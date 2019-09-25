@@ -1,0 +1,278 @@
+//////////////////////////////////////////////////////////////////////$
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Singularity access control micro-benchmark program.
+//
+
+using System;
+using System.Collections;
+using System.Text;
+using Microsoft.Contracts;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.AccessControl;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Configuration;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$test-privilege.localhost")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<KeyboardDeviceContract.Imp:Start> ImpRef;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SecBVT.AppMain(this);
+        }
+    }
+
+
+    //
+    // This is a simple program to test access control functionality.using Microsoft.Singularity.Security;
+//
+    //
+    // It tests:
+    //   a)   Run the test under a role to ensure that roles work.
+    //   b)   Endpoint functionality
+    //          b1)  Obtaining the principal ids of channel endpoints.
+    //          b2)  Obtaining the principal names of channel endpoints
+    //   c)   That the acl cache implementation still works.
+    //   d)   Basic ACL/SecurityService functionality.a-zA-Z1-90_
+    // 
+
+    public class SecBVT
+    {
+
+        AclCore! aclCore;
+        AclConverter! converter;
+        Parameters! config;
+
+        SecBVT (Parameters! _config) {
+            config = _config;
+            AclCore _aclCore = new AclCore(null, new MyAclCoreSupport());
+            aclCore = _aclCore;
+            converter = _aclCore.Converter;
+        }
+
+        private static void DualWriteLine(string message)
+        {
+            Console.WriteLine(message);
+            DebugStub.WriteLine(message);
+        }
+
+        private static void DualWrite(string message)
+        {
+            Console.Write(message);
+            DebugStub.Print(message);
+        }
+
+        private static void DualWrite1(string format, string! s1)
+        {
+            Console.Write(format, s1);
+            DebugStub.Print(format, __arglist(s1));
+        }
+
+        private static void DualWrite2(string format, string! s1, string! s2)
+        {
+            Console.Write(format, s1, s2);
+            DebugStub.Print(format, __arglist(s1,s2));
+        }
+
+        private static void DualWrite3(string format, string! s1, string! s2, string! s3)
+        {
+            Console.Write(format, s1, s2, s3);
+            DebugStub.Print(format, __arglist(s1,s2,s3));
+        }
+
+        private static void DualWrite4(string format, string! s1, string! s2, string! s3, string! s4)
+        {
+            Console.Write(format, s1, s2, s3, s4);
+            DebugStub.Print(format, __arglist(s1,s2,s3,s4));
+        }
+
+        internal static int AppMain(Parameters! _config)
+        {
+            SecBVT test = new SecBVT(_config);
+            test.EndpointTest();
+            test.SimpleAclTest();
+            test.FullAclTest();
+            test.CachePerfTest();
+            return 0;
+        }
+
+        private void EndpointTest()
+        {
+            DualWriteLine("[Running endpoint test]");
+
+            KeyboardDeviceContract.Imp! chan = config.ImpRef.Acquire();
+            Principal p = AclCore.EndpointPeer(chan);
+            config.ImpRef.Release(chan);
+
+            Principal self = Principal.Self();
+            DualWrite2("Our ep: id={0}, name={1}\n", (!)(self.Val.ToString()), self.GetName());
+            DualWrite2("Peer ep: id={0}, name={1}\n", (!)(p.Val.ToString()), p.GetName());
+        }
+
+        public class MyAclCoreSupport: IAclCoreSupport
+        {
+            Hashtable expnTable;
+
+            [NotDelayed]
+            public MyAclCoreSupport() {
+                expnTable = new Hashtable();
+                base();
+                expnTable["/test-exp-1"] = "{$any}+(test1|test2|test3|test4|SecBVT.!)";
+                expnTable["/test-exp-2a"] = "test5|test6|test7|test8";
+                expnTable["/test-exp-2b"] = "test9|test10|test11|test12";
+                expnTable["/test-exp-2c"] = "test13|test14|test15|test16|(SecBVT.!)";
+                expnTable["/test-exp-2"] = "{$any}+({/test-exp-2c})";
+                expnTable["/test-exp-3"] = "{$any}+({/test-exp-2a}|{/test-exp-2b}|{/test-exp-2c})";
+            }
+
+            public string Expand(string! path)
+            {
+                return (string) expnTable[path];
+            }
+        }
+
+        private void SimpleAclTest()
+        {
+            DualWriteLine("[Running endpoint test]");
+
+            KeyboardDeviceContract.Imp! chan = config.ImpRef.Acquire();
+            Principal p = AclCore.EndpointPeer(chan);
+            config.ImpRef.Release(chan);
+
+            string[] resources = new string[]{"{$any}",
+                                              "{$anyuser}"};
+            bool[] correct = new bool[]{true, false};
+
+            int i = 0;
+            foreach (string! resource in resources) {
+
+                bool result = aclCore.CheckAccess(resource, null, p);
+
+                DualWrite4("Acl: {0}, Principal: {1}, Result: {2} ... {3}\n",
+                                    resource, p.GetName(), result.ToString(),
+                                    (result==correct[i])?"OK":"failed");
+                i++;
+            }
+        }
+
+        private void FullAclTest()
+        {
+            DualWriteLine("[Running full ACL test]");
+
+            Principal p = Principal.Self();
+            AccessMode mode = new AccessMode("write");
+            string[] resources = new string[]{"{$anyall}",
+                                              "{$anyuserall}",
+                                              "{$any}@(write|read)",
+                                              "{$any}@write",
+                                              "{$any}@read",
+                                              "{$any}+{$test-privilege}@!",
+                                              "{$any}+{$test-privilege}@read",
+                                              "{$any}+{$test-privilege}@write",
+                                              "!@!+!+{$test-privilege}@!",
+                                              "!@!(+!)*+{$test-privilege}@!",
+                                              "!@!(+!)*+!.microsoft.com@!",
+                                              "!@!(+!)*+!.adobe.com@!",
+                                              "{/test-exp-3}@!",
+                                              "{$dsanyrw}|{$dsregister}"
+            };
+
+            bool[] correct = new bool[]{true,   // {"{$anyall}",
+                                        false,  // "{$anyuserall}",
+                                        true,   // "{$any}@write|read",
+                                        true,   // "{$any}@write",
+                                        false,  // "{$any}@read",
+                                        true,   // "{$any}+{$test-privilege}@!",
+                                        false,  // "{$any}+{$test-privilege}@read",
+                                        true,   // "{$any}+{$test-privilege}@write",
+                                        true,   // "!+!+{$test-privilege}@!",
+                                        true,   // "!(+!)*+{$test-privilege}@!",
+                                        true,   // "!(+!)*+!.microsoft.com@!",
+                                        false,  // "!(+!)*+!.adobe.com@!"
+                                        true,   // "{/test-exp-3}@!"
+                                        true    // "{$dsanyrw}|{$dsregister}"
+            };
+
+            DualWrite(String.Format("Principal: {0}\n", p.GetName()));
+            DualWrite(String.Format("Mode: {0}\n", mode.Val));
+            int i = 0;
+            foreach (string! resource in resources) {
+                bool result = aclCore.CheckAccessBody(resource, mode, p);
+                DualWrite3(
+                    "Acl: {0}, Result: {1} ... {2}\n",
+                    resource, result.ToString(), (result==correct[i++])?"OK":"failed");
+            }
+        }
+
+        private void CachePerfTest()
+        {
+            DualWriteLine("[Running cache performance test]");
+
+            Principal p = Principal.Self();
+            AccessMode mode = new AccessMode("write");
+            string[] resources = new string[]{"{$anyuserall}",
+                                              "{$any}+{$test-privilege}@write",
+                                              "{$any}(+!.microsoft.com)*@!",
+                                              "{$dsanyrw}",
+                                              "{$dsanyrw}|{$dsregister}",
+                                              "{$dsanyr}|{$login}@ted(+!.microsoft.com)*@write",
+                                              "{$dsanyr}|{$login}@{$grp5}(+!.microsoft.com)*@write",
+                                              "{$dsanyr}|{$login}@{$grp10}(+!.microsoft.com)*@write",
+                                              "{$dsanyr}|{$login}@{$grp20}(+!.microsoft.com)*@write"
+            };
+            foreach (string! resource in resources) {
+                int nSubExprs = 0;
+                string! aclConv = converter.ConvertTest(resource, out nSubExprs);
+                DualWrite1("Acl: {0}\n", resource);
+                DualWrite3("TopLength: {0}, ConvLength: {1}, nSubExprs {2}\n",
+                           resource.Length.ToString(), aclConv.Length.ToString(), nSubExprs.ToString());
+
+                for (AclCore.CacheLevel level = AclCore.CacheLevel.All;
+                                       level <= AclCore.CacheLevel.None; level++) {
+
+                    aclCore.ClearStats();
+                    aclCore.SetCacheLevel(level);
+                    PerfSnap snap = new PerfSnap();
+                    // warm cache
+                    aclCore.CheckAccessBody(resource, mode, p);
+                    snap.Start();
+                    try {
+                        for (int i = 0; i < 1000; i++) {
+                            aclCore.CheckAccessBody(resource, mode, p);
+                        }
+                    }
+                    finally {
+                        snap.Finish(1000);
+                    }
+                    snap.Display(String.Format("CheckAccess({0})", level.ToString()));
+                }
+            }
+            aclCore.SetCacheLevel(AclCore.CacheLevel.All);
+        }
+    }
+}

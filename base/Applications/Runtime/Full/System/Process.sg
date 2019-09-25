@@ -1,0 +1,590 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Types;
+
+namespace System
+{
+
+    [CLSCompliant(false)]
+    public sealed class Process
+    {
+        private ProcessHandle handle;
+
+        // Retrieve an endpoint passed as a parameter to this process.
+        //
+        public static unsafe Endpoint* in ExHeap GetStartupEndpoint(int arg)
+        {
+            SharedHeapService.Allocation* alloc =
+                ProcessService.GetStartupEndpoint(arg);
+            Endpoint* in ExHeap ep = (Endpoint* in ExHeap)alloc;
+            return ep;
+        }
+
+        // Retrieve an endpoint passed as a parameter to this process.
+        //
+        public static unsafe void RetStartupEndpoint(int arg,
+                                                     [Claims] Endpoint* in ExHeap ep)
+        {
+            ProcessService.SetStartupEndpoint(arg, (SharedHeapService.Allocation*)ep);
+        }
+
+#region Methods about current process
+        public static int GetStartupBoolArgCount()
+        {
+            return ProcessService.GetStartupBoolArgCount();
+        }
+
+        public static int GetStartupLongArgCount()
+        {
+            return ProcessService.GetStartupLongArgCount();
+        }
+
+        public static int GetStartupStringArgCount()
+        {
+            return ProcessService.GetStartupStringArgCount();
+        }
+
+        public static int GetStartupStringArrayArgCount()
+        {
+            return ProcessService.GetStartupStringArrayArgCount();
+        }
+
+        public static ParameterCode GetStartupLongArg(int index, out long value)
+        {
+            return ProcessService.GetStartupLongArg(index, out value);
+        }
+
+        public static ParameterCode GetStartupBoolArg(int index, out bool value)
+        {
+            return ProcessService.GetStartupBoolArg(index, out value);
+        }
+
+        public static unsafe ParameterCode GetStartupStringArrayArg(int index, out string[] arguments)
+        {
+            int count;
+            int totalCharCount;
+            ParameterCode code = ProcessService.GetStartupStringArrayArg(index,
+                                                                         null,
+                                                                         null,
+                                                                         out count,
+                                                                         out totalCharCount);
+            // REVIEW: for now NotSet is ignored and we return a string[1] below
+            if (code != ParameterCode.Success && code != ParameterCode.NotSet) {
+                arguments = new string[0];
+                return code;
+            }
+            if (count == 0) {
+                arguments = new string[0];
+                return ParameterCode.Success;
+            }
+
+            // Note: totalCharCount+1 because if we have an array of empty strings,
+            // the totalCharCount is 0 and then we can't take the address of &argArray[0] !
+            char[] argArray = new char [totalCharCount+1];
+            int [] intArray = new int[count];
+            fixed (int *intptr = &intArray[0]) {
+                fixed (char *argptr = &argArray[0]) {
+                    ProcessService.GetStartupStringArrayArg(index,
+                                                            argptr,
+                                                            intptr,
+                                                            out count,
+                                                            out totalCharCount);
+                    // now reconstruct the string array from the flattened char array
+                    arguments = new string[count];
+                    int offset = 0;
+                    for (int i = 0; i < count; i++) {
+                        arguments[i] = String.StringCTOR(
+                            argptr, offset, intptr[i]);
+                        offset += intptr[i];
+                    }
+                }
+            }
+            return ParameterCode.Success;
+        }
+
+        public static unsafe ParameterCode GetStartupStringArg(int arg, out string value)
+        {
+            int len = 0;
+            ParameterCode code = ProcessService.GetStartupStringArg(arg, null, ref len);
+            if (code != ParameterCode.Success) {
+                value = null;
+                return code;
+            }
+            if (len == 0) {
+                // REVIEW: should this be "" or null?
+                value = null;
+                return ParameterCode.Success;
+            }
+            char[] argArray = new char [len];
+            fixed (char *argptr = &argArray[0]) {
+                ProcessService.GetStartupStringArg(arg,
+                                                   argptr,
+                                                   ref len);
+                value = String.StringCTOR(argptr, 0, len);
+                return ParameterCode.Success;
+            }
+        }
+#endregion
+
+#region Methods about other processes
+        public  ParameterCode SetStartupLongArg(int index, long value)
+        {
+            ParameterCode p =
+                ProcessHandle.SetStartupLongArg(handle, index,  value);
+            GC.KeepAlive(this);
+            return p;
+        }
+
+        public  ParameterCode SetStartupBoolArg(int index, bool value)
+        {
+            ParameterCode p =
+                ProcessHandle.SetStartupBoolArg(handle, index,  value);
+            GC.KeepAlive(this);
+            return p;
+        }
+
+        public  unsafe ParameterCode SetStartupStringArrayArg(int index, string[]! strings)
+        {
+            ParameterCode p;
+            if (strings.Length > 0) {
+                int[]! lengths;
+                char[]! chars;
+
+                FlattenStringArray(strings, out lengths, out chars);
+                fixed (char *charptr = &chars[0]) {
+                    fixed (int *intptr = &lengths[0]) {
+                        p = ProcessHandle.SetStartupStringArrayArg(handle,
+                                                                   index,
+                                                                   charptr,
+                                                                   intptr,
+                                                                   strings.Length);
+                    }
+                }
+            }
+            else {
+                p = ProcessHandle.SetStartupStringArrayArg(handle,
+                                                           index,
+                                                           null,
+                                                           null,
+                                                           strings.Length);
+            }
+            GC.KeepAlive(this);
+            return p;
+        }
+
+        public  unsafe ParameterCode SetStartupStringArg(int index, string value)
+        {
+            ParameterCode p;
+            if (value != null && value.Length != 0) {
+                // String.m_firstChar is not accessible to sgc (defined in corlib)
+                // need to copy until the kernel and system are compiled
+                // with the same compiler
+                char[] c = new char[value.Length];
+                for (int i = 0; i < value.Length; i++) {
+                    c[i] = value[i];
+                }
+                fixed ( char *argptr = &c[0] ) {
+                    p = ProcessHandle.SetStartupStringArg(handle, index, argptr, value.Length);
+                }
+            }
+            // set "null"
+            else p = ProcessHandle.SetStartupStringArg(handle, index, null, 0);
+            GC.KeepAlive(this);
+            return p;
+        }
+
+#endregion
+        // In order to pass the arguments to the kernel, we first need to
+        // flatten the arguments parameter from an array of strings to
+        // an array of characters (containing the contents of the strings).
+        private static unsafe void FlattenStringArray(string[]! arguments,
+                                                       out int[]! argLengths,
+                                                       out char[]! argVector)
+        {
+            int totalCharacters = 0;
+
+            int len = arguments.Length;
+            for (int arg = 0; arg < len; arg++) {
+                string argstring = arguments[arg];
+                if (argstring == null) continue;
+                totalCharacters += argstring.Length;
+            }
+
+            argVector = new char[totalCharacters + 1];
+            argLengths = new int[len];
+
+            int offset = 0;
+            for (int arg = 0; arg < len; arg++) {
+                string argstring = arguments[arg];
+                if (argstring == null) {
+                    argLengths[arg] = 0;
+                    continue;
+                }
+                int alen = argstring.Length;
+                argstring.CopyTo(0, argVector, offset, alen);
+                offset += alen;
+                argLengths[arg] = alen;
+            }
+        }
+
+
+        // In order to pass the arguments to the kernel, we first need to
+        // flatten the arguments parameter from an array of strings to
+        // an array of characters (containing the contents of the strings).
+        private static unsafe void FlattenArgs(string[]! arguments,
+                                               String role,
+                                               out int[]! argLengths,
+                                               out char[]! argVector,
+                                               out char[]! roleVector,
+                                               out int roleLength)
+        {
+
+            FlattenStringArray(arguments, out argLengths, out argVector);
+
+            // package the role parameters (if present)
+            if (role != null) {
+                roleLength = role.Length;
+                roleVector = new char[roleLength];
+                role.CopyTo(0, roleVector, 0, roleLength);
+            }
+            else {
+                roleLength = 0;
+                roleVector = new char[1];
+            }
+        }
+
+        /// <summary>
+        /// Given 2 system types generate and initialize the two endpoints of
+        /// a channel. The imp side will be set in the processes startup endpoint array
+        /// at position "index". The exp side will be bound to a service based on global policy
+        /// </summary>
+        public unsafe  bool BindToService(SystemType impType,
+                                      SystemType  expType,
+                                      string! contract,
+                                      int startState,
+                                      int index)
+        {
+            // convert string to char* and length
+            char [] strChar = new char[contract.Length];
+            assert strChar != null;
+            contract.CopyTo(0, strChar, 0, contract.Length);
+
+            fixed ( char *strptr = &strChar[0] ) {
+
+                bool b = ProcessHandle.BindToService(handle,
+                                                     impType,
+                                                     expType,
+                                                     strptr,
+                                                     contract.Length,
+                                                     startState,
+                                                     index);
+                GC.KeepAlive(this);
+                return b;
+                }
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public unsafe Process(String! cmd,
+                              String action,
+                              String role)
+        {
+            if (cmd.Length == 0)
+                throw new ArgumentException("The 'cmd' argument is required, and cannot be null or empty.", "cmd");
+
+            char[]! cmdVector;
+            char[]! actionVector;
+            char[]! roleVector;
+
+            int cmdLength;
+            int actionLength;
+            int roleLength;
+
+            // package the command named parameter
+                cmdLength = cmd.Length;
+                cmdVector = new char[cmdLength];
+                cmd.CopyTo(0, cmdVector, 0, cmdLength);
+
+            // package the action parameter(if present)
+            if (action != null && action.Length != 0) {
+                actionLength = action.Length;
+                actionVector = new char[actionLength];
+                action.CopyTo(0, actionVector, 0, actionLength);
+            }
+            else {
+                actionLength = 0;
+                actionVector = new char[1];
+            }
+
+            // package the role parameters (if present)
+            if (role != null && role.Length != 0) {
+                roleLength = role.Length;
+                roleVector = new char[roleLength];
+                role.CopyTo(0, roleVector, 0, roleLength);
+            }
+            else {
+                roleLength = 0;
+                roleVector = new char[1];
+            }
+
+            fixed (char *cmdptr = &cmdVector[0]) {
+                fixed (char *act = &actionVector[0]) {
+                    fixed (char *rols = &roleVector[0]) {
+                        ProcessHandle handleOnStack;
+                        ProcessHandle.Create(cmdptr, cmdLength,
+                                             act, actionLength,
+                                             rols, roleLength,
+                                             out handleOnStack);
+                        handle = handleOnStack;
+                    }
+                }
+            }
+            if (handle.id == 0) {
+                throw new ProcessCreateException();
+            }
+            GC.KeepAlive(this);
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public unsafe Process(String[]! arguments,
+                              String role,
+                              int endpointCount)
+        {
+            int[]!  argLengths;
+            char[]! argVector;
+            char[]! roleVector;
+            int roleLength;
+
+            FlattenArgs(arguments, role,
+                        out argLengths, out argVector, out roleVector, out roleLength);
+
+            fixed (char *args = &argVector[0]) {
+                fixed (int *lens = &argLengths[0]) {
+                    fixed (char *rols = &roleVector[0]) {
+                        ProcessHandle handleOnStack;
+                        ProcessHandle.Create(args, lens, arguments.Length,
+                                             rols, roleLength, endpointCount,
+                                             out handleOnStack);
+                        handle = handleOnStack;
+                    }
+                }
+            }
+
+            if (handle.id == 0) {
+                throw new ProcessCreateException();
+            }
+            GC.KeepAlive(this);
+            ProcessService.Waypoint(573);
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public unsafe Process(String[]! arguments,
+                              String role,
+                              [Claims] Endpoint* in ExHeap endpoint)
+            : this((!)arguments[0], null, role)
+        {
+            ProcessHandle.SetStartupEndpoint(handle, 0,
+                                             (SharedHeapService.Allocation *)endpoint);
+            GC.KeepAlive(this);
+            ProcessService.Waypoint(574);
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public unsafe Process(String[]! arguments,
+                              [Claims] Endpoint* in ExHeap exp)
+            : this(arguments, null, exp)
+        {
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public unsafe Process(String[]! arguments,
+                              String role)
+            : this(arguments, role, 0)
+        {
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public unsafe Process(String[]! arguments)
+            : this(arguments, null, 0)
+        {
+        }
+
+        /// <summary>
+        /// Finalizer is responsible for freeing handle that keeps corresponding
+        /// kernel AutoResetEvent object live.
+        /// </summary>
+        ~Process() {
+            Dispose(false);
+        }
+
+        public unsafe bool SetStartupEndpoint(int index,
+                                              [Claims] Endpoint * in ExHeap endpoint)
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool b = ProcessHandle.SetStartupEndpoint(handle, index,
+                                                    (SharedHeapService.Allocation *)endpoint);
+            GC.KeepAlive(this);
+            return b;
+        }
+
+        public void Dispose(bool explicitDisposing)
+        {
+            if (handle.id != 0) {
+                ProcessHandle.Dispose(handle);
+                handle = new ProcessHandle();
+            }
+        }
+
+        public void Start()
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool unstarted = ProcessHandle.Start(handle);
+            GC.KeepAlive(this);
+            if (!unstarted) {
+                throw new ProcessStateException("started");
+            }
+        }
+
+        public void Join()
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool started;
+            ProcessHandle.Join(handle, out started);
+            GC.KeepAlive(this);
+            if (!started) {
+                throw new ProcessStateException("unstarted");
+            }
+        }
+
+        public bool Join(TimeSpan timeout)
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool started;
+            bool joined = ProcessHandle.Join(handle, timeout, out started);
+            GC.KeepAlive(this);
+            if (!started) {
+                throw new ProcessStateException("unstarted");
+            }
+            return joined;
+        }
+
+        public bool Join(SchedulerTime stop)
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool started;
+            bool joined = ProcessHandle.Join(handle, stop, out started);
+            GC.KeepAlive(this);
+            if (!started) {
+                throw new ProcessStateException("unstarted");
+            }
+            return joined;
+        }
+
+        public void Suspend(bool recursive)
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool started = ProcessHandle.Suspend(handle, recursive);
+            GC.KeepAlive(this);
+            if (!started) {
+                throw new ProcessStateException("unstarted");
+            }
+        }
+
+        public void Resume(bool recursive)
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            bool started = ProcessHandle.Resume(handle, recursive);
+            GC.KeepAlive(this);
+            if (!started) {
+                throw new ProcessStateException("unstarted");
+            }
+        }
+
+        public void Stop()
+        {
+            Stop((int) ProcessExitCode.StopDefault);
+        }
+
+        public void Stop(int exitcode)
+        {
+            if (handle.id == 0) {
+                throw new ProcessStateException("disposed");
+            }
+            ProcessHandle.Stop(handle, exitcode);
+            GC.KeepAlive(this);
+        }
+
+        public int Id
+        {
+            get {
+                int i =
+                    (handle.id != 0) ? ProcessHandle.GetProcessId(handle) : 0;
+                GC.KeepAlive(this);
+                return i;
+            }
+        }
+
+        public Principal Principal
+        {
+            get
+            {
+                if (handle.id == 0) {
+                    throw new ProcessStateException("disposed");
+                }
+                Principal p =
+                    new Principal(ProcessHandle.GetPrincipalHandle(handle));
+                GC.KeepAlive(this);
+                return p;
+            }
+        }
+
+        public int ExitCode
+        {
+            get {
+                int i =
+                    (handle.id != 0) ? ProcessHandle.GetExitCode(handle) : 0;
+                GC.KeepAlive(this);
+                return i;
+            }
+        }
+
+        public ProcessState State {
+            get {
+                ProcessState p =
+                    (handle.id != 0) ? ProcessHandle.GetState(handle) : ProcessState.Stopped;
+                GC.KeepAlive(this);
+                return p;
+            }
+        }
+
+    }
+}

@@ -1,0 +1,31 @@
+﻿<!--
+###############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!-- A special project that merely copies the precompiled nForce4 MSIL binary
+to the object directory. -->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\..\Paths.targets" />
+  
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>nvmac</AssemblyName>
+    <Precompiled>true</Precompiled>
+    <PrecompiledPath>.</PrecompiledPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Net.Contracts\Io.Net.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Drivers.Net\Drivers.Net.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\DriverCategory.targets" />
+
+</Project>

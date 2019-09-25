@@ -1,0 +1,255 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security.AccessControl
+{
+    using System;
+    using System.Text;
+    using System.Collections;
+
+    /// <summary>
+    /// Implement an cache with maximum size, timeouts, and LRU pruning.
+    /// </summary>
+
+    public class ICacheValue
+    {
+        public DateTime expiry;
+        public bool Expired { get { return (this.expiry > DateTime.Now); } }
+
+        public void ResetExpiry(Cache! cache, DateTime minExpiry)
+        {
+            expiry = cache.ComputeExpiry(minExpiry);
+        }
+
+        public ICacheValue(Cache! cache, DateTime minExpiry)
+        {
+            expiry = cache.ComputeExpiry(minExpiry);
+        }
+    }
+
+    public class Cache : Hashtable
+    {
+        internal struct Stats {
+            public int maxEntries;
+            public bool enabled;
+            public int hits;
+            public int misses;
+            public int timeout;
+            public int prunePercent;
+            public string statHeader;
+
+            public Stats (int _maxSize, int _timeout, int _prunePercent, string! _statHdr)
+            {
+                maxEntries = _maxSize;
+                enabled = true;
+                hits = 0;
+                misses = 0;
+                timeout = _timeout;
+                prunePercent = _prunePercent;
+                statHeader = _statHdr;
+            }
+        }
+
+        internal class CacheEntry
+        {
+            public string! key;
+            public ulong lastAccess;
+            public ICacheValue! value;          // the client value
+
+            public CacheEntry(string! key, ICacheValue! value)
+            {
+                this.key = key;
+                this.value = value;
+                this.lastAccess = lastAccessSource++;
+            }
+        }
+
+        private const int DefaultMaxCacheSize = 1000;
+        private const int DefaultTimeout = 60 * 60;
+        private const int DefaultPrunePercent = 25;
+
+        // we don't access this inside a lock, because if we lose
+        // a click we don't care
+        private static ulong lastAccessSource = 0L;
+
+        private Stats stats;
+
+        public Cache()
+        {
+            this.stats = new Stats(DefaultMaxCacheSize, DefaultTimeout, DefaultPrunePercent, "");
+        }
+
+        public Cache(int maxEntries, int timeout, int prunePercent, string! statHeader)
+        {
+            this.stats = new Stats(maxEntries, timeout, prunePercent, statHeader);
+        }
+
+        public DateTime ComputeExpiry(DateTime minExpiry)
+        {
+            DateTime exp = DateTime.Now;
+            exp.AddSeconds(stats.timeout);
+            if (exp > minExpiry)
+                exp = minExpiry;
+            return exp;
+        }
+
+        /// <summary>
+        /// Retrieve the corresponding entry
+        /// </summary>
+        public ICacheValue GetEntry(string! key)
+        {
+            // no lock because HTs are lock-free for read
+            if (!stats.enabled)
+                return null;
+
+            CacheEntry e = (CacheEntry) this[key];
+            if (e == null) {
+                stats.misses++;
+                return null;
+            }
+            stats.hits++;
+            e.lastAccess = lastAccessSource++;
+            return e.value;
+        }
+
+        /// <summary>
+        /// Add or replace the entry in the cache
+        /// </summary>
+        public void AddEntry(string! key, ICacheValue! value)
+        {
+            lock (this) {
+                if (!stats.enabled)
+                    return;
+
+                CacheEntry e = new CacheEntry(key, value);
+                if (this.Count >= stats.maxEntries)
+                    Prune(false);
+                this[e.key] = e;
+            }
+        }
+
+        /// <summary>
+        /// Make room in the cache
+        /// </summary>
+
+        public void Prune(bool all)
+        {
+            // assume that Expired entries will come to the head of the LRU
+            lock (this) {
+                if (all)
+                    this.Clear();
+                else {
+                    int target = (this.stats.maxEntries * stats.prunePercent) / 100;
+                    CacheEntry[] candidates = new CacheEntry[target];
+                    CacheEntry lastCandidate = null;
+                    foreach (DictionaryEntry de in this) {
+                        CacheEntry! e = (CacheEntry!) de.Value;
+                        if (lastCandidate == null || e.lastAccess < lastCandidate.lastAccess) {
+                            lastCandidate = InsertPruningCandidate(e, candidates);
+                        }
+                    }
+                    for (int i = 0; i < target; i++) {
+                        CacheEntry e = candidates[i];
+                        if (e != null)
+                            this.Remove(e.key);
+                    }
+                }
+            }
+        }
+
+        private CacheEntry InsertPruningCandidate(CacheEntry! e, CacheEntry[]! ccs)
+        {
+
+            for (int i = ccs.Length - 1; i >= 0; i--) {
+                CacheEntry ee = ccs[i];
+                if (ee == null) {
+                    ccs[i] = e;
+                    break;
+                }
+                if (e.lastAccess < ee.lastAccess) {
+                    // push everyone down, insert here
+                    while (ee != null) {
+                        ccs[i] = e;
+                        if (i-- == 0)
+                            break;
+                        e = ee;
+                        ee = ccs[i];
+                    }
+                    break;
+                }
+                // otherwise keep looking
+            }
+            return ccs[0];
+        }
+
+        // these methods are for testing purposes
+
+        public void ResetStats()
+        {
+            lock (this) {
+                this.stats.hits = 0;
+                this.stats.misses = 0;
+            }
+        }
+
+        public void SetMaxEntries(int max)
+        {
+            lock (this) {
+                stats.maxEntries = max;
+                Prune(false);
+            }
+        }
+
+        public void SetTimeout(int seconds)
+        {
+            lock (this) {
+                stats.timeout = seconds;
+            }
+        }
+
+        public void SetPrunePercent(int percent)
+        {
+            lock (this) {
+                stats.prunePercent = percent;
+            }
+        }
+
+        public void Enable()
+        {
+            lock (this) {
+                stats.enabled = true;
+            }
+        }
+
+        public void Disable()
+        {
+            lock (this) {
+                stats.enabled = false;
+            }
+        }
+
+        public void DumpStats(StringBuilder! sb)
+        {
+            lock (this) {
+                sb.AppendFormat("{0} Hit:{1}, Miss:{2}, N:{3}, Max:{4}, T0:{5}, PP:{6}\n",
+                                        stats.statHeader, stats.hits, stats.misses,
+                                        this.Count, stats.maxEntries, stats.timeout,
+                                        stats.prunePercent);
+            }
+        }
+
+        public void DumpCache(StringBuilder! sb)
+        {
+            lock (this) {
+                foreach (DictionaryEntry de in this) {
+                        CacheEntry! e = (CacheEntry!) de.Value;
+                        sb.AppendFormat("Key: {0}, Expiry: {1}, LastAccess: {2}\n",
+                                    e.key, e.value.expiry.ToString("t"), e.lastAccess);
+                }
+            }
+        }
+    }
+}

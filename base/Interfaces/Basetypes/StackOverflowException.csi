@@ -1,0 +1,15 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+
+    public sealed class StackOverflowException : SystemException {
+        public StackOverflowException();
+        public StackOverflowException(String message);
+        public StackOverflowException(String message, Exception innerException);
+    }
+}

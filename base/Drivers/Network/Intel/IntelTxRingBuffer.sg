@@ -1,0 +1,154 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IntelTxRingBuffer.cs
+//
+//  Notes:
+//
+//  Adaptor class for the Tx ring buffer.
+//
+
+using Microsoft.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+
+using System;
+
+namespace Microsoft.Singularity.Drivers.Network.Intel
+{
+    internal class IntelTxRingBuffer
+    {
+        IntelRingBuffer! txRingBuffer;
+        ExRef<PacketFifo>! txPacketsInDevice;
+
+        internal IntelTxRingBuffer(uint capacity)
+            requires capacity > 0 && IntelRingBuffer.IsPowerOf2(capacity);
+        {
+            this.txRingBuffer = new IntelRingBuffer(capacity);
+            this.txPacketsInDevice = new ExRef<PacketFifo>(
+                new [ExHeap] PacketFifo((int) capacity),
+                false
+                );
+        }
+
+        internal void Reset()
+        {
+            txRingBuffer.Reset();
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Buffer Operations, should only be called when a lock is held
+        // this ring buffer.
+        //
+        private void LockedPushTsmtBuffer(UIntPtr packetVirtAddr, int length)
+        {
+            PlatformService.CleanAndInvalidateDCache(packetVirtAddr, (UIntPtr)length);
+
+            ulong controlBits = (ulong) ByteOrder.HostToLittleEndian(length);
+
+            // set necessary command fields
+            controlBits |= (TxCmdFields.END_OF_PACKET | TxCmdFields.INSERT_FCS |
+                            TxCmdFields.REPORT_STATUS);
+            txRingBuffer.Push(packetVirtAddr, controlBits);
+        }
+
+        internal void LockedPushTsmtBuffer([Claims]Packet*! in ExHeap packet)
+        {
+            DebugStub.Assert(packet->FragmentCount == 1);
+            DebugStub.Assert(!txRingBuffer.IsFull);
+
+            UIntPtr address;
+            int     length;
+
+            packet->GetFragmentRange(0, out address, out length);
+
+            this.LockedPushTsmtBuffer(address, length);
+
+            PacketFifo*! in ExHeap liveFifo = (!)this.txPacketsInDevice.Acquire();
+            liveFifo->Push(packet);
+            txPacketsInDevice.Release(liveFifo);
+        }
+
+        private Packet*! in ExHeap MakePacketFromDescriptor(UIntPtr fragmentVirtAddr,
+                                                            ulong controlBits)
+        {
+            PacketFifo*! in ExHeap inDevPkts = txPacketsInDevice.Acquire();
+            Packet*! in ExHeap packet = inDevPkts->Pop();
+
+            // int length   = (int) ((controlBits & TxDescriptor.LENGTH_MASK)
+            //                      >> TxDescriptor.LENGTH_SHIFT);
+            int stat_err = (int) ((controlBits & TxDescriptor.ERR_STAT_MASK)
+                                  >> TxDescriptor.ERR_STAT_SHIFT);
+
+
+            DebugStub.Assert(packet->GetFragmentVirtualAddress(0) == fragmentVirtAddr);
+
+            if (((TxStatErrFields.LATE_COLLISION |
+                  TxStatErrFields.EXCESS_COLLISIONS |
+                  TxStatErrFields.TRANSMIT_UNDERRUN) & stat_err) == 0) {
+                packet->FromDeviceFlags = FromDeviceFlags.TransmitSuccess;
+            } else {
+                packet->FromDeviceFlags = FromDeviceFlags.TransmitError;
+            }
+
+            txPacketsInDevice.Release(inDevPkts);
+
+            return packet;
+        }
+
+        internal void LockedDrainTsmtBuffer (PacketFifo*! in ExHeap toUser)
+        {
+            UIntPtr fragmentVirtAddr;
+            ulong   controlBits;
+
+            while (txRingBuffer.Peek(out fragmentVirtAddr, out controlBits)) {
+                Packet*! in ExHeap packet = MakePacketFromDescriptor(fragmentVirtAddr,
+                                                                     controlBits);
+                toUser->Push(packet);
+                txRingBuffer.Pop();
+            }
+        }
+
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Ring buffer properties
+        //
+        internal UIntPtr BaseAddress
+        {
+            get { return txRingBuffer.BaseAddress; }
+        }
+
+        internal bool NewTransmitEvent() {
+            return txRingBuffer.Peek();
+        }
+
+        [Pure]
+        internal uint Capacity { get { return txRingBuffer.Capacity; } }
+
+        [Pure]
+        internal uint Free { get { return txRingBuffer.Free; } }
+
+        [Pure]
+        internal bool IsFull { get { return txRingBuffer.IsFull; } }
+
+        [Pure]
+        internal uint Count { get { return txRingBuffer.Count; } }
+
+        [Pure]
+        internal uint Tail { get { return txRingBuffer.Tail; } }
+
+        [Pure]
+        internal uint Head { get { return txRingBuffer.Head; } }
+
+        [Pure]
+        internal uint DescLength { get { return txRingBuffer.DescLength; } }
+    }
+}

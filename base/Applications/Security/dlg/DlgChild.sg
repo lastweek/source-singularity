@@ -1,0 +1,86 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple delegation test (child)
+//
+
+using System;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Applications.Contracts;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [Category("DlgTest")]
+    internal class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<DlgTestContract.Exp:Start> expRef;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return DlgChild.AppMain(this);
+        }
+    }
+    public class DlgChild
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            DlgTestContract.Exp dlgExp = config.expRef.Acquire();
+            if (dlgExp == null) {
+                return 1;
+            }
+
+            bool more = true;
+            TRef<DlgTestContract.Imp:Start>  wrapper = null;
+            try {
+
+                dlgExp.SendSuccess();
+                while (more) {
+                    switch receive {
+                        case dlgExp.HereIsCapabilityEndpoint(ep):
+                            Principal p = Principal.EndpointOwner(ep);
+                            string! str = p.GetName();
+                            char[]! in ExHeap msg = Bitter.FromString2(str);
+                            dlgExp.SendHereIsCapabilityEndpointAck(msg);
+                            delete ep;
+                            break;
+
+                        case dlgExp.HereIsMediationEndpoint(ep):
+                            DlgTestContract.Imp! ix;
+                            DlgTestContract.Exp! ex;
+                            DlgTestContract.NewChannel(out ix, out ex);
+                            Endpoint.AcceptDelegation(ix, ex, ep);
+                            dlgExp.SendHereIsMediationEndpointAck(ex);
+                            wrapper = new TRef<DlgTestContract.Imp:Start>(ix);
+                            delete ep;
+                            break;
+
+                        case dlgExp.ChannelClosed():
+                            more = false;
+                            break;
+                    }
+                }
+                return 0;
+            }
+            finally {
+                delete dlgExp;
+                if (wrapper != null)
+                    delete wrapper.Acquire();
+            }
+            return 1;
+        }
+    }
+}

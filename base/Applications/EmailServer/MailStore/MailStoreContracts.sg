@@ -1,0 +1,38 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract used by SMTP Agents to talk to the mail store.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Endpoint;
+
+using Microsoft.Singularity.Extending;
+
+namespace Microsoft.Singularity.Email.Contracts
+{
+    public contract MailStoreContract : ExtensionContract //ServiceContract
+    {
+        public const string ModuleName = "/service/mailstore";
+
+        out message MailStoreReady();
+
+        in  message GetAddressList();
+        out message GetAck(char[]! in ExHeap addresses);
+
+        in  message SaveMessage(char[]! in ExHeap accounts,
+                                byte[]! in ExHeap buffer);
+        out message SaveAck();
+        out message SaveNak(int error);
+
+        override state Start : MailStoreReady! -> ReadyState;
+        state ReadyState : one {
+            SaveMessage? -> (SaveAck! or SaveNak!) -> ReadyState;
+            GetAddressList? -> (GetAck!) -> ReadyState;
+        }
+    }
+}

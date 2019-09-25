@@ -1,0 +1,16 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using Bartok.Runtime;
+
+namespace System
+{
+
+    internal sealed class RuntimeType
+    {
+        internal TypeInitState cctorState;
+    }
+}

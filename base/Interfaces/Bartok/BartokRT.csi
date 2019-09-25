@@ -1,0 +1,69 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+// This code is included in both Bartok compiler and mscorlibOverride builds
+// so that constants can be shared.
+
+using System;
+using System.Runtime.InteropServices;
+
+//#define DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+
+namespace Microsoft.Bartok.Runtime
+{
+#if DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+    public enum StructuralType {
+        None            = 0x00,
+        Reference       = 0x01,
+        UntracedPointer = 0x02,
+        Struct          = 0x03,
+        Bool            = 0x04,
+        Char            = 0x05,
+        Int8            = 0x06,
+        Int16           = 0x07,
+        Int32           = 0x08,
+        Int64           = 0x09,
+        UInt8           = 0x0a,
+        UInt16          = 0x0b,
+        UInt32          = 0x0c,
+        UInt64          = 0x0d,
+        Float32         = 0x0e,
+        Float64         = 0x0f,
+        IntPtr          = 0x10,
+        UIntPtr         = 0x11,
+        Void            = 0x12,
+    };
+#endif
+
+    public enum GCType{
+        AdaptiveCopyingCollector    = 0x00,
+        MarkSweepCollector          = 0x01,
+        SemispaceCollector          = 0x02,
+        SlidingCollector            = 0x03,
+        ReferenceCountingCollector  = 0x04,
+        ConcurrentMSCollector       = 0x05,
+    };
+
+    public class Constants {
+        public const int TypeTestDisplaySize;
+        public const int TypeTestDisplayPosCache;
+        public const bool TypeTestDisplayIncludesObject;
+        public const int TypeTestDisplayObjectOffset;
+
+        // Workaround for lack of enum printing in Bartok
+        public static string[] StructuralTypeNames;
+
+        // BUGBUG: what about entry for structs?
+        public int[] arrayOfStride;
+    };
+
+#if DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+    public enum TypeInitState {
+        Ready = 1,
+        Running = 2,
+        Failed = 3,
+        Completed =4
+    };
+#endif
+}

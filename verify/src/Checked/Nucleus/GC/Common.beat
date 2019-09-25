@@ -1,0 +1,306 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+/*****************************************************************************
+******************************************************************************
+**** VERIFIED
+******************************************************************************
+*****************************************************************************/
+
+axiom (forall f:int, j:int, $FrameAddr:[int]int, $FrameSlice:[int]int::
+_InFrameSlice(f, j, $FrameAddr, $FrameSlice) == ($FrameSlice[$FrameAddr[f] + 4 * j] == f));
+implementation _inFrameSlice() {}
+
+axiom (forall $IoVars:_, $pciMem:[int]int:: IoInv($IoVars, $pciMem) == _IoInv($IoVars, $pciMem));
+implementation _ioInv() {}
+
+procedure TableSearch($base:int, $count:int, $x:int)
+  requires ecx == $base && edx == $count && ebp == $x;
+  requires word(ecx) && word(edx) && word(ebp);
+  requires (forall j:int::{TO(j)} TO(j) ==> 0 <= j && j <= $count ==> inRo($base + 4 * j, 4));
+  requires (forall j1:int, j2:int::{TO(j1), TO(j2)} TO(j1) && TO(j2) ==> 0 <= j1 && j1 < j2 && j2 <= $count ==>
+    ro32($base + 4 * j1) < ro32($base + 4 * j2));
+  requires SMemRequireRA(100, $sMem, esp, $RET);
+  requires MemInv($MemVars);
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp, esp;
+  modifies $Mem;
+  // eax = ret
+  // edx = found
+  ensures edx != 0 <==> (exists j:int::{TO(j)} TO(j) && 0 <= j && j < $count && between(ro32($base + 4 * j), ro32($base + 4 * (j + 1)), $x));
+  ensures edx != 0  ==> 0 <= eax && eax < $count && between(ro32($base + 4 * eax), ro32($base + 4 * (eax + 1)), $x);
+  ensures SMemEnsure($sMem, old($sMem), esp, old(esp));
+  ensures MemInv($MemVars);
+{
+  if (edx >= 0) { goto skip1; }
+    edx := 0;
+    return;
+  skip1:
+
+  assert TO(0);
+  call eax := RoLoad32(ecx);
+  if (ebp >= eax) { goto skip2; }
+    assert TO(0);
+    edx := 0;
+    return;
+  skip2:
+
+  assert TO($count);
+  call eax := RoLoad32(ecx + 4 * edx);
+  if (ebp < eax) { goto skip3; }
+    assert TO($count);
+    // REVIEW: can this be cleaned up?
+    assert (forall j:int::{TSlot(j)} TSlot(j) && TO(j) && TO(j + 1) && 0 <= j && j < $count ==> $x >= ro32($base + 4 * (j + 1)));
+    assert (forall j:int::{TO(j)} TO(j) && TSlot(j) && 0 <= j && j < $count ==> $x >= ro32($base + 4 * (j + 1)));
+    edx := 0;
+    return;
+  skip3:
+
+  esi := 0;
+  edi := edx;
+
+//  while (esi + 1 < edi)
+  loop:
+    assert TO(esi) && TO(edi) && 0 <= esi && esi < edi && edi <= $count;
+    assert (exists j:int::{TO(j)} TO(j) && 0 <= j && j < $count && between(ro32($base + 4 * j), ro32($base + 4 * (j + 1)), $x)) ==>
+      ro32($base + 4 * esi) <= $x && $x < ro32($base + 4 * edi);
+    call eax := Lea(esi + 1);
+    if (eax >= edi) { goto loopEnd; }
+
+    call ebx := LeaUnchecked(esi + 1 * edi);
+    call ebx := Shr(ebx, 1);
+    if (ebx <= esi) { goto do4; }
+    if (ebx >= edi) { goto do4; }
+    goto skip4;
+    do4:
+      call ebx := Lea(esi + 1);
+    skip4:
+
+    assert TO(ebx);
+    call eax := RoLoad32(ecx + 4 * ebx);
+    if (eax <= ebp) { goto do5; }
+      edi := ebx;
+    goto skip5;
+    do5:
+      esi := ebx;
+    skip5:
+    goto loop;
+  loopEnd:
+
+  eax := esi;
+  call ebx := RoLoad32(ecx + 4 * eax);
+  if (ebp < ebx) { goto skip6; }
+  call ebx := RoLoad32(ecx + 4 * eax + 4);
+  if (ebp >= ebx) { goto skip6; }
+    edx := 1;
+    return;
+  skip6:
+    edx := 0;
+    return;
+}
+
+implementation TablesSearch($s:int, $f:int, $ra:int, $nextFp:int)
+{
+  var ra:int;
+  var nextFp:int;
+  var table:int;
+  var index:int;
+  var tableBase:int;
+  var tmp1:int;
+  var tmp2:int;
+  ra := ecx;
+  nextFp := edx;
+  table := 0;
+  edx := 0;
+
+  //while (table < ?callSiteTableCount)
+  loop:
+    assert TVFT($f);
+    assert TT(table) && 0 <= table;
+    assert edx == 0;
+    assert !(exists t:int, j:int::{TT(t), TO(j)} TT(t) && TO(j) && t < table && RetAddrAt(t, j, ra));
+    assert word(table) && word(ra);
+    assert SMemInv($sMem, old($sMem), esp, old(esp));
+    assert MemInv($MemVars);
+    eax := table;
+    if (?callSiteTableCount <= eax) { goto loopEnd; }
+
+    ebx := ?returnAddressToCallSiteSetNumbers;
+    call ecx := RoLoad32(ebx + 4 * eax);
+    ebx := ?callSiteSetCount;
+    call edx := RoLoad32(ebx + 4 * eax);
+    call edx := RoLoad32(edx);
+    ebx := ?codeBaseStartTable;
+    call esi := RoLoad32(ebx + 4 * eax);
+
+    ebp := ra;
+
+    assert TO(0);
+    call eax := RoLoad32(ecx); // REVIEW: better way to prove word(ro32(ecx)).
+
+    if (esi > ebp) { goto skip1; }
+      call ebp := Sub(ebp, esi);
+      call TableSearch(ecx, edx, ra - esi);
+      index := eax;
+
+    assert TO(index);
+    if (edx == 0) { goto skip1; }
+      esi := table;
+      edi := ?activationDescriptorTable;
+      call ecx := RoLoad32(edi + 4 * esi);
+      edi := ?callSiteSetNumberToIndex;
+      call ebp := RoLoad32(edi + 4 * esi);
+      call ebp := RoLoadU16(ebp + 2 * eax);
+      call eax := RoLoad32(ecx + 4 * ebp);
+      return;
+    skip1:
+
+    call table := AddChecked(table, 1);
+    edx := 0;
+    goto loop;
+  loopEnd:
+    return;
+}
+
+procedure getSize($abs:int, $ptr:int, $vt:int, $_nElems1:int, $_nElems2:int)
+  requires ecx == $ptr && edx == $vt;
+  requires ObjSize($abs, $vt, $_nElems1, $_nElems2);
+  requires VTable($abs, $vt);
+  requires numFields($abs) >= 3 ==> AlignedHeapAddr($ptr + 8);
+  requires numFields($abs) >= 3 && !VFieldPtr($abs, 2) ==> $gcMem[$ptr + 8] == $_nElems1;
+  requires numFields($abs) >= 4 ==> AlignedHeapAddr($ptr + 12);
+  requires numFields($abs) >= 4 && !VFieldPtr($abs, 3) ==> $gcMem[$ptr + 12] == $_nElems2;
+  requires MemInv($MemVars);
+  modifies $Eip, eax, ebx, edx, esi, edi, ebp;
+  ensures  eax == 4 * numFields($abs);
+  ensures  MemInv($MemVars);
+{
+  assert TVL($abs);
+  assert TVT($abs, $vt);
+  call ebp := RoLoad32(edx + ?VT_MASK);
+  call ebp := And(ebp, 15);
+
+  if (ebp != ?SPARSE_TAG) { goto skip1; }
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+    goto end;
+  skip1:
+
+  if (ebp != ?DENSE_TAG) { goto skip2; }
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+    goto end;
+  skip2:
+
+  if (ebp != ?STRING_TAG) { goto skip3; }
+    assert TO(2);
+    call esi := GcLoad(ecx + 8);
+    //eax := pad(16 + 2 * esi);
+    eax := esi;
+    call eax := AddChecked(eax, eax);
+    call eax := AddChecked(eax, 19);
+    ebx := 3;
+    call ebx := Not(ebx);
+    call eax := And(eax, ebx);
+    goto end;
+  skip3:
+
+  if (ebp != ?PTR_VECTOR_TAG) { goto skip4; }
+    assert TO(2);
+    call esi := GcLoad(ecx + 8);
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+    //eax := pad(eax + 4 * esi);
+    call esi := AddChecked(esi, esi);
+    call esi := AddChecked(esi, esi);
+    call eax := AddChecked(eax, esi);
+    call eax := AddChecked(eax, 3);
+    ebx := 3;
+    call ebx := Not(ebx);
+    call eax := And(eax, ebx);
+    goto end;
+  skip4:
+
+  if (ebp != ?OTHER_VECTOR_TAG) { goto skip5; }
+    assert TO(2);
+    call esi := GcLoad(ecx + 8);
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+    call ebx := RoLoad32(edx + ?VT_ARRAY_ELEMENT_SIZE);
+    //eax := pad(eax + Mult(ebx, esi));
+    ebp := eax;
+    eax := ebx;
+    call eax, edx := MulChecked(eax, esi);
+    call eax := AddChecked(eax, ebp);
+    call eax := AddChecked(eax, 3);
+    ebx := 3;
+    call ebx := Not(ebx);
+    call eax := And(eax, ebx);
+    goto end;
+  skip5:
+
+  if (ebp != ?PTR_ARRAY_TAG) { goto skip6; }
+    assert TO(3);
+    call esi := GcLoad(ecx + 12);
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+    //eax := pad(eax + 4 * esi);
+    call esi := AddChecked(esi, esi);
+    call esi := AddChecked(esi, esi);
+    call eax := AddChecked(eax, esi);
+    call eax := AddChecked(eax, 3);
+    ebx := 3;
+    call ebx := Not(ebx);
+    call eax := And(eax, ebx);
+    goto end;
+  skip6:
+
+  if (ebp != ?OTHER_ARRAY_TAG) { goto skip7; }
+    assert TO(3);
+    call esi := GcLoad(ecx + 12);
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+    call ebx := RoLoad32(edx + ?VT_ARRAY_ELEMENT_SIZE);
+    //eax := pad(eax + Mult(ebx, esi));
+    ebp := eax;
+    eax := ebx;
+    call eax, edx := MulChecked(eax, esi);
+    call eax := AddChecked(eax, ebp);
+    call eax := AddChecked(eax, 3);
+    ebx := 3;
+    call ebx := Not(ebx);
+    call eax := And(eax, ebx);
+    goto end;
+  skip7:
+
+  // else
+    call eax := RoLoad32(edx + ?VT_BASE_LENGTH);
+  end:
+}
+
+implementation GetSize($ptr:int, $vt:int, $rs:[int]int, $rt:[int]int)
+{
+  assert TV($ptr);
+  assert TO(1);
+  assert TO(2);
+  assert TO(3);
+  call getSize($rs[$ptr], $ptr, $vt, $AbsMem[$rs[$ptr]][2], $AbsMem[$rs[$ptr]][3]);
+  return;
+}
+
+implementation readTag($abs:int, $vt:int)
+{
+  assert TVT($abs, $vt);
+  call eax := RoLoad32(ecx + ?VT_MASK);
+  call eax := And(eax, 15);
+}
+
+implementation readArrayOf($abs:int, $vt:int)
+{
+  assert TVT($abs, $vt);
+  call ebp := RoLoad32(ecx + ?VT_ARRAY_OF);
+}
+
+implementation readElementInfo($abs:int, $vt:int)
+{
+  assert TVT($abs, $vt);
+  call esi := RoLoad32(ecx + ?VT_ARRAY_ELEMENT_SIZE);
+  call edi := RoLoad32(ecx + ?VT_ARRAY_ELEMENT_CLASS);
+  call edi := RoLoad32(edi + ?VT_MASK);
+}
+
+

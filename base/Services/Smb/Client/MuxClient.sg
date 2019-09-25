@@ -1,0 +1,23 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Threading;
+using System.Text;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Smb.PrivateChannels;
+
+namespace Smb.Client
+{
+}

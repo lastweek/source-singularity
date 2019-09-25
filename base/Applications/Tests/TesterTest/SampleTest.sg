@@ -1,0 +1,221 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+
+// needed for DebugStub
+using Microsoft.Singularity;
+// needed for stdin and stdout
+using Microsoft.Singularity.Io;
+
+// needed for the transform
+using Microsoft.SingSharp.Reflection;
+
+// needed for the Thread.sleep()
+using System.Threading;
+
+// needed for tests
+using Microsoft.Singularity.UnitTest;
+
+// needed for the generated infrastructure
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Test.Contracts;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+//[assembly: Transform(typeof(TestTransform))]
+namespace Microsoft.Singularity
+{
+
+    /// Classes with the [TestClass] attribute are classes containing test
+    /// methods.
+    /// Methods with the [TestMethod] attribute are unit test methods.
+
+    [TestClass]
+    public class SampleTest : TestClass
+    {
+        int data = 0;
+
+        [ClassInitialize]
+        public void Init()
+        {
+            data = 2;
+            Expect.Info("Initializing Sample");
+        }
+
+        [TestMethod]
+        public void HelloTest()
+        {
+            //TODO add something
+            Expect.Info("Hello test");
+            Expect.True(true, "Got here");
+        }
+
+        [TestMethod]
+        public void ClassInitTest()
+        {
+            Expect.Equal(2, data, "data was setup correctly in ClassInitialize phase");
+        }
+
+        [TestMethod]
+        public void EqualTest()
+        {
+            Expect.Equal("","", "Empty strings are equal");
+            Expect.NotEqual("","a", "Empty is not equal to a nonempty string");
+        }
+    }
+
+    [TestClass]
+    public class FailTest : TestClass
+    {
+        [ClassInitialize]
+        public void Init()
+        {
+        }
+
+        [TestMethod]
+        public void SkipTest()
+        {
+            Expect.Continue(false, "This test should be skipped");
+            Expect.Fail("This test should have been skipped");
+        }
+
+        [TestMethod]
+        public void TimeoutTest()
+        {
+            for (int i = 0; i < 1000; i++) {
+                Thread.Sleep(50);
+            }
+            Expect.Fail("This test should be aborted before now via timeout");
+        }
+    }
+
+    // EXAMPLE OF CODE THAT WOULD BE GENERATED /////////////////////
+    internal class SampleTest_Jig : SuiteJig
+    {
+        private SampleTest! m_test;
+
+        public SampleTest_Jig(TestLog! log) {
+            SampleTest t = new SampleTest();
+            t.SetLog(log);
+            m_test = t;
+        }
+
+        override public void Initialize()
+        {
+            m_test.Init();
+        }
+
+        override public void DoTest(string! test)
+        {
+            switch (test) {
+                case "HelloTest":
+                    m_test.HelloTest();
+                    break;
+               case "EqualTest":
+                    m_test.EqualTest();
+                    break;
+                case "ClassInitTest":
+                    m_test.ClassInitTest();
+                    break;
+                default:
+                    base.DoTest(test);
+                    break;
+            }
+        }
+    }
+
+    internal class FailTest_Jig : SuiteJig
+    {
+        private FailTest! m_test;
+
+        public FailTest_Jig(TestLog! log) {
+            FailTest t = new FailTest();
+            t.SetLog(log);
+            m_test = t;
+        }
+
+        override public void Initialize()
+        {
+            m_test.Init();
+        }
+
+        override public void DoTest(string! test)
+        {
+            switch (test) {
+                case "SkipTest":
+                    m_test.SkipTest();
+                    break;
+                case "TimeoutTest":
+                    m_test.TimeoutTest();
+                    break;
+                default:
+                    base.DoTest(test);
+                    break;
+            }
+        }
+    }
+
+    public class Sample_ModuleJig : ModuleJig
+    {
+        override public SuiteJig GetSuite(string! name, TestLog! log)
+        {
+            switch (name) {
+                case "SampleTest":
+                    return new SampleTest_Jig(log);
+                case "FailTest":
+                    return new FailTest_Jig(log);
+                case "Shell":
+                    return new ShellTest_Jig(log);
+                default:
+                    return base.GetSuite(name, log);
+            }
+        }
+    }
+
+    // Currently required to get process launch code generated.
+    [ConsoleCategory(HelpMessage="Run using the test framework", DefaultAction=true)]
+    internal class ModuleConsole {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal ModuleConsole();
+
+        internal int AppMain() {
+            Console.WriteLine("This is a test application and can only be run from the tester.");
+            return -1;
+        }
+    }
+
+    [ConsoleCategory(HelpMessage="ModuleTester", Action="test")]
+    internal class ModuleTest {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [CustomEndpoint]
+        public readonly TRef<ModuleTesterContract.Exp:START> testerRef;
+
+        reflective internal ModuleTest();
+
+        internal int AppMain() {
+            ModuleTesterContract.Exp tester = ((!) testerRef).Acquire();
+            if (tester == null) {
+                DebugStub.WriteLine("TEST unable to acquite handle to test driver");
+                throw new Exception("Unable to acquire handle to the test driver");
+            }
+
+            ModuleJig jig = new Sample_ModuleJig();
+            ModuleTester.RunTests(tester, jig);
+            return 0;
+        }
+    }
+}

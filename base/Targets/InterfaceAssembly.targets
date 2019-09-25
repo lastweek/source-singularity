@@ -1,0 +1,232 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Targets\InterfaceAssembly.targets
+
+This file contains the build logic for interface assemblies.  Interface assemblies
+contain MSIL metadata, but do not contain method bodies.  Interface assemblies allow
+cyclic dependencies (e.g. kernel.exe also IoSystem.dll both refer to each other),
+and also allow one assembly to be replaced with another at runtime (or at ngen).
+
+Projects that import this file can set the following properties:
+
+  AssemblyName                Name of assembly, excluding file extension
+  OutputType                  'Exe' or 'Library'
+  AllowUnsafeBlocks           'true' to allow unverifiable code
+  NoStrongName                'true' to turn off assembly strong name signing
+  InterfaceAssemblyIsKey      'true' to pass /key to csic.exe
+  CSIC                        Overrides the default compiler tool, $(BUILDDIR)\csic.exe
+  OutputPath                  Specifies output path for the assembly. Default is $(APPILLSDIR).
+  NoStdLib                    'true' to pass /nostdlib to csic.exe
+
+Projects can declare the following items:
+
+  Compile                     Source file (.cs or .sg, etc.)
+  ProjectReference            A reference to another interface project.  The project can
+                              also declare the optional 'Alias' metadata tag.  This will
+                              add the "=<aliasvalue>" suffix to the /r: reference arg.
+
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- Supply defaults. -->
+  <PropertyGroup>
+    <NoStdlib Condition="'$(NoStdlib)'==''">false</NoStdlib>
+    <AllowUnsafeBlocks Condition="'$(AllowUnsafeBlocks)'==''">false</AllowUnsafeBlocks>
+    <NoStrongName Condition="'$(NoStrongName)'==''">false</NoStrongName>
+    <InterfaceAssemblyIsKey Condition="'$(InterfaceAssemblyIsKey)'==''">false</InterfaceAssemblyIsKey>
+    <CSIC Condition="'$(CSIC)'==''">&quot;$(BUILDDIR)\csic.exe&quot;</CSIC>
+  </PropertyGroup>
+
+
+  <!-- Build the command line for the csic compiler. -->
+  <PropertyGroup>
+    <CompilerFlags></CompilerFlags>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="'$(OutputType)'=='Exe'">
+      <PropertyGroup>
+        <AssemblyExt>.exe</AssemblyExt>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(OutputType)'=='Library'">
+      <PropertyGroup>
+        <AssemblyExt>.ill</AssemblyExt>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup>
+        <Error Include="The value '$(OutputType)' is not valid for the 'OutputType' property."/>
+      </ItemGroup>
+    </Otherwise>
+  </Choose>
+  
+
+  <PropertyGroup>
+    <AssemblyFileName>$(AssemblyName)$(AssemblyExt)</AssemblyFileName>
+    <OutputAssemblyPath>$(OutputPath)\$(AssemblyFileName)</OutputAssemblyPath>
+  </PropertyGroup>
+  
+
+  <Choose>
+    <When Condition="'$(NoStdlib)'=='false'"/>
+    
+    <When Condition="'$(NoStdlib)'=='true'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /nostdlib</CompilerFlags>
+      </PropertyGroup>
+    </When>
+
+    <Otherwise>
+      <ItemGroup>
+        <Error Include="The value '$(NoStdlib)' is not a valid choice for the 'NoStdlib' property."/>
+      </ItemGroup>
+    </Otherwise>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(AllowUnsafeBlocks)'=='true'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /unsafe</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(AllowUnsafeBlocks)'=='false'">
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>The value '$(AllowUnsafeBlocks)' is not a valid choice for the 'AllowUnsafeBlocks' property.</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+
+  <Choose>
+    <When Condition="'$(NoStrongName)'=='false'">
+
+      <ItemGroup>
+        <DependentProject Include="$(SINGULARITY_ROOT)\Build\BuildKey.proj"/>
+        <Dependency Include="$(StrongNameKeyFile)"/>
+      </ItemGroup>
+      
+    </When>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(InterfaceAssemblyIsKey)'=='true'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /key</CompilerFlags>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+  <!-- TARGETS -->
+  
+  <Target Name="CheckErrors">
+    <Error Condition="'@(Error)'!=''" Text="%(Error.Identity)"/>
+    <Error Condition="'$(AssemblyName)'==''" Text="The 'AssemblyName' property is required."/>
+    <Error Condition="'$(OutputPath)'==''" Text="The 'OutputPath' property is required."/>
+    <Error Condition="'$(OutputType)'==''" Text="The 'OutputType' property is required."/>
+  </Target>
+
+  <Target Name="ShowDebugInfo" DependsOnTargets="CheckErrors">
+    <Message Text="Projects: @(ProjectReference,' ')"/>
+    <Message Text="Dependent project: %(ProjectReference.Identity)"/>
+    <Message Text="_aliased_refs: %(_aliased_refs.Identity)"/>
+    <Message Text="Reference: %(Reference.Identity) alias %(Reference.Alias)"/>
+  </Target>
+  
+  <Target Name="BuildDependentProjects" DependsOnTargets="CheckErrors">
+    <MSBuild Projects="@(ProjectReference);@(DependentProject)"
+             Targets="Build"
+             StopOnFirstFailure="$(StopOnFirstFailure)"
+             Condition="'$(BuildInParallel)'!='true'">
+      <Output TaskParameter="TargetOutputs" ItemName="__built_items" />
+    </MSBuild>
+    <MSBuild Projects="@(ProjectReference);@(DependentProject)"
+             Targets="Build"
+             StopOnFirstFailure="$(StopOnFirstFailure)"
+             Condition="'$(BuildInParallel)'=='true'"
+             BuildInParallel="true">
+      <Output TaskParameter="TargetOutputs" ItemName="__built_items" />
+    </MSBuild>
+
+    <!-- i hate this. -->
+    <CreateItem Include="@(ProjectReference->'$(OutputPath)\%(filename).ill')" AdditionalMetadata="Alias=%(ProjectReference.Alias)">
+      <Output TaskParameter="Include" ItemName="Reference"/>
+    </CreateItem>
+
+    <!-- now create "_aliased_refs" set -->
+    <CreateItem Include="@(Reference)">
+      <Output TaskParameter="Include" Condition="'%(Reference.Alias)'==''" ItemName="_aliased_refs" />
+    </CreateItem>
+    <Error Condition="'%(Reference.Alias)'=='' and '%(Reference.Identity)'!=''" Text="Missing Alias $(AssemblyName) for %(Reference.Identity)"/>
+    <CreateItem Include="%(Reference.Identity)=%(Reference.Alias)">
+      <Output TaskParameter="Include" Condition="'%(Reference.Alias)'!=''" ItemName="_aliased_refs" />
+    </CreateItem>
+
+  </Target>
+
+  <!--
+  It is necessary to invoke Build\BuildKey.proj, rather than directly invoking sn.exe, in order
+  to avoid a race condition during parallel builds.  If you have enough processors, then more than
+  one project can race this sequence: check to see if key file exists, execute sn.exe to create file,
+  one sn.exe opens file for write, another sn.exe attempts to open file for write, but fails because
+  the file is locked.  The solution is to use a single MSBuild project as a dependency of all of 
+  these projects; that project is Build\BuildKey.proj.
+
+  This points out a general principal: No two projects should ever produce or modify the same file.
+  -->
+  <Target Name="BuildStrongName" DependsOnTargets="CheckErrors"
+          Condition="'$(NoStrongName)'!='true'">
+    <MSBuild Projects="$(SINGULARITY_ROOT)\Build\BuildKey.proj" StopOnFirstFailure="$(StopOnFirstFailure)"/>
+  </Target>
+
+  <PropertyGroup>
+    <ResponseFileName>$(OutputPath)\$(AssemblyName).csic.rsp</ResponseFileName>
+  </PropertyGroup>
+
+  
+  <Target Name="BuildAssembly"
+          Inputs="@(Compile);@(Reference);@(Dependency);$(MSBuildProjectFullPath)"
+          Outputs="$(OutputAssemblyPath)"
+          DependsOnTargets="CheckErrors;BuildStrongName;BuildDependentProjects">
+
+    <MakeDir Directories="$(OutputPath)"/>
+
+    <Message Text="Writing response file - $(ResponseFileName)"/>
+    <WriteLinesToFile File="$(ResponseFileName)"
+                      Overwrite="true"
+                      Lines="
+                      @(_aliased_refs->'/r:%(Identity)');
+                      @(Compile->'%(FullPath)');
+                      "/>
+
+    <Exec Command="$(CSIC) -ilasm:$(ILASM) -out:&quot;$(OutputAssemblyPath)&quot; -outdir:&quot;$(OutputPath)&quot; $(CompilerFlags) -t:library @&quot;$(ResponseFileName)&quot; || (
+      echo Deleting corrupted output - &quot;$(OutputAssemblyPath)&quot; &amp; del &quot;$(OutputAssemblyPath)&quot; /q &amp; exit 1)"/>
+  </Target>
+
+  <Target Name="Build"
+          Outputs="$(OutputAssemblyPath)"
+          DependsOnTargets="BuildAssembly">
+  </Target>
+  
+  <Target Name="Clean" DependsOnTargets="$(CleanDependsOn)">
+    <Delete Files="$(OutputAssemblyPath)"/>
+    <Delete Files="$(OutputPath)\$(AssemblyName).pdb"/>
+    <Delete Files="$(OutputPath)\$(AssemblyName).il"/>
+  </Target>
+
+  <Target Name="ShowCommands">
+    <MSBuild Projects="@(ProjectReference);@(DependentProject)" Targets="ShowCommands"/>
+    <Message Text="$(CSIC) -ilasm:$(ILASM) -out:&quot;$(OutputAssemblyPath)&quot; -outdir:&quot;$(OutputPath)&quot; $(CompilerFlags) @(_aliased_refs->'/r:%(Identity)',' ') -t:library @(Compile->'&quot;%(Identity)&quot;,' ')"/>
+  </Target>
+
+</Project>
+

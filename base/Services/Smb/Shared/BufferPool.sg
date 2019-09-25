@@ -1,0 +1,66 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+namespace Smb.Shared
+{
+	class BufferPool : IDisposable
+	{
+		public BufferPool(int maxcount, int size)
+		{
+			_maxcount = maxcount;
+			_buffersize = size;
+		}
+		
+		readonly int _maxcount;
+		readonly int _buffersize;
+		readonly VContainer<byte>[]! _pool = new VContainer<byte>[0x10];
+		
+		int _readycount = 0;
+		
+		public void Recycle([Claims]byte[]! in ExHeap buffer)
+		{
+			if (_readycount < _pool.Length) {
+				VContainer<byte> container = _pool[_readycount];
+				if (container != null) {
+					container.Release(buffer);				
+				}
+				else {
+					_pool[_readycount] = new VContainer<byte>(buffer);
+				}
+				_readycount++;				
+			}
+			else {
+				delete buffer;
+			}
+		}
+		
+		public byte[]! in ExHeap Allocate()
+		{
+			if (_readycount > 0) {
+				byte[] in ExHeap buf = ((!)_pool[--_readycount]).Acquire();
+				return buf;
+			}
+			else {
+				byte[]! in ExHeap buf = new[ExHeap] byte[_buffersize];
+				return buf;			
+			}
+		}
+		
+		public void Dispose()
+		{
+			for (int i = 0; i < _readycount; i++) {
+				byte[] in ExHeap! buf = ((!)_pool[i]).Acquire();
+				delete buf;
+			}
+			_readycount = 0;
+		}
+	}
+}

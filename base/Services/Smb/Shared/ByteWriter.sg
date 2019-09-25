@@ -1,0 +1,246 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+namespace Smb.Shared
+{
+    public class ByteWriter
+    {
+        byte[]! _buffer;
+        int _length;
+        int _pos;
+        
+        // requires _pos >= 0;
+        // requires _pos <= _length;
+        // requires _length <= _buffer.Length;
+
+        public ByteWriter()
+        {
+            _buffer = new byte[0x100];
+            _length = 0;
+            _pos = 0;
+        }
+
+        public int Position
+        {
+            get { return _pos; }
+            set { _pos = value; }
+        }
+
+        public int Length
+        {
+            get
+				// ensures _length >= 0;
+			{ return _length; }
+				
+            set
+				requires value >= 0;
+            {
+                if (value < 0)
+                    throw new Exception("Length cannot be negative");
+                InsureCapacity(value);
+                _length = value;
+            }
+        }
+
+        public void InsureCapacity(int capacity)
+			requires capacity >= 0;
+        {
+            if (capacity < 0)
+                throw new Exception("Capacity cannot be negative");
+
+            if (capacity <= _buffer.Length)
+                return;
+
+            int newsize = capacity * 3 / 2 + 0x20;
+            byte[] newbuffer = new byte[newsize];
+            if (_length > 0)
+                Buffer.BlockCopy(_buffer, 0, newbuffer, 0, _length);
+            _buffer = newbuffer;
+        }
+
+        public void Write(byte b)
+        {
+            if (_pos < _length) {
+                _buffer[_pos++] = b;
+                return;
+            }
+
+            if (_length == _buffer.Length)
+                InsureCapacity(_length + 1);
+            _buffer[_length] = b;
+            _length++;
+            _pos = _length;
+        }
+
+        public void WriteZero(int count)
+        {
+            if (count == 0)
+                return;
+            if (count < 0)
+                throw new Exception("Count cannot be negative.");
+
+            InsureCapacity(_pos + count);
+            for (int i = 0; i < count; i++)
+                _buffer[_pos + i] = 0;
+            _pos += count;
+            if (_pos > _length)
+                _length = _pos;
+        }
+
+#if ENABLE_GENERICS
+        public void Write(ArraySpan<byte> span)
+        {
+            Write(span.ContainingArray, span.Offset, span.Length);
+        }
+#else
+        public void Write(ArraySpan_byte span)
+        {
+            Write(span.ContainingArray, span.Offset, span.Length);
+        }		
+#endif
+
+        public void Write(byte[]! data, int offset, int length)
+        {
+            if (length == 0)
+                return;
+            if (length < 0)
+                throw new Exception("Length cannot be negative.");
+            if (offset < 0)
+                throw new Exception("Index cannot be negative.");
+            if (offset + length > data.Length)
+                throw new Exception("Length and offset exceed the length of the input buffer.");
+
+            InsureCapacity(_pos + length);
+            Buffer.BlockCopy(data, offset, _buffer, _pos, length);
+            _pos += length;
+            if (_pos > _length)
+                _length = _pos;
+        }
+        
+        public void Write(ByteWriter! data)
+        {
+			Write(data._buffer, 0, data._length);
+        }
+
+        public void Write(byte[]! data)
+        {
+            Write(data, 0, data.Length);
+        }
+
+        public void WriteUInt64Le(ulong value)
+        {
+            Write((byte)(value & 0xff));
+            Write((byte)((value >> 0x08) & 0xff));
+            Write((byte)((value >> 0x10) & 0xff));
+            Write((byte)((value >> 0x18) & 0xff));
+            Write((byte)((value >> 0x20) & 0xff));
+            Write((byte)((value >> 0x28) & 0xff));
+            Write((byte)((value >> 0x30) & 0xff));
+            Write((byte)((value >> 0x38) & 0xff));
+        }
+
+        public void WriteUInt32Le(uint value)
+        {
+            Write((byte)(value & 0xff));
+            Write((byte)((value >> 8) & 0xff));
+            Write((byte)((value >> 16) & 0xff));
+            Write((byte)((value >> 24) & 0xff));
+        }
+
+        public void WriteUInt16Le(ushort value)
+        {
+            Write((byte)(value & 0xff));
+            Write((byte)((value >> 8) & 0xff));
+        }
+
+
+
+        //
+        //typedef struct _STRING32 {
+        //  USHORT   Length;
+        //  USHORT   MaximumLength;
+        //  ULONG  Buffer;
+        //} STRING32;
+        //typedef STRING32 *PSTRING32;
+        //
+
+        // This writes a STRING32 header into the buffer at the specified position
+        // offset - the offset of the string data (somewhere else)
+        // length - the total length
+        public void WriteCountedHeader(int offset, int length)
+        {
+            WriteUInt16Le((ushort)length); // Length
+            WriteUInt16Le((ushort)length); // MaximumLength
+            WriteUInt16Le((ushort)offset);
+            WriteUInt16Le(0);
+        }
+
+
+        public byte[]! ToArray()
+        {
+            byte[]! result = new byte[_length];
+            Buffer.BlockCopy(_buffer, 0, result, 0, _length);
+            return result;
+        }
+
+        public byte[]! in ExHeap ToArrayEx()
+        {
+            return Bitter.FromByteArray(_buffer, 0, _length);
+        }
+        
+        public void CopyTo(byte[]! in ExHeap dest, int dest_offset, int src_offset, int length)
+			requires dest_offset >= 0;
+			requires length >= 0;
+			requires dest_offset + length <= dest.Length;
+			requires src_offset >= 0;
+			requires src_offset + length <= Length;
+        {
+			Bitter.FromByteArray(dest, dest_offset, length, _buffer, 0);
+        }
+
+		public void CopyTo(byte[]! in ExHeap dest, int dest_offset)
+			requires dest_offset >= 0;
+			// requires dest_offset + _length <= dest.Length;
+		{
+			Bitter.FromByteArray(dest, dest_offset, _length, _buffer, 0);
+		}        
+
+        public void WriteStringUnicode(string! text, bool terminate)
+		{
+			for (int i = 0; i < text.Length; i++) {
+				char c = text[i];
+				Write((byte)(c & 0xff));
+				Write((byte)(c >> 8));
+			}
+
+            if (terminate) {
+                Write((byte)0);
+                Write((byte)0);
+            }
+		}
+
+        public void WriteStringAscii(string! text, bool terminate)
+        {
+            for (int i = 0; i < text.Length; i++) {
+                char c = text[i];
+                Write((byte)(c & 0xff));
+            }
+
+            if (terminate) {
+                Write((byte)0);
+            }
+        }
+        
+	}
+
+}

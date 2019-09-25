@@ -1,0 +1,243 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NtlmMessages.cs
+//
+//  Note:
+//
+//      This file contains structures and enumerated types of the NTLM
+//      authentication protocol.
+//
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Runtime.InteropServices;
+
+namespace System.Security.Protocols.Ntlm
+{
+    class NtlmConstants
+    {
+#if false
+        public static readonly byte[]! MessageSignature = {
+            (byte)'N',
+            (byte)'T',
+            (byte)'L',
+            (byte)'M',
+            (byte)'S',
+            (byte)'S',
+            (byte)'P',
+            0
+        };
+#endif
+
+        // This is the NTLM message signature, encoded as a little-endian ulong.
+        public const ulong MessageSignature64Le =
+            ((ulong)'N')
+            | (((ulong)'T') << 8)
+            | (((ulong)'L') << 0x10)
+            | (((ulong)'M') << 0x18)
+            | (((ulong)'S') << 0x20)
+            | (((ulong)'S') << 0x28)
+            | (((ulong)'P') << 0x30)
+            /* 0x38 position is zero */;
+
+        public const int HeaderLength = 0x10;
+
+        public const int ChallengeLength = 8;
+
+    }
+
+    public enum NtlmMessageType
+    {
+        Negotiate = 1,
+        Challenge = 2,
+        Response = 3,
+    }
+
+    ///
+    //  <summary>
+    //      All NTLMSSP messages begin with this header.
+    //  </summary>
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct NtlmMessageHeader
+    {
+        /// <summary>
+        /// This value should always be "NTLMSSP\0", encoded as a little-endian 64-bit ulong.
+        /// NtlmConstants.MessageSignature64Le encodes this value.
+        /// </summary>
+        //
+        public ulong Signature;
+
+        /// <summary>A value from NtlmMessageType.</summary>
+        public uint MessageType;
+    }
+
+    ///
+        //<summary>
+            //The Negotiate message is the first message in an NTLM exchange.
+            //The client (supplicant) sends this message to the server, requesting a session
+            //and indicating what kind of options this client supports.  The OemDomainName
+            //and OemWorkstationName values can be provided for diagnostics and logging,
+            //but the server is under no obligation to trust them.
+        //</summary>
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct NtlmNegotiateMessage
+    {
+        public NtlmMessageHeader Header;
+        public uint NegotiateFlags;
+        public BufferRegion OemDomainName;
+        public BufferRegion OemWorkstationName;
+        public ulong Version;
+    }
+
+    [Flags]
+    public enum NtlmNegotiateFlags
+    {
+        None = 0,
+
+        /// <summary>Text strings are in unicode</summary>
+        NegotiateUnicode = 0x00000001,
+
+        /// <summary>Text strings are in OEM</summary>
+        NegotiateOem = 0x00000002,
+
+        /// <summary>Server should return its authentication realm</summary>
+        RequestTarget = 0x00000004,
+
+        /// <summary>Request signature capability</summary>
+        NegotiateSign = 0x00000010,
+
+        /// <summary>Request confidentiality</summary>
+        NegotiateSeal = 0x00000020,
+
+        /// <summary>Use datagram style authentication</summary>
+        NegotiateDatagram = 0x00000040,
+
+        /// <summary>Use LM session key for sign/seal</summary>
+        NegotiateLmKey = 0x00000080,
+
+        /// <summary>NetWare authentication</summary>
+        NegotiateNetware = 0x00000100,
+
+        /// <summary>NTLM authentication</summary>
+        NegotiateNtlm = 0x00000200,
+
+        /// <summary>NT authentication only (no LM)</summary>
+        NegotiateNtOnly = 0x00000400,
+
+        /// <summary>NULL Sessions on NT 5.0 and beyond</summary>
+        NegotiateNullSession = 0x00000800,
+
+        /// <summary>Domain Name supplied on negotiate</summary>
+        NegotiateOemDomainSupplied = 0x1000,
+
+        /// <summary>Workstation Name supplied on negotiate</summary>
+        NegotiateOemWorkstationSupplied = 0x2000,
+
+        /// <summary>Indicates client/server are same machine</summary>
+        NegotiateLocalCall = 0x00004000,
+
+        /// <summary>Sign for all security levels</summary>
+        NegotiateAlwaysSign = 0x00008000,
+    }
+
+    ///
+    //<summary>
+    //  <para>
+    //      Describes the header for the NTLM "Challenge" message.  This message is also known as an
+    //      NTLM "Type 3" message.  This message is sent from a server (authenticator) to a client
+    //      (supplicant).  The server generates a random 8-byte challenge (nonce).
+    //  </para>
+    //</summary>
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct NtlmChallengeMessage
+    {
+        public NtlmMessageHeader Header;
+
+        ///
+        //<summary>
+        //  The domain name (realm name) of the server.  This value may or may not be present.
+        //  If the NtlmNegotiateFlag.RequestTarget flag is set in the Negotiate message, then
+        //  the client requests this field, but the server is not obligated to send this value.
+        //</summary>
+        //
+        public BufferRegion TargetName;
+
+        /// <summary>The set of negotiation flags that the server has agreed to.</summary>
+        public uint NegotiateFlags;
+
+        /// <summary>The 8-byte challenge, encoded as a 64-bit integer.</summary>
+        public ulong PackedChallenge;
+
+        // The contents of the TargetName follow.
+    }
+
+
+    ///
+    //<summary>
+    //  <para>
+    //      This structure describes the header for the NTLM "Response" message, also known as the NTLM
+    //      "Type 3" message.  This message is sent from the client (supplicant) to the server (authenticator),
+    //      and is the last message in the exchange.  This message proves that the client has valid credentials.
+    //  </para>
+    //</summary>
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct NtlmResponseMessage
+    {
+        public NtlmMessageHeader Header;
+
+        /// <summary>Describes the size and location of the LAN Manager response.</summary>
+        public BufferRegion LmChallengeResponse;
+
+        /// <summary>Describes the size and location of the NT response.</summary>
+        public BufferRegion NtChallengeResponse;
+
+        /// <summary>Describes the size and location of the domain name of the authenticating user.</summary>
+        public BufferRegion DomainName;
+
+        /// <summary>Describes the size and location of the username of the authenticating user.</summary>
+        public BufferRegion UserName;
+
+        /// <summary>Describes the size and location of the workstation name (computer name) of the client's computer.</summary>
+        public BufferRegion Workstation;
+
+        // The contents of the many BufferRegion fields follow.
+    }
+
+    ///
+    //<summary>
+    //  <para>
+    //      Identifies a region within a buffer.  This structure is compatible with the STRING32 structure
+    //      used by NT, which is used to describe the offset and length of variable-length strings that are
+    //      stored after a fixed-length message header.
+    //  </para>
+    //
+    //  <para>
+    //      NTLM uses this structure to describe the size and location variable-length strings in NTLMSSP messages.
+    //  </para>
+    //</summary>
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct BufferRegion
+    {
+        public ushort Length;               // the length in bytes of the string
+        public ushort MaximumLength;        // the maximum number of bytes to write to the buffer (n/a in networking!)
+        public ushort Offset;               // offset within the message of this string
+        public ushort Reserved;             // always zero
+
+        public BufferRegion(ushort length, ushort maximumLength, ushort offset)
+        {
+            this.Length = length;
+            this.MaximumLength = maximumLength;
+            this.Offset = offset;
+            this.Reserved = 0;
+        }
+    }
+}

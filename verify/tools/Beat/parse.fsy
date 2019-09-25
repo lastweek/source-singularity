@@ -1,0 +1,216 @@
+%{
+
+open Ast;;
+open Parse_util;;
+open Microsoft.FSharp.Compatibility.OCaml.Big_int;;
+
+%}
+
+%start start
+%type <(loc * Ast.bdecl) list> start
+
+%token <string> UID
+%token <string> LID
+%token <string> DUID
+%token <string> DLID
+%token <string> QUID
+%token <string> QLID
+%token <loc> IF ELSE WHILE RETURN VAR LBRACE RBRACE SEMI
+%token <bigint> LITINT
+%token <bool> LITBOOL
+%token <loc> COLON
+%token LPAREN RPAREN LBRACKET RBRACKET
+%token LT GT BAR EQ BANG QUESTION COMMA RARROW LARROW LE GE EQEQ NE
+%token PLUS MINUS STAR
+%token <loc> AMPAMP
+%token BARBAR PLUSPLUS HASH CARET
+%token RLOL SLASH BACKSLASH AT DOLLAR PERCENT SQUOTE BQUOTE
+%token REQARROW
+%token <loc> COLONEQ
+%token FUN
+%token UNDERSCORE
+%token DOT
+%token INT BOOL
+%token NULL
+%token AMP
+%token <loc> CONST FUNCTION RETURNS TYPE AXIOM PROCEDURE IMPLEMENTATION
+%token <loc> REQUIRES ENSURES MODIFIES INVARIANT ASSUME ASSERT GOTO CALL
+%token FORALL EXISTS OLD COLONCOLON EQEQGT LTEQEQGT
+%token EAX EBX ECX EDX ESI EDI EBP ESP
+
+%token EOF
+
+/* Precedence declarations. */
+
+%left LTEQEQGT
+%right EQEQGT
+%left AMPAMP BARBAR
+%left LT GT LE GE EQEQ NE
+%left PLUS MINUS
+%left STAR SLASH PERCENT
+%right BANG
+%left LPAREN RPAREN LBRACKET RBRACKET
+
+%%
+
+start: Decls EOF { $1 }
+
+ID
+  : LID { $1 }
+  | UID { $1 }
+
+Type
+  : INT { BInt }
+  | BOOL { BBool }
+  | LBRACKET Types RBRACKET Type { BArray ($2, $4) }
+  | AnyId { BNamedType $1 }
+
+Types
+  : Type { [$1] }
+  | Type COMMA Types { $1::$3 }
+
+Triggers
+  : { [] }
+  | LBRACE Exps RBRACE Triggers { $2 }
+
+Exp
+  : LPAREN Exp RPAREN { $2 }
+  | Exp LTEQEQGT Exp { BBop (BEquiv, $1, $3) }
+  | Exp EQEQGT Exp { BBop (BImply, $1, $3) }
+  | Exp AMPAMP Exp { BLoc ($2, BBop (BAnd, $1, $3)) } /* TODO: this should match the Boogie grammar better */
+  | Exp BARBAR Exp { BBop (BOr, $1, $3) }
+  | Exp EQEQ Exp { BBop (BEq, $1, $3) }
+  | Exp NE Exp { BBop (BNe, $1, $3) }
+  | Exp LT Exp { BBop (BLt, $1, $3) }
+  | Exp GT Exp { BBop (BGt, $1, $3) }
+  | Exp LE Exp { BBop (BLe, $1, $3) }
+  | Exp GE Exp { BBop (BGe, $1, $3) }
+  | Exp PLUS Exp { BBop (BAdd, $1, $3) }
+  | Exp MINUS Exp { BBop (BSub, $1, $3) }
+  | Exp STAR Exp { BBop (BMul, $1, $3) }
+  | Exp SLASH Exp { BBop (BDiv, $1, $3) }
+  | Exp PERCENT Exp { BBop (BMod, $1, $3) }
+  | LPAREN MINUS Exp RPAREN { BUop (BNeg, $3) }
+  | BANG Exp { BUop (BNot, $2) }
+  | LPAREN FORALL Formals COLONCOLON Triggers Exp RPAREN { BQuant (BForall, $3, $5, $6) }
+  | LPAREN EXISTS Formals COLONCOLON Triggers Exp RPAREN { BQuant (BExists, $3, $5, $6)  }
+  | Exp LBRACKET Exps RBRACKET { BSubscript ($1, $3) }
+  | Exp LBRACKET Exps COLONEQ Exp RBRACKET { BUpdate ($1, $3, $5) }
+  | LITINT { BIntConst $1 }
+  | LITBOOL { BBoolConst $1 }
+  | OLD LPAREN Exp RPAREN { BUop (BOld, $3) }
+  | ID LPAREN Exps RPAREN { BApply ($1, $3) }
+  | UID { BVar $1 }
+  | LID { BVar $1 }
+  | DUID { BVar $1 }
+  | DLID { BVar $1 }
+  | QUID { BVar $1 }
+  | QLID { BVar $1 }
+Exps
+  : { [] }
+  | Exp { [$1] }
+  | Exp COMMA Exps { $1::$3 }
+AnyId
+  : UID { $1 }
+  | LID { $1 }
+  | DUID { $1 }
+  | DLID { $1 }
+  | QUID { $1 }
+  | QLID { $1 }
+  | UNDERSCORE { "_" }
+AnyIds
+  : { [] }
+  | AnyId { [$1] }
+  | AnyId COMMA AnyIds { $1::$3 }
+
+LoopInvs
+  : { [] }
+  | INVARIANT Exp SEMI LoopInvs { ($1, $2)::$4 }
+
+BFormalTyp
+  : COLON Type { BFormalType $2 }
+  | AT AnyId { BFormalAlias $2 }
+
+Stmt
+  : ID COLON { ($2, BLabel $1) }
+  | GOTO ID SEMI { ($1, BGoto $2) }
+  | VAR AnyId BFormalTyp SEMI { ($1, BLocalDecl ($2, $3, None)) }
+  | VAR AnyId BFormalTyp COLONEQ Exp SEMI { ($1, BLocalDecl ($2, $3, Some $5)) }
+  | IF LPAREN Exp RPAREN Block { ($1, BIf ($3, $5, None)) }
+  | IF LPAREN Exp RPAREN Block ELSE Block { ($1, BIf ($3, $5, Some $7)) }
+  | WHILE LPAREN Exp RPAREN LoopInvs Block { ($1, BWhile ($3, $5, $6)) }
+  | ASSUME Exp SEMI { ($1, BAssume $2) }
+  | ASSERT Exp SEMI { ($1, BAssert $2) }
+  | AnyId COLONEQ Exp SEMI { ($2, BAssign ($1, $3)) }
+  | AnyId LBRACKET Exps RBRACKET COLONEQ Exp SEMI { ($5, BAssign ($1, BUpdate(BVar $1, $3, $6))) }
+  | CALL                AnyId LPAREN Exps RPAREN SEMI { ($1, BCall ([], $2, $4)) }
+  | CALL AnyIds COLONEQ AnyId LPAREN Exps RPAREN SEMI { ($1, BCall ($2, $4, $6)) }
+  | RETURN SEMI { ($1, BReturn) }
+
+Stmts
+  : { [] }
+  | Stmt Stmts { $1::$2 }
+
+Block
+  : LBRACE Stmts RBRACE { $2 }
+
+FormalVar
+  : AnyId COLON Type { ($1, BFormalType $3) }
+  | AnyId AT AnyId { ($1, BFormalAlias $3) }
+FormalVars
+  : { [] }
+  | FormalVar { [$1] }
+  | FormalVar COMMA FormalVars { $1::$3 }
+
+Formal
+  : AnyId COLON Type { ($1, $3) }
+Formals
+  : { [] }
+  | Formal { [$1] }
+  | Formal COMMA Formals { $1::$3 }
+
+FormalFun
+  : AnyId COLON Type { ($1, $3, None) }
+  | AnyId COLON Type COLONEQ Exp { ($1, $3, Some $5) }
+FormalFuns
+  : { [] }
+  | FormalFun { [$1] }
+  | FormalFun COMMA FormalFuns { $1::$3 }
+
+Spec
+  : REQUIRES Exp SEMI { ($1, BRequires $2) }
+  | ENSURES Exp SEMI { ($1, BEnsures $2) }
+  | MODIFIES AnyIds SEMI { ($1, BModifies $2) }
+  | RETURNS LPAREN Formals RPAREN { ($1, BReturns $3) }
+  | RETURNS LPAREN Formals RPAREN SEMI { ($1, BReturns $3) }
+Specs
+  : { [] }
+  | Spec Specs { $1::$2 }
+
+Attr
+  : { }
+  | LBRACE COLON AnyId LITBOOL RBRACE { }
+
+ProcOrImpl: PROCEDURE { ($1, Procedure) } | IMPLEMENTATION { ($1, Implementation) }
+
+Decl
+  : VAR AnyId COLON Type SEMI { ($1, BGlobalDecl ($2, $4)) }
+  | VAR AnyId AT LBRACE Formals RBRACE { ($1, BGlobalAliasDecl ($2, $5)) }
+  | CONST AnyId COLON Type SEMI { ($1, BConstDecl ($2, $4)) }
+  | ProcOrImpl AnyId LPAREN FormalVars RPAREN SEMI Specs
+    { (fst $1, BProcDecl ($2, $4, $7, None, snd $1)) }
+  | ProcOrImpl AnyId LPAREN FormalVars RPAREN Specs
+    { (fst $1, BProcDecl ($2, $4, $6, None, snd $1)) }
+  | ProcOrImpl AnyId LPAREN FormalVars RPAREN Specs Block
+    { (fst $1, BProcDecl ($2, $4, $6, Some $7, snd $1)) }
+  | FUNCTION Attr ID LPAREN FormalFuns RPAREN RETURNS LPAREN Type RPAREN LBRACE Exp RBRACE { ($1, BFunDecl ($3, $5, $9, Some $12)) }
+  | FUNCTION Attr ID LPAREN FormalFuns RPAREN RETURNS LPAREN ID COLON Type RPAREN LBRACE Exp RBRACE { ($1, BFunDecl ($3, $5, $11, Some $14)) }
+  | FUNCTION Attr ID LPAREN FormalFuns RPAREN RETURNS LPAREN Type RPAREN SEMI              { ($1, BFunDecl ($3, $5, $9, None)) }
+  | FUNCTION Attr ID LPAREN FormalFuns RPAREN RETURNS LPAREN ID COLON Type RPAREN SEMI     { ($1, BFunDecl ($3, $5, $11, None)) }
+  | TYPE AnyId SEMI { ($1, BTypeDecl $2) }
+  | AXIOM Exp SEMI { ($1, BAxiomDecl $2) }
+Decls
+  : { [] }
+  | Decl Decls { $1::$2 }
+
+

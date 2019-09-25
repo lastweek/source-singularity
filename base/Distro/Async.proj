@@ -1,0 +1,65 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+  <Import Project="ExcludeTests.targets"/>
+
+  <PropertyGroup>
+    <Suppress>true</Suppress>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Apps -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tty\tty.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Shell\Shell.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Login\Login.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\BootCount\BootCount.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Tester\Tester.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Utilities\Utilities.proj"/>
+
+    <!-- Benchmarks -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\SingBench\SingBench\SingBenchApp.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\SingBench\BenchChild\SingBenchChild.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\Perfcnt\Perfcnt.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\diskrw\diskrw.csproj"/>
+
+    <!-- Drivers -->
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Disk\Disk.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\LegacyKeyboard\LegacyKeyboard.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Network\Tulip\Tulip.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\VolumeManager\VolumeManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\SB16\SB16.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\S3Trio64\S3Trio64.csproj"/>
+
+    <!-- Services -->
+    <Application Include="$(SINGULARITY_ROOT)\Services\CredentialsManager\CredentialsManagerService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\Control\FatControl.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\ClientManager\FatClientManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\Fs\FatFs.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Iso9660\Iso9660.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\NetStack\NetStackService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\RamDisk\Disk\RamDisk.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\RamDisk\Control\RamDiskControl.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\RamDisk\ClientManager\RamDiskClientManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\ServiceManager\ServiceManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Smb\Client\SmbClient.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Smb\ClientService\SmbClientService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Smb\Control\Smb.Control.csproj"/>
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.BVT.proj"/>
+  <ItemGroup Condition="!Exists('$(SINGULARITY_ROOT)\internal')">
+      <Application Include="$(SINGULARITY_ROOT)\precompiled\Drivers\Network\nForce4\nForce4.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

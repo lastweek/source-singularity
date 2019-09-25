@@ -1,0 +1,45 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Targets\DistroPaths.targets
+
+Note:
+
+    This file contains paths for the Distro.targets file.
+-->
+
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <DistroName Condition="'$(DistroName)'==''">$(MSBuildProjectName)</DistroName>
+
+    <PATH>$(SINGULARITY_PATH);$(SYSTEMROOT)\system32</PATH>
+
+    <DISTRO_OBJNAME>$(Configuration).$(Platform).$(COLLECTOR_APP).$(SCHEDULER).$(COLLECTOR_KERNEL)$(PAGING_FLAG)</DISTRO_OBJNAME>
+    <DISTRO_ROOT>$(SINGULARITY_OBJROOT)\Distros\$(DistroName).$(DISTRO_OBJNAME)</DISTRO_ROOT>
+    <DISTRO_ISO>$(DISTRO_ROOT).iso</DISTRO_ISO>
+    <DISTRO_ISO_LOG>$(DISTRO_ISO).log</DISTRO_ISO_LOG>
+    <DISTRO_FLASH>$(DISTRO_ROOT).raw</DISTRO_FLASH>
+    <DISTRO_ENV>$(DISTRO_ENV_DIR)\$(SINGULARITY_CMDID).cmd</DISTRO_ENV>
+    <DISTDIR>$(DISTRO_ROOT)</DISTDIR>
+
+    <DISTRO_SINGULARITY_DIR>$(DISTDIR)\Singularity</DISTRO_SINGULARITY_DIR>
+    <DISTRO_FILES_DIR>$(DISTDIR)\Singularity\Files</DISTRO_FILES_DIR>
+    <DISTRO_BINARIES_DIR>$(DISTDIR)\Singularity\Binaries</DISTRO_BINARIES_DIR>
+    <DISTRO_SCRIPT_DIR>$(DISTDIR)\Singularity\Scripts</DISTRO_SCRIPT_DIR>
+
+    <INIFILE_NAME>Singularity\Singboot.ini</INIFILE_NAME>
+
+    <NibFileList>$(DISTDIR)\NibFileList.txt</NibFileList>
+
+    <!-- #[TODO]:  this ought to depend on $(PLATFORM) but doesn't right now. -->
+
+    <METADATA_NAME>metadata.xml</METADATA_NAME>
+    <FILE_LIST>$(DISTDIR)\files.txt</FILE_LIST>
+
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,154 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   StringBuilder Utility Class
+//
+
+using System;
+using System.Text; 
+using Microsoft.Singularity.Channels;
+
+#if !SINGULARITY_PROCESS 
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif 
+{
+    public class SbUtils
+    {
+        private const char delimiter = '/'; 
+
+        public static bool IsTail(StringBuilder! sb) 
+        {
+            if (sb.Length <= 1) return false; 
+            int pos = IndexOf(sb,delimiter,1); 
+            if (pos == -1) return true; 
+            return false; 
+        }
+        public static int IndexOf (StringBuilder! sb, char theChar, int startPos)
+        {
+            if (sb.Length == 0) return 0; 
+            for (int i = startPos; i < sb.Length; i++) {
+                if (sb[i] == theChar) return i; 
+            }
+            return -1; 
+        }
+
+        public static int LastIndexOf (StringBuilder! sb, char theChar, int startPos)
+        {
+            if (sb.Length == 0) return 0; 
+            for (int i = sb.Length; i > startPos + 1; i--) {
+                if (sb[i - 1] == theChar) return i; 
+            }
+            return -1; 
+        }
+
+        public static bool Empty (StringBuilder! sb) 
+        { 
+            if (sb.Length > 0) {
+                return true; 
+            }
+            else {
+                return false; 
+            }
+        }
+
+        public int Length(StringBuilder! sb)
+        {
+            return sb.Length;
+        }
+
+        public static StringBuilder! StripLast(StringBuilder! sb)
+        {
+            int pos = LastIndexOf(sb,delimiter,0); 
+            if ((pos + 1) < sb.Length) {
+                sb.Length = pos-1; 
+            }
+            else {
+                sb.Length = 0; 
+            }
+            return sb; 
+        }
+        
+       
+        public static StringBuilder! RemoveFirstElement(StringBuilder! sb)
+        {
+            return StripFirst(sb); 
+        }
+        
+        public static StringBuilder! StripFirst(StringBuilder! sb)
+        {
+            if (sb[0] == delimiter) {
+                int pos = IndexOf(sb, delimiter,1);  // just in case it starts with '/'
+                if ((pos >= 0) && (pos < sb.Length)) {
+                    sb.Remove(0,pos); 
+                    return sb; 
+                }
+                sb.Length = 0; 
+                return sb; 
+            }
+            else {
+                int pos = IndexOf(sb,delimiter,0);  // just in case it starts with '/'
+                if ((pos >= 0) && (pos < sb.Length)) {
+                    sb.Remove(0,pos); 
+                    return sb; 
+                }
+                sb.Length = 0; 
+                return sb; 
+            }
+       }
+
+        public static void Append(StringBuilder! sb, String! elt)
+        {
+            sb.Append(elt);
+        }
+
+        // Return a st
+        //
+        public static String FirstElement(StringBuilder! sb)
+        {
+            if (sb.Length == 0) return null; 
+            
+            if (sb[0] == delimiter) {
+                int pos = IndexOf(sb,delimiter,1);  
+              
+                // DebugStub.WriteLine("  FindFirst:pos={0},len={1},s={2}",__arglist(pos,sb.Length,sb.ToString())); 
+                //DebugStub.Break(); 
+                if (pos == -1) {
+                    if (sb.Length == 1) return null; // just the delimiter 
+                    return sb.ToString(1,sb.Length-1); 
+                }
+                if ((pos > 1) && (pos < sb.Length)) {
+                    return sb.ToString(1,pos-1); 
+                }
+                return null; 
+            }
+            else {
+                int pos = IndexOf(sb,delimiter,0); 
+                if (pos == -1) {
+                    return sb.ToString(); 
+                }
+                if ((pos < sb.Length) && (pos > 0)) {
+                    return sb.ToString(0,pos); 
+                }
+                return null; 
+            }
+        }
+
+        public static String PathString(StringBuilder! sb)
+        {
+            if (sb.Length == 0) return null; 
+            return sb.ToString(); 
+        }
+
+        public static char[]! in ExHeap PathVector(StringBuilder! sb)
+        {
+            return Bitter.FromString2(sb.ToString());
+        }
+    }
+}

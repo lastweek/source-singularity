@@ -1,0 +1,127 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DiagnosisService.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct DiagnosisService
+    {
+        [NoHeapAllocation]
+        public static unsafe int GCProfileSettings(
+            ulong *defaultMemorySize,
+            ulong *Options);
+
+        public static int GCProfileSettingsImpl(
+            out ulong defaultMemorySize,
+            out ulong Options);
+
+        [NoHeapAllocation]
+        public static bool RegisterEventingController(
+            UIntPtr controllerHandle,
+            UIntPtr executionContextHandle);
+
+        [NoHeapAllocation]
+        public static bool DebugPrintLogEntry(UIntPtr controllerHandle, 
+                                              UIntPtr entryHandle);
+
+        public static bool TestKernelStorage();
+        
+        public static UIntPtr OpenGlobalStorage(UIntPtr storageId);
+
+        [NoHeapAllocation]
+        public static void CloseGlobalStorage(UIntPtr storageHandle);
+
+        [NoHeapAllocation]
+        public static unsafe UIntPtr LogSourceEntry(UIntPtr sourceHandle,
+                                                    uint flags, 
+                                                    UIntPtr eventType, 
+                                                    byte * buffer, 
+                                                    int size);
+
+        [NoHeapAllocation]
+        public static unsafe UIntPtr LogSourceEntry(UIntPtr sourceHandle,
+                                                    uint flags, 
+                                                    UIntPtr eventType, 
+                                                    byte * buffer, 
+                                                    int size,
+                                                    int stringsCount,
+                                                    void ** strings);
+
+        [NoHeapAllocation]
+        public static UIntPtr CreateQueryView(UIntPtr storageHandle, bool forward);
+
+        [NoHeapAllocation]
+        public static void DeleteQueryView(UIntPtr storageHandle);
+
+        [NoHeapAllocation]
+        public static unsafe UIntPtr GetNextEntry(UIntPtr queryHandle,
+                                                  UIntPtr * type,
+                                                  UInt32 * userOffset,
+                                                  byte * buffer,
+                                                  UInt16 bufferSize );
+        [NoHeapAllocation]
+        public static bool RegisterEvent(char * eventName, char * eventDescription, UIntPtr * eventHandle);
+
+        [NoHeapAllocation]
+        public static bool RegisterEventField(UIntPtr eventHandle, 
+                                              char * fieldName, 
+                                              UInt16 offset, 
+                                              UInt16 type);
+
+        [NoHeapAllocation]
+        public static bool RegisterEventGenericField(UIntPtr eventHandle, 
+                                                     char * fieldName, 
+                                                     UInt16 offset, 
+                                                     UInt16 size,
+                                                     UIntPtr fieldTypeHandle);
+
+
+        [NoHeapAllocation]
+        public static bool RegisterEnum(char * enumName, UInt16 type, UIntPtr * eventHandle);
+            
+        [NoHeapAllocation]
+        public static bool RegisterEnumValue(UIntPtr eventHandle, 
+                                             char * valueName, 
+                                             UInt64 value, 
+                                             byte flagChar);
+
+        [NoHeapAllocation]
+        public static unsafe UIntPtr WalkEventDescriptor(UIntPtr eventHandle,
+                                                         UIntPtr currentField,
+                                                         UInt16 * offset,
+                                                         UInt16 * type,
+                                                         char * bufferName,
+                                                         UInt16 bufferSize );
+        [NoHeapAllocation]
+        public static unsafe bool GetSourceInformation(UIntPtr sourceHandle,
+                                                       UIntPtr * storageHandle,
+                                                       UIntPtr * eventType,
+                                                       UInt16 * count,
+                                                       char * bufferName,
+                                                       UInt16 bufferSize );
+
+        [NoHeapAllocation]
+        public static unsafe int QuerySourcesList(UIntPtr * buffer, int size);
+
+        [NoHeapAllocation]
+        public static unsafe int QueryEventTypeList(UIntPtr * buffer, int size);
+
+        [NoHeapAllocation]
+        public static unsafe bool ReadActiveSourceItem(UIntPtr sourceHandle,
+                                                        int item,
+                                                        UIntPtr * type,
+                                                        byte * buffer,
+                                                        UInt16 bufferSize );
+
+    }
+}

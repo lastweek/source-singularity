@@ -1,0 +1,176 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Tpm Communication Channel
+//
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Hal;
+using System;
+
+namespace Microsoft.Singularity.Diagnostics
+{
+    public class TpmModule
+    {
+        private bool tpmPresent = false;
+
+        private void InitializeHardware()
+        {
+            tpmPresent = true;
+        }
+
+        private bool
+        TpmSendReceive([Claims] byte[]! in ExHeap request, out byte[] response)
+        {
+            try {
+                byte[] tmp = new byte[request.Length];
+                for (int i = 0; i < request.Length; i++)
+                    tmp[i] = request[i];
+                if (tpmPresent) {
+                    return Platform.TpmSendReceive(tmp, out response);
+                }
+                else {
+                    response = null;
+                    return false;
+                }
+            }
+            finally {
+                delete request;
+            }
+
+        }
+
+        private void Run()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(TpmContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the Process Diagnostic module.\n");
+                        delete nsExp;
+                        if (rejectedEP != null) {
+                            delete rejectedEP;
+                        }
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<TpmContract.Exp:ReadyState> epSet = new ESet<TpmContract.Exp:ReadyState>();
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people top give us ProcessContract.Exp instances
+                            TpmContract.Exp newDiagEp = newEp as TpmContract.Exp;
+
+                            if (newDiagEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newDiagEp.SendReady();
+                                epSet.Add(newDiagEp);
+                            }
+                        }
+                        break;
+
+                    case ep.SendReceive(request) in epSet :
+                        {
+                            //
+                            //byte[] capability_command = {0, 193,
+                            //               0, 0, 0, 18,
+                            //               0, 0, 0, 101,
+                            //               0, 0, 0, 6,
+                            //               0, 0, 0, 0 };
+                            //
+                            byte[] dummyResponse = {0};
+                            bool status = true;
+                            byte[] response;
+
+
+                                //Platform.TpmSend(capability_command);
+                            status = TpmSendReceive(request, out response);
+
+                            if (response == null) {
+                              response = dummyResponse;
+
+                            }
+
+                            byte* opt(ExHeap[]) retval = new[ExHeap] byte[response.Length];
+
+                            for (int i = 0; i < response.Length; ++i) {
+                                retval[i] = response[i];
+                            }
+
+                            ep.SendResponse(retval, status);
+                            epSet.Add(ep);
+
+
+
+                        }
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        {
+                            delete ep;
+                        }
+                        break;
+
+                    case epSet.Empty() && nsExp.ChannelClosed() :
+                        {
+                            // Exit this thread
+                            delete nsExp;
+                            epSet.Dispose();
+                            return;
+                        }
+                        break;
+                }
+            }
+        }
+
+        internal static void Initialize()
+        {
+            TpmModule module = new TpmModule();
+            module.InitializeHardware();
+
+            Thread thread = Thread.CreateThread(Thread.CurrentProcess,
+                                                new ThreadStart(module.Run));
+
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+    }
+}

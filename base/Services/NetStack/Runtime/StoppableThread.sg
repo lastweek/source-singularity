@@ -1,0 +1,126 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+// using System.Diagnostics;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+namespace NetStack.Runtime
+{
+    public contract StopThreadContract
+    {
+        in message Terminate();
+        out message AckTerminate();
+        
+        state Ready : one {
+            Terminate? -> Terminating;
+        }
+        
+        state Terminating : one {
+            AckTerminate! -> Terminated;
+        }
+        
+        state Terminated : one {
+        }
+    }
+    
+    public abstract class StoppableThread
+    {
+        protected abstract void Run(StopThreadContract.Exp:Ready! terminator);
+        
+        Thread thread;
+        
+        bool running;
+        readonly TRef<StopThreadContract.Imp:Ready>! terminatorImpRef;
+        readonly TRef<StopThreadContract.Exp:Ready>! terminatorExpRef;
+        
+        protected StoppableThread()
+        {
+            StopThreadContract.Imp! terminator_imp;
+            StopThreadContract.Exp! terminator_exp;
+            StopThreadContract.NewChannel(out terminator_imp, out terminator_exp);
+            
+            terminatorImpRef = new TRef<StopThreadContract.Imp:Ready>(terminator_imp);
+            terminatorExpRef = new TRef<StopThreadContract.Exp:Ready>(terminator_exp);
+            running = false;
+            
+            thread = null;
+        }
+        
+        private void ThreadRoutine()
+        {
+            StopThreadContract.Exp! terminator_exp = terminatorExpRef.Acquire();
+            try {
+                Run(terminator_exp);
+            }
+            finally {
+                delete terminator_exp;
+            }            
+        }
+        
+        public void Start()
+        {
+            if (thread != null)
+                throw new InvalidOperationException("This thread has already been started.");
+            
+            Thread t = new Thread(ThreadRoutine);
+            thread = t;
+            t.Start();
+            running = true;
+        }
+        
+        public void Stop()
+        {
+            if (!running)
+                return;
+                
+            DebugStub.WriteLine(String.Format("StoppableThread: Asking thread {0} to stop...", thread.GetThreadId()));
+            
+            assert thread != null;
+            StopThreadContract.Imp! terminatorImp = this.terminatorImpRef.Acquire();
+            terminatorImp.SendTerminate();
+
+            bool timeout_occurred = false;
+            
+            bool done;
+            do {
+                switch receive {
+                    case terminatorImp.AckTerminate():
+                        done = true;
+                        break;
+                        
+                    case terminatorImp.ChannelClosed():
+                        // good enough
+                        done = true;
+                        DebugStub.WriteLine(String.Format("Warning: Thread {0} closed its termination channel.", thread.GetThreadId()));
+                        DebugStub.WriteLine("The thread may have terminated unexpectedly (thrown an exception).");
+                        break;
+                        
+                    case timeout(TimeSpan.FromSeconds(10)):
+                        DebugStub.WriteLine(String.Format("Warning: Thread {0} is ignoring request to terminate.", thread.GetThreadId()));
+                        done = false;
+                        timeout_occurred = true;
+                        break;
+                }
+            } while (!done);
+
+            delete terminatorImp;
+            running = false;
+
+            while (!thread.Join(TimeSpan.FromSeconds(10))) {
+                DebugStub.WriteLine(String.Format("Warning: Thread {0} acknowledge stop request, but has not yet terminated.", thread.GetThreadId()));
+                timeout_occurred = true;
+            }
+            
+            if (timeout_occurred) {
+                DebugStub.WriteLine(String.Format("StoppableThread: Thread {0} successfully stopped.", thread.GetThreadId()));
+            }
+        }
+    }
+}

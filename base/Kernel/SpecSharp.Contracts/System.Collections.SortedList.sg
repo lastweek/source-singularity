@@ -1,0 +1,124 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace System.Collections
+{
+
+    public class SortedList
+    {
+
+        public object this [object key]
+        {
+          get;
+          set
+            requires key != null otherwise ArgumentNullException;
+        }
+
+        public int Capacity
+        {
+          get;
+          set;
+        }
+
+        public bool IsFixedSize
+        {
+          get;
+        }
+
+        public ICollection! Values
+        {
+          get;
+        }
+
+        public object SyncRoot
+        {
+          get;
+        }
+
+        public bool IsSynchronized
+        {
+          get;
+        }
+
+        public ICollection! Keys
+        {
+          get;
+        }
+
+        public int Count
+        {
+          get;
+        }
+
+        public bool IsReadOnly
+        {
+          get;
+        }
+
+        public void TrimToSize ();
+
+        public static SortedList! Synchronized (SortedList! list)
+            requires list != null otherwise ArgumentNullException;
+
+        public void SetByIndex (int index, object value)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+
+        public void Remove (object key);
+
+        public void RemoveAt (int index)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+
+        public int IndexOfValue (object value);
+
+        public int IndexOfKey (object! key)
+            requires key != null otherwise ArgumentNullException;
+
+        public IList GetValueList ();
+
+        public IList GetKeyList ();
+
+        public object GetKey (int index)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+
+        public IDictionaryEnumerator GetEnumerator ();
+
+        public object GetByIndex (int index)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+
+        public void CopyTo (Array! array, int arrayIndex)
+            requires array != null otherwise ArgumentNullException;
+            requires arrayIndex >= 0 otherwise ArgumentOutOfRangeException;
+
+        public bool ContainsValue (object value);
+
+        public bool ContainsKey (object key);
+
+        public bool Contains (object key);
+
+        public object Clone ();
+
+        public void Clear ();
+
+        public void Add (object! key, object value)
+            requires key != null otherwise ArgumentNullException;
+
+        public SortedList (IDictionary! d, IComparer comparer)
+            requires d != null otherwise ArgumentNullException;
+
+        public SortedList (IDictionary d);
+
+        public SortedList (IComparer comparer, int capacity);
+
+        public SortedList (IComparer comparer);
+
+        public SortedList (int initialCapacity)
+            requires initialCapacity >= 0 otherwise ArgumentOutOfRangeException;
+
+        public SortedList ();
+    }
+}

@@ -1,0 +1,35 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   
+
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Cryptobvt</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="CryptoBvt.cs" />
+    <Compile Include="MD4Test.cs" />
+    <Compile Include="DesTest.cs" />
+    <Compile Include="Util.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Crypto\Crypto.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

@@ -1,0 +1,102 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   XRef.cs
+//
+//  Note: File is part of Sing# runtime files and copied into Singularity tree
+//        whenever a new version of Sing# is dropped.
+//        Coordinate any changes with Sing# team.
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Memory;
+
+namespace Microsoft.Singularity.Channels
+{
+    using System.Threading;
+    using Allocation = Microsoft.Singularity.Memory.SharedHeap.Allocation;
+
+    public sealed class ExRef<T> where T : unmanaged struct, ITracked
+    {
+        unsafe T* opt(ExHeap) obj;
+        Mutex mutex;
+
+        public ExRef([Claims] T* opt(ExHeap)! i_obj, bool synchronized)
+        {
+            if (i_obj == null) {
+                throw new ArgumentNullException("ExRef must be initialized with a non-null value!");
+            }
+            i_obj->Release();
+            obj = i_obj;
+            if (synchronized) {
+                this.mutex = new Mutex();
+            }
+        }
+
+        // invariant:
+        //   If mutex is held, thread holding mutex is
+        //   responsible for calling Release during that time,
+        //   the obj slot is empty and if the thread tries to
+        //   acquire it again, an exception is thrown.
+
+        /// <summary>
+        /// Will block until the ExRef is free.
+        /// </summary>
+        /// <returns>Acquired tracked type protected by ExRef</returns>
+        public T* opt(ExHeap)! Acquire()
+        {
+            if (this.mutex != null) {
+                this.mutex.WaitOne();
+            }
+            T* opt(ExHeap) elem = this.obj;
+            if (elem == null) {
+                throw new ApplicationException("thread already holds ExRef!");
+            }
+            elem->Acquire();
+            this.obj = null;
+            return elem;
+        }
+
+        /// <summary>
+        /// Releases tracked data into the ExRef so other
+        /// threads can access it.
+        /// </summary>
+        /// <param name="newObj">tracked data to be released</param>
+        public void Release([Claims] T* opt(ExHeap)! newObj)
+        {
+            if (newObj == null) {
+                throw new ArgumentNullException("ExRef must be released with a non-null value!");
+            }
+
+            T* opt(ExHeap) elem = this.obj;
+            if (elem != null) {
+                throw new ApplicationException("Releasing into occupied slot!");
+            }
+
+            newObj->Release();
+            obj = newObj;
+            if (this.mutex != null) {
+                this.mutex.ReleaseMutex();
+            }
+        }
+
+        /// <summary>
+        /// Finalizer to dispose of any left over contents
+        /// </summary>
+        ~ExRef()
+        {
+            T* opt(ExHeap) toDelete = this.obj;
+            if (toDelete != null) {
+                this.obj = null;
+                unsafe {
+                    toDelete->Dispose(); // Explicit call needed due to generics
+                }
+                delete toDelete;
+            }
+        }
+    }
+}

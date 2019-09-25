@@ -1,0 +1,638 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File: NicManager.sg
+//
+//  Note:
+//
+//  When a network device comes up, it registers with the
+//  NicManager, who places it in the namespace under
+//  /dev/nicX and advertises its existence with the netstack
+//  runtime core.  The netstack runtime core will be responsible
+//  for notifying the NicManager when the device has gone away.
+//
+//  This is a lot of jiggery-pokery just so users can see the device names
+//  under /dev and the names are sequential.
+//
+
+// #define DEBUG_NIC
+
+using NetStack.Common;
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+
+using NetStack.Contracts;
+using NetStack.Runtime;
+
+using Drivers.Net;
+
+namespace NetStack.Channels.Nic
+{
+    internal class Nic : IAdapter
+    {
+        // Upper bounds computed for 10Gbps with maximum sized
+        // packets to give a small number of I/O requests per
+        // second and be a power of 2.
+        private const int MaxTxPacketsInDevice = 128 * 1024;
+        private const int MaxRxPacketsInDevice = 128 * 1024;
+
+        private TRef<NicDeviceContract.Imp:READY>!     nicChannel;
+        private TRef<NicDeviceEventContract.Imp:READY> eventChannel;
+
+        string!  driverName;
+        string!  driverVersion;
+        byte []! macAddress;
+        int mtu;
+        int maxTxPacketsInDevice;
+        int maxRxPacketsInDevice;
+        int maxTxFragmentsPerPacket;
+        int maxRxFragmentsPerPacket;
+
+        private AutoResetEvent !readHandle;
+        private AutoResetEvent !writeHandle;
+
+        private Queue! rxFreePacketQueue;
+
+        private ExRef<PacketFifo>! rxToDeviceFifo;
+        private ExRef<PacketFifo>! rxFromDeviceFifo;
+
+        private ExRef<PacketFifo>! txToDeviceFifo;
+        private ExRef<PacketFifo>! txFromDeviceFifo;
+        private ExRef<PacketFifo>! txFreeFifo;
+
+        private ulong txRequests = 0;
+        private ulong txComplete = 0;
+        private ulong rxTotal    = 0;
+
+        [Microsoft.Contracts.NotDelayed]
+        public Nic([Claims] NicDeviceContract.Imp:READY! nicImp,
+                   NicDeviceProperties*! in ExHeap np)
+        {
+            this.readHandle  = new AutoResetEvent(false);
+            this.writeHandle = new AutoResetEvent(false);
+
+            this.nicChannel = new TRef<NicDeviceContract.Imp:READY>(nicImp);
+            expose (np) {
+                assume np->DriverName != null;
+                assume np->MacAddress != null;
+                this.driverName    = Bitter.ToString2(np->DriverName);
+                this.driverVersion = Bitter.ToString2(np->DriverName);
+                this.macAddress    = Bitter.ToByteArray(np->MacAddress);
+            }
+            this.mtu = np->MtuBytes;
+            this.maxTxPacketsInDevice    = np->MaxTxPacketsInDevice;
+            this.maxRxPacketsInDevice    = np->MaxRxPacketsInDevice;
+            this.maxTxFragmentsPerPacket = np->MaxTxFragmentsPerPacket;
+            this.maxRxFragmentsPerPacket = np->MaxRxFragmentsPerPacket;
+            // The following attributes are both integers yet
+            // sgc is complaining it doesn't know to use
+            // Math.Min(sbyte, sbyte) or Math.Min(byte, byte).
+            int rxFifoSize = Math.Min(np->MaxRxPacketsInDevice,
+                                      (int)Nic.MaxRxPacketsInDevice);
+
+            // Create a queue for NetPackets that we pass up to
+            // the NetStack and it passes down to us.  And
+            // create a Packet fifo that has a packet for each
+            // NetPacket.
+
+            this.rxFreePacketQueue = new Queue(rxFifoSize);
+            this.rxToDeviceFifo =
+                new ExRef<PacketFifo>(
+                    new [ExHeap] PacketFifo(rxFifoSize),
+                    false
+                    );
+
+            this.rxFromDeviceFifo =
+                new ExRef<PacketFifo>(
+                    new [ExHeap] PacketFifo(rxFifoSize),
+                    false
+                    );
+
+            // The following attributes are both integers yet
+            // sgc is complaining it doesn't know to use
+            // Math.Min(sbyte, sbyte) or Math.Min(byte, byte).
+            int txFifoSize = Math.Min(np->MaxTxPacketsInDevice,
+                                      (int)Nic.MaxTxPacketsInDevice);
+
+            this.txToDeviceFifo =
+                new ExRef<PacketFifo>(
+                    new [ExHeap] PacketFifo(txFifoSize),
+                    false
+                    );
+
+            this.txFromDeviceFifo =
+                new ExRef<PacketFifo>(
+                    new [ExHeap] PacketFifo(txFifoSize),
+                    false
+                    );
+
+            this.txFreeFifo =
+                new ExRef<PacketFifo>(
+                    new [ExHeap] PacketFifo(txFifoSize),
+                    false
+                    );
+
+            base();
+
+            TxProvision();
+            RxProvision();
+        }
+
+        int MaxRxPackets { get { return this.maxRxPacketsInDevice; } }
+
+        internal void ThreadMain()
+        {
+            StartIO();
+            EventMessagePump();
+        }
+
+        internal void EventMessagePump()
+        {
+            Tracing.Log(Tracing.Debug, "Started event pump");
+
+            NicDeviceEventContract.Imp imp = ((!)eventChannel).Acquire();
+            eventChannel = null;
+            try {
+                assert imp.InState(NicDeviceEventContract.READY.Value);
+                imp.RecvSuccess();
+                assert imp.InState(NicDeviceEventContract.RUNNING.Value);
+                for (;;) {
+                    NicEventType eventType;
+                    imp.RecvNicDeviceEvent(out eventType);
+                    if ((eventType & NicEventType.ReceiveEvent) != 0) {
+                        Tracing.Log(Tracing.Debug, "Receive event");
+                        readHandle.Set();
+                    }
+                    if ((eventType & NicEventType.TransmitEvent) != 0) {
+                        Tracing.Log(Tracing.Debug, "Transmit event");
+                        writeHandle.Set();
+                    }
+                    if ((eventType & NicEventType.LinkEvent) != 0) {
+                        Tracing.Log(Tracing.Debug, "Link event");
+                        DebugStub.Print("UNHANDLED link event!...acking anyway\n");
+                    }
+                    imp.SendAckNicDeviceEvent();
+                }
+            }
+            catch (ChannelClosedException) {
+                Tracing.Log(Tracing.Debug, "NIC event channel closed.");
+            }
+            finally {
+                delete imp;
+            }
+        }
+
+
+        //
+        // IAdapter interface
+        //
+        string  IAdapter.DriverName
+        {
+            get { return this.driverName; }
+        }
+
+        string  IAdapter.DriverVersion
+        {
+            get { return this.driverVersion; }
+        }
+
+        uint IAdapter.LinkSpeed { get { return 100000000; } }
+
+        EthernetAddress IAdapter.HardwareAddress
+        {
+            get { return new EthernetAddress(this.macAddress); }
+        }
+
+        WaitHandle IAdapter.GetReadHandle()  { return readHandle;  }
+        WaitHandle IAdapter.GetWriteHandle() { return writeHandle; }
+
+        [Conditional("DEBUG_NIC")]
+        internal static void DebugPrint(string format, __arglist)
+        {
+            DebugStub.Print(format, new ArgIterator(__arglist));
+        }
+
+        private void RxExchangeInternal(NicDeviceContract.Imp! imp)
+        {
+            int toCount, fromCount;
+            PacketFifo*! in ExHeap exFifo = this.rxToDeviceFifo.Acquire();
+            toCount = exFifo->Count;
+            try {
+                imp.SendGiveRxPacketsToDevice(exFifo);
+                imp.RecvTakeRxPacketsFromDevice(out exFifo);
+                fromCount = exFifo->Count;
+
+                // Transfer packets received from the device
+                // to the fromDevice fifo.
+                PacketFifo*! in ExHeap fromDevice =
+                    this.rxFromDeviceFifo.Acquire();
+
+                try {
+                    while (exFifo->Count > 0) {
+                        fromDevice->Push(exFifo->Pop());
+                    }
+                }
+                finally {
+                    this.rxFromDeviceFifo.Release(fromDevice);
+                }
+            }
+            finally {
+                this.rxToDeviceFifo.Release(exFifo);
+            }
+            DebugPrint("RxExchange out: {0} in: {1}\n",
+                       __arglist(toCount, fromCount));
+        }
+
+        private void RxExchange()
+        {
+            NicDeviceContract.Imp imp = nicChannel.Acquire();
+            try {
+                RxExchangeInternal(imp);
+            }
+            finally {
+                this.nicChannel.Release(imp);
+            }
+        }
+
+        // Get the received packets from the adapter
+        void IAdapter.GetReceivedPackets(Queue! outQueue)
+        {
+            lock (this) {
+                // REVIEW: Should be able to make a decision about
+                // whether to RxExchange or not here.
+                RxExchange();
+
+                PacketFifo*! in ExHeap toDevice = this.rxToDeviceFifo.Acquire();
+                try {
+                    PacketFifo*! in ExHeap fromDevice = this.rxFromDeviceFifo.Acquire();
+                    try {
+                        while (rxFreePacketQueue.Count > 0 &&
+                               fromDevice->Count > 0) {
+                            // Take netstack packet from free queue
+                            NetPacket! netPacket =
+                                (NetPacket!)rxFreePacketQueue.Dequeue();
+
+                            // Take packet from the device
+                            Packet*! in ExHeap packet = fromDevice->Pop();
+
+                            // If packet from device has an error
+                            // recycle it right away, and try next
+                            // packet.  Careful not to lose the
+                            // packet from the rxFreePacketQueue!
+                            FromDeviceFlags fromFlags = packet->FromDeviceFlags;
+                            if ((fromFlags & FromDeviceFlags.ReceiveError) != 0) {
+                                packet->UnsetFragmentLengths();
+                                toDevice->Push(packet);
+                                rxFreePacketQueue.Enqueue(netPacket);
+                                continue;
+                            }
+
+                            // Copy data from device's packet into netstack's packet
+                            netPacket.Reset(packet->GetLength());
+                            packet->ToByteArray((!)netPacket.GetRawData());
+                            netPacket.AdapterContext = this;
+
+                            // Enqueue netstack's packet for upward processing
+                            outQueue.Enqueue(netPacket);
+
+                            // Reset packet from device and put in the queue
+                            // of return candidates.
+                            packet->UnsetFragmentLengths();
+                            toDevice->Push(packet);
+                        }
+                    }
+                    finally {
+                        this.rxFromDeviceFifo.Release(fromDevice);
+                    }
+                }
+                finally {
+                    this.rxToDeviceFifo.Release(toDevice);
+                }
+            }
+        }
+
+        // populate the adapter's receive ring with new NetPackets
+        void IAdapter.PopulateRxRing(NetPacket! freePacket)
+        {
+            lock (this) {
+                this.rxFreePacketQueue.Enqueue(freePacket);
+
+                bool sendPacketsToDevice = false;
+                PacketFifo*! in ExHeap toDevice = this.rxToDeviceFifo.Acquire();
+                try {
+                    sendPacketsToDevice = toDevice->Count > MaxRxPacketsInDevice / 2;
+                }
+                finally {
+                    this.rxToDeviceFifo.Release(toDevice);
+                }
+
+                if (sendPacketsToDevice) {
+                    RxExchange();
+                }
+            }
+        }
+
+        private void TxExchange()
+        {
+            int toCount = 0;
+            int fromCount = 0;
+            NicDeviceContract.Imp imp = nicChannel.Acquire();
+            try {
+                PacketFifo*! in ExHeap src = this.txToDeviceFifo.Acquire();
+                toCount = src->Count;
+                try {
+                    imp->SendGiveTxPacketsToDevice(src);
+                    imp->RecvTakeTxPacketsFromDevice(out src);
+                    fromCount = src->Count;
+                    PacketFifo*! in ExHeap dst =
+                        this.txFromDeviceFifo.Acquire();
+                    try {
+                        dst->Push(src);
+                    }
+                    finally {
+                        this.txFromDeviceFifo.Release(dst);
+                    }
+                }
+                finally {
+                    this.txToDeviceFifo.Release(src);
+                }
+            }
+            finally {
+                nicChannel.Release(imp);
+            }
+            DebugPrint("TxExchange out: {0} in: {1}\n",
+                       __arglist(toCount, fromCount));
+        }
+
+        uint IAdapter.GetTransmittedPackets()
+        {
+            lock (this) {
+                TxExchange();
+
+                PacketFifo*! in ExHeap src = this.txFromDeviceFifo.Acquire();
+                int srcCount = src->Count;
+                try {
+                    PacketFifo*! in ExHeap dst = this.txFreeFifo.Acquire();
+                    try {
+                        dst->Push(src);
+                    }
+                    finally {
+                        this.txFreeFifo.Release(dst);
+                    }
+                }
+                finally {
+                    this.txFromDeviceFifo.Release(src);
+                }
+
+                return (uint) srcCount;
+            }
+        }
+
+        void IAdapter.PopulateTxRing(NetPacket[]! fromUser, uint count)
+        {
+            lock (this) {
+                PacketFifo*! in ExHeap txFree = this.txFreeFifo.Acquire();
+                try {
+                    PacketFifo*! in ExHeap txToDevice = this.txToDeviceFifo.Acquire();
+                    try {
+                        for (int i = 0; i < count; i++) {
+                            Packet*! in ExHeap packet = txFree->Pop();
+                            byte []! data = (!)((!)fromUser[i]).GetRawData();
+                            packet->SetFragment(0, data, 0, data.Length);
+                            txToDevice->Push(packet);
+                        }
+                    }
+                    finally {
+                        this.txToDeviceFifo.Release(txToDevice);
+                    }
+                }
+                finally {
+                    this.txFreeFifo.Release(txFree);
+                }
+
+                TxExchange();
+
+                // TODO: Recycle fromUser packets...
+                // Making work for the GC da...da...
+            }
+        }
+
+        int IAdapter.TxSlotsFree
+        {
+            get {
+                lock (this) {
+                    PacketFifo*! in ExHeap txFree = this.txFreeFifo.Acquire();
+                    try {
+                        return txFree->Count;
+                    }
+                    finally {
+                        this.txFreeFifo.Release(txFree);
+                    }
+                }
+            }
+        }
+
+        private bool
+        ConfigureEventChannel(NicDeviceContract.Imp:IO_CONFIGURE_BEGIN! nicImp)
+        {
+            NicDeviceEventContract.Imp! imp;
+            NicDeviceEventContract.Exp! exp;
+            NicDeviceEventContract.NewChannel(out imp, out exp);
+
+            nicImp.SendRegisterForEvents(exp);
+            switch receive {
+                case nicImp.Success():
+                    eventChannel =
+                        new TRef<NicDeviceEventContract.Imp:READY>(imp);
+                    return true;
+
+                case nicImp.ChannelClosed():
+                    Tracing.Log(Tracing.Error, "NIC channel closed");
+                    delete imp;
+                    break;
+            }
+            return false;
+        }
+
+        private bool
+        ConfigureChecksumProperties(NicDeviceContract.Imp! nicImp)
+        {
+            nicImp.SendSetChecksumProperties(0);
+            switch receive {
+                case nicImp.Success():
+                    return true;
+
+                case nicImp.UnsupportedChecksumProperties():
+                    Tracing.Log(Tracing.Error, "NIC refused checksum configuration it advertised");
+                    break;
+            }
+            return false;
+        }
+
+        private bool Configure()
+        {
+            NicDeviceContract.Imp! nicImp = nicChannel.Acquire();
+            try {
+                nicImp.SendConfigureIO();
+                nicImp.RecvAckConfigureIO();
+                if (ConfigureEventChannel(nicImp) == true &&
+                    ConfigureChecksumProperties(nicImp) == true) {
+                    return true;
+                }
+            }
+            catch (ChannelClosedException) {
+                Tracing.Log(Tracing.Error, "NIC channel closed.");
+            }
+            catch (SystemException e) {
+                DebugStub.WriteLine("System exception occurred in Nic.Configure().");
+                DebugStub.WriteLine(e.ToString());
+                DebugStub.Break();
+            }
+            finally {
+                nicChannel.Release(nicImp);
+            }
+            DebugStub.Break();
+            return false;
+        }
+
+        private void RxProvision()
+        {
+            PacketFifo*! in ExHeap toDevice = this.rxToDeviceFifo.Acquire();
+            for (int i = 0; i < toDevice->Capacity; i++) {
+                this.rxFreePacketQueue.Enqueue( new NetPacket(this.mtu) );
+                toDevice->Push(
+                    new [ExHeap] Packet(
+                        new [ExHeap] byte [this.mtu]
+                        )
+                    );
+            }
+            this.rxToDeviceFifo.Release(toDevice);
+        }
+
+        private void TxProvision()
+        {
+            PacketFifo*! in ExHeap txFree = this.txFreeFifo.Acquire();
+            for (int i = 0; i < txFree->Capacity; i++) {
+                txFree->Push(
+                    new [ExHeap] Packet(
+                        new [ExHeap] byte [this.mtu]
+                        )
+                    );
+            }
+            this.txFreeFifo.Release(txFree);
+        }
+
+        private bool StartIO()
+        {
+            NicDeviceContract.Imp imp = nicChannel.Acquire();
+            try {
+                if (imp.InState(NicDeviceContract.IO_CONFIGURED.Value) == true) {
+                    imp.SendStartIO();
+                    imp.RecvAckStartIO();
+                    RxExchangeInternal(imp);
+                    return true;
+                }
+            }
+            catch (ChannelClosedException) {
+            }
+            finally {
+                nicChannel.Release(imp);
+            }
+            DebugStub.Break();
+            return false;
+        }
+
+        private bool StopIO()
+        {
+            NicDeviceContract.Imp imp = nicChannel.Acquire();
+            try {
+                if (imp.InState(NicDeviceContract.IO_RUNNING.Value) == true) {
+                    imp.SendStopIO();
+                    imp.RecvAckStopIO();
+                    return true;
+                }
+            }
+            catch (ChannelClosedException) {
+            }
+            finally {
+                nicChannel.Release(imp);
+            }
+            return false;
+        }
+
+        //
+        // Factory methods
+        //
+        internal static NicDeviceProperties* in ExHeap
+        GetNicProperties(NicDeviceContract.Imp:READY! imp)
+        {
+            try {
+                NicDeviceProperties*! in ExHeap np =
+                    new [ExHeap] NicDeviceProperties();
+                imp.SendGetDeviceProperties(np);
+                imp.RecvDeviceProperties(out np);
+                return np;
+            }
+            catch (OutOfMemoryException) {
+                Tracing.Log(Tracing.Debug,
+                            "Out-of-memory getting NIC properties");
+                return null;
+            }
+            catch (ChannelClosedException) {
+                Tracing.Log(Tracing.Debug,
+                            "Channel closed while getting NIC properties");
+                return null;
+            }
+        }
+
+        internal static bool
+        CreateAndRegister([Claims] NicDeviceContract.Imp:Start! imp,
+                          string! nicName)
+        {
+            Nic nic = null;
+            try {
+                imp.RecvSuccess();
+                Tracing.Log(Tracing.Debug, "Nic channel transition");
+                Tracing.Log(Tracing.Debug, imp.CurrentState());
+
+                NicDeviceProperties* in ExHeap np = GetNicProperties(imp);
+                if (np == null) {
+                    delete imp;
+                    return false;
+                }
+
+                nic = new Nic(imp, np);
+                delete np;
+                if (nic.Configure() == false) {
+                    return false;
+                }
+
+                NetStack.Runtime.Core! ns = (!)NetStack.Runtime.Core.Instance();
+                ns.RegisterAdapter(nic, nicName, nic.MaxRxPackets);
+
+                Thread thread = new Thread(
+                    new ThreadStart(nic.ThreadMain)
+                    );
+                thread.Start();
+
+                return true;
+            }
+            catch {
+                delete imp;
+                DebugStub.Break();
+                return false;
+            }
+        }
+    }
+}

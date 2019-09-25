@@ -1,0 +1,14 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace System
+{
+
+    public class ValueType {
+
+        public override string! ToString();
+    }
+}

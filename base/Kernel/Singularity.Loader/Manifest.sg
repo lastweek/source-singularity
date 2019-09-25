@@ -1,0 +1,318 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Manifest.cs
+//
+//  Note:   Creates and binds endpoints using a manifest.
+//
+
+using System;
+using System.Text;
+using System.Collections;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Loader
+{
+    /// <summary>
+    /// This is a placeholder class for an application's manifest.
+    /// At present the application manifest is represented by a hashtable.
+    /// The hashtable has several important properties:
+    ///  - name: the name of the application
+    ///  - path: path to the application executable
+    /// </summary>
+    public class Manifest
+    {
+        /// <summary>
+        /// We treat the application manifest as a collection of
+        /// key, value pairs.
+        /// </summary>
+        private Hashtable! data = new Hashtable();
+        private const string pipeContract = "Microsoft.Singularity.Io.UnicodePipeContract";
+
+        private string name;
+        private string path;
+        private string publisher;
+        private string[] privileges = null;
+
+        private readonly XmlNode! applicationNode;
+        private readonly XmlNode! processNode;
+        private readonly XmlNode  categoriesNode;
+
+        /// <summary>
+        /// Create a manifest object from the given xml representation
+        /// </summary>
+        [Microsoft.Contracts.NotDelayed]
+        public Manifest(byte[] xml)
+        {
+            Kernel.Waypoint(2600);
+            XmlReader! reader = new XmlReader(xml);
+            XmlNode! doc = (!)reader.Parse();
+            Kernel.Waypoint(2601);
+
+            this(doc);
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public Manifest(IoMemory memory)
+        {
+            Kernel.Waypoint(2600);
+            XmlReader! reader = new XmlReader(memory);
+            XmlNode! doc = (!)reader.Parse();
+            Kernel.Waypoint(2601);
+
+            this(doc);
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        private Manifest(XmlNode! doc)
+        {
+            XmlNode app = (!)doc.GetChild("application");
+            name = app["name"];
+            publisher = app["publisher"];
+            XmlNode proc = null;
+            foreach (XmlNode! process in app.Children) {
+                if (process.Name != "process") {
+                    continue;
+                }
+                if (process.GetAttribute("main", "false") == "true") {
+                    path = process["path"];
+                    proc = process;
+                    break;
+                }
+            }
+            applicationNode = app;
+            XmlNode! processNode = this.processNode = (!)proc;
+
+            base();
+
+            XmlNode privsNode = applicationNode.GetChild("privileges");
+            if (privsNode != null) {
+                int pCount = 0;
+                foreach (XmlNode! privilegeNode in privsNode.Children) {
+                    if (privilegeNode.Name != "privilege")
+                        continue;
+                    if (privilegeNode.GetAttribute("name", null) != null) {
+                        pCount++;
+                    }
+                }
+                if (pCount != 0) {
+                    privileges = new string[pCount];
+                    pCount = 0;
+                    foreach (XmlNode! privilegeNode in privsNode.Children) {
+                        if (privilegeNode.Name != "privilege")
+                            continue;
+                        String privilege = privilegeNode.GetAttribute("name", null);
+                        if (privilege != null) {
+                            privileges[pCount++] = privilege;
+                        }
+                    }
+                }
+            }
+
+            categoriesNode = processNode.GetChild("categories");
+            if (categoriesNode != null) {
+                    return;
+            }
+#if false
+            string ns = child["namespace"];
+            string name = child["name"];
+            string value = child["value"];
+
+            if (name != null && value != null) {
+                DataItem item = new DataItem(ns, name, value);
+                data[name] = item;
+            }
+            else {
+                throw new Exception("Invalid manifest");
+            }
+#endif
+            Kernel.Waypoint(2602);
+        }
+
+        public object GetProperty(object! name)
+        {
+            return data[name];
+        }
+
+        public void SetProperty(object! name, object value)
+        {
+            data[name] = value;
+        }
+
+        // given an action find the corresponding category node
+        public  XmlNode GetCategoryNode(string actionName) {
+            if (categoriesNode == null) return null;
+            if (actionName == null) {
+                foreach (XmlNode! c in categoriesNode.Children) {
+                    string name = c.GetAttribute("name","");
+                    if (name != "console") return c;
+                    bool present = c.GetAttribute("DefaultAction",false);
+                    if (present) return c;
+                }
+                return null;
+            }
+            else {
+                foreach (XmlNode! c in categoriesNode.Children) {
+                    string a = c.GetAttribute("Action",null);
+                    if (a != null && a == actionName) {
+                        return c;
+                    }
+                }
+                return null;
+            }
+        }
+
+        public bool GetParameterCounts( string action,
+                                        out int boolCount,
+                                        out int longCount,
+                                        out int stringCount,
+                                        out int stringArrayCount)
+        {
+            XmlNode categoryNode;
+
+            boolCount = 0;
+            longCount = 0;
+
+            stringCount = 0;
+            stringArrayCount = 0;
+
+            XmlNode boolParametersNode;
+            XmlNode longParametersNode;
+            XmlNode stringParametersNode;
+            XmlNode stringArrayParametersNode;
+
+            categoryNode = GetCategoryNode(action);
+
+            if (categoryNode == null) {
+                return true;
+            }
+
+            boolParametersNode = categoryNode.GetChild("BoolParameters");
+            if (boolParametersNode != null) {
+               boolCount = boolParametersNode.GetAttribute("length", 0);
+            }
+
+            longParametersNode = categoryNode.GetChild("LongParameters");
+            if (longParametersNode != null) {
+               longCount = longParametersNode.GetAttribute("length", 0);
+            }
+
+            stringParametersNode = categoryNode.GetChild("StringParameters");
+            if (stringParametersNode != null) {
+               stringCount = stringParametersNode.GetAttribute("length", 0);
+            }
+
+            stringArrayParametersNode = categoryNode.GetChild("StringArrayParameters");
+            if (stringArrayParametersNode != null) {
+               stringArrayCount = stringArrayParametersNode.GetAttribute("length", 0);
+            }
+
+            return true;
+
+        }
+
+        public int SetEndpoints(Process! process, string action)
+        {
+            // walk the XmlTree looking endpoints
+            // these will be used by the binder to setup and transfer to
+            // the starting process much like what is done for drivers
+
+            XmlNode categoryNode;
+            categoryNode = GetCategoryNode(action);
+
+            if (categoryNode == null) {
+#if DEBUG
+                DebugStub.WriteLine("::: no category");
+#endif
+                return 0;
+            }
+            XmlNode endpoints = categoryNode.GetChild("endpoints");
+            if (endpoints == null) {
+                return 0;
+            }
+            int endpointCount = endpoints.GetAttribute("length", 0);
+            if (endpointCount == 0) {
+                return 0;
+            }
+
+            // now allocate memory for ep set
+            process.SetEndpointCount(endpointCount);
+            //DebugStub.WriteLine("Setting endpoint count to {0}", __arglist(endpointCount));
+            return endpointCount;
+        }
+
+        public string Name
+        {
+            get {
+                return name;
+            }
+        }
+
+        public string Publisher
+        {
+            get {
+                return publisher;
+            }
+        }
+
+        public string Path
+        {
+            get {
+                return path;
+            }
+        }
+
+        public string[] Privileges
+        {
+            get {
+                return privileges;
+            }
+        }
+
+#if false
+        public override string! ToString()
+        {
+            StringBuilder sb = new StringBuilder();
+
+            sb.AppendFormat("<application name=\"{0}\">", Name);
+
+            // the main executable
+            sb.AppendFormat("<process main=\"true\" path=\"{0}\"/>", Path);
+
+            foreach (DataItem item in data.Values) {
+                if (item.Directory == null) {
+                    sb.AppendFormat("<data name=\"{0}\" value=\"{1}\"/>",
+                                    item.Name, item.Value);
+                }
+                else {
+                    sb.AppendFormat("<data namespace=\"{0}\" name=\"{1}\" value=\"{2}\"/>",
+                                    item.Directory, item.Name, item.Value);
+                }
+            }
+
+            sb.Append("</process>");
+            sb.Append("</application>");
+            sb.Append("<signature>");
+            sb.Append("</signature>");
+
+            return sb.ToString();
+        }
+
+        public byte[] Serialize()
+        {
+            return (new UTF8Encoding()).GetBytes(ToString());
+        }
+#endif
+    }
+}

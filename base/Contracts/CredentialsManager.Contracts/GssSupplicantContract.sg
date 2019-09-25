@@ -1,0 +1,154 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Contracts/CredentialsManager.Contracts/GssSupplicantContract.sg
+//
+//  Note:	Defines a contract for use with authentication protocols that 
+//			use the GSSAPI model for exchanging tokens between clients and
+//			servers.
+//
+
+using System;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Security
+{
+	///
+	//<summary>
+	//	<para>
+	//		This contract represents an active authentication session.  It is modeled after
+	//		the GSS API, which is a standard API for performing authentication exchanges.
+	//		(See RFC 2078.)  However, this contract models only the behavior of a supplicant
+	//		(a client who wishes to prove its identity), not that of an authenticator.
+	//	</para>
+//
+	//	<para>
+	//		This contract is analogous to an SSPI session in Win32.  See InitializeSecurityContext
+	//		and friends.
+	//	</para>
+	//	
+	//	<para>
+	//		In general, applications hold the import endpoint of this contract, while
+	//		implementations of authentication protocols, implemented in the Credentials
+	//		Manager Service, hold the export side.  The channel is bound using the
+	//		CreateSupplicant or CreateSupplicantForProtocol requests of the
+	//		CredentialsManagerContract.  Applications ferry opaque authentication tokens
+	//		between the local supplicant and the remote network service until both sides
+	//		decide that authentication has succeeded, or one side decides that authentication
+	//		has failed.  Applications should not interpret or modify the contents of the tokens.
+	//	</para>
+	//	
+	//	<para>
+	//		Authentication protocols vary in the number of messages sent, in which side sends
+	//		the first message, and in which side sends the last message.  This contract supports
+	//		all message patterns.  The supplicant sends the first message to the client application,
+	//		and that first message indicates whether the supplicant sends the first token,
+	//		(supplicant sends FirstToken to application), or expects the network service to send
+	//		the first token (supplicant sends NeedFirstToken).
+	//	</para>
+	//	
+	//	<para>
+	//		Currently, the only implementor of this contract is the NTLM authentication
+	//		protocol.  However, it is intended that SPNEGO, Kerberos, etc. will eventually
+	//		implement this contract as well.
+	//	</para>
+	//	
+	//	<para>
+	//		This contract should be expanded to allow applications to negotiate standard
+	//		GSS options, such as integrity / confidentiality services, etc.  For now,
+	//		it models only authentication (identification).
+	//	</para>
+	//</summary>
+	//
+	public contract GssSupplicantContract : ServiceContract
+	{
+		/// <summary>
+		/// If the supplicant sends this as the first message out of the Start state,
+		/// then the supplicant expects the remote network service to be the first to
+		/// send an authentication token.
+		/// </summary>
+		out message NeedFirstToken();
+		out message FirstToken(byte[]! in ExHeap token);
+		
+		override state Start : one
+		{
+			NeedFirstToken! -> WaitingForToken;
+			FirstToken! -> WaitingForToken;
+		}
+
+		state WaitingForToken : one
+		{
+			AcceptToken? -> ProcessingToken;
+		}
+
+		// The application sends this message to the supplicant when it has received
+		// an authentication token from the remote network service.  The supplicant
+		// will process the token, and will either decide that authentication has
+		// succeeded, or failed, or that another token must be sent to the network
+		// service (ContinueNeeded).
+		in message AcceptToken(byte[]! in ExHeap token);
+		
+		// The supplicant sends this message in response to AcceptToken when the
+		// supplicant needs to send a message to the remote network service.
+		// The application should send the message, using whatever network transport
+		// is appropriate.  Then the application should receive the next authentication
+		// token from the network service, and should forward the token to this
+		// supplicant.
+		out message ContinueNeeded(byte[]! in ExHeap token);
+		
+		// The supplicant sends this message in response to AcceptToken when the
+		// supplicant has processed the last message in the authentication exchange,
+		// and has decided that authentication has succeeded, and has a token it
+		// needs to transmit to the remote network service.  The application should
+		// transmit the token to the remote network service, and should consider
+		// authentication to be complete.
+		out message CompleteWithToken(byte[]! in ExHeap token);
+		
+		// The supplicant sends this message in response to AcceptToken when the
+		// supplicant has processed the last message in the authentication exchange,
+		// and has decided that authentication has succeeded, and there is no need
+		// to send another token to the remote network service.  The application
+		// should consider authentication to be complete.
+		out message Complete();
+		
+		// The supplicant sends this message in response to AcceptToken when the
+		// supplicant has decided that authentication has failed.
+		out message AuthenticationFailed(GssErrorCode error);
+		
+		state ProcessingToken : one
+		{
+			AuthenticationFailed! -> Failed;
+			ContinueNeeded! -> WaitingForToken;
+			Complete! -> Succeeded;
+			CompleteWithToken! -> Succeeded;
+		}
+		
+		state Succeeded : one
+		{
+		}
+		
+		state Failed : one
+		{
+		}
+		
+	}
+	
+	public enum GssErrorCode
+	{
+		None = 0,
+		
+		/// <summary>The server refused the request, for some unspecified reason.</summary>
+		ServerRefusedAuthentication,
+
+		InternalError,
+		
+		// Add more error codes here, as appropriate, once GSS support is fleshed out more.
+	}
+}

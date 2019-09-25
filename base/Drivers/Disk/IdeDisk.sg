@@ -1,0 +1,897 @@
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IdeDisk.cs
+//
+//  Base Classes and Interfaces for  ATA Disk devices
+//
+//  References used:
+//  "AT Attachment Interface with Extension (ATA-2)", Revision 4c, DRAFT
+//          09/03/97, ISO Working Group T13, http://www.t13.org/
+//
+
+// #define DEBUG_LBA48
+#define DEBUG_SHARED_IRQ
+
+using System;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using System.Runtime.CompilerServices;  //StructAlign attribute
+using System.Runtime.InteropServices;   //structLayout attribute
+using System.GCs;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Extending;
+
+using UserAllocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Drivers.IDE
+{
+    public enum IdeCmdType
+    {
+        Read  = 0,
+        Write = 1,
+    }
+
+    [CLSCompliant(false)]
+    public class IdeRequest
+    {
+        public const int SECTOR_SIZE = 512;
+
+        // [grp] make fields private and add properties??
+        // [grp] performance difference should optimize away
+        public ulong        SectorNumber;
+        //\ public byte* opt(ExHeap[]) Buffer;
+        public UIntPtr      BufferOffset;
+        /// <summary>Note: This is a pointer into a byte array in the ExHeap.</summary>
+        public byte *       BufferAddress;
+        public UIntPtr      BufferLength;
+        public UIntPtr      Length;
+        public IdeCmdType   Command;
+
+        public IdeRequest()
+        {
+        }
+
+        public void Set(ulong sector,
+                        byte* opt(ExHeap[])! buffer,
+                        UIntPtr bufferOffset,
+                        UIntPtr len,
+                        IdeCmdType command)
+        {
+            this.SectorNumber  = sector;
+            //\ this.Buffer        = buffer;
+            this.Length        = len;
+            this.Command       = command;
+            this.BufferOffset  = bufferOffset;
+
+            this.BufferLength  = (UIntPtr)buffer.Length;
+
+            unsafe { this.BufferAddress = (byte*) &buffer[0]; }
+        }
+    }
+
+
+#region IdeDisk
+    public class IdeDisk
+    {
+        public const int    MAX_LBA28_SECTOR_COUNT = 256;
+        public const int    MAX_LBA48_SECTOR_COUNT = 65536;
+        public const byte   IDE_MODE_SET_ULTRA_DMA = 0x40;   // page 176
+        public const byte   IDE_FEATURE_SET_TRANSFER_MODE  = 0x03;   // Set the transfer mode.
+
+        private string      deviceName;
+        private string      registeredName;   //with Directory
+        private string      strDevSel;
+        private byte        devsel;
+        private bool        atapi;
+        private IdentifyDeviceInformation ident;
+        private bool        present = false;
+        private IdeRequest  ideRequest;
+        private IdeConfig   ideConfigHandle;
+        private string      ideInstanceName;
+        private IdeDiskConfig ideDiskConfig;
+        private IdeController controller;
+        private int         maxSectorCount;   // [grp] camel case privates?
+        private byte        readCommand;
+        private byte        writeCommand;
+        private int         diskId;
+        private static int  diskIdGenerator = 0;
+        private static int  connectionCount = 0;
+
+        [CLSCompliant(false)]
+        private enum DiskIoEvent : ushort
+        {
+            Start = 0, // +1 if this is a write // [grp] Seems excessively economical - make explicit?
+            End   = 2, // +1 if this is a write
+            NewDiskName = 4,
+            NewDiskId = 5,
+        }
+
+        private class DiskConnectionState
+        {
+            public const int NoSystemId = 0xffff;   // Whole disk
+
+            private int   systemId;
+            private ulong startSector;
+            private ulong sectorCount;
+
+            public DiskConnectionState(int sysId, ulong start, ulong count)
+            {
+                this.systemId    = sysId;
+                this.startSector = start;
+                this.sectorCount = count;
+            }
+
+            public DiskConnectionState(ulong start, ulong count)
+            : this(NoSystemId, start, count)
+            {
+            }
+
+            public DiskAttributes DiskAttributes
+            {
+                get { return 0; }
+            }
+
+            public int SystemId
+            {
+                get { return this.systemId; }
+            }
+
+            public ulong StartSector
+            {
+                get { return this.startSector; }
+            }
+
+            public ulong SectorCount
+            {
+                get { return this.sectorCount; }
+            }
+        }
+
+        // TODO: need to set up connection to VolumeManager
+
+        // TODO: do we still need ideDiskConfig.DeviceName field,
+        // now that this driver no longer needs to know its public name?
+
+        public void Finalize()
+        {
+            Tracing.Log(Tracing.Debug," Ide Disk: Finalize");
+        }
+
+        public void Run([Claims] ExtensionContract.Exp!             extension,
+                        [Claims] ServiceProviderContract.Exp:Start! service,
+                        [Claims] VolumeManagerContract.Imp:Start!   volman)
+        {
+            //\ Tracing.Log(Tracing.Debug," Ide Disk: initialize\n");
+            this.ideRequest  = new IdeRequest();
+
+            if (!this.present) {
+                delete extension;
+                delete service;
+                delete volman;
+                return;
+            }
+
+            this.registeredName = this.ideDiskConfig.DeviceName;
+
+            Tracing.Log(Tracing.Debug,"found VolMgr, awaiting Success");
+            DebugStub.Print("Waiting for VolMgr to ack.\n");
+            switch receive {
+                case volman.Success():
+                    Tracing.Log(Tracing.Debug,"Should be in ready state");
+                    break;
+                case volman.ContractNotSupported():
+                    Tracing.Log(Tracing.Debug,"volman is not a volume manager");
+                    delete extension;
+                    delete service;
+                    delete volman;
+                    return;
+                case volman.ChannelClosed() :
+                    Tracing.Log(Tracing.Debug,"volman has closed channel");
+                    delete extension;
+                    delete service;
+                    delete volman;
+                    return;
+            }
+            DebugStub.Print("Connected to VolMgr.\n");
+
+            SetUdmaMode();
+
+            // copy disk name to SharedHeap
+            Tracing.Log(Tracing.Debug,"Registering disk {0}", this.registeredName);
+            assert volman.InState(VolumeManagerContract.Ready.Value);
+            if (!this.atapi) {
+                // Assume CD - ROM (ie., no MBR, partitions) if Atapi
+                volman.SendRegisterDisk(Bitter.FromString2(this.registeredName));
+            }
+
+            Tracing.Log(Tracing.Audit, "Starting diskMsgPump.");
+
+            extension.SendSuccess();
+
+            // create a set of all client endpoints connected to the device
+            EMap<DiskDeviceContract.Exp:Ready,DiskConnectionState!> clients =
+                new EMap<DiskDeviceContract.Exp:Ready,DiskConnectionState!>();
+
+            // These sets will only ever contain one thing, but they are here to
+            // save memory, since this avoids boxing these endpoints
+            // once per iteration.
+            ESet<ServiceProviderContract.Exp:Start> serviceproviders =
+                new ESet<ServiceProviderContract.Exp:Start>();
+            serviceproviders.Add(service);
+            ESet<VolumeManagerContract.Imp:RegisterAck> volumemanagers1 =
+                new ESet<VolumeManagerContract.Imp:RegisterAck>();
+            volumemanagers1.Add(volman);
+            ESet<VolumeManagerContract.Imp:Accept> volumemanagers2 =
+                new ESet<VolumeManagerContract.Imp:Accept>();
+            ESet<ExtensionContract.Exp:Ready> extensions =
+                new ESet<ExtensionContract.Exp:Ready>();
+            extensions.Add(extension);
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        // Listen for new connections
+                        case sp.Connect(candidate) in serviceproviders:
+                            DiskDeviceContract.Exp newClient = candidate as DiskDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                // switching to use lba48 numbers
+                                DiskConnectionState! conn = new DiskConnectionState(0, this.ident.MaxLBASectors);
+                                clients.Add(newClient, conn);
+                                sp.SendAckConnect();
+                            }
+                            else {
+                                sp.SendNackConnect(candidate);
+                            }
+                            serviceproviders.Add(sp);
+                            break;
+
+                        case sp.ChannelClosed() in serviceproviders:
+                            delete sp;
+                            break;
+
+                            // Listen for client departure
+                        case ep.ChannelClosed() in clients~>connState:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            //\ IdeDisk.DumpGCStats();
+                            break;
+
+                            // Listen for extension parent
+                        case ext.Shutdown() in extensions:
+                            ext.SendAckShutdown();
+                            delete ext;
+                            run = false;
+                            break;
+
+                        case ext.ChannelClosed() in extensions:
+                            delete ext;
+                            break;
+
+                            //Listen for messages on Volume Manager
+                        case vm.Connect(candidate, systemId, start, count) in volumemanagers2:
+                            DiskDeviceContract.Exp newClient = candidate as DiskDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                DiskConnectionState! conn = new DiskConnectionState(systemId, start, count);
+                                clients.Add(newClient,conn);
+                                vm.SendAckConnect();
+                            }
+                            else {
+                                vm.SendNakConnect(candidate);
+                            }
+                            volumemanagers2.Add(vm);
+                            break;
+
+                        case vm.ChannelClosed() in volumemanagers2:
+                            delete vm;
+                            break;
+
+                        case vm.AckRegisterDisk() in volumemanagers1:
+                            Tracing.Log(Tracing.Debug,"volman has accepted the disk");
+                            // transition vm into Accept state
+                            assert vm.InState(VolumeManagerContract.Accept.Value);
+                            volumemanagers2.Add(vm);
+                            break;
+
+                        case vm.NakRegisterDisk() in volumemanagers1:
+                            Tracing.Log(Tracing.Debug,"volman did not want to register our disk");
+                            delete vm;
+                            break;
+
+                        case vm.ChannelClosed() in volumemanagers1:
+                            Tracing.Log(Tracing.Debug,"volman has closed channel");
+                            delete vm;
+                            break;
+
+
+                            // Listen for client requests
+                        case ep.GetDeviceName()in clients~>connState:
+                            char[] in ExHeap blee = Bitter.FromString(GetDeviceName());
+                            ep.SendAckGetDeviceName(blee);
+                            clients.Add(ep,connState);
+                            break;
+
+                        case ep.GetDiskAttributes() in clients~>connState:
+                            ep.SendAckGetDiskAttributes(connState.DiskAttributes);
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.GetStartSector() in clients~>connState:
+                            ep.SendAckGetStartSector(connState.StartSector);
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.GetSectorCount() in clients~>connState:
+                            ep.SendAckGetSectorCount(connState.SectorCount);
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.GetSystemId() in clients~>connState:
+                            int systemId = connState.SystemId;
+                            if (systemId != DiskConnectionState.NoSystemId) {
+                                ep.SendSystemId((byte)systemId);
+                            }
+                            else {
+                                ep.SendNoSystemId();
+                            }
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.Write(data, offset, length, sectorId) in clients~>connState:
+
+                            if (data == null) {
+                                Tracing.Log(Tracing.Debug,"data buffer is null!!!\n");
+                                ep.SendNakWrite();
+                            }
+                            else if (this.atapi) { // assume CD - ROM
+                                Tracing.Log(Tracing.Debug,"can't write to atapi cdrom\n");
+                                delete data;
+                                ep.SendNakWrite();
+                            }
+                            else {
+                                //byte* addr;
+                                //unsafe { addr = (byte*) &data[0]; }
+
+                                Tracing.Log(Tracing.Debug,"write: sector={0} len={1}",sectorId,length);
+                                ReadWrite(true, data, offset, length, sectorId, connState);
+                                ep.SendAckWrite(data);
+                            }
+                            clients.Add(ep, connState);
+                            Tracing.Log(Tracing.Debug,"write: ends.");
+                            break;
+
+                        case ep.NoOp()in clients~>connState:
+                            //DebugStub.Break();
+                            ep.SendAckNoOp();
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.Read(data, offset, length, sectorId) in clients~>connState:
+                            if (data == null) {
+                                Tracing.Log(Tracing.Debug,"data buffer is null!!!\n");
+                                ep.SendNakRead();
+                            }
+                            else {
+                                //byte* addr;
+                                //unsafe { addr = (byte*) &data[0]; }
+
+                                Tracing.Log(Tracing.Debug,"read: sector={0} len={1}", sectorId, length);
+                                ReadWrite(false, data, offset, length, sectorId, connState);
+                                ep.SendAckRead(data);
+                            }
+
+                            clients.Add(ep, connState);
+                            Tracing.Log(Tracing.Debug,"read: ends.");
+                            break;
+
+                        case ep.ReadPerf(numMB, chunkSize) in clients~>connState:
+                        {
+                            long cycles;
+                            long ticks;
+                            ReadPerf(numMB, chunkSize, out cycles, out ticks, connState);
+                            ep.SendAckReadPerf(cycles, ticks);
+                            clients.Add(ep, connState);
+                            break;
+                        }
+
+                        // If all else fails....
+                        case clients.Empty() && serviceproviders.Empty() && volumemanagers1.Empty() && volumemanagers2.Empty() && extensions.Empty():
+                            Tracing.Log(Tracing.Debug, "Disk driver has no more connections");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                Tracing.Log(Tracing.Debug, "diskMsgPump exiting.");
+                clients.Dispose();
+                serviceproviders.Dispose();
+                extensions.Dispose();
+                volumemanagers1.Dispose();
+                volumemanagers2.Dispose();
+            }
+        }
+
+        [NotDelayed]
+        public IdeDisk(IdeDiskConfig! config, string! instanceName)
+        {
+            DebugStub.Print("IdeDisk: {0}\n", __arglist(instanceName));
+
+            this.ideDiskConfig = config;
+            this.ideInstanceName = instanceName;
+            this.ideConfigHandle = config.ControllerConfig;
+            this.controller = config.ControllerConfig.IdeController;
+            this.devsel = config.DiskNumber;
+            this.atapi = config.Atapi;
+
+            if (this.devsel == 0) {
+                this.strDevSel = "master";
+            }
+            else {
+                this.strDevSel = "slave";
+                this.devsel = ATA6.DriveSelect;
+            }
+
+            try {
+                this.ident = ATA6.GetDeviceIdentification(this.controller, this.devsel, this.atapi);
+            }
+            catch {
+                Tracing.Log(Tracing.Debug," GetDeviceIdentification failed!\n");
+                this.present = false;
+                return;
+            }
+
+            if (!this.ident.LBASupported) {
+                Tracing.Log(Tracing.Debug,"IdeDisk: Device ({0}) missing or does not support LBA.\n",
+                            this.controller.ControllerName);
+                DebugStub.WriteLine("IdeDisk: Device ({0}) missing or does not support LBA.\n",
+                                    __arglist(this.controller.ControllerName));
+                this.present = false;
+                this.deviceName = String.Format("IdeDisk: Device ({0}) {1} missing or not supported.\n",
+                                                this.strDevSel, this.controller.ControllerName);
+                return;
+            }
+
+            if (this.ident.LBA48Enabled) {
+                this.maxSectorCount = MAX_LBA48_SECTOR_COUNT;
+                this.readCommand  = (byte) ATA6.IdeCommand.ReadDmaExt;
+                this.writeCommand = (byte) ATA6.IdeCommand.WriteDmaExt;
+            }
+            else {
+                this.maxSectorCount = MAX_LBA28_SECTOR_COUNT;
+                this.readCommand  = (byte) ATA6.IdeCommand.ReadDmaRetry;
+                this.writeCommand = (byte) ATA6.IdeCommand.WriteDmaRetry;
+            }
+            this.present = true;
+            if (this.ident.ModelNumber == "Virtual HD" ||
+                this.ident.ModelNumber == "Virtual CD") {
+                this.ideDiskConfig.ControllerConfig.BusMasterDma.SetVirtualized();
+            }
+
+            this.deviceName = String.Format("IdeDisk {0} ser {1} {2} MB",
+                                            this.ident.ModelNumber,
+                                            this.ident.SerialNumber,
+                                            (this.ident.MaxLBASectors>>11));
+
+            this.diskId = ++IdeDisk.diskIdGenerator;
+
+            announceDrive();
+
+            Monitoring.Log(Monitoring.Provider.DiskIo,
+                           (ushort)DiskIoEvent.NewDiskName, instanceName);
+            Monitoring.Log(Monitoring.Provider.DiskIo,
+                           (ushort)DiskIoEvent.NewDiskId, 0,
+                           (uint)this.diskId, 0, 0, 0, 0);
+        }
+
+        private void dumpStatus(int start, int now)
+        {
+            byte        status;
+            status      = this.controller.ReadStatusPort();
+
+            // We timed out and the interrupt occurred.  This implies that we did
+            // not get scheduled in a timely way.  Note this and keep on going
+
+            if  (start + 1 == now) {
+                DebugStub.WriteLine("ideDisk: timeout; status={0:x},expected INT={1}, actual={2}",
+                                    __arglist(status, start+1, now));
+                DebugStub.WriteLine("ideDisk: timeout; status={0:x},expected INT={1}, actual={2}",
+                                    __arglist(status, start+1, now));
+                return;
+            }
+
+            byte control,  sectorCount;
+            ATA6.DebugQueryStatus(this.controller);
+            byte bmStatus = this.ideConfigHandle.BusMasterDma.GetStatus();
+            Tracing.Log(Tracing.Debug,"BusMaster status={0:x2}\n",(UIntPtr) bmStatus);
+            sectorCount = this.controller.ReadSectorCountPort();
+            Tracing.Log(Tracing.Debug," status={0:x} count={1:x}",(UIntPtr) status,(UIntPtr) sectorCount);
+            DebugStub.Break();
+        }
+
+        private void ShowOffsetAndCount()
+        {
+            byte lbaLow2  = 0;
+            byte lbaMid2  = 0;
+            byte lbaHigh2 = 0;
+
+            this.controller.WriteControlPort(0);
+            byte lbaLow =  this.controller.ReadLBALowPort();
+            byte lbaMid =  this.controller.ReadLBAMidPort();
+            byte lbaHigh = this.controller.ReadLBAHighPort();
+
+            if (this.ident.LBA48Enabled) {
+
+                // Write High Order Bit to Control Register
+                // so we can probe the "previous" elements of the LBA queue
+                this.controller.WriteControlPort(ATA6.DeviceControlHOB);
+                lbaLow2 =  this.controller.ReadLBALowPort();
+                this.controller.WriteControlPort(ATA6.DeviceControlHOB);
+                lbaMid2 =  this.controller.ReadLBAMidPort();
+                this.controller.WriteControlPort(ATA6.DeviceControlHOB);
+                lbaHigh2 = this.controller.ReadLBAHighPort();
+
+                DebugStub.WriteLine("LBA={0:x2},{1:x2},{2:x2}, {3:x2},{4:x2},{5:x2}",
+                                    __arglist(lbaHigh2,lbaMid2,lbaLow2,lbaHigh,lbaMid,lbaLow));
+            }
+        }
+
+        private void IssueOffsetAndCount(ulong SectorOffset,short sectorCount)
+        {
+            uint sectors = (uint) sectorCount;
+            if (sectorCount > this.maxSectorCount) {
+                throw new Exception("IDE Disk: too many sectors");
+            }
+            if (sectorCount == this.maxSectorCount) {
+                sectorCount = 0; // read all sectors
+            }
+
+            if (this.ident.LBA48Enabled) {
+                // 48 bit addresses are formed by pushing 2 sets of values into the
+                // LBA registers: See ATA-6 spec and beyond
+
+                this.controller.WriteSectorCountPort ((byte)((sectors >>  8) & 0xff));
+                this.controller.WriteLBALowPort ((byte)((SectorOffset >> 24) & 0xff));
+                this.controller.WriteLBAMidPort ((byte)((SectorOffset >> 32) & 0xff));
+                this.controller.WriteLBAHighPort((byte)((SectorOffset >> 40) & 0xff));
+
+                this.controller.WriteSectorCountPort ((byte)((sectors >>  0) & 0xff));
+                this.controller.WriteLBALowPort ((byte)((SectorOffset >>  0) & 0xff));
+                this.controller.WriteLBAMidPort ((byte)((SectorOffset >>  8) & 0xff));
+                this.controller.WriteLBAHighPort((byte)((SectorOffset >> 16) & 0xff));
+
+                this.controller.WriteDeviceHeadPort((byte)(this.devsel | 0x40 )); //use LBA
+            }
+            else {
+                this.controller.WriteSectorCountPort ((byte)((sectors >>  0) & 0xff));
+                this.controller.WriteLBALowPort ((byte)((SectorOffset >>  0) & 0xff));
+                this.controller.WriteLBAMidPort ((byte)((SectorOffset >>  8) & 0xff));
+                this.controller.WriteLBAHighPort((byte)((SectorOffset >> 16) & 0xff));
+                this.controller.WriteDeviceHeadPort((byte)(this.devsel | 0x40 | (byte)(SectorOffset >> 24)));   // [grp] Doesn't (SectorOffset >> 24) collide with devsel (0|1) if Non-Zero?
+            }
+#if DEBUG_LBA48
+            DebugStub.WriteLine("IDE offset={0}, count ={1}",__arglist(SectorOffset,sectors));
+            ShowOffsetAndCount();
+#endif
+            //Tracing.Log(Tracing.Debug," {0:x} sectorId={1}",(UIntPtr) this.controller.ReadFullStatus(),(UIntPtr)SectorOffset);
+
+        }
+
+        private int ReadPerf(int      numMB,
+                             int      chunkSize,
+                             out long cycles,
+                             out long ticks,
+                             DiskConnectionState! conn)
+        {
+            long endCycles;
+            long endClock;
+            long startCycles;
+            long startClock;
+
+            int sectors = numMB * 1024 * (1024 / IdeRequest.SECTOR_SIZE);
+            int sectorsPerChunk = chunkSize / IdeRequest.SECTOR_SIZE;
+
+            byte* opt(ExHeap[]) perfBuffer = new [ExHeap] byte[chunkSize];
+
+            try {
+                startCycles = ProcessService.GetCycleCount();
+                startClock  = ProcessService.GetUpTime().Ticks;
+
+                int i = 0;
+                while (i < sectors) {
+                    ReadWrite(false, perfBuffer, 0, (UIntPtr) chunkSize, (ulong)i, conn);
+                    i += sectorsPerChunk;
+                }
+
+                endCycles = ProcessService.GetCycleCount();
+                endClock  = ProcessService.GetUpTime().Ticks;
+            }
+            finally {
+                delete perfBuffer;
+            }
+
+            cycles = endCycles - startCycles;
+            ticks = endClock - startClock;
+
+            return 0;
+        }
+
+        private static ushort evt2ushort(DiskIoEvent evt, bool offset)
+        {
+            return (ushort)(((ushort)evt) + (offset? 1 : 0));
+        }
+
+        private int ReadWrite( bool doWrite,
+                               byte[]! in ExHeap  buffer,
+                               UIntPtr bufferOffset,
+                               UIntPtr length,
+                               ulong sector,
+                               DiskConnectionState! conn)
+        {
+            ushort temp;
+            ulong sectorId;
+            IdeCmdType ideCmdType;
+            byte controllerCommand;
+            uint dataStart;
+            uint bufferStart;
+
+            //if (true) return 0 ;   //use for testing overhead
+
+            // checks
+            unsafe {
+                bufferStart = (uint)&buffer[0];
+                dataStart =  bufferStart + (uint)bufferOffset;
+
+                if ((dataStart & 0x03) != 0) {
+                    DebugStub.Break();
+                    throw new Exception("IDE ReadWrite: Impermissible buffer (not 4-byte aligned)");
+                }
+            }
+
+            if ((int)length % IdeRequest.SECTOR_SIZE != 0) {
+                DebugStub.Break();
+                throw new Exception("IDE ReadWrite: Impermissible buffer (not in sector-size chunks)");
+            }
+
+            ulong numSectors = (ulong)length / IdeRequest.SECTOR_SIZE;
+
+            if (sector > conn.SectorCount) {
+                throw new Exception("IDE ReadWrite: Sector start out of Bounds.");
+            }
+
+            if ((sector + numSectors) > conn.SectorCount) {
+                throw new Exception("IDE ReadWrite: Sector operation out of Bounds.");
+            }
+
+            sectorId = sector + conn.StartSector;
+
+            if (sectorId >= this.ident.MaxLBASectors) {
+                throw new Exception("IDE ReadWrite: Sector out of Bounds.");
+            }
+
+            if ((length + bufferOffset) > (UIntPtr)buffer.Length) {
+                throw new Exception("IDE ReadWrite: length + offset exceeds array bounds");
+            }
+
+            if (length > (UIntPtr) (IdeRequest.SECTOR_SIZE * this.maxSectorCount)) {
+                throw new Exception("IDE ReadWrite: Length exceeds MAX_SECTORS");
+            }
+
+            // [grp] Reduce branch count w/ Interrupts Off (and total branch count as well).
+            if (doWrite) {
+                ideCmdType = IdeCmdType.Write;
+                controllerCommand = this.writeCommand;
+            }
+            else {
+                ideCmdType = IdeCmdType.Read;
+                controllerCommand = this.readCommand;
+            }
+
+            //Tracing.Log(Tracing.Debug,"pre cmds {0:x}",
+            //            (UIntPtr) this.controller.ReadFullStatus());
+
+            lock (this) {
+                if (!this.present) {
+                    DebugStub.Break();
+                    throw new Exception("IDE ReadWrite: Device Not Present");
+                }
+
+                //
+                // perform operation
+                //
+                this.ideRequest.Set((ulong)sectorId,buffer,bufferOffset, length, ideCmdType);
+
+                int startCount;
+                bool iflag = PrivilegedGate.DisableInterrupts();
+                try {
+                    unsafe {
+                        Monitoring.Log(Monitoring.Provider.DiskIo,
+                                       IdeDisk.evt2ushort(DiskIoEvent.Start, doWrite), 0,
+                                       (uint)sectorId, (uint)length, (uint)this.diskId,
+                                       (uint)this.ideRequest.BufferAddress, 0);
+                    }
+
+                    startCount = DeviceService.GetIrqCount((byte)this.ideConfigHandle.Interrupt.Irq);
+                    //Tracing.Log(Tracing.Debug,"pre cmd int={0}",(UIntPtr) startCount);
+                    this.controller.SetCommandPending(true);
+                    this.controller.SelectDevice(this.devsel, this.atapi); //set master or slave
+                    this.controller.PollDRDY(true);            //Wait for Device to indicate ready.
+
+                    this.ideConfigHandle.BusMasterDma.BmPrepareController(this.ideRequest); //setup PRD
+                    if (!this.atapi) {
+                        this.IssueOffsetAndCount(sectorId,(short) (length >> 9)); //setup LBA
+                        this.controller.WriteCommandPort(controllerCommand);
+                    }
+                    else {
+                        this.controller.WriteCommandPort((byte) ATA6.IdeCommand.AtapiPacket);
+
+                        this.controller.WriteFeaturesPort((byte) ATA6.Atapi.DMA);
+
+                        this.controller.WriteLBAHighPort ((byte)(length >> 8));
+                        this.controller.WriteLBAMidPort  ((byte)(length >> 0));
+
+                        // set-up the CDB (Command Descriptor Block)
+
+                        byte []cdb; cdb = new byte[10];
+
+                        cdb[0] = (byte)ATA6.Atapi.Read;
+                        cdb[1] = 0; // LUN
+
+                        cdb[2] = (byte)(sectorId >> 24);
+                        cdb[3] = (byte)(sectorId >> 16);
+                        cdb[4] = (byte)(sectorId >>  8);
+                        cdb[5] = (byte)(sectorId >>  0);
+
+                        cdb[6] = 0; // Reserved
+
+                        cdb[7] = (byte)(length >> (11 + 8));
+                        cdb[8] = (byte)(length >> (11 + 0));
+
+                        cdb[9] = 0; // Control
+
+                        for (int i = 0; i < 10; i += 2) {
+                            ushort x = cdb[i+1]; x <<= 8; x |= cdb[i];
+
+                            this.controller.WriteDataPort (x);
+                        }
+                        this.controller.WriteDataPort (0); // controller needs 12-byte cdb
+                    }
+
+                    // DMA protocol Check_Status State
+                    // After dma command has been issued the host must read the status register.
+                    // Before doing so it must wait 400ns.
+
+                    this.controller.Delay400ns();         // mandatory delay for controller commands
+
+                    //Tracing.Log(Tracing.Debug,"post cmds status={0:x}",
+                    //            (UIntPtr) this.controller.ReadFullStatus());
+
+                    this.controller.ReadFullStatus();
+                    this.ideConfigHandle.BusMasterDma.Arm(this.ideRequest);
+
+                    //\ ATA6.DebugQueryStatus(this.controller);
+
+                    int currentCount = DeviceService.GetIrqCount((byte)this.ideConfigHandle.Interrupt.Irq);
+                    Debug.Assert(currentCount == startCount);
+                }
+                finally {
+                    Tracing.Log(Tracing.Debug, "enabling interrupts for {0}",
+                                this.controller.ControllerNameInternal);
+                    PrivilegedGate.RestoreInterrupts(iflag);
+                }
+
+                bool success = false;
+                success = this.ideConfigHandle.CommandEndEvent.WaitOne(TimeSpan.FromMilliseconds(1000));
+                int c  = DeviceService.GetIrqCount((byte)this.ideConfigHandle.Interrupt.Irq);
+                Tracing.Log(Tracing.Debug,"post wait int={0}, expected={1}",(UIntPtr) c, (uint) (startCount +1) );
+#if DEBUG_SHARED_IRQ
+                Tracing.Log(Tracing.Debug,"read completes on {0}, numInterrupts={1}\n",
+                            this.controller.ControllerNameInternal,
+                            (UIntPtr) (c - startCount)
+                            );
+#endif //DEBUG_SHARED_IRQ
+
+                unsafe {
+                    Monitoring.Log(Monitoring.Provider.DiskIo,
+                                   IdeDisk.evt2ushort(DiskIoEvent.End, doWrite), 0,
+                                   (uint)sectorId, (uint)length, (uint)this.diskId,
+                                   (uint)this.ideRequest.BufferAddress, 0);
+                }
+
+                if (!success) {
+                    dumpStatus(startCount, c);
+                }
+                if ((c - startCount) != 1) {
+                    this.controller.CatchBug = true;
+                    this.controller.CatchCount =  (c-startCount);
+                    Tracing.Log(Tracing.Debug," ^^^^^^ TRYING To Catch COUNT={0} ^^^^",
+                                (UIntPtr) this.controller.CatchCount);
+                    //\ DebugStub.Break();
+                }
+                return 0;
+            }
+        }
+
+        private static void DumpGCStats()
+        {
+            int count;
+            long millis;
+            long bytes;
+            GC.PerformanceCounters(out count, out millis, out bytes);
+            DebugStub.WriteLine("Disk GC stats - count {0} millis {1} bytes {2}", __arglist(count, millis, bytes));
+        }
+
+        private ulong GetSectorCount()
+        {
+            if (!this.present) {
+                throw new Exception("IDE Disk: Device Not Present");
+            }
+            return this.ident.MaxLBASectors;
+        }
+
+        private String GetDeviceName()
+        {
+            if (!this.present) {
+                throw new Exception("IDE Disk: Device Not Present");
+            }
+
+            return this.deviceName;
+        }
+
+        private void SetUdmaMode()
+        {
+            if (atapi) {
+                return;
+            }
+            if (!ident.UltraDmaSupported) {
+                return;
+            }
+
+            this.controller.IssueSet(IdeSet.IDE_SET_MAX_UDMA, ref this.ident);
+            this.controller.IssueSet(IdeSet.IDE_SET_READ_AHEAD, ref this.ident);
+            // let's see what we get back once we have set it...
+            try {
+                this.ident = ATA6.GetDeviceIdentification(this.controller, this.devsel, this.atapi);
+            }
+            catch {
+                Tracing.Log(Tracing.Debug, " GetDeviceIdentification failed!\n");
+                this.present = false;
+                return;
+            }
+        }
+
+        private void announceDrive()    // [grp] was Parameterized, Why? (ref IdentifyDeviceInformation ident)
+        {
+            Tracing.Log(Tracing.Debug,"IdeDisk: id {0}, present={1}\n",
+                        this.deviceName,
+                        (UIntPtr) (this.present ? 1: 0));
+
+            DebugStub.WriteLine("  IdeDisk: id={0}", __arglist(this.deviceName));
+            DebugStub.WriteLine("  IdeDisk: {0}" ,__arglist(this.controller.ControllerName));
+            DebugStub.WriteLine("  IdeDisk: LBA48={0}, UDMA={1},MaxSectors={2}",
+                                __arglist(this.ident.LBA48Enabled,
+                                          this.ident.UltraDmaSupported ? this.ident.HighestUltraDmaMode : (byte)0,
+                                          this.ident.MaxLBASectors
+                                          ));
+#if false
+            for (ushort i = 8; i > 3; i--) {
+                if ((this.ident.MajorVersion & (1 << i)) > 0) {
+                    DebugStub.Print("Device supports ATA {0}\n",__arglist(i));
+                    break;
+                }
+            }
+#endif
+        }
+    }
+#endregion
+}

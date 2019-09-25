@@ -1,0 +1,31 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>BounceBackServer</AssemblyName>
+    <ApplicationCategory>Custom</ApplicationCategory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="CalculatorContract.sg" />
+    <Compile Include="BounceBackServer.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+   </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

@@ -1,0 +1,642 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   BPB.sg
+//
+//  Note:
+//
+//  Based on:
+//  "Microsoft Extensible Firmware Initiative FAT32 File System Specification",
+//  Version 1.03, December 6, 2000, Microsoft Corporation.
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <remarks>
+    /// Boot Sector and Bios Parameter Block structure.
+    /// </remarks>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal pointerfree struct BPB
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+        internal const int Length        = 36;
+        internal const int OemNameLength = 8;
+
+        internal const byte Byte510Value = 0x55;  // These are not strictly
+        internal const byte Byte511Value = 0xaa;  // part of BPB.
+
+        ///////////////////////////////////////////////////////////////////////
+        // Boot Sector fields
+
+        internal byte   JmpBoot0;                       //  0
+        internal byte   JmpBoot1;                       //  1
+        internal byte   JmpBoot2;                       //  2
+
+        private  byte   oemName0;                       //  3
+        private  byte   oemName1;                       //  4
+        private  byte   oemName2;                       //  5
+        private  byte   oemName3;                       //  6
+        private  byte   oemName4;                       //  7
+        private  byte   oemName5;                       //  8
+        private  byte   oemName6;                       //  9
+        private  byte   oemName7;                       // 10
+
+        private  ushort bytesPerSector;                 // 11..12
+        internal byte   SectorsPerCluster;              // 13
+        private  ushort reservedSectorCount;            // 14..15
+        internal byte   NumberOfFats;                   // 16
+        private  ushort rootEntryCount;                 // 17..18
+        private  ushort totalSectors16;                 // 19..20
+        internal byte   Media;                          // 21
+        private  ushort fatSize16;                      // 22..23
+        private  ushort sectorsPerTrack;                // 24..25
+        private  ushort numberOfHeads;                  // 26..27
+        private  uint   hiddenSectors;                  // 28..31
+        private  uint   totalSectors32;                 // 32..35
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal ushort BytesPerSector
+        {
+            get { return ByteOrder.LittleEndianToHost(bytesPerSector); }
+            set { bytesPerSector = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort ReservedSectorCount
+        {
+            get { return ByteOrder.LittleEndianToHost(reservedSectorCount); }
+            set { reservedSectorCount = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort RootEntryCount
+        {
+            get { return ByteOrder.LittleEndianToHost(rootEntryCount); }
+            set { rootEntryCount = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort TotalSectors16
+        {
+            get { return ByteOrder.LittleEndianToHost(totalSectors16); }
+            set { totalSectors16 = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort FatSize16
+        {
+            get { return ByteOrder.LittleEndianToHost(fatSize16); }
+            set { fatSize16 = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort SectorsPerTrack
+        {
+            get { return ByteOrder.LittleEndianToHost(sectorsPerTrack); }
+            set { sectorsPerTrack = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort NumberOfHeads
+        {
+            get { return ByteOrder.LittleEndianToHost(numberOfHeads); }
+            set { numberOfHeads = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal uint HiddenSectors
+        {
+            get { return ByteOrder.LittleEndianToHost(hiddenSectors); }
+            set { hiddenSectors = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal uint TotalSectors32
+        {
+            get { return ByteOrder.LittleEndianToHost(totalSectors32); }
+            set { totalSectors32 = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal string! OemName
+        {
+            get {
+                byte [] oemBytes = new byte [OemNameLength] {
+                    oemName0, oemName1, oemName2, oemName3,
+                    oemName4, oemName5, oemName6, oemName7
+                };
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                return (!) ascii.GetString(oemBytes);
+            }
+            set {
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                byte []! bytes = new byte [OemNameLength];
+
+                int done = ascii.GetBytes(value, 0, value.Length, bytes, 0);
+                for (int i = done; i < OemNameLength; i++) {
+                    bytes[i] = ' ';
+                }
+                oemName0 = bytes[0]; oemName1 = bytes[1];
+                oemName2 = bytes[2]; oemName3 = bytes[3];
+                oemName4 = bytes[4]; oemName5 = bytes[5];
+                oemName6 = bytes[6]; oemName7 = bytes[7];
+            }
+        }
+
+        internal static bool ValidateOverlay()
+        {
+            if (sizeof(BPB) != BPB.Length) {
+                DebugStub.Print("Bad BPB Length ({0} != {1})\n",
+                                __arglist(sizeof(BPB), BPB.Length));
+                return false;
+            }
+
+            byte []! bytes = new byte[BPB.Length];
+            ref BPB bpb = ref bytes[0];
+
+            bpb.RootEntryCount = 0xbeef;
+            if (bytes[17] != 0xef || bytes[18] != 0xbe) {
+                DebugStub.Print("Bad BPB test for RootEntryCount (0x{0:x2}{1:x2})\n",
+                                __arglist(bytes[17], bytes[18]));
+                return false;
+            }
+
+            bpb.TotalSectors32 = 0x32333435;
+            if (bytes[32] != 0x35 || bytes[33] != 0x34 ||
+                bytes[34] != 0x33 || bytes[35] != 0x32) {
+                DebugStub.Print("Bad BPB test for TotalSectors32 (0x{0:x2}{1:x2}{2:x2}{3:x2})\n", __arglist(bytes[32], bytes[33], bytes[34], bytes[35]));
+                return false;
+            }
+            return bpb.TotalSectors32 != 0;
+        }
+    }
+
+    /// <remarks>
+    /// FAT12 and FAT16 structure that immediately follows the BPB structure
+    /// in the Boot Sector (offset 36).
+    /// </remarks>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal pointerfree struct BPB1x
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        internal const int  Length                = 26;
+        internal const byte ExpectedBootSignature = 0x29;
+        private  const int  VolumeLabelLength     = 11;
+        private  const int  FileSystemTypeLength  = 8;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Fields
+
+        internal byte DriveNumber;                      //  0
+        internal byte Reserved1;                        //  1
+        internal byte BootSignature;                    //  2
+
+        private uint volumeId;                          //  3..6
+
+        // TODO: replace if/when arrays become
+        // valid in overlay.
+        private byte volumeLabel00;                     //  7
+        private byte volumeLabel01;                     //  8
+        private byte volumeLabel02;                     //  9
+        private byte volumeLabel03;                     // 10
+        private byte volumeLabel04;                     // 11
+        private byte volumeLabel05;                     // 12
+        private byte volumeLabel06;                     // 13
+        private byte volumeLabel07;                     // 14
+        private byte volumeLabel08;                     // 15
+        private byte volumeLabel09;                     // 16
+        private byte volumeLabel10;                     // 17
+
+        // TODO: replace if/when arrays become
+        // valid in overlay.
+        private byte fileSystemType0;                   // 18
+        private byte fileSystemType1;                   // 19
+        private byte fileSystemType2;                   // 20
+        private byte fileSystemType3;                   // 21
+        private byte fileSystemType4;                   // 22
+        private byte fileSystemType5;                   // 23
+        private byte fileSystemType6;                   // 24
+        private byte fileSystemType7;                   // 25
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal bool ValidSignature
+        {
+            get { return BootSignature == ExpectedBootSignature; }
+        }
+
+        internal uint VolumeId
+        {
+            get { return ByteOrder.LittleEndianToHost(volumeId); }
+            set { volumeId = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal string! VolumeLabel
+        {
+            get {
+                byte [] bytes = new byte [VolumeLabelLength] {
+                    volumeLabel00, volumeLabel01, volumeLabel02,
+                    volumeLabel03, volumeLabel04, volumeLabel05,
+                    volumeLabel06, volumeLabel07, volumeLabel08,
+                    volumeLabel09, volumeLabel10
+                };
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                return (!) ascii.GetString(bytes);
+            }
+            set {
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                byte []! bytes = new byte[VolumeLabelLength];
+                int done = ascii.GetBytes(value, 0, value.Length, bytes, 0);
+                for (int i = done; i < VolumeLabelLength; i++) {
+                    bytes[i] = ' ';
+                }
+                volumeLabel00 = bytes[0]; volumeLabel01 = bytes[1];
+                volumeLabel02 = bytes[2]; volumeLabel03 = bytes[3];
+                volumeLabel04 = bytes[4]; volumeLabel05 = bytes[5];
+                volumeLabel06 = bytes[6]; volumeLabel07 = bytes[7];
+                volumeLabel08 = bytes[8]; volumeLabel09 = bytes[9];
+                volumeLabel10 = bytes[10];
+            }
+        }
+
+        internal string! FileSystemType
+        {
+            get {
+                byte [] oemBytes = new byte [FileSystemTypeLength] {
+                    fileSystemType0, fileSystemType1, fileSystemType2,
+                    fileSystemType3, fileSystemType4, fileSystemType5,
+                    fileSystemType6, fileSystemType7
+                };
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                return (!) ascii.GetString(oemBytes);
+            }
+            set {
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                byte []! bytes = new byte [FileSystemTypeLength];
+
+                int done = ascii.GetBytes(value, 0, value.Length, bytes, 0);
+                for (int i = done; i < FileSystemTypeLength; i++) {
+                    bytes[i] = ' ';
+                }
+                fileSystemType0 = bytes[0]; fileSystemType1 = bytes[1];
+                fileSystemType2 = bytes[2]; fileSystemType3 = bytes[3];
+                fileSystemType4 = bytes[4]; fileSystemType5 = bytes[5];
+                fileSystemType6 = bytes[6]; fileSystemType7 = bytes[7];
+            }
+        }
+    }
+
+    /// <remarks>
+    /// FAT32 structure that immediately follows the BPB structure
+    /// in the Boot Sector (offset 36).
+    /// </remarks>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal pointerfree struct BPB32
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        internal const int  Length                = 54;
+        internal const byte ExpectedBootSignature = 0x29;
+        private  const int  VolumeLabelLength     = 11;
+        private  const int  FileSystemTypeLength  = 8;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Fields
+
+        private  uint   fatSize32;      // 0..3   - FAT size in sectors
+        private  ushort extFlags;       // 4..5   - Mirroring flags
+        private  ushort fsVersion;      // 6..7   - 0:0 or not mountable
+        private  uint   rootCluster;    // 8..11  - First cluster of root dir
+        private  ushort fsInfoSector;   // 12..13 - Primary pointer to FsInfo
+        private  ushort bootRecordCopy; // 14..15
+
+        // TODO: replace if/when arrays become
+        // valid in overlay.
+        internal byte   Reserved00;     // 16
+        internal byte   Reserved01;     // 17
+        internal byte   Reserved02;     // 18
+        internal byte   Reserved03;     // 19
+        internal byte   Reserved04;     // 20
+        internal byte   Reserved05;     // 21
+        internal byte   Reserved06;     // 22
+        internal byte   Reserved07;     // 23
+        internal byte   Reserved08;     // 24
+        internal byte   Reserved09;     // 25
+        internal byte   Reserved10;     // 26
+        internal byte   Reserved11;     // 27
+
+        // Fields equivalent to those in BPB1x
+        internal byte   DriveNumber;    // 28
+        internal byte   Reserved1;      // 29
+        internal byte   BootSignature;  // 30
+        private  uint   volumeId;       // 31..34
+
+        // TODO: replace if/when arrays become
+        // valid in overlay.
+        private byte volumeLabel00;     // 35
+        private byte volumeLabel01;     // 36
+        private byte volumeLabel02;     // 37
+        private byte volumeLabel03;     // 38
+        private byte volumeLabel04;     // 39
+        private byte volumeLabel05;     // 40
+        private byte volumeLabel06;     // 41
+        private byte volumeLabel07;     // 42
+        private byte volumeLabel08;     // 43
+        private byte volumeLabel09;     // 44
+        private byte volumeLabel10;     // 45
+
+        // TODO: replace if/when arrays become
+        // valid in overlay.
+        private byte fileSystemType0;   // 46
+        private byte fileSystemType1;   // 47
+        private byte fileSystemType2;   // 48
+        private byte fileSystemType3;   // 49
+        private byte fileSystemType4;   // 50
+        private byte fileSystemType5;   // 51
+        private byte fileSystemType6;   // 52
+        private byte fileSystemType7;   // 53
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal bool ValidSignature
+        {
+            get {
+                return (BootSignature == ExpectedBootSignature &&
+                        fsVersion == 0);
+            }
+        }
+
+        internal uint FatSize32
+        {
+            get { return ByteOrder.LittleEndianToHost(fatSize32); }
+            set { fatSize32 = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort ExtFlags
+        {
+            get { return ByteOrder.LittleEndianToHost(extFlags); }
+            set { extFlags = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort FsVersion
+        {
+            get { return ByteOrder.LittleEndianToHost(fsVersion); }
+            set { fsVersion = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal uint RootCluster
+        {
+            get { return ByteOrder.LittleEndianToHost(rootCluster); }
+            set { rootCluster = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort FsInfoSector
+        {
+            get { return ByteOrder.LittleEndianToHost(fsInfoSector); }
+            set { fsInfoSector = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal ushort BootRecordCopy
+        {
+            get { return ByteOrder.LittleEndianToHost(bootRecordCopy); }
+            set { bootRecordCopy = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal uint VolumeId
+        {
+            get { return ByteOrder.LittleEndianToHost(volumeId); }
+            set { volumeId = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal string! VolumeLabel
+        {
+            get {
+                byte [] bytes = new byte [VolumeLabelLength] {
+                    volumeLabel00, volumeLabel01, volumeLabel02,
+                    volumeLabel03, volumeLabel04, volumeLabel05,
+                    volumeLabel06, volumeLabel07, volumeLabel08,
+                    volumeLabel09, volumeLabel10
+                };
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                return (!) ascii.GetString(bytes);
+            }
+            set {
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                byte []! bytes = new byte[VolumeLabelLength];
+                int done = ascii.GetBytes(value, 0, value.Length, bytes, 0);
+                for (int i = done; i < VolumeLabelLength; i++) {
+                    bytes[i] = ' ';
+                }
+                volumeLabel00 = bytes[0]; volumeLabel01 = bytes[1];
+                volumeLabel02 = bytes[2]; volumeLabel03 = bytes[3];
+                volumeLabel04 = bytes[4]; volumeLabel05 = bytes[5];
+                volumeLabel06 = bytes[6]; volumeLabel07 = bytes[7];
+                volumeLabel08 = bytes[8]; volumeLabel09 = bytes[9];
+                volumeLabel10 = bytes[10];
+            }
+        }
+
+        internal string! FileSystemType
+        {
+            get {
+                byte [] oemBytes = new byte [FileSystemTypeLength] {
+                    fileSystemType0, fileSystemType1, fileSystemType2,
+                    fileSystemType3, fileSystemType4, fileSystemType5,
+                    fileSystemType6, fileSystemType7
+                };
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                return (!) ascii.GetString(oemBytes);
+            }
+            set {
+                ASCIIEncoding ascii = new ASCIIEncoding();
+                byte []! bytes = new byte [FileSystemTypeLength];
+
+                int done = ascii.GetBytes(value, 0, value.Length, bytes, 0);
+                for (int i = done; i < FileSystemTypeLength; i++) {
+                    bytes[i] = ' ';
+                }
+                fileSystemType0 = bytes[0]; fileSystemType1 = bytes[1];
+                fileSystemType2 = bytes[2]; fileSystemType3 = bytes[3];
+                fileSystemType4 = bytes[4]; fileSystemType5 = bytes[5];
+                fileSystemType6 = bytes[6]; fileSystemType7 = bytes[7];
+            }
+        }
+    }
+
+    internal class BpbException : System.Exception
+    {
+        internal BpbException(string message)
+            : base (message)
+        {
+        }
+    }
+
+    enum FatVersion : byte {
+        Fat12,
+        Fat16,
+        Fat32
+    };
+
+    internal class BpbSummary
+    {
+        internal readonly FatVersion Version;           // yes
+        internal readonly uint  BytesPerSector;         // yes
+        internal readonly uint  BytesPerCluster;        // yes
+        internal readonly uint  ClusterCount;           // yes
+        internal readonly uint  FirstFatSector;         // yes
+        internal readonly ulong FirstClusterSector;     // yes
+        internal readonly ulong FsInfoSector;           // yes
+        internal readonly uint  NumberOfFats;           // yes
+        internal readonly uint  ReservedSectors;        // yes
+        internal readonly uint  RootEntryCount;         // yes
+        internal readonly uint  RootDirectorySectors;   // yes
+        internal readonly uint  RootCluster;            // yes
+        internal readonly uint  SectorsPerFat;          // yes
+        internal readonly uint  SectorsPerCluster;      // yes
+        internal readonly uint  TotalSectors;           // yes
+
+        private static bool IsNonZeroPowerOfTwo(uint value)
+        {
+            return (value != 0) && ((value & (value - 1)) == 0);
+        }
+
+        internal BpbSummary(byte[]! in ExHeap sector0)
+        {
+            ref BPB   bpb   = ref sector0[0];
+            ref BPB1x bpb1x = ref sector0[BPB.Length];
+            ref BPB32 bpb32 = ref sector0[BPB.Length];
+
+            BytesPerSector = bpb.BytesPerSector;
+            if (!IsNonZeroPowerOfTwo(BytesPerSector) ||
+                BytesPerSector < 512 || BytesPerSector > 4096) {
+                throw new BpbException("Bad bytes per sector in BPB.");
+            }
+
+            if (sector0[510] != BPB.Byte510Value ||
+                sector0[511] != BPB.Byte511Value) {
+                throw new
+                    BpbException("Bad trailing signature in boot block.");
+            }
+
+            NumberOfFats = bpb.NumberOfFats;
+            if (NumberOfFats == 0) {
+                throw new BpbException("No FATs described in BPB.");
+            }
+
+            SectorsPerCluster = bpb.SectorsPerCluster;
+            if (!IsNonZeroPowerOfTwo(SectorsPerCluster)) {
+                throw new BpbException("Bad sectors per cluster value.");
+            }
+
+            ReservedSectors = bpb.ReservedSectorCount;
+            if (ReservedSectors == 0) {
+                throw new BpbException("Bad reserved sectors count.");
+            }
+
+            BytesPerCluster = BytesPerSector * SectorsPerCluster;
+            if (BytesPerCluster > 32768) {
+                throw new BpbException("Bad bytes per cluster value.");
+            }
+
+            if (bpb.FatSize16 != 0) {
+                // Looks like FAT12/16
+                if (bpb1x.ValidSignature == false) {
+                    throw new BpbException("Bad signature in Fat12/16 BPB.");
+                }
+                SectorsPerFat = bpb.FatSize16;
+
+                if (bpb.TotalSectors16 != 0) {
+                    TotalSectors = bpb.TotalSectors16;
+                }
+                else if (bpb.TotalSectors32 != 0) {
+                    TotalSectors = bpb.TotalSectors32;
+                }
+                else {
+                    throw new BpbException("Bad total sectors value in BPB.");
+                }
+            }
+            else {
+                // Looks like FAT32
+                if (bpb32.ValidSignature == false) {
+                    throw new BpbException("Bad signature in Fat32 BPB.");
+                }
+                if (bpb.TotalSectors16 != 0 ||
+                    bpb.FatSize16 != 0) {
+                    throw new BpbException(
+                        "Legacy fields set in BPB for Fat32."
+                        );
+                }
+                if (bpb32.FatSize32 == 0) {
+                    throw new BpbException("Bad FAT size in Fat32 BPB.");
+                }
+                SectorsPerFat = bpb32.FatSize32;
+                if (bpb.TotalSectors32 == 0) {
+                    throw new BpbException("Bad total sectors value in BPB.");
+                }
+                TotalSectors = bpb.TotalSectors32;
+            }
+
+            RootEntryCount = bpb.RootEntryCount;
+            RootDirectorySectors =
+                (RootEntryCount * 32 + BytesPerSector - 1) / BytesPerSector;
+
+            FirstClusterSector = (ulong)ReservedSectors +
+                NumberOfFats * SectorsPerFat + RootDirectorySectors;
+
+            FirstFatSector = ReservedSectors;
+
+            // Check First cluster sector < total sectors
+            if (FirstClusterSector > TotalSectors) {
+                throw new BpbException(
+                    "First cluster sector exceeds total sectors."
+                    );
+            }
+
+            ClusterCount =
+                (uint) (TotalSectors - FirstClusterSector) / SectorsPerCluster;
+
+            if (ClusterCount < 4085) {
+                Version      = FatVersion.Fat12;
+                FsInfoSector = 0;
+                RootCluster  = 0;
+            }
+            else if (ClusterCount < 65525 || bpb.FatSize16 != 0) {
+                // HACK!HACK!HACK!  The
+                // spec says the limit should be 65525, but the
+                // table on page for formatting disks up to 2GB
+                // gives a value that leads to 65527 (0xfff6)
+                // clusters.
+                if (ClusterCount > 65527) {
+                    throw new BpbException(
+                        "FAT16 partition with bad cluster count."
+                        );
+                }
+                Version      = FatVersion.Fat16;
+                FsInfoSector = 0;
+                RootCluster  = 0;
+            }
+            else if (ClusterCount < 0x0ffffff7) {
+                Version      = FatVersion.Fat32;
+                if (bpb32.FsInfoSector <= ReservedSectors) {
+                    FsInfoSector = bpb32.FsInfoSector;
+                }
+                else {
+                    FsInfoSector = 0;
+                }
+                RootCluster  = bpb32.RootCluster;
+            }
+            else {
+                throw new BpbException("Invalid cluster count.");
+            }
+        }
+    }
+}

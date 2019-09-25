@@ -1,0 +1,532 @@
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+
+//
+//
+//This class provides the run-time support for "try_all { ... }" blocks
+//(i.e. exception handlers with roll-back) and for "atomic { ... }"
+//blocks implemented over STM.
+//
+//Overview
+//--------
+//
+//Static methods on TryAllManager provide the entry points from compiled
+//code.  The per-thread TryAllManager objects that are passed in are
+//instantiated the first time a thread invokes startTryAll.
+//
+//NB : for most entry points there are variants that take a
+//TryAllManager and variants that look up the TryAllManager from the
+//current thread.  The former are used when
+//StageControlOptions.TryAllOptimisePass is enabled (intended to be the
+//default).  The latter are there for performance comparisons.
+//
+//Names in this file reflect the try_all origin of the code.  In
+//practice a try_all is simply an atomic block that (a) doesn't enlist
+//the objects that it works on and therefore can't fail with
+//AtomicIsInvalidException and, (b) doesn't catch
+//AtomicIsInvalidException and use that to prompt automatic
+//re-execution.
+//
+//The external entry points are as follows:
+//
+//- startTryAll  - start a new try_all / atomic
+//
+//- commit       - attempt to commit the current try_all / atomic
+//
+//- abort        - abort the current try_all / atomic
+//
+//- validate     - validate the current atomic
+//
+//- Enlist[X]for[Y] where X is in {Addr, Indirect, Obj} and Y is in {Read, Update}
+//              - Add the specified item to the set for read-only access or
+//                read-write access in the current atomic block.  "Obj"
+//                operations take an object reference.  "Addr" operations take
+//                the address of a static field.  "Indirect" operations take
+//                an arbitrary address and byte size.
+//
+//- Log*         - Log the current contents of the specified data before it
+//                may be updated.  Variants specify ref/val (whether the
+//                data being updated is a reference type or a value type)
+//                and heap/indirect (whether the data is identified by
+//                an object & offset (object == null for statics), or
+//                by a pointer).
+//
+//- RegisterForUndo - Register a call-back for execution during an
+//                abort.  See Shinnar et al's paper for a discussion
+//                of the semantics: currently the heap is rolled back
+//                to the point of registration, then the call-back
+//                executes, then roll-back continues.  If the
+//                call-back raises an exception then it itself is
+//                rolled back and the exception silently dropped.
+//
+//The caller must guarantee that:
+//
+//- commit / abort / validate / enlist* / log* are only invoked when there is
+// an active try_all or atomic.
+//
+//- before a data item is read, an enlist-for-read or enlist-for-update
+// has been issued that covers it (since the earliest active
+// startTryAll on that manager).
+//
+//- before a data item is updated, an enlist-for-update has been issued
+// that covers it (since the earliest active startTryAll on that
+// manager) and a log call has been made for the item (since the most
+// recent active startTryAllOnThatManager).
+//
+//- within an atomic block, a AtomicIsInvalidException will
+// propagate to the edge of an atomic block and cause abort to be
+// called.
+//
+//The roll-back code here is, of course, largely derived from the
+//try_all implementation.
+//
+
+
+// Verbose runtime tracing
+//#define ENABLE_LOG_TRACING
+
+// Verbose tracing during GC
+//#define ENABLE_GC_TRACING
+
+// Trace to an in-memory buffer, not stdout
+//#define BUFFER_LOG
+
+// Profile operation counts
+#define ENABLE_PROFILING
+
+// Profile individual call sites (needs /StageControl.
+//#define ENABLE_PER_CALL_SITE_PROFILING
+
+// Occasionally pretend atomic blocks are invalid
+//#define SHAKE
+
+// Use hashing to attempt to filter duplicate udpate log entries
+#define HASHING
+
+// Test EnlistForRead calls as EnlistForUpdate
+//#define ALWAYS_OPEN_FOR_UPDATE
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [RequiredByBartok]
+    public class AtomicException : Exception {}
+
+    //----------------------------------------------------------------------
+    //
+    // AtomicIsInvalidException is the sole way that invalidity is signalled:
+    // we assume that transactions generally execute and commit without conflict
+    // and so take a bigger hit on dealing with invalid exceptions in order to
+    // avoid testing against boolean results.
+    //
+    // Code must be prepared to deal with AtomicIsInvalidException being raised
+    // until the point where the status field is set to ChosenCommit.
+    //
+    // If building a non-blocking implementation we could throw
+    // AtomicIsInvalidException in asynchronously.
+
+    public sealed class AtomicIsInvalidException : AtomicException {}
+
+    // This Interface allows programs to define manual actions to be taken to
+    // recover during a tryall abort. See also TryAllManager.RegisterForUndo
+
+    public interface IUndo {
+        // Note that when Undo is called, accessible memory should be in the same
+        // state as it was when RegisterForUndo was called.
+        void Undo();
+    }
+
+    // A method marked as NoLoggingForUndo will not have logging code
+    // inserted even if called from a logging context
+    [AttributeUsage(AttributeTargets.Assembly | AttributeTargets.Class
+                    | AttributeTargets.Struct | AttributeTargets.Constructor
+                    | AttributeTargets.Method,
+                    Inherited = false)]
+    public sealed class NoLoggingForUndoAttribute: Attribute {}
+
+    // A method marked as NonTransactional may NOT be called from a
+    // transactional context.  This is statically checked by
+    // convert\PropagateLogging.cs
+    [AttributeUsage(AttributeTargets.Assembly | AttributeTargets.Class
+                    | AttributeTargets.Struct | AttributeTargets.Constructor
+                    | AttributeTargets.Method,
+                    Inherited = false)]
+    public sealed class NonTransactableAttribute: Attribute {}
+
+    //----------------------------------------------------------------------
+    //
+    // This is the main class that implements the runtime support for tryall
+    // clauses.  Just about all functions called from outside the class are
+    // static, and they just call the current thread's local version of the
+    // function.
+
+    //----------------------------------------------------------------------
+    //
+    // This is the main class that implements the runtime support for tryall
+    // clauses.  Just about all functions called from outside the class are
+    // static, and they just call the current thread's local version of the
+    // function.
+
+    [NoLoggingForUndo]
+    [CCtorIsRunDuringStartup]
+    [RequiredByBartok]
+    public sealed class TryAllManager {
+        //----------------------------------------------------------------------
+        //
+        // Start, validate, commit, abort, end
+        //
+        // These are expected to be called "start, validate*, commit"
+        // for transactions that attempt to commit, or "start, validate*,
+        // abort" for transactions that decide to abort.  Validation is
+        // performed in commit, so explicit calls are needed only to detect
+        // if a transaction is looping.  "end" is used internally in "commit"
+        // and "abort" so is not called explicitly.
+
+        public static void RegisterForUndo(IUndo ua);
+
+        [RequiredByBartok]
+        private static Object objForStaticEnlists;
+
+        [RequiredByBartok]
+        [NoLoggingForUndoAttribute]
+        internal static void StartTryAll(StackHeight stackHeight);
+
+        [RequiredByBartok]
+        [NoLoggingForUndoAttribute]
+        internal static void StartTryAll(StackHeight stackHeight,
+                                         TryAllManager m);
+
+        [RequiredByBartok]
+        [NoLoggingForUndoAttribute]
+        internal static void StartAtomic(StackHeight stackHeight);
+
+        [RequiredByBartok]
+        [NoLoggingForUndoAttribute]
+        internal static void StartAtomic(StackHeight stackHeight,
+                                         TryAllManager m);
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void CommitTryAll();
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void CommitTryAll(TryAllManager m);
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void CommitAtomic();
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void CommitAtomic(TryAllManager m);
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void AbortTryAll();
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void AbortTryAll(TryAllManager m);
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void AbortAtomic();
+
+        [RequiredByBartok]
+        [NoLoggingForUndo]
+        internal static void AbortAtomic(TryAllManager m);
+
+        [RequiredByBartok]
+        [NoLoggingForUndoAttribute]
+        internal static void ValidateEnlistments();
+
+        [RequiredByBartok]
+        [NoLoggingForUndoAttribute]
+        internal static void ValidateEnlistments(TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnsureLogMemoryForUpdateLog(uint bytesNeeded);
+
+        [RequiredByBartok]
+        internal static void EnsureLogMemoryForUpdateLog(uint bytesNeeded,
+                                                         TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnsureLogMemoryForReadEnlistmentLog(uint bytesNeeded);
+
+        [RequiredByBartok]
+        internal static void EnsureLogMemoryForReadEnlistmentLog(uint bytesNeeded,
+                                                                 TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnsureLogMemoryForUpdateEnlistmentLog(uint bytesNeeded);
+
+        [RequiredByBartok]
+        internal static void EnsureLogMemoryForUpdateEnlistmentLog(uint bytesNeeded,
+                                                                   TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForRead(Object obj);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForReadFast(Object obj);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForRead(Object obj,
+                                              TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForReadFast(Object obj,
+                                                  TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForRead(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForReadFast(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForRead(UIntPtr pobj,
+                                               TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForReadFast(UIntPtr pobj,
+                                                   TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForRead(UIntPtr ptr,
+                                                   UIntPtr byteSize);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForReadFast(UIntPtr ptr,
+                                                       UIntPtr byteSize);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForRead(UIntPtr ptr,
+                                                   UIntPtr byteSize,
+                                                   TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForReadFast(UIntPtr ptr,
+                                                       UIntPtr byteSize,
+                                                       TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForUpdate(Object obj);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForUpdateFast(Object obj);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForUpdate(Object obj,
+                                                TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistObjForUpdateFast(Object obj,
+                                                    TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistNewObjForUpdate(Object obj);
+
+        [RequiredByBartok]
+        internal static void EnlistNewObjForUpdateFast(Object obj);
+
+        [RequiredByBartok]
+        internal static void EnlistNewObjForUpdate(Object obj,
+                                                   TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistNewObjForUpdateFast(Object obj,
+                                                       TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForUpdate(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForUpdateFast(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForUpdate(UIntPtr pobj,
+                                                 TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistAddrForUpdateFast(UIntPtr pobj,
+                                                     TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForUpdate(UIntPtr ptr,
+                                                     UIntPtr byteSize);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForUpdateFast(UIntPtr ptr,
+                                                         UIntPtr byteSize);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForUpdate(UIntPtr ptr,
+                                                     UIntPtr byteSize,
+                                                     TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void EnlistIndirectForUpdateFast(UIntPtr ptr,
+                                                         UIntPtr byteSize,
+                                                         TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogValHeapMultiple(Object obj,
+                                                UIntPtr off,
+                                                UIntPtr size);
+
+        [RequiredByBartok]
+        internal static void LogValHeapMultipleFast(Object obj,
+                                                    UIntPtr off,
+                                                    UIntPtr size);
+
+        [RequiredByBartok]
+        internal static void LogValHeapMultiple(Object obj,
+                                                UIntPtr off,
+                                                UIntPtr size,
+                                                TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogValHeapMultipleFast(Object obj,
+                                                    UIntPtr off,
+                                                    UIntPtr size,
+                                                    TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogValHeap(Object obj,
+                                        UIntPtr off);
+
+        [RequiredByBartok]
+        internal static void LogValHeapFast(Object obj,
+                                            UIntPtr off);
+
+        [RequiredByBartok]
+        internal static void LogValHeap(Object obj,
+                                        UIntPtr off,
+                                        TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogValHeapFast(Object obj,
+                                            UIntPtr off,
+                                            TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogValStatic(UIntPtr addr);
+
+        [RequiredByBartok]
+        internal static void LogValStaticFast(UIntPtr addr);
+
+        [RequiredByBartok]
+        internal static void LogValStatic(UIntPtr addr,
+                                          TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogValStaticFast(UIntPtr addr,
+                                              TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogRefHeap(Object obj,
+                                        UIntPtr off);
+
+        [RequiredByBartok]
+        internal static void LogRefStatic(UIntPtr addr);
+
+        [RequiredByBartok]
+        internal static void LogRefHeapFast(Object obj,
+                                            UIntPtr off);
+
+        [RequiredByBartok]
+        internal static void LogRefStaticFast(UIntPtr addr);
+
+        [RequiredByBartok]
+        internal static void LogRefHeap(Object obj,
+                                        UIntPtr off,
+                                        TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogRefStatic(UIntPtr addr,
+                                          TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogRefHeapFast(Object obj,
+                                            UIntPtr off,
+                                            TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogRefStaticFast(UIntPtr addr,
+                                              TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogIndirectRef(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void LogIndirectRefFast(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void LogIndirectRef(UIntPtr pobj,
+                                            TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogIndirectRefFast(UIntPtr pobj,
+                                                TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogIndirectValMultiple(UIntPtr pobj,
+                                                    UIntPtr size);
+
+        [RequiredByBartok]
+        internal static void LogIndirectValMultipleFast(UIntPtr pobj,
+                                                        UIntPtr size);
+
+        [RequiredByBartok]
+        internal static void LogIndirectValMultiple(UIntPtr pobj,
+                                                    UIntPtr size,
+                                                    TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogIndirectValMultipleFast(UIntPtr pobj,
+                                                        UIntPtr size,
+                                                        TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogIndirectVal(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void LogIndirectValFast(UIntPtr pobj);
+
+        [RequiredByBartok]
+        internal static void LogIndirectVal(UIntPtr pobj,
+                                            TryAllManager m);
+
+        [RequiredByBartok]
+        internal static void LogIndirectValFast(UIntPtr pobj,
+                                                TryAllManager m);
+
+        //----------------------------------------------------------------------
+
+        public static bool InTryAll {
+            get;
+        }
+
+        //----------------------------------------------------------------------
+        //
+        // Per-call-site profiling.
+        //
+        // If /TryAllPerCallSiteProfiling is enabled then Bartok will generate calls
+        // to UnsafeSetCallSite just before each Enlist* or Log* instruction.  This
+        // call supplies an integer value that uniquely identifies the call sit.
+        //
+        // The Enlist* and Log* operations are responsible for calling CountAsLogged
+        // if they write to the log.
+        //
+        // The counting is best effort because a single shared call site ID
+        // is kept at runtime and shared count arrays are used.  This code is
+        // intended for single-threaded use when developing optimizations to
+        // reduce the calls made onto Enlist* and Log* functions.
+
+        [RequiredByBartok]
+        public static void UnsafeSetCallSite(int i);
+    }
+}

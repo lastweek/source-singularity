@@ -1,0 +1,40 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>RMAPITest</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <NoNullChecks>true</NoNullChecks>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="RMAPI.cs"/>
+    <Compile Include="TestProcessCreation.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Diagnostics.Contracts\Diagnostics.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Xml\Xml.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Manifest\Manifest.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

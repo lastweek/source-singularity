@@ -1,0 +1,16 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+using System.Runtime.CompilerServices;
+namespace System.Reflection
+{
+
+    //| <include file='doc\Assembly.uex' path='docs/doc[@for="Assembly"]/*' />
+    [RequiredByBartok]
+    public class Assembly
+    {
+    }
+}
+

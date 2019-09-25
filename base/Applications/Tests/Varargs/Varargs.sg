@@ -1,0 +1,103 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Test __arglist parameters
+//
+using System;
+using System.Text;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class Varargs
+    {
+        public static int Main(String[]! args)
+        {
+            string name = "VarArgs";
+            int len = 1; 
+            int code = Printf("Invoked command with name '%s' and %d arguments", __arglist(name, len));
+            Console.WriteLine("Varargs exiting.");
+            return code;
+        }
+
+        public static int Printf(string! fmt, __arglist) {
+            return Decode(fmt, __arglist);
+        }
+
+        public static int Decode(string! fmt, RuntimeArgumentHandle art) {
+
+            StringBuilder sb = new StringBuilder();
+            ArgIterator ai = new ArgIterator(art);
+
+            int length = fmt.Length;
+            for (int index = 0; index < length; index++) {
+
+                char c = fmt[index];
+
+                if (c == '%') {
+                    index++;
+                    if (index < length) {
+                        c = fmt[index];
+                        switch (c) {
+                        case '%':
+                            sb.Append('%');
+                            break;
+                        case 's':
+                            if (ai.GetRemainingCount() > 0) {
+                                TypedReference tr = ai.GetNextArg();
+                                Type t = __reftype(tr);
+                                if (t == typeof(string)) {
+                                    string s = __refvalue(tr, string);
+                                    sb.Append(s);
+                                }
+                                else {
+                                    Console.WriteLine("Invalid argument for %s: {0}", t.ToString());
+                                    return 1;
+                                }
+                            }
+                            else {
+                                Console.WriteLine("Insufficient number of arguments for %s");
+                                return 1;
+                            }
+                            break;
+
+                        case 'd':
+                            if (ai.GetRemainingCount() > 0) {
+                                TypedReference tr = ai.GetNextArg();
+                                Type t = __reftype(tr);
+                                if (t == typeof(int)) {
+                                    int i = __refvalue(tr, int);
+                                    sb.Append(i.ToString());
+                                }
+                                else {
+                                    Console.WriteLine("Invalid argument for %i: {0}", t.ToString());
+                                    return 1;
+                                }
+                            }
+                            else {
+                                Console.WriteLine("Insufficient number of arguments for %i");
+                                return 1;
+                            }
+                            break;
+
+                        default:
+                            Console.WriteLine("Unknown format directive %{0}", c);
+                            return 1;
+                        }
+                    }
+                    else {
+                        Console.WriteLine("Error in format: end of string after %");
+                        return -1;
+                    }
+                }
+                else {
+                    sb.Append(c);
+                }
+            }
+            Console.WriteLine(sb.ToString());
+            return 0;
+        }
+    }
+}

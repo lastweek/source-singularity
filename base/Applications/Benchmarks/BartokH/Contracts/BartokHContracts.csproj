@@ -1,0 +1,15 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Bartok.Contracts</AssemblyName>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="CompilerPhaseContract.sg" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>

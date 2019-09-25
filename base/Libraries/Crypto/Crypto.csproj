@@ -1,0 +1,45 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\Crypto\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>Crypto</AssemblyName>
+    <OutputType>Library</OutputType>
+    <Language>C#</Language>
+    <AssemblyEnvironment>none</AssemblyEnvironment>
+    <WarningLevel>2</WarningLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <!-- # already part of kernel.exe and corlib.dll   MD5.cs -->
+    <Compile Include="Random.cs" />
+    <Compile Include="Rsa\Digit.cs" />
+    <Compile Include="Rsa\Digit2.cs" />
+    <Compile Include="Rsa\Digits.cs" />
+    <Compile Include="Rsa\Modular.cs" />
+    <Compile Include="Rsa\Modulus.cs" />
+    <Compile Include="Rsa\Prime.cs" />
+    <Compile Include="Rsa\RSA.cs" />
+    <Compile Include="Des.cs" />
+    <Compile Include="MD4.cs" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>

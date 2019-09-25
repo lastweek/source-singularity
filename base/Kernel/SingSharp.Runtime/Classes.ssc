@@ -1,0 +1,49 @@
+using System;
+using System.Collections;
+
+namespace Microsoft.Contracts {
+  /// <summary>
+  /// Indicates that all derived classes must override this virtual method since the implementation of the method depends on the runtime type of the "this" object
+  /// to be the same as the declaring type of the method.
+  /// </summary>
+  [AttributeUsage(AttributeTargets.Method)]
+  public sealed class MustOverrideAttribute : Attribute {
+  }
+}
+
+//---------------------------------------------------------------------------
+//SingSharp Library
+//---------------------------------------------------------------------------
+
+
+namespace Microsoft.SingSharp {
+  /// <summary>
+  /// Used as a reference point to the runtime library from code
+  /// </summary>
+  public sealed class RuntimeLibraryHook{
+    private RuntimeLibraryHook(){}
+  }
+  
+  
+  [AttributeUsage(AttributeTargets.Assembly, AllowMultiple=true)]
+  public sealed class PostCompilationPluginAttribute : Attribute{
+    private Type pluginType;
+    
+    public PostCompilationPluginAttribute(){      
+    }
+    
+    public PostCompilationPluginAttribute(Type pluginType){
+      this.pluginType = pluginType;
+    }
+    
+    public Type PluginType{
+      get{
+        return this.pluginType;
+      }
+      set{
+        this.pluginType = value;
+      }
+    }
+  }
+  
+}

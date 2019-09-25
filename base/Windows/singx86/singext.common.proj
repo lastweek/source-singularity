@@ -1,0 +1,161 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+
+  <PropertyGroup>
+    <TargetName>$(AssemblyName)</TargetName>
+    <TargetExt>.dll</TargetExt>
+    <PrecompiledHeaderFile>singx86.h</PrecompiledHeaderFile>
+    <ModuleDefinitionFile>singx86.def</ModuleDefinitionFile>
+  </PropertyGroup>
+  
+  <ItemGroup>
+
+    <ResourceScript Include="singx86.rc"/>
+    
+    <Source Include="apic.cpp"/>
+    <Source Include="bytev.cpp"/>
+    <Source Include="charv.cpp"/>
+    <Source Include="crashdump.cpp"/>
+    <Source Include="diagnose.cpp"/>
+    <Source Include="diagdump.cpp"/>
+    <Source Include="GCLog.cpp"/>
+    <Source Include="help.cpp"/>
+    <Source Include="ioapic.cpp"/>
+    <Source Include="log.cpp"/>
+    <Source Include="object.cpp"/>
+    <Source Include="procs.cpp"/>
+    <Source Include="sample.cpp">
+      <CompilerFlags>/Y-</CompilerFlags>
+    </Source>
+    <Source Include="singx86.cpp"/>
+    <Source Include="sips.cpp"/>
+    <Source Include="stack.cpp"/>
+    <Source Include="structs.cpp"/>
+    <Source Include="thread.cpp"/>
+    <Source Include="threads.cpp"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Libraries Include="$(WINDOWS_SDK_PATH)\kernel32.lib"/>
+    <Libraries Include="$(WINDOWS_SDK_PATH)\libcmt.lib"/>
+    <Libraries Include="$(WINDOWS_SDK_PATH)\dbgeng.lib"/>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <RC>rc.exe</RC>
+    <TargetDir>$(WINDOWSDIR)</TargetDir>
+    <ObjDir>$(WINDOWSDIR)\obj\$(Machine)\$(TargetName)</ObjDir>
+    <ObjPdbPath>$(ObjDir)\vc80.pdb</ObjPdbPath>
+    <TargetPath>$(TargetDir)\$(TargetName)$(TargetExt)</TargetPath>
+    <TargetPdbPath>$(TargetDir)\$(TargetName).pdb</TargetPdbPath>
+    <CFLAGS>$(CFLAGS) /DWIN32 /DNT /Oi- /Zi /I$(SINGULARITY_ROOT)\Windows\inc /D_CRT_SECURE_NO_DEPRECATE</CFLAGS>
+    <RCFLAGS></RCFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PrecompiledHeaderFile)'!=''">
+    <PrecompiledHeaderDatabase>$(ObjDir)\precomp.pch</PrecompiledHeaderDatabase>
+    <PrecompiledSourceFile>$(ObjDir)\precomp.cpp</PrecompiledSourceFile>
+    <PrecompiledObjPath>$(ObjDir)\precomp.obj</PrecompiledObjPath>
+  </PropertyGroup>
+
+  <Target Name="Build"
+          DependsOnTargets="Link"/>
+
+  <Target Name="CreateDirs" DependsOnTargets="CheckRequirements">
+    <MakeDir Directories="
+             $(TargetDir);
+             $(ObjDir);
+             "/>
+  </Target>
+
+  <Target Name="CheckRequirements">
+    <Error Condition="'$(TARGET_LINK)'==''" Text="The TARGET_LINK property is required, but no value is set."/>
+    <Error Condition="'$(TARGET_CC)'==''" Text="The TARGET_CC property is required, but no value is set."/>
+    <Error Condition="'$(TargetArchitecture)'!='$(Machine)'" Text="The target architecture '$(TargetArchitecture)' does not match the current build environment settings, because Machine='$(Machine)'."/>
+  </Target>
+
+  <Target Name="CompileSources"
+          Inputs="
+          @(Source);
+          diag.h;
+          singx86.h;
+          $(PrecompiledHeaderDatabase);
+          $(MSBuildProjectFullPath);
+          "
+          Outputs="$(ObjDir)\%(Source.filename).obj"
+          DependsOnTargets="CreateDirs;PrecompileHeaders">
+    <Exec Command="$(TARGET_CC) $(CFLAGS) /c /Yu$(PrecompiledHeaderFile) /Fp$(PrecompiledHeaderDatabase) /Fd$(ObjPdbPath) /Fo$(ObjDir)\%(Source.filename).obj %(Source.CompilerFlags) %(Source.identity)"/>
+  </Target>
+
+  <Target Name="CompileResourceScripts"
+          Inputs="%(ResourceScript.identity)"
+          Outputs="$(ObjDir)\%(ResourceScript.filename).res"
+          >
+    
+    <Exec Command="$(RC) $(RCFLAGS) /fo$(ObjDir)\%(ResourceScript.filename).res %(ResourceScript.identity)"/>
+  </Target>
+
+  <Target Name="PrecompileHeaders"
+          DependsOnTargets="CreateDirs"
+          Inputs="singx86.h;res.inl;diag.h"
+          Outputs="$(PrecompiledHeaderDatabase)"
+          Condition="'$(PrecompiledHeaderFile)'!=''"
+          >
+    <WriteLinesToFile Lines='#include "$(PrecompiledHeaderFile)"'
+                      File="$(PrecompiledSourceFile)"
+                      Overwrite="true"/>
+    <Exec Command="$(TARGET_CC) $(CFLAGS) /c /I. /Yc$(PrecompiledHeaderFile) /Fp$(PrecompiledHeaderDatabase) /Fd$(ObjPdbPath) /Fo$(PrecompiledObjPath) $(PrecompiledSourceFile)"/>
+    
+  </Target>
+
+  <Target Name="Link"
+          Inputs="
+            @(Source->'$(ObjDir)\%(filename).obj');
+            @(ResourceScript->'$(ObjDir)\%(filename).res');
+            $(ModuleDefinitionFile);
+          "
+          Outputs="$(TargetPath)"
+          DependsOnTargets="CreateDirs;CompileSources;CompileResourceScripts">
+    <Exec Command="$(TARGET_LINK) /nologo /dll /machine:$(MACHINE) /nod /fixed:no /DEBUG /out:$(TargetPath) /pdb:$(TargetPdbPath) /def:singx86.def /incremental:no @(Source->'$(ObjDir)\%(filename).obj',' ') @(ResourceScript->'$(ObjDir)\%(filename).res',' ') @(Libraries,' ')"/>
+  </Target>
+
+  <Target Name="Install"
+          DependsOnTargets="Build;CheckOut;CopyToInstallDir"/>
+
+  <Target Name="CopyToInstallDir"
+          DependsOnTargets="Build">
+    <Copy SourceFiles="$(TargetPath);$(TargetPdbPath)" DestinationFolder="$(SINGULARITY_ROOT)\build"/>
+  </Target>
+
+  <Target Name="CheckOut">
+    <Exec Command="sd edit $(TargetName)$(TargetExt) $(TargetName).pdb" WorkingDirectory="$(SINGULARITY_ROOT)\build"/>
+  </Target>
+    
+  
+
+  <Target Name="Clean">
+    <Delete Files="
+            $(ObjPdbPath);
+            $(TargetPdbPath);
+            $(TargetPath);
+            $(PrecompiledHeaderDatabase);
+            $(PrecompiledSourceFile);
+            $(PrecompiledObjPath);
+            $(ObjDir)\%(Source.filename).obj;
+            $(ObjDir)\%(ResourceScript.filename).res;
+            $(TargetDir)\$(TargetName).exp;
+            $(TargetDir)\$(TargetName).lib;
+            "/>
+    
+  </Target>
+
+</Project>

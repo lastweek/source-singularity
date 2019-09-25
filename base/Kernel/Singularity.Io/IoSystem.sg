@@ -1,0 +1,2020 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IoSystem.sg
+//
+//  Note:
+//
+
+//#define DEBUG_DISPATCH_IO
+//#define VERBOSE
+
+// This will be removed as I complete testing on the SIP based nameserver
+#define TYAN_MOTHERBOARD_HACK
+
+using System;
+using System.Collections;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Text;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.Hal;
+using Microsoft.Singularity.Loader;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Io
+{
+    internal sealed class VerboseOut
+    {
+        [System.Diagnostics.Conditional("VERBOSE")]
+        internal static void WriteLine(string format, __arglist)
+        {
+            DebugStub.WriteLine(format, new ArgIterator(__arglist));
+        }
+
+        [System.Diagnostics.Conditional("VERBOSE")]
+        internal static void WriteLine(string message)
+        {
+            DebugStub.WriteLine(message);
+        }
+
+        [System.Diagnostics.Conditional("VERBOSE")]
+        internal static void Write(string format, __arglist)
+        {
+            DebugStub.Write(format, new ArgIterator(__arglist));
+        }
+
+        [System.Diagnostics.Conditional("VERBOSE")]
+        internal static void Write(string message)
+        {
+            DebugStub.Write(message);
+        }
+    }
+
+    [CLSCompliant(false)]
+    public delegate IDevice! IoDeviceCreate(IoConfig! config,
+                                            String! instanceName);
+
+    internal class ExtensionDevice
+    {
+        // endpoint tags:
+        public const string EndpointSetXmlTag = "endpoints";
+        public const string ServiceEndpointXmlTag = "serviceProvider";
+        public const string ExtensionEndpointXmlTag = "extension";
+        public const string GenericEndpointXmlTag = "endpoint";
+        public const string ContractXmlAttribute = "contractName";
+        public const string EndpointEndXmlAttribute = "endpointEnd";
+        public const string IndexXmlAttribute = "id";
+
+        private readonly Driver!        driver;
+        private readonly DeviceNode!    device;
+        private String                  instance;
+        private Process                 process;
+        private TRef<ExtensionContract.Imp:Ready> channel;
+
+        // invariant driver.imagePath != null;
+
+        public ExtensionDevice(Driver! driver, DeviceNode! device)
+            requires driver.imagePath != null;
+        {
+            VerboseOut.WriteLine("  ExtensionDevice({0})", __arglist(driver.name));
+
+            this.driver = driver;
+            this.device = device;
+            this.instance = null;
+            base();
+        }
+
+        public void Finalize()
+        {
+            VerboseOut.WriteLine("Finalizing {0} (channel = {1})",
+                                 __arglist(driver.name, channel != null));
+            if (channel == null) {
+                return;
+            }
+
+            ExtensionContract.Imp imp = channel.Acquire();
+            VerboseOut.WriteLine("Requesting shutdown...");
+
+            imp.SendShutdown();
+            switch receive {
+                case imp.RecvAckShutdown():
+                    Tracing.Log(Tracing.Audit, "Driver shutdown!");
+                    break;
+                case imp.RecvNakShutdown():
+                    Tracing.Log(Tracing.Audit, "Driver won't shutdown!");
+                    break;
+                case unsatisfiable:
+                    Tracing.Log(Tracing.Audit, "Child aborted!");
+                    break;
+                case timeout(TimeSpan.FromSeconds(5)):
+                    DebugStub.Break();
+                    break;
+            }
+            delete imp;
+            VerboseOut.WriteLine("done");
+
+            channel = null;
+        }
+
+        // Activate a device driver
+        // NB: this method assumes that the device has already been checked, and
+        // its dependencies are all satisfied/satisfiable
+        public bool Activate()
+        {
+            VerboseOut.WriteLine("IoSystem.Activate executing\n");
+            // Update the /hardware namespace
+            if (driver.directoryRoot == null || device.directoryRoot == null) {
+                // The /hardware tree is incomplete for this device
+                DebugStub.Break();
+                return false;
+            }
+
+            // Create an instance name for this driver
+            for (int i = 0;; i++) {
+                string inst = driver.directoryRoot + "/instance" + i;
+                if (DirectoryService.FindDirectory(inst, false) == null) {
+                    instance = inst;
+                    break;
+                }
+            }
+
+            // Create the child process.
+            Manifest manifest;
+
+            // from invariant
+            assume driver.imagePath != null;
+
+            IoMemory memory = Binder.LoadImage(Process.KernelProcess,
+                                               driver.imagePath,
+                                               out manifest);
+            if (null == memory && manifest == null) {
+                DebugStub.Break();
+                return false;
+            }
+
+            // The instance argument in the
+            // process arguments gets replaced by the service
+            // endpoint path if present in the manifest before
+            // we call process.Start().  This is a little ugly,
+            // but some services need to be able to pass their
+            // endpoint name to other services (e.g. disk driver
+            // to volume manager).
+            string [] processArgs = new String[] {
+                driver.imagePath,
+                "-instance",
+                instance,           // Value overwritten below (do not reorder)
+                "-signature",
+                device.MatchingDeviceId,
+                "-class",
+                driver.configClass
+            };
+
+            process = new Process(Process.KernelProcess, memory, null,
+                                  processArgs, manifest);
+            if (null == process) {
+                return false;
+            }
+
+            //
+            //  Allow device drivers to enable / disable interrupts.
+            //  This should however be further restricted only to the drivers
+            //  that need this. This should be added to the manifest somehow.
+            //
+
+            process.SetPrivileges(new ProcessPrivileges(
+                                    ProcessPrivileges.Operations.DisableInterrupts));
+
+            process.IoConfig = device.config;
+
+            // the order here is a little bit funny; we need to create the
+            // endpoints before we start the driver.  We must also build the
+            // pieces of the /hardware tree that store the real endpoints.
+            // However, we cannot create the public names (i.e. those in the
+            // /dev namespace) until after the driver is started.
+
+            // TODO: If the activation fails, there is no rollback,
+            // and so we'll end up with a polluted namespace
+
+            // since we can't create the public names until after driver
+            // activation, we need a place to store the string names as we
+            // generate them
+
+            SortedList publicServiceProviderNames = new SortedList();
+
+            // do the accounting, NS bindings, and endpoint creation:
+
+            // get the image node and device node, create the instance node
+            DirNode devImageNode = DirectoryService.FindDirectory(
+                driver.directoryRoot + "/image", false);
+            DirNode driverNode = DirectoryService.FindDirectory(instance, true);
+            DirNode! deviceNode = (!)DirectoryService.FindDirectory(
+                device.directoryRoot, false);
+
+            VerboseOut.WriteLine("DriverName: {0}", __arglist(driver.directoryRoot));
+            VerboseOut.WriteLine("DeviceName: {0}", __arglist(device.directoryRoot));
+
+            // build the symlinks:
+            DirectoryService.CreateSymbolicLink(driverNode, "device", device.directoryRoot);
+            DirectoryService.CreateSymbolicLink(deviceNode, "driver", instance);
+            if (devImageNode != null) {
+                DirectoryService.CreateSymbolicLink(driverNode, "image",
+                                               driver.directoryRoot);
+            }
+
+            // Now create and link all of the ServiceProvider endpoints
+            // that this driver provides:
+            XmlNode! endpoints
+                = (!)driver.metadata.GetChild(EndpointSetXmlTag);
+
+            // TODO: this will not work correctly if there
+            // are non-endpoint declarations in the <endpoints> set
+            int endpointCount = endpoints.GetAttribute("length", 0);
+            process.SetEndpointCount(endpointCount);
+
+            int extensionIndex = -1; // we only support one extension
+            // Make all endpoints
+            foreach (XmlNode! endpoint in endpoints.Children) {
+                string! contract = (!)endpoint.GetAttribute(
+                    ContractXmlAttribute, "");
+                bool created = false;
+
+                int index = endpoint.GetAttribute(IndexXmlAttribute, -1);
+
+                if (endpoint.Name == ExtensionEndpointXmlTag &&
+                    extensionIndex == -1) {
+                    extensionIndex = index;
+                    created = true;
+                }
+                else if (endpoint.Name == ServiceEndpointXmlTag) {
+                    // create the /hardware name (private name)
+                    string privateName = instance + "/endpoint" + index;
+
+                    string! publicName;
+
+                    // now tell the ResourceTracker to connect this private
+                    // name and use the policy to create a public name
+                    Binder.SetEndpoint(process, index,
+                                       Binder.BindServiceProvider(
+                                           contract, privateName,
+                                           out created, out publicName));
+
+                    VerboseOut.WriteLine("privateName: {0}", __arglist(privateName));
+                    VerboseOut.WriteLine("publicName : {0}", __arglist(publicName));
+                    processArgs[2] = privateName;
+
+                    publicServiceProviderNames.Add(privateName, publicName);
+                }
+                else if (endpoint.Name == GenericEndpointXmlTag) {
+                    // get a pre-bound generic endpoint to a service from the
+                    // resource tracker
+                    created = Binder.BindServiceUser(process, index, contract, endpoint);
+                }
+                else {
+                    DebugStub.WriteLine("Invalid tag {0} in Metadata",
+                                        __arglist(endpoint.Name));
+                    DebugStub.Break();
+                }
+
+                // TODO: how should we handle errors?  Can we do
+                // a roll-back?
+                if (!created) {
+                    DebugStub.Break();
+                    // we might have dangling endpoints and a polluted
+                    // /hardware namespace
+                    return false;
+                }
+            }
+            if (extensionIndex == -1) {
+                DebugStub.WriteLine("Driver is missing extension endpoint.");
+                DebugStub.Break();
+            }
+
+            // Add all endpoints that we created.
+            VerboseOut.WriteLine("Activate Device {0} {1} [{2}]",
+                                 __arglist(device.location, driver.name, instance));
+
+            ExtensionContract.Imp! imp;
+            ExtensionContract.Exp! exp;
+            ExtensionContract.NewChannel(out imp, out exp);
+
+            Binder.SetEndpoint(process, extensionIndex, exp);
+            process.Start();
+
+            Tracing.Log(Tracing.Audit, "Waiting for driver {0:x8} to init.",
+                        Kernel.AddressOf(process));
+
+            bool success = false;
+            switch receive {
+                case imp.RecvSuccess():
+                    Tracing.Log(Tracing.Audit, "Driver initialized!");
+                    success = true;
+                    break;
+                case unsatisfiable:
+                    Tracing.Log(Tracing.Audit, "Driver failed to initialize!");
+                    break;
+            }
+
+            if (success) {
+                channel = new TRef<ExtensionContract.Imp:Ready>(imp);
+            }
+            else {
+                delete imp;
+            }
+
+            // update the public namespace
+            foreach (DictionaryEntry de in publicServiceProviderNames) {
+                string! privateName = (!)(de.Key as string);
+                string! publicName = (!)(de.Value as string);
+                DebugStub.WriteLine("{0} symlink {1}", __arglist(privateName, publicName));
+                Binder.CreatePublicSymlink(publicName, privateName);
+            }
+            DebugStub.WriteLine("Driver Initialized\n");
+            return true;
+        }
+    }
+
+    // Driver encapsulates known device drivers.
+    internal class Driver
+    {
+        // Instance fields:
+        /// <summary>
+        /// Friendly name used in debugging.
+        /// This comes from the Name property of the System.Type instance.
+        /// </summary>
+        public readonly String! name;
+
+        /// <summary>
+        /// The PNP device ID (hardware, model, class, etc.) that this device driver definition binds to.
+        /// </summary>
+        public readonly String! pnpSignature;
+
+        /// <summary>
+        /// The PNP config class defined in metadata (class with SignatureAttribute).
+        /// </summary>
+        public readonly String! configClass;
+
+        /// <summary>
+        /// root node in directory.
+        /// </summary>
+        public readonly String! directoryRoot;
+
+        /// <summary>
+        /// The XML metadata for this driver.  -XXX- Which element?
+        /// </summary>
+        public readonly XmlNode! metadata;
+
+        /// <summary>
+        /// Creation delegate for internal (in-kernel) drivers.
+        /// </summary>
+        public readonly IoDeviceCreate factory;
+
+        /// <summary>
+        /// The binary / image path for the executable.
+        /// This field is only non-null for process drivers (not in-kernel drivers).
+        /// </summary>
+        public readonly String imagePath;
+
+        public override string! ToString()
+        {
+            if (factory != null) {
+                return "<kernel driver '" + this.name + "'>";
+            }
+            if (imagePath != null) {
+                return "<process driver '" + this.name + "' image=" + this.imagePath + "'>";
+            }
+            return "<hal driver '" + this.name + "'>";
+        }
+
+        /// <summary>
+        /// The number of instances of this device driver.
+        /// </summary>
+        private int instanceCount;
+
+        // Static fields:
+
+        /// <summary>
+        /// Key: string! PNP device ID
+        /// Value: Driver! driver
+        ///
+        /// List of registered drivers.  A given driver can be in this list more than once,
+        /// if that driver can match more than one device ID.
+        /// </summary>
+        private static SortedList DriversTable;
+
+        // Constructor for external drivers.
+        private Driver(String! name,
+                       String! pnpSignature,
+                       String! configClass,
+                       String! directoryRoot,
+                       String! imagePath,
+                       XmlNode! metadata)
+        {
+            this.name = name;
+            this.pnpSignature = pnpSignature;
+            this.configClass = configClass;
+            this.directoryRoot = directoryRoot;
+            this.metadata = metadata;
+            this.imagePath = imagePath;
+            this.factory = null;
+            base();
+        }
+
+        // Constructor for internal drivers.
+        private Driver(String! pnpSignature,
+                       String! configClass,
+                       String! directoryRoot,
+                       Type! type,
+                       IoDeviceCreate! factory,
+                       XmlNode! metadata)
+        {
+            this.name = (!)type.Name;
+            this.pnpSignature = pnpSignature;
+            this.configClass = configClass;
+            this.directoryRoot = directoryRoot;
+            this.metadata = metadata;
+            this.imagePath = null;
+            this.factory = factory;
+            base();
+        }
+
+        // Constructor for HAL drivers.
+        private Driver(String! pnpSignature,
+                       String! configClass,
+                       String! directoryRoot,
+                       Type! type,
+                       XmlNode! metadata)
+        {
+            this.name = (!)type.Name;
+            this.pnpSignature = pnpSignature;
+            this.configClass = configClass;
+            this.directoryRoot = directoryRoot;
+            this.metadata = metadata;
+            this.imagePath = null;
+            this.factory = null;
+            base();
+        }
+
+        // Generic helper function for driver registration.
+        private static void Add(Driver! driver)
+        {
+            if (DriversTable == null) {
+                DriversTable = new SortedList();
+            }
+
+            string canonical_device_id = GetCanonicalDeviceId(driver.pnpSignature);
+
+            Driver existingDriver = (Driver)DriversTable[canonical_device_id];
+            if (existingDriver != null) {
+                DebugStub.WriteLine("WARNING: Two drivers match the same PNP signature!");
+                DebugStub.WriteLine("    PNP signature:    {0}", __arglist(canonical_device_id));
+                DebugStub.WriteLine("    Existing driver:  {0}", __arglist(existingDriver.imagePath));
+                DebugStub.WriteLine("    Second driver:    {0}", __arglist(driver.imagePath));
+                DebugStub.WriteLine("  The second driver will be IGNORED.");
+                return;
+            }
+
+            DriversTable.Add(canonical_device_id, driver);
+            VerboseOut.WriteLine("Adding driver map:   device id {0,-25} -> {1}",
+                                 __arglist(driver.pnpSignature, driver.ToString()));
+        }
+
+        static Driver FindDriverByDeviceId(string! deviceId)
+        {
+            if (DriversTable == null) {
+                return null;
+            }
+
+            deviceId = GetCanonicalDeviceId(deviceId);
+            Driver driver = (Driver)DriversTable[deviceId];
+            return driver;
+        }
+
+        static string! GetCanonicalDeviceId(string! id)
+        {
+            return id.ToLower();
+        }
+
+        // Register an external driver.
+        public static Driver! Register(String! name,
+                                       String! pnpSignature,
+                                       String! configClass,
+                                       String! directoryRoot,
+                                       String! imagePath,
+                                       XmlNode! metadata)
+        {
+            Driver! driver
+                = new Driver(name, pnpSignature, configClass, directoryRoot, imagePath, metadata);
+            Add(driver);
+            return driver;
+        }
+
+        // Register an internal driver.
+        public static Driver! Register(String! pnpSignature,
+                                       String! configClass,
+                                       String! directoryRoot,
+                                       Type! type,
+                                       IoDeviceCreate! factory,
+                                       XmlNode! metadata)
+        {
+            Driver! driver
+                = new Driver(pnpSignature, configClass, directoryRoot, type, factory, metadata);
+            Add(driver);
+            return driver;
+        }
+
+        // Register a HAL driver.
+        public static Driver! Register(String! pnpSignature,
+                                       String! configClass,
+                                       String! directoryRoot,
+                                       Type! type,
+                                       XmlNode! metadata)
+        {
+            Driver! driver
+                = new Driver(pnpSignature, configClass, directoryRoot, type, metadata);
+            Add(driver);
+            return driver;
+
+}
+        // Searches a list of PNP signatures for the best driver (closest match).
+        public static Driver FindBest(string[]! deviceIds, out string! matchingDeviceId)
+        {
+            VerboseOut.WriteLine("Driver.FindBest: checking these signatures: {0}",
+                                 __arglist(String.Join(", ", deviceIds)));
+
+            foreach (string deviceId in deviceIds) {
+                assert deviceId != null;
+                VerboseOut.WriteLine("  Checking signature: {0}", __arglist(deviceId));
+
+                Driver driver = FindBest(deviceId);
+                if (driver != null) {
+                    VerboseOut.WriteLine("  Found match: {0}", __arglist(driver));
+                    matchingDeviceId = deviceId;
+                    return driver;
+                }
+            }
+
+            matchingDeviceId = "";
+            return null;
+        }
+
+        // Find the best driver for this PNP signature via prefix match.
+        public static Driver FindBest(string! deviceId)
+        {
+            Driver driver = FindDriverByDeviceId(deviceId);
+            return driver;
+        }
+
+        // Dump the list of know drivers.
+        public static void DumpAll()
+        {
+            if (DriversTable == null) {
+                return;
+            }
+#if false
+            DebugStub.WriteLine("Drivers:");
+            foreach (Driver driver in DriversTable.Values) {
+                if (driver == null) {
+                    continue;
+                }
+                DebugStub.WriteLine(" {0}", __arglist(driver));
+            }
+#endif
+
+            DebugStub.WriteLine("Device ID mappings:");
+            foreach (DictionaryEntry entry in DriversTable) {
+                string! deviceId = (string)entry.Key;
+                Driver! driver = (!)(Driver)entry.Value;
+                DebugStub.WriteLine(" {0} -> {1}", __arglist(deviceId, driver.name));
+            }
+
+            DebugStub.WriteLine("");
+
+            Tracing.Log(Tracing.Audit, "Drivers:");
+            foreach (Driver driver in DriversTable.Values) {
+                if (driver == null) {
+                    continue;
+                }
+                Tracing.Log(Tracing.Audit, "{0}:{1}", driver.pnpSignature, driver.name);
+            }
+        }
+    }
+
+    // DeviceNodes are the single mechanism for initializing device drivers.
+    // DeviceNodes will never be fully populated, but once certain fields are
+    // populated correctly, the DeviceNode can move into a new list, signifying
+    // that it has moved into a new state of execution
+    internal class DeviceNode
+    {
+        public readonly String!     location;       // location on a bus
+
+        // This is the hardware ID (PNP signature) that we actually matched when
+        // locating a device driver.  This value is null if we have not associated
+        // a function driver.
+        public string MatchingDeviceId;
+        public string MatchingClassName;
+
+        public readonly IoConfig!   config;         // Io resource container
+
+        public Driver               driver;         // associated device driver
+        public ExtensionDevice      extdev;         // external device.
+        public IDevice              intdev;         // internal device.
+        public String               directoryRoot;  // in the /Hardware namespace
+        public int                  startOrder;     // > zero when activated
+
+        public static int           lastStartOrder;
+
+        public DeviceNode(String! location, String! matchingDeviceId, IoConfig! config)
+        {
+            this.location = location;
+            this.MatchingDeviceId = matchingDeviceId;
+            this.config = config;
+            this.startOrder = -1;
+            base();
+        }
+
+        public override string! ToString()
+        {
+            if (MatchingDeviceId != null) {
+                return "[Device: location='" + this.location + "' MatchingDeviceId='" + this.MatchingDeviceId + "']";
+            }
+            else {
+                return "[Device: location='" + this.location + " (not associated)]";
+            }
+        }
+    }
+
+
+    [CLSCompliant(false)]
+    public class IoSystem
+    {
+        //
+        // consts for accessing Xml tags and attributes
+        //
+
+        // tags describing the IoSystem config xml tree
+        public const string DriverRegistrationXmlTag = "driver";
+        public const string DriverNameXmlAttribute = "name";
+        public const string DeviceSignatureXmlAttribute = "signature";
+        public const string DriverPathXmlAttribute = "path";
+        public const string DriverClassXmlAttribute = "class";
+
+        // endpoint tags:
+        public const string EndpointSetXmlTag = "endpoints";
+        public const string ServiceEndpointXmlTag = "serviceProvider";
+        public const string ExtensionEndpointXmlTag = "extension";
+        public const string GenericEndpointXmlTag = "endpoint";
+        public const string ContractXmlAttribute = "contractName";
+        public const string EndpointEndXmlAttribute = "endpointEnd";
+
+        // Io resource tags
+        public const string FixedHardwareSetXmlTag = "fixedHardware";
+        public const string DynamicHardwareSetXmlTag = "dynamicHardware";
+        public const string PortRangeXmlTag = "ioPortRange";
+        public const string DmaRangeXmlTag = "ioDmaRange";
+        public const string IrqRangeXmlTag = "ioIrqRange";
+        public const string MemoryRangeXmlTag = "ioMemoryRange";
+        public const string AddressBitsXmlAttribute = "addressBits";
+        public const string AlignmentXmlAttribute = "alignment";
+        public const string BaseAddressXmlAttribute = "baseAddress";
+        public const string RangeLengthXmlAttribute = "rangeLength";
+        public const string ReadableXmlAttribute = "allowRead";
+        public const string WritableXmlAttribute = "allowWrite";
+        public const string SharedXmlAttribute = "shared";
+        public const string IndexXmlAttribute = "id";
+
+        // follows/provides tags
+        public const string FollowsXmlTag = "follows";
+        public const string ProvidesXmlTag = "provides";
+        public const string FollowsNameXmlAttribute = "name";
+
+        // xml config for the IoSystem
+        private static XmlNode!     config;
+
+        // a device instance consists (full signature, Dynamic IoConfig,
+        // location) and is created only during device enumeration.
+        private static SortedList!  instances;
+
+        // when a device instance is matched to a driver, we have an
+        // association.  This is an activatable object, if its dependencies
+        // are met.
+        private static SortedList!  associations;
+
+        // an instance that is successfully paired with a driver becomes
+        // an activatable entity.  Upon activation, it moves into this list.
+        private static SortedList!  activations;
+
+        // the entire "follows" tracking can be handled with one SortedList
+        private static SortedList!  followsList;
+
+        // to speed up LoadImage we need to cache a ref to the directory service root
+        // this is initialized in InitializeDirectoryService and used in FindFileImage
+        // and FindManifest
+        //Is this needed?  I don't see it used anywhere, and binder has its own
+        //private cached copy.
+        private static TRef<DirectoryServiceContract.Imp:Start> nsRootRef;
+
+        // In order to have unified accounting even for devices who do not have
+        // a Pnp signature (such as the hal console), we need a private,
+        // concrete IoConfig object
+        private class FixedIoConfig : IoConfig
+        {
+            public FixedIoConfig (string[] ids)
+            {
+                this.Ids = ids;
+                this.DynamicRanges = new IoRange[0];
+                this.FixedRanges = new IoRange[0];
+            }
+
+            public override string ToPrint()
+            {
+                return String.Join(",", this.Ids);
+            }
+        }
+
+        private static void StartProcess(string! name,
+                                         string! executable)
+        {
+            Process process = null;
+            Manifest manifest;
+
+            IoMemory memory = Binder.LoadImage(Thread.CurrentProcess,
+                                               executable,
+                                               out manifest);
+
+            if (memory != null && memory.Length > 0 && manifest != null) {
+                process = new Process(Thread.CurrentProcess,
+                                      memory,
+                                      null,
+                                      new string[1] {name},
+                                      manifest);
+                if (process != null) {
+                    VerboseOut.WriteLine("I/O: Starting {0} process", __arglist(name));
+                    process.Start();
+                }
+            }
+            else {
+                DebugStub.WriteLine("I/O: unable to find {0}", __arglist(executable));
+            }
+        }
+
+        // VolumeManager initialization should be managed just
+        // like drivers, but currently isn't
+        public static void InitializeVolumeManager()
+        {
+            StartProcess("volmgr", "volmgr");
+        }
+
+        // This configuration should move to DirectoryService.Initialize() and should
+        // involve xml
+        public static void InitializeDirectoryService()
+        {
+            // initialize IoMemory FileSystem
+            IoMemoryFS ioFS = new IoMemoryFS();
+            IoMemFSContract.Imp fsImp = ioFS.Start();
+            if (fsImp != null) {
+                Directory.DirectoryService.SetIoFS(fsImp);
+            }
+
+            // create  "/dev" namespace  and link it into the root
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+
+            DirectoryServiceContract.Imp! dirImp;
+            DirectoryServiceContract.Exp! dirExp;
+            DirectoryServiceContract.NewChannel(out dirImp, out dirExp);
+            rootNS.SendBind((!)Bitter.FromString("/"), dirExp);
+
+            switch receive {
+                case rootNS.NakBind(rejected, error):
+                    delete rejected;
+                    DebugStub.Break();
+                    break;
+                case rootNS.AckBind():
+                    break;
+            }
+
+            dirImp.RecvSuccess();
+
+            dirImp.SendCreateDirectory((!)Bitter.FromString("dev"));
+            switch receive {
+                case dirImp.AckCreateDirectory() :
+                    break;
+                case dirImp.NakCreateDirectory(error) :
+                    if (error != ErrorCode.AlreadyExists) {
+                        DebugStub.WriteLine("Error = {0}\n", __arglist(error));
+                        DebugStub.Break();
+                    }
+                    break;
+            }
+
+            delete dirImp;
+
+            nsRootRef = new TRef<DirectoryServiceContract.Imp:Start> (rootNS);
+        }
+
+        ///
+        //<summary>
+        //  This method starts the Service Manager, which is a system process that manages
+        //  service processes.  The kernel searches for 'service' elements in the system
+        //  (kernel) manifest, and forwards information about these services to the Service
+        //  Manager process by building the argv list passed to the Service Manager's Main()
+        //  entry point.  The service entries are constructed during the build process, by
+        //  a combination of DistroBuilder.exe and Targets\Distro.targets.
+        //</summary>
+        //
+        public static unsafe void InitializeServiceManager(XmlNode !config)
+        {
+            DebugStub.WriteLine("Initializing Service Manager...");
+
+            const string Name = "sms";
+            const string Executable = "sms";
+
+            ArrayList args = new ArrayList();
+
+            args.Add(Name);
+
+            if (config != null) {
+                foreach (XmlNode! service in config.Children) {
+                    if (service.Name != "service") {
+                        continue;
+                    }
+
+                    // Should be separated to avoid type ambiguity.
+                    string name = service.GetAttribute("name", "");
+                    string binary = service.GetAttribute("binary", "");
+                    string activationMode = service.GetAttribute("activationMode", "");
+
+                    if (name == null || name.Length == 0) {
+                        DebugStub.WriteLine("Warning: System manifest contains a " +
+                                            " <service> node without a 'name' attribute.");
+                        continue;
+                    }
+
+                    if (binary == null || binary.Length == 0) {
+                        DebugStub.WriteLine("Warning: System manifest contains a <service>" +
+                                            " node (name={0}) without a 'binary' attribute.",
+                                            __arglist(name));
+                        continue;
+                    }
+
+                    if (activationMode == null || activationMode.Length == 0) {
+                        DebugStub.WriteLine(String.Format("Warning: System manifest contains" +
+                                                          " a <service> node (name={0}) without" +
+                                                          " an 'activationMode' attribute.", name));
+                        continue;
+                    }
+
+                    args.Add(name);
+                    args.Add(binary);
+                    args.Add(activationMode);
+                }
+            }
+            else {
+                DebugStub.WriteLine("Warning: No services were defined in system manifest. " +
+                                    "Starting Service Manager anyway.");
+            }
+
+            String [] stringArgs = (string []) args.ToArray(typeof(string));
+            Process process = null;
+            Manifest manifest = null;
+
+            IoMemory memory = Binder.LoadImage(Thread.CurrentProcess,
+                                                Executable,
+                                                out manifest);
+            if (memory == null || memory.Length == 0) {
+                DebugStub.WriteLine("The Binder failed to load image '{0}' for the Service Manager.", __arglist(Executable));
+                return;
+            }
+
+            if (manifest == null) {
+                DebugStub.WriteLine("The Binder loaded the image '{0}', but could not load its manifest.", __arglist(Executable));
+                return;
+            }
+
+            DirectoryServiceContract.Imp! ds = DirectoryService.NewClientEndpoint();
+            if (ds == null) {
+                DebugStub.WriteLine("Failed to create new client endpoint to Directory service.");
+                DebugStub.WriteLine("The Service Manager cannot be started.");
+                return;
+            }
+
+            // Next, register the '/service/services' namespace provider with the Directory.
+
+            string! services_name = "/service/services";
+
+            // DebugStub.WriteLine("Registering '{0}' namespace", __arglist(services_name));
+
+            ServiceProviderContract.Imp! services_provider_imp;
+            ServiceProviderContract.Exp! services_provider_exp;
+            ServiceProviderContract.NewChannel(out services_provider_imp, out services_provider_exp);
+
+            char[]! in ExHeap exname = Bitter.FromString2(services_name);
+            ds.SendRegister(exname, services_provider_imp);
+
+            switch receive {
+                case ds.AckRegister():
+                    break;
+
+                case ds.NakRegister(ServiceProviderContract.Imp:Start rejected_imp, ErrorCode error):
+                    DebugStub.WriteLine("FAILED to register '{0}', error code = {1}.", __arglist(services_name, (int)error));
+                    delete rejected_imp;
+                    delete ds;
+                    delete services_provider_exp;
+                    return;
+
+                case ds.NakRegisterReparse(char[]! in ExHeap path, char[]! in ExHeap rest, bool linkFound,
+                    ServiceProviderContract.Imp:Start! rejected_imp):
+                    DebugStub.WriteLine("Encountered reparse point when attempting to register '{0}'?!", __arglist(services_name));
+                    DebugStub.WriteLine("The Service Manager could not be started.");
+                    delete path;
+                    delete rest;
+                    delete rejected_imp;
+                    delete services_provider_exp;
+                    delete ds;
+                    return;
+
+                case ds.ChannelClosed():
+                    DebugStub.WriteLine("Directory closed channel!");
+                    DebugStub.WriteLine("The Service Manager could not be started.");
+                    delete services_provider_exp;
+                    delete ds;
+                    return;
+            }
+
+            process = new Process(Thread.CurrentProcess,
+                                    memory,
+                                    null,
+                                    stringArgs,
+                                    manifest);
+            if (process == null) {
+                DebugStub.WriteLine("Failed to allocate process for Service Manager.");
+                delete ds;
+                delete services_provider_exp;
+                return;
+            }
+
+            process.SetEndpointCount(2);
+            SharedHeap.Allocation* ep0 = (SharedHeap.Allocation*)ds;
+            process.SetEndpoint(0, ref ep0);
+
+            SharedHeap.Allocation* ep1 = (SharedHeap.Allocation*)services_provider_exp;
+            process.SetEndpoint(1, ref ep1);
+
+            process.Start();
+
+            DebugStub.WriteLine("Successfully initialized Service Manager.");
+        }
+
+        // initialize all variables
+        static public void Initialize(XmlNode! _config)
+        {
+            Tracing.Log(Tracing.Debug, "IoSystem.Initialize()");
+
+            // store the xml config:
+            // don't store the nsConfig, since we don't use it locally
+            config = _config;
+
+            // create all lists
+            instances = new SortedList();
+            activations = new SortedList();
+            associations = new SortedList();
+            followsList = new SortedList();
+
+            // initialize the resource tracker.
+            ResourceTracker.Initialize();
+
+            Tracing.Log(Tracing.Debug, "IoSystem.Initialized");
+        }
+
+        public static void Finalize()
+        {
+            Tracing.Log(Tracing.Debug, "IoSystem.Finalize()");
+            FinalizeOldDevices();
+        }
+
+        public static byte GetMaximumIrq()
+        {
+            return Platform.GetMaximumIrq();
+        }
+
+        // all sorted tracking is handled here:
+        // check if a follows name has been provided yet
+        public static bool CheckFollows(string followName)
+        {
+            return followsList.ContainsKey(followName);
+        }
+
+        // mark a follows name as being provided
+        public static void SetFollows(string! followName)
+        {
+            if (!followsList.ContainsKey(followName)) {
+                followsList.Add(followName, followName);
+            }
+        }
+
+
+
+
+        ////////////////////////////////////////////////////////////////////////
+        //
+        // Device Management Code: The kernel has 2 stages of device management.
+        //
+        //  Stage 1: there are no interrupts, and the Hal isn't even started.
+        //
+        //      In this stage, we use Drivers\register.cs to create a pnpbus,
+        //      and then we pass it to a custom method in IoSystem which
+        //      associates and activates the bus (the bus is not a process).
+        //      Then we start the Hal, and we use another custom method to
+        //      simulate association and activation of the hal devices (in this
+        //      case, we don't actually activate, we just mark the devices as
+        //      activated and give their resources to the Hal)
+        //
+        //  Stage 2: we can run any process whose dependencies are satisfied.
+        //
+        //      In this stage, we can start any driver, and so we use general
+        //      mechanisms.  We also pre-bind endpoints and generally do our
+        //      best to make everything nice and clean.  There is a hack in here
+        //      to let us register the drivers who haven't migrated to separate
+        //      processes.
+
+        // Parse the driverRegistry metadata to register drivers.
+        public static void RegisterDrivers()
+        {
+            ErrorCode error;
+            VerboseOut.WriteLine("IoSystem.RegisterDrivers executing\n");
+            foreach (XmlNode! driver in config.Children) {
+                if (driver.Name != DriverRegistrationXmlTag) {
+                    continue;
+                }
+                string! drivername
+                    = (!)driver.GetAttribute(DriverNameXmlAttribute, "");
+                string! image
+                    = (!)driver.GetAttribute(DriverPathXmlAttribute, "");
+                string! signature
+                    = (!)driver.GetAttribute(DeviceSignatureXmlAttribute, "");
+                string! mclass
+                    = (!)driver.GetAttribute(DriverClassXmlAttribute, "");
+
+                if (image != "" &&
+                    !image.EndsWith(DirectoryService.ExecutableExtension)) {
+                    // A driver but not for our architecture.
+                    continue;
+                }
+
+                // add the driver to /hardware/drivers
+                drivername = "/hardware/drivers/" + drivername;
+                DirNode! driverNode = (!)DirectoryService.FindDirectory(drivername, true);
+
+                // if this is an external driver, create a symlink for the
+                // executable image of the driver.  Since this is at boot
+                // time, we know the image should go to /init
+                if (image != "") {
+                    // we only work with DirectoryService.ExecutableExtension images for now:
+                    if (image.EndsWith(DirectoryService.ExecutableExtension)) {
+                        const int extensionLength = DirectoryService.ExecutableExtensionLength;
+                        image = "/init/" + image.Remove(image.Length-extensionLength,
+                                                        extensionLength);
+                        DirectoryService.CreateSymbolicLink(driverNode, "image", image);
+                    }
+                }
+
+                DebugStub.WriteLine("image = {0} drivername = {1}", __arglist(image, drivername));
+
+                // TODO: if there is no device signature, what
+                // should we do?  We need some way to register the volume
+                // manager.
+                if (signature != "") {
+                    if (image != "") {
+                        Driver.Register(image, signature, mclass, drivername, image, driver);
+                    }
+                    // add the device to /hardware/registrations
+                    string! registration_path;
+                    if (signature.StartsWith("/")) {
+                        registration_path = "/hardware/registrations" + signature;
+                    } else {
+                        registration_path = "/hardware/registrations/" + signature;
+                    }
+                    DirNode! deviceNode =
+                        (!)DirectoryService.FindDirectory(registration_path, true);
+                    // create a symlink to the driver
+                    DirectoryService.CreateSymbolicLink(deviceNode, "driver",
+                                                        drivername);
+                }
+            }
+        }
+
+        // There are a few devices that aren't processes but who don't start
+        // until after interrupts are up.  Once all drivers become processes,
+        // this should go away.
+        // The key problem is that we haven't figured out, yet, how
+        // to move bus drivers out of the kernel.
+        public static bool RegisterKernelDriver(Type type,
+                                                IoDeviceCreate creator)
+        {
+            string iclass = ((!)type).FullName;
+            VerboseOut.WriteLine("  Registering class: {0}", __arglist(iclass));
+
+            // Find any signatures in the metadata for this class.
+            bool match = false;
+            foreach (XmlNode! driver in config.Children) {
+                if (driver.Name != DriverRegistrationXmlTag) {
+                    continue;
+                }
+
+                string mclass = driver.GetAttribute(DriverClassXmlAttribute, "");
+                if (mclass != iclass) {
+                    continue;
+                }
+
+                match = true;
+                string! signature = (!)driver.GetAttribute(DeviceSignatureXmlAttribute, "");
+                VerboseOut.WriteLine("    Registering signature: {0}", __arglist(signature));
+
+                string! drivername = "/hardware/drivers/" +
+                    driver.GetAttribute(DriverNameXmlAttribute, "");
+
+                // Caution: we already added this to /hardware during the general
+                // registration process, but we need to give this node its name in
+                // /hardware
+                Driver.Register(signature, (!)mclass, drivername, type, (!)creator, driver);
+            }
+
+            if (!match) {
+                DebugStub.WriteLine("Error: No metadata for class {0}",
+                                    __arglist(iclass));
+                DebugStub.Break();
+            }
+            return match;
+        }
+
+
+        // given a piece of metadata, generate an IoRange array
+        // the input is the <fixedHardware> or <dynamicHardware> node of a
+        // registered device's metadata
+        private static IoRange[] CreateIoRangesFromMetadata(XmlNode resources)
+        {
+            if (resources == null) {
+                return new IoRange[0];
+            }
+
+            // see if there are any resources in the metadata
+            int numitems = resources.GetAttribute("length", 0);
+
+            // Create all of the fixed resources in one IoRange array
+            IoRange[] ranges = new IoRange[numitems];
+            int i = 0;
+            foreach (XmlNode! res in resources.Children) {
+                if (res.Name == PortRangeXmlTag) {
+                    ushort fixedBase
+                        = (ushort)res.GetAttribute(BaseAddressXmlAttribute, 0);
+                    ushort fixedSize
+                        = (ushort)res.GetAttribute(RangeLengthXmlAttribute, 0);
+                    bool read = res.GetAttribute(ReadableXmlAttribute, true);
+                    bool write = res.GetAttribute(WritableXmlAttribute, true);
+
+                    ranges[i++] = new IoPortRange(fixedBase, fixedSize,
+                                                  read, write);
+                }
+                else if (res.Name == IrqRangeXmlTag) {
+                    byte fixedBase
+                        = (byte)res.GetAttribute(BaseAddressXmlAttribute, 0);
+                    byte fixedSize
+                        = (byte)res.GetAttribute(RangeLengthXmlAttribute, 1);
+                    ranges[i++] = new IoIrqRange(fixedBase, fixedSize);
+                }
+                else if (res.Name == DmaRangeXmlTag) {
+                    byte fixedBase
+                        = (byte)res.GetAttribute(BaseAddressXmlAttribute, 0);
+                    byte fixedSize
+                        = (byte)res.GetAttribute(RangeLengthXmlAttribute, 1);
+
+                    ranges[i++] = new IoDmaRange(fixedBase, fixedSize);
+                }
+                else if (res.Name == MemoryRangeXmlTag) {
+                    UIntPtr fixedBase
+                        = res.GetAttributeAsUIntPtr(BaseAddressXmlAttribute, 0);
+                    UIntPtr fixedSize
+                        = res.GetAttributeAsUIntPtr(RangeLengthXmlAttribute, 0);
+                    byte addressBits
+                        = (byte)res.GetAttribute(AddressBitsXmlAttribute, 24);
+                    UIntPtr alignment
+                        = res.GetAttributeAsUIntPtr(AlignmentXmlAttribute, 4);
+
+                    bool read = res.GetAttribute(ReadableXmlAttribute, true);
+                    bool write = res.GetAttribute(WritableXmlAttribute, true);
+
+                    if (fixedBase == 0) {
+                        IoMemory mem = null;
+
+                        // TODO: This only supports 24-bit addressing right
+                        // now.  We need support for the rest of the possible regions
+                        // eventually
+                        if (addressBits == 24) {
+                            mem = IoMemory.AllocatePhysBelow16MB(fixedSize, alignment);
+                        }
+                        if (mem == null) {
+                            DebugStub.WriteLine("Failed for addressBits={0}",
+                                                __arglist(addressBits));
+                            DebugStub.Break();
+                            continue;
+                        }
+                        DebugStub.Assert(mem.PhysicalAddress.Value != 0);
+                        ranges[i++] = new IoMemoryRange((UIntPtr)mem.PhysicalAddress.Value,
+                                                        (UIntPtr)mem.Length,
+                                                        read, write);
+                    }
+                    else {
+                        ranges[i++] = new IoMemoryRange(fixedBase, fixedSize,
+                                                        read, write);
+                    }
+                }
+                else {
+                    // this should never happen
+                    i++;
+                    DebugStub.Break();
+                }
+            }
+            return ranges;
+        }
+
+        // The root device does not have a Pnp configuration via enumeration,
+        // which is why we require the devConfig parameter.  Also, we need to
+        // enumerate the root before we can start the Hal, but we don't want to
+        // let anything else start running yet (since there is no threading yet)
+        public static void AddRootDevice(String! path,
+                                         IBusDevice! bus,
+                                         IoConfig! config)
+        {
+            String! signature = "/root" + path;
+
+            // Simulate association: we don't have a true registered driver.
+            XmlNode metadata = GetMetaData(signature);
+            if (metadata == null) {
+                DebugStub.WriteLine("No configuration found for root device {0}",
+                                    __arglist(path));
+                DebugStub.Break();
+                return;
+            }
+            if (!ResourceTracker.AreResourcesValid(config, metadata)) {
+                DebugStub.WriteLine("Invalid configuration for root device {0}",
+                                    __arglist(path));
+                DebugStub.Break();
+                return;
+            }
+
+            Driver! driver = Driver.Register(signature,
+                                             (!)bus.GetType().FullName,
+                                             path,
+                                             bus.GetType(),
+                                             metadata);
+
+            // create a device instance of the root:
+            DeviceNode! device = new DeviceNode(path, signature, config);
+
+            // Simulate activation: we don't need to make an
+            // IDevice because we already have one
+            device.driver = driver;
+            device.intdev = bus;
+
+            // make sure the resources are available, and claim them.
+            VerboseOut.WriteLine("AddRootDevice Device: {0}", __arglist(path));
+            if (ResourceTracker.FindResourceConflicts(device) == null) {
+                ResourceTracker.AddResources(device);
+            }
+            else {
+                // somehow the needed root resources are unavailable.
+                DebugStub.Break();
+                return;
+            }
+
+            // Manually initialize the root bus, but don't
+            // associate devices we find
+            VerboseOut.WriteLine("Activate root device {0} {1}",
+                                 __arglist(device.location, device.driver.name));
+            bus.Initialize();
+            EnumerateDevice(bus, device.location, false);
+        }
+
+        static DeviceNode FindSingletonDeviceBySignature(string! signature)
+        {
+            DeviceNode device;
+            if (signature == "") {
+                string[]! ids = { "" };
+                FixedIoConfig! config = new FixedIoConfig(ids);
+                device = new DeviceNode("/hal0", signature, config);
+                return device;
+            }
+            else {
+                device = null;
+
+                foreach (DictionaryEntry de in instances) {
+                    DeviceNode! node = (DeviceNode!) de.Value;
+                    foreach (string sig in node.config.Ids) {
+                        if (sig == signature) {
+                            if (device != null) {
+                                DebugStub.WriteLine("WARNING! Found more than one device with signature '{0}' for singleton device!", __arglist(signature));
+                                DebugStub.WriteLine("  Ignoring device {0}", __arglist(node.config.ToString()));
+                                continue;
+                            }
+                            device = node;
+                            // break;
+                        }
+                    }
+
+                    // Keep looping so we can find duplicates.
+                    // This is just for debugging / paranoia.
+                    //if (device != null)
+                    //    break;
+                }
+
+                return device;
+            }
+        }
+
+        bool PnpSignaturesAreEqual(string! sig1, string! sig2)
+        {
+            return String.Compare(sig1, sig2, true) == 0;
+        }
+
+        // The Hal activates its own devices, but we need to do the accounting
+        // for them and move them from instances to activations.
+        // NB - for the hal screen resources, the signature will be ""
+        public static IoConfig YieldResources(string! signature, Type! type)
+        {
+            // do pseudo-registration by getting metadata directly
+            XmlNode metadata = GetMetaData(signature);
+            if (metadata == null) {
+                DebugStub.WriteLine("IoSystem.YieldResources: Failed to find driver metadata for signature: {0}", __arglist(signature));
+                DebugStub.Break();  // Couldn't find info in manifest!
+                return null;
+            }
+
+            string path = (signature == "") ? "/hal0" : ("/hardware/drivers" + signature);
+
+            Driver! driver = Driver.Register(signature,
+                                             (!)type.FullName,
+                                             path,
+                                             type,
+                                             metadata);
+
+            // first get a device instance (or if signature=="", create an
+            // instance with an empty IoConfig)
+            DeviceNode device = FindSingletonDeviceBySignature(signature);
+            if (device == null) {
+                DebugStub.WriteLine("IoSystem.YieldResources: Failed to find singleton device node for PNP signature: {0}", __arglist(signature));
+                DebugStub.Break();
+                for (;;) {
+                    FindSingletonDeviceBySignature(signature);
+                }
+                return null;    // Couldn't find hardware.
+            }
+
+            device.driver = driver;
+
+            // use the XML to get fixed resources
+            XmlNode fixedResNode
+                = driver.metadata.GetChild(FixedHardwareSetXmlTag);
+            device.config.FixedRanges
+                = CreateIoRangesFromMetadata(fixedResNode);
+
+            // This device is now associated.  Now do all of the
+            // accounting, but don't activate it
+            VerboseOut.WriteLine("YieldResources Signature: {0}",
+                                __arglist(signature));
+
+            if (ResourceTracker.AreResourcesValid(device.config, metadata) &&
+                ResourceTracker.FindResourceConflicts(device) == null) {
+                ResourceTracker.AddResources(device);
+            }
+            else {
+                // somehow the resources the Hal needs have already been taken!
+                DebugStub.Break();
+                return null;
+            }
+
+            // now move the device from instances to activations and return the
+            // dynamic config
+            VerboseOut.WriteLine("YieldResources Remove({0})",
+                                __arglist(device.location));
+            instances.Remove(device.location);
+            activations.Add(device.location, device);
+            return device.config;
+        }
+
+        //
+        // Irq Rerouting code - this lets us keep our accounting clean when
+        // kernel-only devices reroute IRQs
+        //
+
+        // TODO: if multiple devices exist, all of whom have the same
+        // Id, this is going to break.  How can we fix it?  The caller doesn't
+        // understand hardware locations, so the problem is his, but this code
+        // suffers from his lack of information
+
+        // Public hook for well-behaved devices that reroute IRQs to request
+        // permission before doing the rerouting.  This has the side effect of
+        // updating the ResourceTracker with the new IoIrqRange values
+        public static bool RequestRerouteIrq(string name, int irqNum,
+                                             byte irqVal)
+        {
+            // In order to allow a rerouting, two conditions must be met
+            // 1 - the device "name" must not be in activations
+            // 2 - there must be an irqNum'th  IoIrq object
+            foreach (DictionaryEntry de in instances) {
+                DeviceNode! device = (DeviceNode!) de.Value;
+                if (device.MatchingDeviceId == name) {
+                    return RerouteIrq(device, irqNum, irqVal);
+                }
+            }
+
+            foreach (DictionaryEntry de in associations) {
+                DeviceNode! device = (DeviceNode!) de.Value;
+                if (device.MatchingDeviceId == name) {
+                    return RerouteIrq(device, irqNum, irqVal);
+                }
+            }
+            return false;
+        }
+
+        // private code that actually changes the IoConfig object
+        private static bool RerouteIrq(DeviceNode! device, int irqNum,
+                                       byte irqVal)
+        {
+            int irqCounter = 0;
+            int targetPosition = -1;
+            IoRange[]! ranges = device.config.DynamicRanges;
+
+            for (int i = 0; i < ranges.Length; i++) {
+                if (device.config.DynamicRanges[i] is IoIrqRange) {
+                    irqCounter++;
+                }
+                if (irqCounter == irqNum) {
+                    targetPosition = i;
+                    break;
+                }
+            }
+            if (targetPosition == -1) {
+                return false;
+            }
+
+            ranges[targetPosition] = new IoIrqRange(irqVal, 1);
+            return true;
+        }
+
+        // Enumerate an IBusDevice (create instances):
+        //   - Find devices and add them to the devices list
+        public static bool EnumerateDevice(IBusDevice! bus, string busLocation, bool associate)
+        {
+            Tracing.Log(Tracing.Debug, "Enumerating Bus");
+
+            return AddDevicesToTree(bus.Enumerate(), busLocation, associate);
+        }
+
+        // Add a sorted list of devices to the device tree:
+        //   - Add each device to the /hardware namespace
+        //
+        // NB: When we get rid of non-process drivers, then this will only be
+        // used by the root device; all other buses will be separate processes
+        // who will announce new config to the IoSystem over a channel
+        public static bool AddDevicesToTree(SortedList found, string busLocation, bool associate)
+        {
+            if (found != null) {
+                foreach (DictionaryEntry n in found) {
+                    // get the IoConfig for this device
+                    IoConfig! config = (IoConfig!)n.Value;
+
+                    // set the IoConfig's FixedRange to an empty list
+                    config.FixedRanges = new IoRange[0];
+
+                    assume config.Ids != null;
+
+                    // now set up the /hardware namespace
+                    string! location = busLocation + n.Key;
+                    string! device = (!)config.Ids[0];
+                    // -XXX- Need to do something smarter, now that we support lists of IDs.
+
+                    // create a DeviceNode for this device
+                    DeviceNode! node = new DeviceNode(location, device, config);
+                    string! instname;
+
+                    //so we need the device namespace but we have no DirectoryService....
+
+		    // add this location and device to the /hardware tree
+		    location = JoinForwardSlashPath("/hardware/locations", location);
+		    DirNode locationNode = DirectoryService.FindDirectory(location, true);
+
+		    // This needs to be reconsidered.  What's the point of registering the
+		    // device ID, now that doing so is ambiguous?  We'll register the first
+		    // device ID, anyway, until we figure this out.
+		    string! path = JoinForwardSlashPath("/hardware/devices", device);
+		    DirNode deviceNode = DirectoryService.FindDirectory(path, true);
+
+		    // create a device instance in the namespace:
+		    for (int i = 0;; i++) { // find next available instance num
+			instname = path + "/instance" + i.ToString();
+			if (DirectoryService.FindDirectory(instname, false) == null) {
+			    break;
+			}
+		    }
+		    deviceNode = DirectoryService.FindDirectory(instname, true);
+
+		    // symlink the instance and location
+		    DirectoryService.CreateSymbolicLink(locationNode, "device", instname);
+		    DirectoryService.CreateSymbolicLink(deviceNode, "location", location);
+
+                    node.directoryRoot = instname;
+
+                    // try to associate the instance, and if we can't, then put
+                    // it in the instance list:
+                    if (!associate || !Associate(node)) {
+                        instances.Add(node.location, node);
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+
+        static string! JoinForwardSlashPath(string! container, string! path)
+        {
+            bool container_ends_with_slash = container.EndsWith("/");
+            bool path_starts_with_slash = path.StartsWith("/");
+
+            if (container_ends_with_slash && path_starts_with_slash)
+                return container + path.Substring(1, path.Length - 1);
+
+            if (!container_ends_with_slash && !path_starts_with_slash)
+                return container + "/" + path;
+
+            return container + path;
+        }
+
+        // the association step does not care about dependencies and does not
+        // touch the namespace.  All it does is resolve an instance of a device
+        // with the appropriate registration of a driver for that device, and
+        // creates the fixed Io resources:
+        private static bool Associate(DeviceNode! device)
+        {
+            string! matchingDeviceId;
+            Driver driver = Driver.FindBest(device.config.Ids, out matchingDeviceId);
+            if (driver == null) {
+                VerboseOut.WriteLine("{0}: no driver found for this device. Configuration information:",
+                                     __arglist(device.location));
+                VerboseOut.Write(device.config.ToPrint() + "\n \n\n");
+                return false;
+            }
+#if TYAN_MOTHERBOARD_HACK
+            else if (device.location == "/acpi0/123/bus0000/dev0005/func0000"             ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0000/controller0" ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0000/controller1" ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0001"             ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0001/controller0" ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0001/controller1" ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0002"             ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0002/controller0" ||
+                     device.location == "/acpi0/123/bus0000/dev0005/func0002/controller1") {
+                //This is a hack to handle machines with more than one storage controller.
+                VerboseOut.Write("Ignoring secondary device {0} \n", __arglist(device.location));
+                VerboseOut.Write(device.config.ToPrint() + "\n \n\n");
+                return false;
+            }
+            else if (device.location == "/acpi0/101/bus0000/dev0005/func0000/controller1" ||
+                     device.location == "/acpi0/101/bus0000/dev0004/func0000" ||
+                     device.location == "/acpi0/101/bus0000/dev0004/func0000/controller0" ||
+                     device.location == "/acpi0/101/bus0000/dev0004/func0000/controller1" ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0000/controller1" ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0001"             ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0001/controller0" ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0001/controller1" ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0002"             ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0002/controller0" ||
+                     device.location == "/acpi0/101/bus0000/dev0005/func0002/controller1") {
+                //This is a hack to handle machines with more than one storage controller.
+                VerboseOut.Write("Ignoring secondary device {0} \n", __arglist(device.location));
+                VerboseOut.Write(device.config.ToPrint() + "\n \n\n");
+                return false;
+            }
+            else if (device.location == "/acpi0/123/bus0000/dev0004/func0000"             ||
+                     device.location == "/acpi0/123/bus0000/dev0004/func0000/controller0" ||
+                     device.location == "/acpi0/123/bus0000/dev0004/func0000/controller1" ||
+                     device.location == "/acpi0/123/bus0001/dev0004/func0000"             ||
+                     device.location == "/acpi0/123/bus0004/dev0009/func0000") {
+                //This is a hack to handle machines with more than one storage controller.
+                VerboseOut.Write("Ignoring secondary device {0} \n", __arglist(device.location));
+                VerboseOut.Write(device.config.ToPrint() + "\n \n\n");
+                return false;
+            }
+#endif
+            if (driver.factory == null && driver.imagePath == null) {
+                DebugStub.WriteLine("Warning: Attempt to associate HAL driver {0} with {1} ",
+                                    __arglist(driver.name,
+                                              device.location));
+                //DebugStub.Break();
+                return false;
+            }
+
+            VerboseOut.WriteLine(
+                "{0}: now associated with driver {1}, on device id {2}. Configuration information:",
+                __arglist(device.location, driver.name, matchingDeviceId)
+                );
+            VerboseOut.Write(device.config.ToPrint());
+
+            // now attached the driver.
+            device.driver = driver;
+            device.MatchingDeviceId = matchingDeviceId;
+
+            // create the fixed config.
+            XmlNode fixedResNode
+                = driver.metadata.GetChild(FixedHardwareSetXmlTag);
+            device.config.FixedRanges
+                = CreateIoRangesFromMetadata(fixedResNode);
+
+            // if the hardware resources are available, copy the device to associations
+            if (!ResourceTracker.AreResourcesValid(device.config, driver.metadata)) {
+                DebugStub.WriteLine("Error: Can't associate a device without resources.");
+                DebugStub.Break();
+                return false;
+            }
+
+            VerboseOut.WriteLine("{0}: Device associated -> driver {1} using signature {2}",
+                                 __arglist(device.location, driver.name, matchingDeviceId));
+
+            associations.Add(device.location, device);
+            return true;
+        }
+
+        // The root bus and hal need to be associated before the registration
+        // list is ready.  Use this method to associate directly from Xml.
+        private static XmlNode GetMetaData(String! pnpSignature)
+        {
+            // a matched driver must not have an image (that is, it shouldn't be
+            // an external driver).  Otherwise, anything that matches is good:
+
+            int bestlength = 0;
+            XmlNode bestNode = null;
+
+            // check each driver
+            foreach (XmlNode! driver in config.Children) {
+                if (driver.Name != DriverRegistrationXmlTag) {
+                    continue;
+                }
+                string! devicename =
+                    (!)driver.GetAttribute(DeviceSignatureXmlAttribute, "");
+                string! image =
+                    (!)driver.GetAttribute(DriverPathXmlAttribute, "");
+
+                if (image == "" &&
+                    pnpSignature.StartsWith(devicename) &&
+                    devicename.Length > bestlength) {
+                    bestNode = driver;
+                    bestlength = devicename.Length;
+                }
+                // special code for the Hal console, which has no signature
+                // Note: This causes a console initialization failure if any driver is registered
+                // without a signature
+                else if (image == "" &&
+                         pnpSignature == "" &&
+                         devicename == "" &&
+                         bestlength == 0) {
+                    bestNode = driver;
+                    bestlength = 1;
+                }
+            }
+            return bestNode;
+        }
+
+        // check if we can start a driver
+        // RequireFollows--> treat "follows" tags as firm requirements
+        private static bool CheckDependencies(Driver! driver,
+                                              bool RequireFollows)
+        {
+            // Check all <follows> rules
+            if (RequireFollows) {
+                foreach (XmlNode! follows in driver.metadata.Children) {
+                    if (follows.Name != FollowsXmlTag) {
+                        continue;
+                    }
+
+                    string tagName =
+                        follows.GetAttribute(FollowsNameXmlAttribute, "");
+                    if (!CheckFollows(tagName)) {
+                        return false;
+                    }
+                }
+            }
+
+            // Make sure that ServiceProvider endpoint names aren't exhausted,
+            // and that the ServiceContracts are satisfiable
+            XmlNode! endpointset
+                = (!)driver.metadata.GetChild(EndpointSetXmlTag);
+            foreach (XmlNode! endpoint in endpointset.Children) {
+                string contract = endpoint.GetAttribute(
+                    ContractXmlAttribute, "");
+
+                if (endpoint.Name == ServiceEndpointXmlTag) {
+                    if (!Binder.IsServiceContractStartable(contract)) {
+                        return false;
+                    }
+                }
+                else if (endpoint.Name == GenericEndpointXmlTag) {
+                    if (!Binder.IsServiceContractAvailable(contract)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Return the next device that should be activated, according to the
+        // following priority:
+        // 1 - if all dependencies of an bus device are satisfied, return it
+        // 2 - else return the first device with all dependencies satisfied
+        // 3 - else return the first bus device who only lacks "follows"
+        // 4 - else return the first device who only lacks "follows"
+        // 5 - else return null
+        private static DeviceNode GetActivatableDriver()
+        {
+            DeviceNode device = null;
+            DeviceNode busWithoutFollows = null;
+            DeviceNode deviceWithoutFollows = null;
+
+            VerboseOut.Write("GetActivatableDriver:[");
+            foreach (DictionaryEntry de in associations) {
+                DeviceNode! dev = (DeviceNode!)de.Value;
+                VerboseOut.Write(dev.ToString());
+                VerboseOut.Write(" ");
+            }
+            VerboseOut.WriteLine("] ");
+
+            // we need only look in the associations list, as it holds the only
+            // device instances that are matched to drivers:
+            foreach (DictionaryEntry de in associations) {
+                DeviceNode! dev = (DeviceNode!) de.Value;
+
+                // device has already been associated
+                assert dev.driver != null;
+                assert dev.MatchingDeviceId != null;
+
+                Driver! driver = dev.driver;
+
+                // First do the hard test - all <follows> must be satisfied
+                if (CheckDependencies(driver, true)) {
+                    // prioritize buses - if we find one, return it immediately
+                    if (dev.intdev is IBusDevice) {
+                        VerboseOut.WriteLine("-> {0} [bus]",
+                                             __arglist(dev.MatchingDeviceId));
+                        return dev;
+                    }
+                    else {
+                        if (device == null) {
+                            device = dev;
+                        }
+                    }
+                }
+                // then try without the <follows>
+                else if (CheckDependencies(driver, false)) {
+                    if (dev.intdev is IBusDevice) {
+                        if (busWithoutFollows == null) {
+                            busWithoutFollows = dev;
+                        }
+                    }
+                    else {
+                        if (deviceWithoutFollows == null) {
+                            deviceWithoutFollows = dev;
+                        }
+                    }
+                }
+            }
+            if (device != null) {
+                VerboseOut.WriteLine("-> {0}",
+                                     __arglist(device.MatchingDeviceId));
+                return device;
+            }
+            else if (busWithoutFollows != null) {
+                VerboseOut.WriteLine(
+                    "-> {0} [bus w/o]",
+                    __arglist(busWithoutFollows.MatchingDeviceId)
+                    );
+                return busWithoutFollows;
+            }
+            else {
+                if (deviceWithoutFollows == null) {
+                    VerboseOut.WriteLine("-> null");
+                }
+                else {
+                    VerboseOut.WriteLine(
+                        "-> {0} [w/o]",
+                        __arglist(deviceWithoutFollows.MatchingDeviceId)
+                        );
+                }
+                return deviceWithoutFollows; // may be null, but that's ok...
+            }
+        }
+
+        // TODO: non-device services (i.e. volmgr) should start
+        // through this mechanism, but don't yet
+        // Activate any drivers whose needs can be fully satisfied:
+        public static void ActivateDrivers()
+        {
+
+            // since enumeration now associates whatever it can, we can pull
+            // the association step out of the loop.
+            foreach (DictionaryEntry d in instances) {
+                Associate((DeviceNode!) d.Value);
+            }
+
+            // we can't remove items from the instances list during the previous
+            // step, so we need a second loop to remove instances that have been
+            // associated:
+            foreach (DictionaryEntry d in associations) {
+                String key = (String) d.Key;
+                if (instances.ContainsKey(key)) {
+                    instances.Remove(key);
+                }
+            }
+
+            // TODO: once VolMgr is started through this method,
+            // remove the following line (we need it in order for the DiskDrive
+            // to run, as it depends on having a volmgr):
+            Binder.ClaimServiceContract(
+                "Microsoft.Singularity.Io.VolumeManagerContract");
+
+            // now activate devices whose dependencies are satisfied:
+            for (DeviceNode device; (device = GetActivatableDriver()) != null;) {
+                // first, check that the device's resources are valid.
+                Driver! driver = device.driver;
+                DebugStub.Print("Looping to activate new driver device {0} {1}\n",
+                                __arglist(device.location, device.driver.name));
+                // Do the accounting for all Io Resources
+                if (ResourceTracker.AreResourcesValid(device.config, driver.metadata) &&
+                    ResourceTracker.FindResourceConflicts(device) == null) {
+                    ResourceTracker.AddResources(device);
+                }
+                else {
+                    // somehow the resources the device needs are unavailable
+                    DebugStub.Break();
+                    DebugStub.Break();
+                    continue;
+                }
+
+                // Next activate it by factory if needed.
+                bool activated = false;
+                if (driver.factory != null) {
+                    device.intdev = driver.factory(device.config, device.location);
+
+                    // initialize the device, conditional on whether it is a bus or not.
+                    // If it is a bus, be sure to enumerate it.
+                    if (device.intdev is IBusDevice) {
+                        DebugStub.WriteLine(
+                            "Activate Device {0} {1} [w/ Enumerate]",
+                            __arglist(device.location, device.driver.name)
+                            );
+                        IBusDevice bus = (IBusDevice)device.intdev;
+                        bus.Initialize();
+                        activated = true;
+                        EnumerateDevice(bus, device.location, true);
+                    }
+                    else if (device.intdev is IDevice) {
+                        DebugStub.WriteLine("Activate Device {0} {1}",
+                                             __arglist(device.location,
+                                                       device.driver.name));
+                        device.intdev.Initialize();
+                        activated = true;
+                    }
+                }
+                else if (driver.imagePath != null) {
+                    device.extdev = new ExtensionDevice(driver, device);
+                    activated = device.extdev.Activate();
+                }
+                else {
+                    DebugStub.WriteLine("Driver appears to be incorrectly initialized.");
+                    DebugStub.Break();
+                }
+
+                if (activated) {
+                    // mark the device as loaded
+                    device.startOrder = ++DeviceNode.lastStartOrder;
+                    activations.Add(device.location, device);
+                    associations.Remove(device.location);
+
+                    // update the follows listing:
+                    foreach (XmlNode! follows in driver.metadata.Children) {
+                        if (follows.Name != ProvidesXmlTag) {
+                            continue;
+                        }
+                        string tagName =
+                            (!)follows.GetAttribute(FollowsNameXmlAttribute, "");
+                        SetFollows(tagName);
+                    }
+                }
+                else {
+                    DebugStub.WriteLine("Driver failed to activate.");
+                    DebugStub.Break();
+                }
+            }
+        }
+
+        // Finalize only deals with drivers that have been activated
+        private static void FinalizeOldDevices()
+        {
+            bool removed;
+
+            // Disable all of the devices in the order initialized.
+            do {
+                removed = false;
+                int highest = 0;
+                string highestDevice = null;
+
+                foreach (DictionaryEntry d in activations) {
+                    DeviceNode! dev = (DeviceNode!)d.Value;
+
+                    if (highest < dev.startOrder) {
+                        highest = dev.startOrder;
+                        highestDevice = (string)d.Key;
+                    }
+                }
+
+                if (highest != 0 && highestDevice != null) {
+                    DeviceNode! dev = (DeviceNode!)activations[highestDevice];
+
+                    Tracing.Log(Tracing.Audit, "Finalizing {0}\n", dev.location);
+                    if (dev.intdev != null) {
+                        dev.intdev.Finalize();
+                    }
+                    else if (dev.extdev != null) {
+                        dev.extdev.Finalize();
+                    }
+                    activations.Remove(highestDevice);
+                    removed = true;
+                }
+            } while (removed);
+        }
+
+        // Print device config to debug console and to the log
+        public static void Dump(bool detailed)
+        {
+            Driver.DumpAll();
+
+            DebugStub.WriteLine("Devices found but not associated:");
+            Tracing.Log(Tracing.Audit, "Devices found but not associated:");
+            foreach (DictionaryEntry de in instances) {
+                DeviceNode! dev = (DeviceNode!)de.Value;
+                DumpDeviceNode(dev, detailed);
+            }
+
+
+            DebugStub.WriteLine("Devices associated but not initialized:");
+            Tracing.Log(Tracing.Audit, "Devices associated but not initialized:");
+            foreach (DictionaryEntry de in associations) {
+                DeviceNode! dev = (DeviceNode!)de.Value;
+                DumpDeviceNode(dev, detailed);
+            }
+
+            DebugStub.WriteLine("Devices initialized:");
+            Tracing.Log(Tracing.Audit, "Devices initialized:");
+            foreach (DictionaryEntry de in activations) {
+                DeviceNode! dev = (DeviceNode!)de.Value;
+
+                if ((dev.intdev != null || dev.extdev != null) && dev.startOrder != 0) {
+                    DumpDeviceNode(dev, detailed);
+                }
+            }
+        }
+
+        static void DumpDeviceNode(DeviceNode! device, bool detailed)
+        {
+            DebugStub.WriteLine(" {0}:", __arglist(device.location));
+            Tracing.Log(Tracing.Audit, " device at " + device.location);
+
+            if (device.driver != null) {
+                DebugStub.WriteLine("  driver: {0}", __arglist(device.driver.name));
+                Tracing.Log(Tracing.Audit, "  driver: " + device.driver.name);
+            }
+
+            if (device.MatchingDeviceId != null) {
+                DebugStub.WriteLine("  dev-id: {0}", __arglist(device.MatchingDeviceId));
+                Tracing.Log(Tracing.Audit, "  dev-id: " + device.MatchingDeviceId);
+            }
+
+            if (detailed) {
+                if (device.config != null) {
+                    DebugStub.WriteLine(device.config.ToPrint());
+                }
+            }
+            DebugStub.WriteLine("");
+        }
+
+    }
+} // namespace Microsoft.Singularity.Io

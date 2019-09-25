@@ -1,0 +1,458 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Bitter.sg
+//
+//  Helper class for moving values in and out of byte vectors.
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Runtime.CompilerServices;  //StructAlign attribute
+using System.Runtime.InteropServices;   //structLayout attribute
+using System.GCs;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity
+{
+    public class Bitter
+    {
+        private static void BoundsCheck(byte[] in ExHeap buffer, int offset, int length)
+        {
+            if (buffer == null) {
+                throw new ArgumentNullException("value");
+            }
+            if (offset < 0) {
+                throw new ArgumentOutOfRangeException("startIndex", "ArgumentOutOfRange_NeedNonNegNum");
+            }
+            if (offset + length > buffer.Length) {
+                throw new ArgumentOutOfRangeException("ArgumentOutOfRange_Index");
+            }
+        }
+
+        private static void BoundsCheck(char[] in ExHeap buffer, int offset, int length)
+        {
+            if (buffer == null) {
+                throw new ArgumentNullException("value");
+            }
+            if (offset < 0) {
+                throw new ArgumentOutOfRangeException("startIndex", "ArgumentOutOfRange_NeedNonNegNum");
+            }
+            if (offset + length > buffer.Length) {
+                throw new ArgumentOutOfRangeException("ArgumentOutOfRange_Index");
+            }
+        }
+
+        private static void BoundsCheck(byte[] buffer, int offset, int length)
+        {
+            if (buffer == null) {
+                throw new ArgumentNullException("value");
+            }
+            if (offset < 0) {
+                throw new ArgumentOutOfRangeException("startIndex", "ArgumentOutOfRange_NeedNonNegNum");
+            }
+            if (offset + length > buffer.Length) {
+                throw new ArgumentOutOfRangeException("ArgumentOutOfRange_Index");
+            }
+        }
+
+        public static unsafe UIntPtr ToAddress(byte[]! in ExHeap buffer, int offset)
+        {
+            unsafe {
+                return (UIntPtr)(byte *)&buffer[offset];
+            }
+        }
+
+        unsafe public static byte[]! ToByteArray(byte[]! in ExHeap buffer)
+        {
+            byte[] retval = new byte[buffer.Length];
+            int length = buffer.Length;
+
+            fixed (byte *pdst = &retval[0]) {
+                byte *psrc = &buffer[0];
+                Buffer.MoveMemory(pdst, psrc, length);
+            }
+            return retval;
+        }
+
+        public static unsafe void ToByteArray(byte[]! in ExHeap buffer, int offset,
+                                              int length, byte[]! array, int aoffset)
+        {
+            BoundsCheck(buffer, offset, length);
+            BoundsCheck(array, aoffset, length);
+
+            fixed (byte *pdst = &array[aoffset]) {
+                byte *psrc = &buffer[offset];
+                Buffer.MoveMemory(pdst, psrc, length);
+            }
+        }
+
+        public static unsafe void ToIoMemory(byte[] in ExHeap buffer, int offset,
+                                             int length, IoMemory memory, int aoffset)
+        {
+            if (buffer == null || memory == null ||
+                offset < 0 || offset + length > buffer.Length ||
+                aoffset < 0 || aoffset + length > memory.Length) {
+
+                throw new ArgumentOutOfRangeException("ArgumentOutOfRange_Index");
+            }
+
+            byte * src = &buffer[offset];
+            memory.Write8(aoffset, src, length);
+        }
+
+        public static unsafe char ToChar(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(char));
+            byte *ptr = &buffer[offset];
+            return *((char *)ptr);
+        }
+
+        public static unsafe short ToInt16(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(short));
+            byte *ptr = &buffer[offset];
+            return *((short *)ptr);
+        }
+
+        public static unsafe int ToInt32(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(int));
+            byte *ptr = &buffer[offset];
+            return *((int *)ptr);
+        }
+
+        public static unsafe long ToInt64(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(long));
+            byte *ptr = &buffer[offset];
+            return *((long *)ptr);
+        }
+
+        public static unsafe ushort ToUInt16(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(ushort));
+            byte *ptr = &buffer[offset];
+            return *((ushort *)ptr);
+        }
+
+        public static unsafe uint ToUInt32(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(uint));
+            byte *ptr = &buffer[offset];
+            return *((uint *)ptr);
+        }
+
+        public static unsafe ulong ToUInt64(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(ulong));
+            byte *ptr = &buffer[offset];
+            return *((ulong *)ptr);
+        }
+
+        public static unsafe float ToSingle(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(float));
+            byte *ptr = &buffer[offset];
+            return *((float *)ptr);
+        }
+
+        public static unsafe double ToDouble(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(double));
+            byte *ptr = &buffer[offset];
+            return *((double *)ptr);
+        }
+
+        public static unsafe bool ToBoolean(byte[]! in ExHeap buffer, int offset) {
+            BoundsCheck(buffer, offset, sizeof(int));
+            byte *ptr = &buffer[offset];
+            return *((int *)ptr) ==  0 ? false : true;
+        }
+
+        // Converts a character vector to a managed string
+        public static unsafe string ToString(char[] in ExHeap chars)
+        {
+            if (chars == null) return null;
+            else {
+                char[]! in ExHeap nnChars = chars;
+                return ToString2(nnChars);
+            }
+        }
+
+        // Converts a character vector to a managed string
+        public static unsafe string! ToString2(char[]! in ExHeap chars,
+                                               int offset, int length)
+        {
+            if ((length == 0) || (chars.Length == 0)) {
+                return (!)String.Empty; // happens before we have the String contract
+            }
+
+            DebugStub.Assert(offset < chars.Length);
+            DebugStub.Assert(offset + length <= chars.Length);
+
+            char *ptr = &chars[0];
+            // unnecessary cast, but because we have to build the
+            // runtime first before Kernel.Contracts.dll, we don't know
+            // that StringCTOR always returns non-null value.
+            return (!)String.StringCTOR(ptr, offset, length);
+        }
+
+        public static unsafe string! ToString2(char[]! in ExHeap chars)
+        {
+            return ToString2(chars, 0, chars.Length);
+        }
+
+        // Converts a byte vector to a managed string
+        public static unsafe string ToString(byte[] in ExHeap chars)
+        {
+            if (chars == null) return null;
+            else {
+                return ToString2(chars);
+            }
+        }
+
+        // Converts a character vector to a managed string
+        public static unsafe string! ToString2(byte[]! in ExHeap chars)
+        {
+            if (chars.Length == 0) {
+                return (!)String.Empty; // happens before we have the String contract
+            }
+
+            byte *ptr = &chars[0];
+            // unnecessary cast, but because we have to build the
+            // runtime first before Kernel.Contracts.dll, we don't know
+            // that StringCTOR always returns non-null value.
+            return (!)String.StringCTOR(ptr, 0, chars.Length);
+        }
+
+        public static byte[]! in ExHeap FromByteArray(byte[]! buffer)
+        {
+            byte[] in ExHeap retval = new[ExHeap] byte[buffer.Length];
+            int length = buffer.Length;
+
+            FromByteArray(retval, 0, length, buffer, 0);
+            return retval;
+        }
+
+        public static byte[]! in ExHeap
+        FromByteArray(byte[]! buffer, int offset, int length)
+        {
+            byte[] in ExHeap retval = new[ExHeap] byte[length];
+            FromByteArray(retval, 0, length, buffer, offset);
+            return retval;
+        }
+
+        public static unsafe void FromByteArray(byte[]! in ExHeap buffer,
+                                                int offset, int length,
+                                                byte[]! array, int aoffset)
+        {
+            BoundsCheck(buffer, offset, length);
+            BoundsCheck(array, aoffset, length);
+
+            byte *pdst = &buffer[offset];
+            fixed (byte *psrc = &array[aoffset]) {
+                Buffer.MoveMemory(pdst, psrc, length);
+            }
+        }
+
+        public static unsafe void FromIoMemory(byte[] in ExHeap buffer, int offset,
+                                               int length, IoMemory memory, int aoffset)
+        {
+            if (buffer == null || memory == null ||
+                offset < 0 || offset + length > buffer.Length ||
+                aoffset < 0 || aoffset + length > memory.Length) {
+
+                throw new ArgumentOutOfRangeException("ArgumentOutOfRange_Index");
+            }
+
+            byte * src = &buffer[offset];
+            memory.Read8(aoffset, src, length);
+        }
+
+
+        public static unsafe void FromChar(byte[]! in ExHeap buffer, int offset,
+                                           char value) {
+            BoundsCheck(buffer, offset, sizeof(char));
+            byte *ptr = &buffer[offset];
+            *((char *)ptr) = value;
+        }
+
+        public static unsafe void FromInt16(byte[]! in ExHeap buffer, int offset,
+                                            short value) {
+            BoundsCheck(buffer, offset, sizeof(short));
+            byte *ptr = &buffer[offset];
+            *((short *)ptr) = value;
+        }
+
+        public static unsafe void FromInt32(byte[]! in ExHeap buffer, int offset,
+                                            int value) {
+            BoundsCheck(buffer, offset, sizeof(int));
+            byte *ptr = &buffer[offset];
+            *((int *)ptr) = value;
+        }
+
+        public static unsafe void FromInt64(byte[]! in ExHeap buffer, int offset,
+                                            long value) {
+            BoundsCheck(buffer, offset, sizeof(long));
+            byte *ptr = &buffer[offset];
+            *((long *)ptr) = value;
+        }
+
+        public static unsafe void FromUInt16(byte[]! in ExHeap buffer, int offset,
+                                             ushort value) {
+            BoundsCheck(buffer, offset, sizeof(ushort));
+            byte *ptr = &buffer[offset];
+            *((ushort *)ptr) = value;
+        }
+
+        public static unsafe void FromUInt32(byte[]! in ExHeap buffer, int offset,
+                                             uint value) {
+            BoundsCheck(buffer, offset, sizeof(uint));
+            byte *ptr = &buffer[offset];
+            *((uint *)ptr) = value;
+        }
+
+        public static unsafe void FromUInt64(byte[]! in ExHeap buffer, int offset,
+                                             ulong value) {
+            BoundsCheck(buffer, offset, sizeof(ulong));
+            byte *ptr = &buffer[offset];
+            *((ulong *)ptr) = value;
+        }
+
+        public static unsafe void FromSingle(byte[]! in ExHeap buffer, int offset,
+                                             float value) {
+            BoundsCheck(buffer, offset, sizeof(float));
+            byte *ptr = &buffer[offset];
+            *((float *)ptr) = value;
+        }
+
+        public static unsafe void FromDouble(byte[]! in ExHeap buffer, int offset,
+                                             double value) {
+            BoundsCheck(buffer, offset, sizeof(double));
+            byte *ptr = &buffer[offset];
+            *((double *)ptr) = value;
+        }
+
+        public static unsafe void FromBoolean(byte[]! in ExHeap buffer, int offset,
+                                              bool value) {
+            BoundsCheck(buffer, offset, sizeof(int));
+            byte *ptr = &buffer[offset];
+            *((int *)ptr) = value ? 1 : 0;
+        }
+
+        // Converts a managed string to a char vector.
+        public static char[] in ExHeap FromString(string str)
+        {
+            if (str == null) {
+                return null;
+            }
+            return FromString2(str);
+        }
+
+        // Converts a managed string to a char vector.
+        public static char[]! in ExHeap FromString2(string! str)
+        {
+            return FromString2(str, 0, str.Length);
+        }
+
+        public static char[]! in ExHeap FromString2(string! str,
+                                                    int     start,
+                                                    int     length)
+        {
+            if (length == 0) {
+                return new [ExHeap] char[0];
+            }
+            else {
+                if (start + length > str.Length) {
+                    length = str.Length - start;
+                }
+                char [] in ExHeap retval = new [ExHeap] char [length];
+                for (int i = 0; i < length; i++) {
+                    retval[i] = str[start + i];
+                }
+                return retval;
+            }
+        }
+
+        public static unsafe void Copy(byte[]! in ExHeap dest,
+                                       int destOffset,
+                                       int length,
+                                       byte[]! in ExHeap source,
+                                       int sourceOffset)
+        {
+            BoundsCheck(source, sourceOffset, length);
+            BoundsCheck(dest, destOffset, length);
+
+            byte *pdst = &dest[destOffset];
+            byte *psrc = &source[sourceOffset];
+            Buffer.MoveMemory(pdst, psrc, length);
+        }
+
+        public static unsafe void Copy(char[]! in ExHeap dest,
+                                       int destOffset,
+                                       int length,
+                                       char[]! in ExHeap source,
+                                       int sourceOffset)
+        {
+            BoundsCheck(source, sourceOffset, length);
+            BoundsCheck(dest, destOffset, length);
+
+            char *pdst = &dest[destOffset];
+            char *psrc = &source[sourceOffset];
+            Buffer.MoveMemory((byte*)pdst, (byte*)psrc, length*sizeof(char));
+        }
+
+        public static unsafe void Zero(byte[]! in ExHeap dest,
+                                       int destOffset,
+                                       int length)
+        {
+            BoundsCheck(dest, destOffset, length);
+            byte *pdst = &dest[destOffset];
+            Buffer.ZeroMemory(pdst, length);
+        }
+
+        public static unsafe byte[]! in ExHeap
+        SplitOff(ref byte[]! in ExHeap original, int offset)
+        {
+            byte[]! in ExHeap vec = original;
+            return (byte[]! in ExHeap)SharedHeapService.Split(
+                (Allocation*)vec,
+                new UIntPtr(offset)
+                );
+        }
+
+        public static unsafe char[]! in ExHeap
+        SplitOff(ref char[]! in ExHeap original, int charOffset)
+        {
+            char[]! in ExHeap vec = original;
+            return (char[]! in ExHeap)SharedHeapService.Split(
+                (Allocation*)vec,
+                new UIntPtr(sizeof(char) * charOffset)
+                );
+        }
+
+        public static unsafe void Truncate(ref byte[]! in ExHeap buffer,
+                                           int newLength)
+        {
+            SharedHeapService.Truncate(
+                (Allocation*)buffer,
+                new UIntPtr(newLength)
+                );
+        }
+
+        public static unsafe void Truncate(ref char[]! in ExHeap buffer,
+                                           int newLength)
+        {
+            SharedHeapService.Truncate(
+                (Allocation*)buffer,
+                new UIntPtr(sizeof(char) * newLength)
+                );
+        }
+    }
+}
+

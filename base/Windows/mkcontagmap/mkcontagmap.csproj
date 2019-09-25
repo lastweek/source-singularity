@@ -1,0 +1,30 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Windows\mkcontagmap\mkcontagmap.csproj
+
+Note:   Builds files that describe contracts for ETS
+        
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>mkcontagmap</AssemblyName>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="mkcontagmap.cs"/>
+    <Reference Include="System"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+
+</Project>

@@ -1,0 +1,61 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <ProductVersion>8.0.50727</ProductVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{69A8601E-9ADD-4905-96B3-6ABE3E8E3EF0}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <DefineConstants>ENABLE_INTEROP</DefineConstants>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>Microsoft.Singularity.MSBuildTasks</RootNamespace>
+    <AssemblyName>Microsoft.Singularity.MSBuildTasks</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.Build.Framework" />
+    <Reference Include="System" />
+    <Reference Include="System.Xml" />
+    <ProjectReference Include="..\mkmani\mkmani.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Csic.cs" />
+    <Compile Include="ExecTaskBase.cs" />
+    <Compile Include="GenerateLanguage.cs" />
+    <Compile Include="Mkasm.cs" />
+    <Compile Include="Mkmani.cs" />
+    <Compile Include="Nib.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Sgc.cs" />
+    <Compile Include="TaskBase.cs" />
+    <Compile Include="Util.cs" />
+    <Compile Include="WindowsInterop.cs" />
+  </ItemGroup>
+  <Import Project="..\..\Targets\Windows.targets" />
+  <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
+       Other similar extension points exist, see Microsoft.Common.targets.
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+  -->
+</Project>

@@ -1,0 +1,106 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using NetStack.Contracts;
+using Smb.PublicChannels;
+
+namespace Smb.PrivateChannels
+{
+	public enum SmbTransactionError
+	{
+		None = 0,
+		InvalidParameters,
+		Timeout,
+		ConnectionFailed,
+		AuthenticationFailed,
+		ConnectionReset,
+		InternalError,
+	}
+	
+	public rep struct SmbMuxTuple
+	{
+		public int TreeId;
+		public int ProcessId;
+		public int UserId;
+		public int MuxId;
+	}
+
+	public contract SmbTransactor
+	{
+		in message Request(byte[]! in ExHeap request);
+		out message Response(byte[]! in ExHeap response);
+
+		in message Transaction2(byte[]! in ExHeap transaction);
+		out message Transaction2Response(byte[]! in ExHeap segment);
+
+		out message RequestFailed(SmbTransactionError error);
+
+		// A transactor can create *another* transactor.		
+		in message AddTransactor();
+		out message AckAddTransactor(SmbTransactor.Imp:Ready! imp);
+		out message NakAddTransactor();
+		
+		
+		state Ready : one
+		{
+			Request? -> WaitingRequestResponse;
+			Transaction2? -> WaitingTransaction2Response;
+			AddTransactor? -> (AckAddTransactor! or NakAddTransactor!) -> Ready;
+		}			
+		
+		state WaitingRequestResponse : one
+		{
+			RequestFailed! -> Ready;
+			Response! -> Ready;
+		}
+		
+		state WaitingTransaction2Response : one
+		{
+			RequestFailed! -> Ready;
+			Transaction2Response! -> Ready;
+		}
+	}
+	
+	[Flags]
+	public enum TransactorFlag
+	{
+		None = 0,
+		// If set, then this request is part of negotiating the channel (authentication, options, etc.)
+		// If not set, then 
+		Early = 1,
+	}
+	
+	public enum SmbMuxState
+	{
+		Invalid = 0,
+		Disconnected,
+		Connecting,
+		Connected,
+	}
+	
+//	
+//	public enum FileShareAccess
+//	{
+//		None = 0,
+//		Read = 1,
+//		Write = 2,
+//		Delete = 4,
+//	}
+//	
+//	public enum FileCreateDisposition
+//	{
+//		Supersede = 0,
+//		Open = 1,
+//		Create = 2,
+//		OpenIf = 3,
+//		Overwrite = 4,
+//		OverwriteIf = 5,
+//	}
+//
+}

@@ -1,0 +1,190 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Smb.Protocol;
+using Smb.PublicChannels;
+
+namespace Smb.Shared
+{
+	sealed class SmbDebug
+	{
+		private SmbDebug() {}
+		
+		public static void WriteLine(string format, params object[] args)
+		{
+			WriteLine(String.Format(format, args));
+		}
+		
+		public static void WriteLine(string line)
+		{
+			DebugStub.WriteLine(line);
+		}
+
+		public static string! GetCommandName(SmbCommand command)
+		{
+			switch (command)
+			{
+			case SmbCommand.Negotiate: return "Negotiate";
+			case SmbCommand.CloseFile: return "CloseFile";
+			case SmbCommand.SessionSetupAndX: return "SessionSetupAndX";
+			case SmbCommand.TreeConnect: return "TreeConnect";
+			case SmbCommand.TreeConnectAndX: return "TreeConnectAndX";
+			case SmbCommand.NtCreateAndX: return "CreateAndX";
+			case SmbCommand.Transaction2: return "Transaction2";
+			case SmbCommand.DeleteFile: return "DeleteFile";
+			case SmbCommand.CreateDirectory: return "CreateDirectory";
+			case SmbCommand.DeleteDirectory: return "DeleteDirectory";
+			case SmbCommand.CheckDirectory: return "CheckDirectory";			
+			case SmbCommand.ReadAndX: return "ReadAndX";
+			case SmbCommand.WriteAndX: return "WriteAndX";
+			
+			default:
+				return String.Format("0x{0:x}", (int)command);
+			}
+		}
+		
+		public static string! GetSmbMessageSummary(byte[]! in ExHeap smb, int offset)
+		{
+			StringBuilder summary = new StringBuilder(80);
+			
+			ref SmbHeader header = ref smb[offset];
+			
+			
+			summary.Append(GetCommandName((SmbCommand)header.Command));
+			
+			if ((SmbCommand)header.Command == SmbCommand.Transaction2) {
+				if (header.IsRequest) {
+					ref SmbTransaction2Request request = ref smb[offset];
+					SmbTransaction2Code code = (SmbTransaction2Code)request.Transaction.Setup0;
+					switch (code) {
+						case SmbTransaction2Code.FindFirst: return "Transaction2.FindFirst";
+						case SmbTransaction2Code.FindNext: return "Transaction2.FindNext";
+						default:
+							return String.Format("Transaction2.0x{0:x}", (uint)code);
+					}
+				}
+			}
+			
+			summary.Append(" ");
+			
+			if (header.IsResponse && header.IsError) {
+				summary.Append(" ERROR: " + header.GetErrorText());
+			}
+				
+			return summary.ToString();		
+		}
+
+        public static void DumpMessage(byte[]! in ExHeap buffer, int offset, int length)
+        {
+			SmbDebug.WriteLine("--------------- SMB MESSAGE ----------------");        
+			Util.DumpBuffer(buffer, 0, length);
+			if (length < SmbHeader.SizeOf) {
+				SmbDebug.WriteLine("    Message is too short to be a valid SMB message!");
+				return;
+			}
+			
+			ref SmbHeader header = ref buffer[offset];
+			SmbFlag1 flags1 = (SmbFlag1)header.Flags1;
+			SmbFlag2 flags2 = (SmbFlag2)header.Flags2;
+			bool is_response = (flags1 & SmbFlag1.IsResponse) != 0;
+
+			int smbLength = ((int)header.FrameLength1 << 16) | ((int)header.FrameLength2 << 8) | ((int)header.FrameLength3);
+			
+			SmbDebug.WriteLine("    Total Length:  " + length);
+			SmbDebug.WriteLine("    SMB Length:    " + smbLength);			
+			SmbDebug.WriteLine("    Direction:     " + (is_response ? "Response":"Request"));
+			SmbDebug.WriteLine("    Command:       0x{0:x} {1}", header.Command, SmbDebug.GetCommandName((SmbCommand)header.Command));
+			SmbDebug.WriteLine("    Flags2:        " + GetFlags2Text(flags2));
+			SmbDebug.WriteLine("    Flags1:        " + GetFlags1Text(flags1));
+			SmbDebug.WriteLine("    Mux tuple:     Tid {0:x4} Pid {1:x4} Uid {2:x4} Mid {3:x4}",
+				header.TreeId,
+				header.ProcessId,
+				header.UserId,
+				header.MuxId);
+			// SmbDebug.WriteLine("    Parameters:    {0}", header.ParameterCount);
+			
+			SmbDebug.WriteLine("    Error:         {0:x2} {1:x2} {2:x2} {3:x2}",
+				header.ErrorClass,
+				header.Error1,
+				header.Error2,
+				header.Error3);
+			SmbDebug.WriteLine("");
+        }
+
+
+		public static string! GetFlags1Text(SmbFlag1 value)
+		{
+			string! text = String.Format("(0x{0:x4}) ", value);
+			
+			#pragma warning disable 0612 // [Obsolete] reference
+			if ((value & SmbFlag1.LockAndReadOk) != 0)				text += " LockAndReadOk";
+			if ((value & SmbFlag1.SendNoAck) != 0)					text += " SendNoAck";
+			if ((value & SmbFlag1.CaseInsensitive) != 0)			text += " CaseInsensitive";
+			if ((value & SmbFlag1.CanonicalizedPaths) != 0)			text += " CanonicalizedPaths";
+			if ((value & SmbFlag1.SupportsOpLocks) != 0)			text += " SupportsOpLocks";
+			if ((value & SmbFlag1.SupportsOpLockNotify) != 0)		text += " SupportsOpLockNotify";
+			if ((value & SmbFlag1.IsResponse) != 0)					text += " IsResponse";
+			
+			return text;
+		}
+
+		public static string! GetFlags2Text(SmbFlag2 value)
+		{
+			string! text = String.Format("(0x{0:x4}) ", value);
+			
+			if ((value & SmbFlag2.KnowsLongNames) != 0)				text += " KnowsLongNames";
+			if ((value & SmbFlag2.KnowsExtendedAttributes) != 0)	text += " KnowsExtendedAttributes";
+			if ((value & SmbFlag2.SupportsSecuritySignature) != 0)	text += " SupportsSecuritySignature";
+			if ((value & SmbFlag2.SecuritySignatureRequired) != 0)	text += " SecuritySignatureRequired";
+			if ((value & SmbFlag2.AllPathsAreLongNames) != 0)		text += " AllPathsAreLongNames";
+			if ((value & SmbFlag2.ReparsePath) != 0)				text += " ReparsePath";
+			if ((value & SmbFlag2.AwareOfExtendedSecurity) != 0)	text += " AwareOfExtendedSecurity";
+			if ((value & SmbFlag2.DfsNamespace) != 0)				text += " DfsNamespace";
+			if ((value & SmbFlag2.PagingIo) != 0)					text += " PagingIo";
+			if ((value & SmbFlag2.UsingNtStatus) != 0)				text += " UsingNtStatus";
+			if ((value & SmbFlag2.UnicodeStrings) != 0)				text += " UnicodeStrings";
+			
+			return text;
+		}
+
+		public static string! EnumToString(SmbClientConnectionStatus status)
+		{
+			switch (status)
+			{
+				case SmbClientConnectionStatus.Disconnected: return "Disconnected";
+				case SmbClientConnectionStatus.Negotiating: return "Negotiating";				
+				case SmbClientConnectionStatus.TransportConnecting: return "Connecting";
+				case SmbClientConnectionStatus.Authenticating: return "Authenticating";
+				case SmbClientConnectionStatus.Connected: return "Connected";
+				default: return "Unknown (" + ((int)status).ToString() + ")";
+			}
+		}		
+		
+		public static string! EnumToString(SmbReasonDisconnected reason)
+		{
+			switch (reason)
+			{
+				case SmbReasonDisconnected.Idle:					return "Idle";
+				case SmbReasonDisconnected.TransportConnectFailed:	return "Failed to connect transport";
+				case SmbReasonDisconnected.NegotiationFailed:		return "Negotiation failed";
+				case SmbReasonDisconnected.ResourceConnectFailed:	return "Resource connect rejected";
+				case SmbReasonDisconnected.AuthenticationFailed:	return "Authentication failed";
+				case SmbReasonDisconnected.AuthorizationFailed:		return "Authorization failed";
+				case SmbReasonDisconnected.NoResponse:				return "No response from server";
+				case SmbReasonDisconnected.ProtocolViolation:		return "Protocol violation";
+				case SmbReasonDisconnected.TransportFailure:		return "Transport failure";
+				default: return "Unknown (" + ((int)reason).ToString() + ")";
+			}
+		}		
+		
+
+	}
+}

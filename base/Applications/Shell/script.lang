@@ -1,0 +1,309 @@
+
+[fields] 
+{
+	bool TRACE = false;
+}
+
+[init]
+{
+
+
+}
+
+[tokens]
+{
+    if := "^if" 
+    else := "^else"
+    while := "^while"
+    bool := "^(true|false)"
+    equals_compare := "^=="
+    
+    lt := "^<"
+    le := "^<="
+    gt := "^>"
+    ge := "^>="
+    semicolon := "^;"
+    integer := "^-?\d+"
+    interp := "^""(([^\\""\r\n])|(\\.))*"""
+    { tok.value = ((String) tok.value).Replace("\"",""); }
+    
+    
+    string  := "^'([^'])*'"
+    { tok.value = ((String) tok.value).Replace("'",""); }
+    
+    comment := "^#.*"
+    { tok.value = null; }
+
+    word := "^\w+"
+    div := "^/"
+    equals := "^="
+    plus := "^\+"
+    mult := "^\*"
+    mod := "^%"
+    concat := "^\."
+    and := "^&&"
+    ampersand := "^&"
+    or :=  "^\|\|"
+    not := "^\!"
+    lparen := "^\("
+    rparen := "^\)"
+    lbrace := "^{"
+    rbrace := "^}"
+    minus := "^-"
+    
+    reference := "^((\$\w+)|(\$\(\w+\))|(\$\?)|(\$\(\?\))|(\$#)|(\$\(#\)))"
+    {  
+	   tok.value = ((String) tok.value).Replace("$","");
+	   tok.value =((String) tok.value).Replace("(","");
+	   tok.value = ((String) tok.value).Replace(")","");
+    }
+	
+    newline := "^\n"
+    { tok.optional = true; }
+	
+    whitespace := "^[ \f\r\t\v]+"
+    { tok.value = null; }
+	
+	lparen rparen > not
+	lparen rparen not > mult div mod
+	not lparen rparen mult div mod > plus minus concat and or
+}
+
+
+[grammar]
+{	
+	S => STMT_LIST:list
+	{
+		if(TRACE) Console.WriteLine("Reducing statement list to programm");
+		value = new ScriptEngine.Block((ArrayList) list);
+	}
+	
+	STMT_LIST => epsilon
+	{ 
+	  if(TRACE) Console.WriteLine("Rsmt epsilon");
+	  value  = new ArrayList();
+	 }
+	 
+	STMT_LIST => STMT:stmt  STMT_LIST:list 
+	{  
+		if(TRACE) Console.WriteLine("Reduction: adding statement to statement list");
+		((ArrayList) list).Insert(0,stmt);
+		value = list;
+	}
+
+	STMT => if lparen E:cond rparen lbrace STMT_LIST:stmts rbrace
+	{
+		if(TRACE) Console.WriteLine("Reducing if");
+		value = new ScriptEngine.If((ScriptEngine.Expression) cond, new ScriptEngine.Block((ArrayList) stmts));
+	}
+	STMT => if lparen E:cond rparen lbrace STMT_LIST:trueBranch rbrace else lbrace STMT_LIST:falseBranch rbrace 
+	{
+		if(TRACE) Console.WriteLine("Reducing if then else");
+		value = new ScriptEngine.IfThenElse((ScriptEngine.Expression) cond, new ScriptEngine.Block((ArrayList) trueBranch), new ScriptEngine.Block((ArrayList) falseBranch));
+	}
+	
+	STMT => while lparen E:cond rparen lbrace STMT_LIST:block rbrace
+	{
+		if(TRACE) Console.WriteLine("Reducing while loop");
+		value = new ScriptEngine.While((ScriptEngine.Expression) cond, new ScriptEngine.Block((ArrayList) block));	
+	}
+	
+	STMT => word:var equals E:expr newline	
+	{
+		if(TRACE) Console.WriteLine("Reducing assignment: " + var + "= " + expr);
+		value = new ScriptEngine.Assign((String) var, (ScriptEngine.Expression) expr);
+	}
+	
+	STMT => COMMAND:comm 
+	{
+		if(TRACE) Console.WriteLine("Reducing command list to statement: " + comm);
+		value = new ScriptEngine.Command((ArrayList) comm);
+	}
+	
+	STMT => ASYNC_COMMAND:comm 
+	{
+		if(TRACE) Console.WriteLine("Reducing command list to statement: " + comm);
+		value = new ScriptEngine.Command((ArrayList) comm, true);
+	}
+
+
+	COMMAND => COMM:elem COMM_LIST:list newline
+	{
+		if(TRACE) Console.WriteLine("reducing command list to command");
+		((ArrayList) list).Insert(0,elem);
+		value = list;
+	}
+
+
+	ASYNC_COMMAND => COMM:elem COMM_LIST:list ampersand newline
+	{
+		if(TRACE) Console.WriteLine("reducing command list to command");
+		((ArrayList) list).Insert(0,elem);
+		value = list;
+	}
+
+	
+	
+	COMM_LIST =>  COMM:elem COMM_LIST:list
+	{
+        ArrayList rest = (ArrayList)list;
+		if(TRACE) {
+           Console.WriteLine("reducing commlist: '{0}'", elem);
+           int i=0;
+           foreach (object o in rest) {
+              Console.WriteLine("  [{0}] = {1}", i++, o);
+           }
+        }
+		rest.Insert(0,elem);
+		value = list;
+	}
+	
+	COMM_LIST => epsilon
+	{ 
+		value = new ArrayList(); 
+	}
+	
+	COMM => reference:varRef
+	{   
+		if(TRACE) Console.WriteLine("Reducing variable in command reference: '{0}'", varRef);
+		value = new ScriptEngine.VariableReference((String) varRef);
+	}
+
+	COMM => interp:str
+	{
+		if(TRACE) Console.WriteLine("Reducing interp: '{0}'", str);
+        value = new ScriptEngine.StringInterpolation((String) str); 
+    }
+
+	COMM => string:str
+	{ 
+		if(TRACE) Console.WriteLine("Reducing string: '{0}'", str);
+        value = new ScriptEngine.StringLiteral((String) str); 
+    }
+
+	COMM => word:w
+	{
+		if(TRACE) Console.WriteLine("Reducing command word: '{0}'", w);
+		value = new ScriptEngine.StringLiteral((String) w);
+	}
+
+	COMM => integer:integer
+	{ value = new ScriptEngine.IntegerLiteral(Int32.Parse((String) integer)); }
+
+
+	
+	E => lparen E:e rparen
+	{ value = e; }
+	
+	E => integer:intString
+	{ 
+		if(TRACE) Console.WriteLine("Reducing integer literal expression: " + intString);
+		value = new ScriptEngine.IntegerLiteral(Int32.Parse((String) intString)); 
+	}
+	
+	E => interp:interp
+	{ value = new ScriptEngine.StringInterpolation((String) interp); }
+	E => string:strVal
+	{ 
+		if(TRACE) Console.WriteLine("Reducing string literal expression: " + strVal);
+		value = new ScriptEngine.StringLiteral((String) strVal); 
+	}
+	
+	E => bool:boolVal
+	{ 
+		if(TRACE) Console.WriteLine("reducing bool literal expression");
+		value = new ScriptEngine.BooleanLiteral(Boolean.Parse((String) boolVal));
+	}
+	
+	E => reference:varRef
+	{
+		value = new ScriptEngine.VariableReference((String) varRef);
+	}
+	
+	E => E:e1 and E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean and");
+		value = new ScriptEngine.And((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	
+	E => E:e1 or E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean or");
+		value = new ScriptEngine.Or((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	
+	E => E:e1 lt E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean less");
+		value = new ScriptEngine.Less((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	
+	E => E:e1 le E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean less than or equal");
+		value = new ScriptEngine.LessEqual((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	
+	E => E:e1 equals_compare E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean ==");
+		value = new ScriptEngine.Equal((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	
+	E => E:e1 gt E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean greater");
+		value = new ScriptEngine.Greater((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	E => E:e1 ge E:e2
+	{
+		if(TRACE) Console.WriteLine("reducing to boolean greater than or equal");
+		value = new ScriptEngine.GreaterEqual((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}	
+	
+	E => not E:e1
+	{ 
+		if(TRACE) Console.WriteLine("reducing to boolean and");
+		value = new ScriptEngine.Negate((ScriptEngine.Expression) e1);
+	}
+	
+	E => reference:varRef
+	{ 
+		if(TRACE) Console.WriteLine("Reducing expression variable reference");
+		value = new ScriptEngine.VariableReference((String) varRef);
+	}
+	
+	E => E:e1 plus E:e2
+	{ 
+		if(TRACE) Console.WriteLine("Reducing plus");
+		value = new ScriptEngine.Add((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+      }
+
+	E => E:e1 minus E:e2
+	{ 
+		if(TRACE) Console.WriteLine("Reducing minus");
+		value = new ScriptEngine.Subtract((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+      }
+	
+	E => E:e1 mult E:e2
+	{ 
+		if(TRACE) Console.WriteLine("Reducing multiply");
+		value = new ScriptEngine.Multiply((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	E => E:e1 mod E:e2
+	{ 
+		if(TRACE) Console.WriteLine("Reducing modulus");
+		value = new ScriptEngine.Mod((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+
+	E => E:e1 div E:e2
+	{ 
+		if(TRACE) Console.WriteLine("Reducing divide");
+		value = new ScriptEngine.Divide((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);
+	}
+	E => E:e1 concat E:e2
+	{ 
+		value = new ScriptEngine.Concat((ScriptEngine.Expression) e1, (ScriptEngine.Expression) e2);	
+	}
+
+}

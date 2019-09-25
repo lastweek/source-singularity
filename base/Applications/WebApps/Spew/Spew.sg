@@ -1,0 +1,119 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   The Spew web app (serves files and supports browsing)
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Text;
+using System.Web;
+using FileSystem.Utils;
+
+namespace Microsoft.Singularity.WebApps
+{
+    public class SpewWebApp : IWebApp
+    {
+        private const string RepeatPattern = "Here is a repeating string of text that serves as content. ";
+
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            string query = request.GetQueryString();
+            int numBytes = 0, chunkSize = 5840; // 1460 * 4
+
+            ExtractQueryParamNumValue("numBytes", query, ref numBytes);
+            ExtractQueryParamNumValue("chunkSize", query, ref chunkSize);
+
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-type", "text/plain");
+
+            if (numBytes == 0) {
+                request.SendBodyData(Encoding.ASCII.GetBytes("Specify a 'numBytes' query param, and optionally a 'chunkSize' query param!"));
+                request.Done();
+
+            }
+            else {
+                byte[]! in ExHeap buf;
+                int bytesWritten = 0, patternLength = RepeatPattern.Length;
+
+                while (bytesWritten < numBytes) {
+                    int bytesLeft = numBytes - bytesWritten;
+                    int thisPass = chunkSize < bytesLeft ? chunkSize : bytesLeft;
+                    buf = new[ExHeap] byte[thisPass];
+
+                    for (int i = 0; i < thisPass; i++) {
+                        buf[i] = (byte)RepeatPattern[i % patternLength];
+                    }
+
+                    request.SendBodyData(buf);
+                    bytesWritten += thisPass;
+                }
+
+                request.Done();
+            }
+        }
+
+        private bool ExtractQueryParamNumValue(string! paramName, string queryString, ref int outVal)
+        {
+            if (queryString == null) {
+                return false;
+            }
+
+            int start = queryString.IndexOf(paramName + "=");
+
+            if (start == -1) {
+                return false;
+            }
+
+            start += paramName.Length + 1;
+            int end = queryString.IndexOf("&", start);
+            string val;
+
+            if (end == -1) {
+                val = queryString.Substring(start);
+            }
+            else {
+                val = queryString.Substring(start, end - start);
+            }
+
+            try {
+                outVal = Int32.Parse(val);
+                return true;
+            }
+            catch (Exception) {
+                return false;
+            }
+        }
+
+
+        // ======================================================
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        public static void Main(string[]! args)
+        {
+            Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            WebAppContract.Exp conn = ep as WebAppContract.Exp;
+            if (conn == null) {
+                // Wrong contract type!
+                delete ep;
+                return;
+            }
+
+            conn.SendWebAppReady();
+
+            SpewWebApp webApp = new SpewWebApp();
+            Driver.ServiceChannel(webApp, conn);
+            delete conn;
+        }
+    }
+}

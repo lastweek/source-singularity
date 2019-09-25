@@ -1,0 +1,106 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.V1;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    public class BounceBackServer
+    {
+        public static int Main(String[] args)
+        {
+            DirectoryServiceContract.Imp! dirImp;
+
+            dirImp = DirectoryService.NewClientEndpoint();
+
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            string location = "/BounceBackServer";
+            ErrorCode error;
+            if (!SdsUtils.Register(location, dirImp, nsImp, out error)) {
+                DebugStub.WriteLine("Failed to register in BSP namespace error {0}\n",
+                                    __arglist(SdsUtils.ErrorCodeToString(error)));
+                delete nsExp;
+                delete dirImp;
+                return -1;
+            }
+
+            // Here is the set of client channels we service
+            ESet<CalculatorContract.Exp:Ready> epSet = new ESet<CalculatorContract.Exp:Ready>();
+            while (true) {
+                switch receive {
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! exp) :
+                        CalculatorContract.Exp calculatorExp  = exp as CalculatorContract.Exp;
+                        if(calculatorExp == null) {
+                            nsExp.SendNackConnect(exp);
+                        }
+                        else {
+                            DebugStub.Print("Received new ServerControl\n");
+                            calculatorExp.SendSuccess();
+                            epSet.Add(calculatorExp);
+                            nsExp.SendAckConnect();
+                        }
+                        break;
+
+                    case ep.AddInteger(int first, int second) in epSet :
+                        DebugStub.Print("Server received add integer request\n");
+                        int result = first + second;
+                        ep.SendIntegerResult(result);
+                        epSet.Add(ep);
+                        break;
+
+                    case ep.SubtractInteger(int first, int second) in epSet :
+                        DebugStub.Print("Server received subtract integer request\n");
+                        int result = first - second;
+                        ep.SendIntegerResult(result);
+                        epSet.Add(ep);
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        delete ep;
+                        break;
+
+                    case epSet.Empty() && nsExp.ChannelClosed() :
+                        delete nsExp;
+                        epSet.Dispose();
+                        delete dirImp;
+                        return -1;
+                        break;
+
+                    case unsatisfiable :
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            delete dirImp;
+
+            return 0;
+        }
+    }
+}
+

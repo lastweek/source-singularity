@@ -1,0 +1,276 @@
+//******************************************
+// Singularity Events
+//******************************************
+
+1 SysInfo
+#version 0
+#type CpuSpeed 1
+{
+    Hz, ItemLongLong
+}
+#type ContractName 2
+{
+    Tag, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Name, ItemString
+}
+#type ProcessInfo 3
+{
+    Id, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Name, ItemString
+}
+#type ThreadInfo 4
+{
+    Id, ItemULong
+    Pid, ItemULong
+}
+
+3 Cassini
+#version 0
+#type URI 1
+{
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    URI, ItemString
+}
+
+5 Shell
+#version 0
+#type Command 1
+{
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Text, ItemString
+}
+
+
+8 Endpoint
+#version 0
+#type Dispose           1
+{
+    ChannelId, ItemLong
+}
+#type Select            2
+{
+}
+#type RetrieveHook      6
+#type DeliverHook       7
+{
+    MessageTag, ItemLong
+    ChannelId, ItemLong
+    ContractTag, ItemULong
+}
+#type Notify           10
+{
+    ChannelId, ItemLong
+}
+
+
+9 ChannelService
+#version 0
+#type TransferBlockOwnership 1
+{
+    ChannelId, ItemLong
+    DestPID, ItemULong
+}
+#type TransferContentOwnership 2
+{
+    FromPID,       ItemULong
+    DestPID,       ItemULong
+    ChannelIdFrom, ItemLong
+    ChannelIdTo,   ItemLong
+    ChannelIdPeer, ItemLong
+}
+
+
+10 WaitHandle
+#version 0
+#type WaitDone 10
+{
+    HandleID, ItemLong
+    TID, ItemULong
+}
+
+
+11 AutoResetEvent
+#version 0
+
+#type Acquire 1
+#type Enqueue 2
+{
+    HandleID, ItemLong
+    TID, ItemULong
+}
+
+
+12 Mutex
+#version 0
+
+#type AcquireAgain 1
+#type Acquire 2
+#type Enqueue 3
+{
+{
+    HandleID, ItemLong
+    DestTID, ItemULong
+}
+
+
+13 ManuelResetEvent
+#version 0
+
+#type Acquire 1
+#type Enqueue 2
+{
+    HandleID, ItemLong
+    DestTID, ItemULong
+}
+
+
+14 EndpointCore
+#version 0
+
+#type Connect           4
+{
+    ChannelId, ItemLong    
+}
+#type TransferToProcess 5
+{
+    ChannelId, ItemLong    
+    DestPID, ItemULong
+}
+
+
+19 Process
+#version 0
+#type CreateKernelProcess 1
+{
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Name, ItemString
+}
+#type CreateUserProcess 2
+{
+    PID, ItemLong
+    ParentPID, ItemLong
+}
+#type ImageLoad 3
+{
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Name, ItemString
+}
+
+
+20 Thread
+#version 0
+#type SwitchTo  3
+#type CreateIdle    12
+#type Create        13
+{
+    DestTID, ItemULong
+}
+
+#type CreateInitial 10
+{
+}
+
+#type WaitAny      30    // block thread on a certain timeout
+#type WaitFail     31    // wait failed on a certain timeout
+{
+    Timeout, ItemLongLong
+    DestTID, ItemULong
+}
+
+
+21 DiskIo
+#version 0
+#type StartRead  0
+#type StartWrite 1
+#type EndRead    2
+#type EndWrite   3
+{
+    Sector, ItemULong
+    Length, ItemULong
+    DiskId, ItemULong
+    BufferAddr, ItemULong
+}
+
+#type NewDiskName 4
+{
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Name, ItemString
+}
+
+#type NewDiskId 5
+{
+    DiskId, ItemULong
+}
+
+23 Directory
+#version 0
+#type DoBind 1        
+#type DoGetAttributes  2 
+#type DoCreateDirectory  3
+#type DoCreateFile  4
+#type DoDeleteDirectory  5
+#type DoDeleteLink  6
+#type DoGetLinkValue  7
+#type DoCreateLink  8
+{
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Dummy, ItemULong
+    Name, ItemString
+}
+
+25 GC
+#version 0
+#type StartStopTheWorld  1
+#type EndStopTheWorld  2
+#type StartCollection  3
+#type EndCollection  4
+{
+}
+
+30 Processor
+#version 0
+#type Exception 0
+{
+    Vector, ItemULong
+}
+
+#type Resume 1
+{
+    DestTID, ItemULong
+}
+
+#type Interrupt 2
+{
+    Irq, ItemULong
+}

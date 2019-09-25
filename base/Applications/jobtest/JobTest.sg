@@ -1,0 +1,206 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Singularity pipe test program.
+//
+using System;
+using System.Collections;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.ConsoleApplications;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Echo stdin to stdout", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Echo.AppMain(this);
+        }
+    }
+
+    public class Echo
+    {
+            // kinda dumb...
+        private static bool CommandLineSyntaxCheck(string! commandLine)
+        {
+            int quoteCount = 0;
+            for (int i = 0; i < commandLine.Length; i++) {
+                if (commandLine[i] == '\'') {
+                    quoteCount++;
+                }
+            }
+
+            return (quoteCount % 2 == 0);
+        }
+
+        private static bool InSeparators(char c, char []! separators)
+        {
+            for (int i = 0; i < separators.Length; i++) {
+                if (separators[i] == c)
+                    return true;
+            }
+            return false;
+        }
+
+        private static ArrayList! Tokenize(string! input, int last,
+                                           char []! separators)
+        {
+            ArrayList tokens = new ArrayList();
+
+            for (int i = 0; i <= last;) {
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to slurp word
+                int start = i;
+                while (i <= last &&
+                       !InSeparators(input[i], separators) &&
+                       input[i] != '\'')
+                {
+                    i++;
+                }
+                if (i != start) {
+                    tokens.Add(input.Substring(start, i - start));
+                }
+
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to quoted slurp word
+                if (input[i] == '\'') {
+                    start = i;
+                    i++;
+                    while (i <= last && input[i] != '\'') {
+                        i++;
+                    }
+
+                    if (i <= last && input[i] == '\'') {
+                        tokens.Add(input.Substring(start + 1, i - start - 1));
+                        i++;
+                    }
+                    else {
+                        tokens.Add(input.Substring(start, i - start));
+                        i++;
+                    }
+                }
+            } // end for
+
+            return tokens;
+        }
+
+        private static void BreakCommandLine(string!       input,
+                                             char []!      separators,
+                                             out string    command,
+                                             out string[]! commandArguments,
+                                             out bool      isBackground)
+        {
+            isBackground = false;
+
+            if (!CommandLineSyntaxCheck(input)) {
+                command = "";
+                commandArguments = new string[0];
+                return;
+            }
+
+            // Scan for trailing ampersand first
+            int last = input.Length - 1;
+            while (last > 0 && InSeparators(input[last], separators)) {
+                last--;
+            }
+
+            if (input[last] == '&') {
+                isBackground = true;
+                last--;
+            }
+
+            ArrayList tokens = Tokenize(input, last, separators);
+
+            if (tokens.Count == 0) {
+                command = "";
+                commandArguments = new string[0];
+                isBackground = false;
+                return;
+            }
+
+            command = (string) tokens[0];
+            commandArguments = new string [tokens.Count];
+            for (int i = 0; i < tokens.Count; i++) {
+                commandArguments[i] = (string) tokens[i];
+            }
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            string commandName;
+            string[]! commandArguments;
+            bool isBackground;
+
+            DirectoryServiceContract.Imp ds = ((!) config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+            assert ds.InState(DirectoryServiceContract.Ready.Value);
+
+            JobControl  jobControl =  ConsoleJob.StartOutputPipeThread();
+            ParameterProcessor parameterProcessor = new ParameterProcessor();
+
+            while (true) {
+                Console.Write("enter job>");
+                string a = Console.ReadLine();
+                if (a == null || a == "q") {
+                    break;
+                }
+                if (a == "") continue;
+
+                BreakCommandLine(a, new char[] {' '},
+                                out commandName, out commandArguments,
+                                out isBackground);
+
+                ConsoleJob job = new ConsoleJob();
+                if (job.CreateProcess(ds, jobControl, commandArguments, parameterProcessor)) {
+                    job.Start();
+                    if (!isBackground) job.WaitForJob();
+                }
+                job.Dispose();
+                Console.WriteLine(a);
+            }
+            jobControl.Dispose();
+            delete ds;
+            return 0;
+        }
+    }
+}

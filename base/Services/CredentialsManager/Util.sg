@@ -1,0 +1,65 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/CredentialsManager/Util.sg
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Security.CredentialsManager
+{
+    internal class Util
+    {
+        // These methods combine two or more hash codes to produce a combined hash.
+        // The idea is that we multiply the values by different prime numbers
+        // (while extending to 64 bits), XOR the results, and then fold the top 32 bits
+        // into the bottom.  This is completely untested; I have no idea whether this
+        // is a great or horrible way to combine hash values.
+    
+        public static int CombineHashCodes(int hc0, int hc1)
+        {
+            long hc = ((long)hc0) ^ (((long)hc1) * 3);
+            return unchecked((int)(((hc >> 32) ^ (hc)) & 0xffffffffu));
+        }
+        
+        public static int CombineHashCodes(int hc0, int hc1, int hc2)
+        {
+            long hc = ((long)hc0) ^ (((long)hc1) * 3) ^ (((long)hc2) * 5);
+            return unchecked((int)(((hc >> 32) ^ (hc)) & 0xffffffffu));
+        }
+        
+        public static int CombineHashCodes(int hc0, int hc1, int hc2, int hc3)
+        {
+            long hc = ((long)hc0) ^ (((long)hc1) * 3) ^ (((long)hc2) * 5) ^ (((long)hc3) * 7);
+            return unchecked((int)(((hc >> 32) ^ (hc)) & 0xffffffffu));
+        }
+        
+        public static string! ToStringDelete([Claims]char[]! in ExHeap exstring)
+        {
+            string! localstring = Bitter.ToString2(exstring);
+            delete exstring;
+            return localstring;
+        }
+        
+        public static void DumpException(Exception! chain)
+        {
+            for (Exception ex = chain; ex != null; ex = ex.InnerException) {
+                DebugStub.WriteLine(ex.GetType().FullName + ": " + ex.Message);
+            }
+        }
+    }
+}
+

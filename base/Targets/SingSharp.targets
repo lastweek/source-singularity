@@ -1,0 +1,800 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+This targets file allows MSBuild projects to invoke the Sing# compiler.
+It can also be configured to run the C# compiler, with nearly the same
+arguments.  This targets file also handles building dependent projects,
+as well.
+
+Most projects should not directly import this file.  Instead, they should
+import a .targets file that sets up the correct environment for the project.
+For example, App.targets is appropriate for most apps and app-mode libraries,
+while KernelLibrary.targets is appropriate for assemblies that are linked
+into the kernel.
+
+Projects that use this .targets files can define any of the following properties.
+Where possible, this file uses the same properties that the VS2005 C# project
+designer uses.  (For example, AssemblyName, AllowUnsafeBlocks, etc.)  Not all
+of the VS2005 properties are supported, and this .targets file also makes use
+of properties that are not supported (or meaningful) for VS2005.
+
+  * OutputType - "Exe" or "Library".  REQUIRED.  "WinExe" is not supported.
+
+  * AssemblyName - The name of the assembly, without an extension, e.g. "ipconfig".
+    REQUIRED.
+
+  * AssumeFieldsNonNull - Specifies whether the compiler should assume
+    that all fields are non-null.  The default value is "true".
+
+  * UseMsilToSource - if set to true, compilation happens in two
+    stages.  A PrelimAssembly (library) is created from the original
+    sources.  ProcesMsil steps are then invoked to generate source code
+    based on that library.  Finally, a FinalAssembly is compiled based
+    on the original flags, referenceing the PrelimAssembly.  Default is
+    ''.
+
+  * PreSourceAssemblyPath - The name of the assembly that results from
+    compiling the provided sources (@Compile, etc.).  If
+    UseMsilToSource is not set to 'true', then the
+    PreSourceAssemblyPath will be the same as the PreRewriteAssemblyPath
+
+  * MsilToSource - a list of Targets to be invoked after the
+    PreliminaryAssembly is created but before the FinalAssembly is
+    created.  These typically process the preliminary assembly to
+    generate additional source files for inclusion in the FinalAssembly.
+
+  * UseMsilRewrite - if set to true, the compiled assembly is rewritten
+    using the MSIL-to-MSIL target in MsilRewrite.
+
+  * PreRewriteAssemblyPath - The name of the assembly that results from initial
+    compilation, including the optional MsilToSource phase if present.
+    If UseMsilRewrite is not true, then this is the same as OutputAsemblyPath.
+
+  * MsilRewrite - a list of Targets to be invoked after the OutputAssembly
+    is created to modify the MSIL from the OutputAssembly to create the
+    FinalAssembly. NOTE: At the moment this only supports a single such target,
+    since it does not set up a pipeline of rewriters.
+
+  * NoStdLib - If set to "true", specifies that the current assembly
+    does not reference the standard library.  See also the Stdlib
+    property.
+
+  * Stdlib - Specifies the path of the standard library.  For processes,
+    this is usually $(APPRUNTIMEDIR)\Corlib.dll.  For kernel libraries,
+    this is usually $(KERNDIR)\Kernel.exe.  Note that projects should
+    usually not set this property directly; instead, they should import
+    the App.targets or KernelLibrary.targets files.
+
+  * CompilerPlatformVersion - The CLI version to use.  This is usually "cli1".
+
+  * CompilerPlatformDir - The directory that contains the standard
+    platform libraries, such as Microsoft.SingSharp.Runtime.dll.
+
+  * DefineConstants - The list of #define constants to define.  This
+    list should be separated by semi-colons (';'), should not contain
+    any spaces, and should not contain any repeated semi-colons (';;').
+
+  * ProjectGuid - Uniquely identifies this project.  OPTIONAL
+
+  * ShadowAssemblyPath - Causes the /shadow:<filename> parameter to be added.
+
+  * NoNullCheck - If set to 'true', disables all null checking.
+
+  * Precompiled - If set to 'true', the Compile item list is ignored, and instead
+    of running the compiler a precompiled assembly is copied from the PrecompiledPath
+    location. This is useful for shipping certain IP-sensitive components as MSIL only.
+
+  * PrecompiledPath - If Precompiled is 'true', the path where the precompiled assembly
+    can be found. The name should be the same as the name of the assembly that would
+    be built if Precompiled were not true. Defaults to the project file's directory.
+
+Projects that use this .targets file can define the following items:
+
+  * Compile - The names of source files (usually .cs or .sg) to compile.
+
+  * ProjectReference - The path of an MSBuild project.  This .targets file
+      will automatically build the referenced project, and will then add
+      a reference to the output of that project to the input of the current
+      project.
+
+  * Reference - The path of an MSIL file, which the current assembly will
+      reference.  This allows you to declare a reference, but the reference
+      will NOT be tracked by the inter-project dependency checker.  In other
+      words, it's up to you to make sure that the referenced assembly exists,
+      and is up to date, when you use "Reference" items.
+
+  * DependentProject - The path of an MSBuild project.  This .targets file
+      will automatically build the referenced project, but will not add a
+      reference to its output.  This is useful for projects where you have
+      more knowledge about dependencies than MSBuild does, or you are doing
+      something fancy.
+
+  * GeneratedSources - source files that are generated after the
+      PreliminaryAsssembly is created.  These will be included in
+      compilation of a FinalAssembly.  This itemSet is only relevant if
+      UseMsilToSource is 'true'.
+
+
+Targets
+=======
+
+Projects that use this .targets file can define the following targets.
+All targets should be defined AFTER importing this file.
+
+  * AfterBuild - Invoked as the last dependency of the "Build" target.
+  * BeforeBuild - Invoked as the first dependency of the "Build" target.
+
+
+-->
+
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Condition="'$(RuntimePathsIncluded)'==''" Project="RuntimePaths.target"/>
+
+  <!-- Provide default values for properties. -->
+  <!-- Build the CompilerFlags property. -->
+  <!-- Validate compiler parameters and build the CompilerFlags property. -->
+  <PropertyGroup>
+    <CompilerFlags>/nologo</CompilerFlags>
+  </PropertyGroup>
+
+
+  <PropertyGroup>
+    <UseResponseFile Condition="'$(UseResponseFile)'==''">false</UseResponseFile>
+    <Language Condition="'$(Language)'==''">Sing#</Language>
+
+    <WarningLevel Condition="'$(WarningLevel)'==''">2</WarningLevel>
+    <TreatWarningsAsErrors Condition="'$(TreatWarningsAsErrors)'==''">true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks Condition="'$(AllowUnsafeBlocks)'==''">false</AllowUnsafeBlocks>
+    <CheckForOverflowUnderflow Condition="'$(CheckForOverflowUnderflow)'==''">false</CheckForOverflowUnderflow>
+    <NoStdlib Condition="'$(NoStdlib)'==''">false</NoStdlib>
+    <DisableNullParameterValidation Condition="'$(DisableNullParameterValidation)'==''">true</DisableNullParameterValidation>
+
+    <!-- Until we go through everything and make it clean again. -->
+    <AssumeFieldsNonNull Condition="'$(AssumeFieldsNonNull)'==''">false</AssumeFieldsNonNull>
+
+    <OutputPath Condition="'$(OutputPath)'=='' and '$(OBJDIR)'!=''">$(OBJDIR)</OutputPath>
+
+    <CompilerPlatformVersion Condition="'$(CompilerPlatformVersion)'==''">cli1</CompilerPlatformVersion>
+    <EnableDocumentationFile Condition="'$(EnableDocumentationFile)'==''">true</EnableDocumentationFile>
+    <MKASM Condition="'$(MKASM)'==''">&quot;$(BUILDDIR)\mkasm.exe&quot;</MKASM>
+    <ShowFullPaths Condition="'$(ShowFullPaths)'=='' and '$(BuildingInsideVisualStudio)'=='true'">true</ShowFullPaths>
+    <ServiceType Condition="'$(ServiceType)'==''">unmanaged</ServiceType>
+  </PropertyGroup>
+
+  <Target Name="SetupSubPath"
+          Outputs="$(OutputPath)\public.snk">
+    <MakeDir Condition="'$(SubPath)'!=''"
+             Directories="$(OutputPath)"/>
+    <Copy Condition="'$(SubPath)'!=''"
+          SourceFiles="$(BUILDDIR)\BuildKey.snk"
+          DestinationFiles="$(OutputPath)\public.snk"
+          SkipUnchangedFiles="true"/>
+  </Target>
+  <Choose>
+    <When Condition="'$(SubPath)'!=''">
+      <PropertyGroup>
+        <OutputPath >$(OutputPath)\$(SubPath)</OutputPath>
+      </PropertyGroup>
+    </When>
+  </Choose>
+  
+  <PropertyGroup>
+    <PrecompiledPath Condition="'$(Precompiled)'=='true' and '$(PrecompiledPath)'==''">$(MSBuildProjectDirectory)</PrecompiledPath>
+    <AssemblyExt Condition="'$(AssemblyExt)'=='' and '$(OutputType)'=='Exe'">.exe</AssemblyExt>
+    <AssemblyExt Condition="'$(AssemblyExt)'=='' and '$(OutputType)'=='Library'">.dll</AssemblyExt>
+    <AssemblyFileName>$(AssemblyName)$(AssemblyExt)</AssemblyFileName>
+    <OutputAssemblyPath>$(OutputPath)\$(AssemblyFileName)</OutputAssemblyPath>
+    <OutputAssemblySymbolPath>$(OutputPath)\$(AssemblyName).pdb</OutputAssemblySymbolPath>
+    <PrecompiledAssemblyPath Condition="'$(Precompiled)'=='true'">$(PrecompiledPath)\$(AssemblyFileName)</PrecompiledAssemblyPath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <CompilerTargetFlag Condition="'$(OutputType)'=='Library'">/t:library</CompilerTargetFlag>
+    <CompilerTargetFlag Condition="'$(OutputType)'=='Exe'">/t:exe</CompilerTargetFlag>
+  </PropertyGroup>
+
+
+  <Choose>
+    <When Condition="'$(UseMsilRewrite)'=='true'">
+      <PropertyGroup>
+        <PreRewriteAssemblyPath>$(OutputPath)\PreRewrite\$(AssemblyName)$(AssemblyExt)</PreRewriteAssemblyPath>
+        <PreRewriteAssemblySymbolPath>$(OutputPath)\PreRewrite\$(AssemblyName).pdb</PreRewriteAssemblySymbolPath>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <PreRewriteAssemblyPath>$(OutputAssemblyPath)</PreRewriteAssemblyPath>
+        <PreRewriteAssemblySymbolPath>$(OutputSymbolPath)</PreRewriteAssemblySymbolPath>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(UseMsilToSource)'=='true'">
+      <PropertyGroup>
+        <PreSourceAssemblyPath>$(OutputPath)\$(AssemblyName)$(AssemblyExt).gen.dll</PreSourceAssemblyPath>
+        <PrelimAssemblySymbolPath>$(OutputPath)\$(AssemblyName)$(AssemblyExt).gen.pdb</PrelimAssemblySymbolPath>
+        <PrelimCompilerFlags>/out:&quot;$(PreSourceAssemblyPath)&quot; /t:library</PrelimCompilerFlags>
+        <FinalCompilerFlags>/out:&quot;$(PreRewriteAssemblyPath)&quot; $(CompilerTargetFlag)</FinalCompilerFlags>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <PreSourceAssemblyPath>$(PreRewriteAssemblyPath)</PreSourceAssemblyPath>
+        <PrelimAssemblySymbolPath>$(PreRewriteAssemblySymbolPath)</PrelimAssemblySymbolPath>
+        <PrelimCompilerFlags>/out:&quot;$(PreRewriteAssemblyPath)&quot; $(CompilerTargetFlag)</PrelimCompilerFlags>
+        <FinalCompilerFlags></FinalCompilerFlags>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <PropertyGroup>
+    <NoWarn>444,465,1699,3019,3021,$(NoWarn)</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <CompilerFlags>$(CompilerFlags) /debug /noconfig</CompilerFlags>
+    <CompilerFlags Condition="'$(DefineConstants)'!=''">$(CompilerFlags) /d:$(DefineConstants)</CompilerFlags>
+    <CompilerFlags Condition="'$(WarningLevel)'!=''">$(CompilerFlags) /warn:$(WarningLevel)</CompilerFlags>
+    <CompilerFlags Condition="'$(TreatWarningsAsErrors)'=='true'">$(CompilerFlags) /warnaserror+</CompilerFlags>
+    <CompilerFlags Condition="'$(NoWarn)'!=''">$(CompilerFlags) /nowarn:$(NoWarn)</CompilerFlags>
+    <CompilerFlags Condition="'$(CheckForOverflowUnderflow)'=='true'">$(CompilerFlags) /checked</CompilerFlags>
+    <CompilerFlags Condition="'$(AllowUnsafeBlocks)'=='true'">$(CompilerFlags) /unsafe</CompilerFlags>
+  </PropertyGroup>
+
+
+  <!-- Handle Configuration, which can be "Debug", "Release", or "Prototype". -->
+  <Choose>
+    <When Condition="'$(Configuration)'=='Debug'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:DEBUG;TRACING;WAYPOINTS;CHANNEL_COUNT</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Configuration)'=='Release'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:CHANNEL_COUNT</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Configuration)'=='Prototype'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:DEBUG;TRACING;WAYPOINTS;CHANNEL_COUNT</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="('$(Configuration)'=='Debug' or '$(Configuration)'=='Prototype') and '$(Runtime)'!='Null'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:MONITORING</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>'Configuration' must either be unset, or set to one of "Debug", "Release", or "Prototype"; "$(Configuration)" is not valid.</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+  <Choose>
+    <When Condition="'$(Language)'=='Sing#'">
+      <PropertyGroup>
+        <CompilerTool>$(SGC)  /shoholacreek </CompilerTool>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Language)'=='C#'">
+      <PropertyGroup>
+        <CompilerTool>$(CSC)</CompilerTool>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+
+  <Choose>
+    <When Condition="'$(Machine)'=='x86'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:ISA_IX;ISA_IX86;LITTLE_ENDIAN;PTR_SIZE_32</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Machine)'=='x64'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:ISA_IX;ISA_IX64;LITTLE_ENDIAN;PTR_SIZE_64</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Machine)'=='arm'">
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /d:ISA_ARM;LITTLE_ENDIAN;PTR_SIZE_32</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>The value '$(Machine)' is not a recognized value for the 'Machine' property.</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(Language)'=='Sing#'">
+      <!-- Build CompilerFlags values that are relevant only to Sing#. -->
+      <PropertyGroup>
+        <CompilerFlags Condition="'$(AssumeFieldsNonNull)'=='true'">$(CompilerFlags) /assumefieldsnonnull</CompilerFlags>
+        <CompilerFlags>$(CompilerFlags) /shoholacreek /platform:&quot;$(CompilerPlatformVersion),$(CompilerPlatformDir)&quot;</CompilerFlags>
+        <CompilerFlags Condition="'$(ShadowAssemblyPath)'!=''">$(CompilerFlags) /shadow:&quot;$(ShadowAssemblyPath)&quot;</CompilerFlags>
+        <CompilerFlags Condition="'$(DisableNullParameterValidation)'=='true'">$(CompilerFlags) /disable:nullparametervalidation</CompilerFlags>
+        <CompilerFlags Condition="'$(NoNullCheck)'=='true'">$(CompilerFlags) /d:NONULLCHECK</CompilerFlags>
+      </PropertyGroup>
+
+      <!-- Handle stdlib. -->
+      <PropertyGroup>
+        <CompilerFlags Condition="'$(NoStdLib)'=='true'">$(CompilerFlags) /nostdlib</CompilerFlags>
+        <CompilerFlags Condition="'$(Stdlib)'!=''">$(CompilerFlags) /stdlib:&quot;$(Stdlib)&quot;</CompilerFlags>
+      </PropertyGroup>
+
+
+    </When>
+
+    <When Condition="'$(Language)'=='C#'">
+      <!-- Build CompilerFlags values that are relevant only to C# -->
+      <!-- Handle stdlib. We always pass /nostdlib to the C# compiler. -->
+      <PropertyGroup>
+        <CompilerFlags>$(CompilerFlags) /nostdlib</CompilerFlags>
+        <CompilerFlags Condition="'$(NoStdlib)'!='true'">$(CompilerFlags) /r:&quot;$(Stdlib)&quot;</CompilerFlags>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+
+  <PropertyGroup>
+    <CompilerFlags>$(CompilerFlags) /d:SINGULARITY</CompilerFlags>
+    <CompilerFlags Condition="'$(SINGULARITY_MP)'=='true'">$(CompilerFlags) /d:SINGULARITY_MP</CompilerFlags>
+    <CompilerFlags Condition="'$(EnableWaypoints)'!='false'">$(CompilerFlags) /d:WAYPOINTS</CompilerFlags>
+    <CompilerFlags Condition="'$(EnableMonitoring)'!='false'">$(CompilerFlags) /d:MONITORING</CompilerFlags>
+    <CompilerFlags Condition="'$(ShowFullPaths)'=='true'">$(CompilerFlags) /fullpaths</CompilerFlags>
+  </PropertyGroup>
+
+
+  <Choose>
+    <When Condition="'$(EnableDocumentationFile)'=='true'">
+      <PropertyGroup>
+        <_DocumentationFile>$(OutputPath)\$(AssemblyName).xml</_DocumentationFile>
+        <CompilerFlags>$(CompilerFlags) /doc:&quot;$(_DocumentationFile)&quot;</CompilerFlags>
+      </PropertyGroup>
+      <ItemGroup>
+        <FilesToClean Include="$(_DocumentationFile)"/>
+      </ItemGroup>
+    </When>
+  </Choose>
+
+
+  <PropertyGroup>
+    <ResponseFileName>$(OutputPath)\$(AssemblyName).rsp</ResponseFileName>
+  </PropertyGroup>
+
+
+  <PropertyGroup>
+    <CompilerFlags Condition="'$(Paging)'=='On'">$(CompilerFlags) /d:PAGING</CompilerFlags>
+
+    <CompilerFlags>$(CompilerFlags) $(ExtraCompilerFlags)</CompilerFlags>
+  </PropertyGroup>
+
+
+
+  <PropertyGroup Condition="'$(DebugSgc)'=='true'">
+    <CompilerTool>start /wait cordbg.exe $(CompilerTool)</CompilerTool>
+  </PropertyGroup>
+
+  <!-- ###################################### TARGETS ############################ -->
+
+  <Target Name="ShowDebugInfo" DependsOnTargets="CheckProperties;BuildILReferences;BuildDependentProjects">
+    <Message Text="Assembly - $(AssemblyFileName)"/>
+    <Message Text="    Output path:                 $(OutputAssemblyPath)"/>
+    <Message Text="    Reference:                   %(Reference.Identity)"/>
+    <Message Text="    __il_refs:                   %(__il_refs.identity)"/>
+    <Message Text="    Stdlib:                      $(Stdlib)" Condition="'$(NoStdlib)'!='true'"/>
+    <Message Text="    NoStdlib:                    $(NoStdlib)" Condition="'$(NoStdlib)'=='true'"/>
+    <Message Text="    CompilerPlatform:            $(CompilerPlatformVersion),$(CompilerPlatformDir)"/>
+    <Message Text="    Defines:                     $(DefineConstants)"/>
+    <Message Text="    Warnings:                    level $(WarningLevel) as_error=$(TreatWarningsAsErrors)"/>
+    <Message Text="__il_projects: %(__il_projects.identity)"/>
+    <Message Text="__il_refs: %(__il_refs.identity)"/>
+    <Message Text="__built_projects: %(__built_projects.Identity) exc_il='%(__built_projects.ExcludeFromILReferences)' exc_native='%(__built_projects.ExcludeFromNativeReferences)'"/>
+    <Message Text="__native_projects: %(__native_projects.identity)"/>
+    <Message Text="__native_refs: %(__native_refs.identity)"/>
+  </Target>
+
+  <!--
+  The sole purpose of this target is to create the one, single output item that we export
+  through to "Build" target.  We also export several metadata tags, which, for now, have
+  special meaning to specific kinds of projects.  This is ripe for refactoring.
+  -->
+  <Target Name="CreateBuildOutputItem" DependsOnTargets="CheckProperties">
+    <CreateItem Include="$(OutputAssemblyPath)"
+                AdditionalMetadata="Category=$(ApplicationCategory);$(OutputItemAdditionalMetadata)">
+      <Output ItemName="BuildOutput" TaskParameter="Include"/>
+    </CreateItem>
+  </Target>
+
+  <Target Name="Build"
+          DependsOnTargets="$(BuildDependsOn);
+          BeforeBuild;
+          CheckProperties;
+          BuildAssembly;
+          BuildContractMap;
+          AfterBuild;
+          CreateBuildOutputItem;
+          "
+          Outputs="@(BuildOutput)"
+          >
+  </Target>
+
+  <Target Name="BeforeBuild"/>
+  <Target Name="AfterBuild"/>
+
+  <!--
+  This target allows other projects to determine the full path of the output assembly of this project,
+  without actually building the project.
+  -->
+  <Target Name="GetOutputAssemblyPath" DependsOnTargets="CreateBuildOutputItem" Outputs="@(BuildOutput)"/>
+
+
+  <Target Name="CheckProperties" DependsOnTargets="$(CheckPropertiesDependsOn)">
+    <Error Condition="'$(AssemblyName)'==''" Text="The 'AssemblyName' property is required."/>
+    <Error Condition="'$(ERROR)'!=''" Text="$(ERROR)"/>
+    <Error Condition="'$(OutputType)'==''" Text="The 'OutputType' property must be set, to either 'Exe' or 'Library'."/>
+    <Error Condition="'$(OutputType)'!='Exe' and '$(OutputType)'!='Library'" Text="The 'OutputType' property is invalid; '$(OutputType)' is not a supported output type."/>
+    <Error Condition="'$(OutputPath)'==''" Text="The 'OutputPath' property is required, but is not set."/>
+    <Error Condition="'$(NoStdlib)'!='false' and '$(NoStdLib)'!='true'" Text="The 'NoStdLib' property is set to an invalid value; '$(NoStdLib)' is not valid."/>
+    <Error Condition="'$(NoStdLib)'=='false' and '$(Stdlib)'==''" Text="When the 'NoStdLib' property is set to 'true', the 'Stdlib' property is required, but it is not set."/>
+    <Error Condition="'$(AllowUnsafeBlocks)'!='true' and '$(AllowUnsafeBlocks)'!='false'" Text="The value '$(AllowUnsafeBlocks)' is not a valid choice for the 'AllowUnsafeBlocks' property."/>
+    <Error Condition="'$(CheckForOverflowUnderflow)'!='true' and '$(CheckForOverflowUnderflow)'!='false'" Text="The value '$(CheckForOverflowUnderflow)' is not a valid choice for the 'CheckForOverflowUnderflow' property."/>
+    <Error Condition="'$(Language)'=='Sing#' and '$(CompilerPlatformDir)'==''" Text="When using the Sing# language, the 'CompilerPlatformDir' is required, but is not set."/>
+    <Error Condition="'$(Language)'!='C#' and '$(Language)'!='Sing#'" Text="'The value '$(Language)' is not a supported value for the 'Language' property.  Only 'C#' and 'Sing#' are supported."/>
+  </Target>
+
+  <!-- Compile an assembly from the provided sources.  If
+       UseMsilToSource is 'true', this will be a internal library
+       assembly, which will consume by BuildAssembly to produce a final
+       assembly.  -->
+  <Target Name="BuildPrelimAssembly"
+          DependsOnTargets="
+            CheckProperties;
+            BuildDependentProjects;
+            BuildILReferences;
+            BuildBinaryResources;
+            RunCustomBuildTools;
+            CreateStrongName;
+            SetupSubPath;
+            "
+          Inputs="@(Compile);@(Reference);@(__il_refs);$(MSBuildProjectFullPath)"
+          Outputs="$(_DocumentationFile);$(PreSourceAssemblyPath);$(PrelimAssemblySymbolPath)"
+          >
+
+    <Message Text="Compiling - $(AssemblyName)$(AssemblyExt)"/>
+
+    <!-- setup directories and public.snk files -->
+    <MakeDir Directories="$(OutputPath)"/>
+    <Copy SourceFiles="$(BUILDDIR)\BuildKey.snk"
+          DestinationFiles="$(OutputPath)\public.snk"
+          SkipUnchangedFiles="true"/>
+    <MakeDir Condition="'$(UseMsilRewrite)'=='true'"
+             Directories="$(OutputPath)\PreRewrite"/>
+    <Copy Condition="'$(UseMsilRewrite)'=='true'"
+          SourceFiles="$(BUILDDIR)\BuildKey.snk"
+          DestinationFiles="$(OutputPath)\PreRewrite\public.snk"/>
+
+    <!-- This is to catch programs that modify binaries after they are built. -->
+    <Exec Condition="'$(ReadOnlyHack)'=='true'" Command="attrib -r &quot;$(PreSourceAssemblyPath)&quot;"/>
+
+    <Delete Files="$(PreSourceAssemblyPath);$(PrelimAssemblySymbolPath)"/>
+
+
+    <Message Condition="'$(UseMsilToSource)'=='true'"
+             Text="Compiling to intermediate DLL: $(PreSourceAssemblyPath)" Importance="low"/>
+    <Message Condition="'$(UseResponseFile)'=='true'" Text="Writing response file - $(ResponseFileName)"/>
+    <WriteLinesToFile Condition="'$(UseResponseFile)'=='true'"
+                      File="$(ResponseFileName)"
+                      Overwrite="true"
+                      Lines="
+                      @(ReferencePath->'/lib:&quot;%(Identity)&quot;');
+                      @(Reference->'/r:&quot;%(Identity)&quot;');
+                      @(__il_refs->'/r:&quot;%(identity)&quot;');
+                      @(Compile->'&quot;%(Identity)&quot;');
+                      "/>
+    <Exec Condition="'$(UseResponseFile)'=='true' and '$(Precompiled)'!='true'"
+          Command="$(CompilerTool) $(PrelimCompilerFlags) $(CompilerFlags) /debug @&quot;$(ResponseFileName)&quot;"/>
+
+    <Message Condition="'$(UseResponseFile)'!='true'" Text="Not using response file" Importance="low"/>
+    <Exec Condition="'$(UseResponseFile)'!='true' and '$(Precompiled)'!='true'"
+          Command="$(CompilerTool) $(PrelimCompilerFlags) $(CompilerFlags) /debug @(ReferencePath->'/lib:&quot;%(Identity)&quot;', ' ') @(Reference->'/r:&quot;%(Identity)&quot;',' ') @(__il_refs->'/r:&quot;%(identity)&quot;',' ') @(Compile->'&quot;%(Identity)&quot;',' ')"/>
+
+    <Message Condition="'$(Precompiled)'=='true'" Text="Copying precompiled binary to output tree - $(AssemblyName)$(AssemblyExt)"/>
+    <Copy Condition="'$(Precompiled)'=='true'"
+          SourceFiles="$(PrecompiledAssemblyPath);@(PrecompiledItem)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true"/>
+
+    <!-- This is to catch programs that modify binaries after they are built. -->
+    <Exec Condition="'$(ReadOnlyHack)'=='true'" Command="attrib +r &quot;$(PreSourceAssemblyPath)&quot;"/>
+  </Target>
+
+  <!-- Add the any intermediate DLL to References after its is generated.
+       This simplifies the implementation of later stages. -->
+  <Target Name="AddPrelimReference"
+            DependsOnTargets="
+            BuildPrelimAssembly;
+            $(MsilToSource);
+            "
+          Condition="'$(UseMsilToSource)'=='true'"
+          Outputs="@(Reference)"
+          >
+
+    <CreateItem Include="$(PreSourceAssemblyPath)">
+      <Output ItemName="Reference" TaskParameter="Include"/>
+    </CreateItem>
+  </Target>
+
+  <!-- Compile an output assembly.  If UseMsilToSource is 'true', this will
+       first build a preliminary assembly form the provided sources, then invoke
+       any tools registered in MsilToSource to process that assembly, and then
+       generate the final output assembly from the prelinary assembly and the
+       generated sources. If UseMsilToSource is not 'true', then the preliminary
+       assembly *is* the output  assembly -->
+  <Target Name="BuildFinalAssembly"
+          Condition="'$(UseMsilToSource)'=='true'"
+          DependsOnTargets="BuildPrelimAssembly;AddPrelimReference;$(MsilToSource);"
+          Inputs="@(Compile);@(Reference);@(__il_refs);$(MSBuildProjectFullPath);$(PreSourceAssemblyPath);@(GeneratedSources)"
+          Outputs="$(PreRewriteAssemblyPath);$(PreRewriteAssemblySymbolPath);$(_DocumentationFile)"
+          >
+
+    <!-- If this rule is to build the output assemblies, it should delete them first. -->
+    <Delete Files="$(OutputAssemblyPath);$(OutputAssemblySymbolPath)"/>
+    <Exec Command="$(CompilerTool) $(FinalCompilerFlags) $(CompilerFlags) /debug @(ReferencePath->'/lib:&quot;%(Identity)&quot;', ' ') @(Reference->'/r:&quot;%(Identity)&quot;',' ') @(__il_refs->'/r:&quot;%(identity)&quot;',' ') @(GeneratedSources->'&quot;%(Identity)&quot;',' ')"/>
+
+    <!-- This is to catch programs that modify binaries after they are built. -->
+    <Exec Condition="'$(ReadOnlyHack)'=='true'" Command="attrib +r &quot;$(OutputAssemblyPath)&quot;"/>
+  </Target>
+
+  <!-- rewrite assemblies if necessary -->
+  <Target Name="RewriteFinalAssembly"
+          DependsOnTargets="BuildPrelimAssembly;$(MsilRewrite)"
+          Inputs="$(PreRewriteAssemblyPath);$(PreRewriteAssemblySymbolPath)"
+          Outputs="$(OutputAssemblyPath);$(OutputSymbolPath)"
+          >
+    <Message Condition="'$(UseMsilRewrite)'=='true'"
+             Text="Rewriting assembly $(PreRewriteAssemblyPath) to $(OutputAssemblyPath)"/>
+  </Target>
+
+  <!-- Compile an output assembly by ensuring that the Preliminary and
+       optional final assembly phases happen. -->
+  <Target Name="BuildAssembly"
+          DependsOnTargets="BuildPrelimAssembly;BuildFinalAssembly;RewriteFinalAssembly"/>
+
+  <!--
+  This target builds all of the projects that the current project references.
+  This target also generates the assembly references for thos projects.
+
+  There are two separate phases of compilation, for executable projects.
+  The first is compiling source code to IL.
+  The second is compiling native code from a set of IL assemblies.
+
+  Some referenced assemblies are only part of the first phase, some are part
+  of the second phase, and some are part of both.  The makefiles distinguished
+  them by using the APP_DLLS, APP_ILLS, and SYS_DLLs.  This requires that each
+  project that references a DLL put the referenced DLL in the correct list.
+
+  This .targets file handles this differently.  All referenced assemblies are
+  pulled in using "ProjectReference" items.  Each project can declare which
+  phases of compilation it should be involved in, using properties that it
+  sets before importing this .targets file.
+
+  If an assembly sets the ExcludeFromNativeReferences property to 'true',
+  then that assembly will not be passed as a reference to Bartok.
+
+  If an assembly sets the ExcludeFromILReferences property to 'true',
+  then that assembly will not be passed as a reference to CSC/SGC.
+
+  This information is passed between projects as metadata on the output items
+  of the "Build" task.  This task looks for those items, and builds references
+  for the different phases appropriately.  The "Reference" item set is used for
+  IL references.  The "NativeReference" item set is used for native code
+  references (those passed to Bartok).
+
+  -->
+
+  <Target Name="BuildILReferences" DependsOnTargets="CheckProperties">
+    <CreateItem Include="@(ProjectReference)">
+      <Output ItemName="__il_projects" TaskParameter="Include" Condition="'%(ProjectReference.ExcludeFromILReferences)'!='true'"/>
+    </CreateItem>
+
+    <MSBuild Projects="@(__il_projects)" Targets="Build" Condition="'$(BuildInParallel)'!='true'" StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__il_refs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+    <MSBuild Projects="@(__il_projects)" Targets="Build" Condition="'$(BuildInParallel)'=='true'" StopOnFirstFailure="$(StopOnFirstFailure)" BuildInParallel="true">
+      <Output ItemName="__il_refs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+
+
+  <Target Name="BuildNativeReferences" DependsOnTargets="CheckProperties">
+    <CreateItem Include="@(ProjectReference)">
+      <Output ItemName="__native_projects" TaskParameter="Include" Condition="'%(ProjectReference.ExcludeFromNativeReferences)'!='true'"/>
+    </CreateItem>
+
+    <MSBuild Projects="@(__native_projects)" Targets="Build" StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__native_refs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+
+
+  <Target Name="BuildDependentProjects">
+    <!--
+    The DependentProject item set contains projects that the current assembly depends on,
+    but not in a way that is visible to this file.  The project usually knows the output
+    paths of the project.
+    -->
+    <MSBuild Projects="@(DependentProject)" StopOnFirstFailure="$(StopOnFirstFailure)"/>
+  </Target>
+
+
+  <PropertyGroup>
+    <BinaryResourceAssemblyPath>$(OutputPath)\$(AssemblyName).Resources.dll</BinaryResourceAssemblyPath>
+  </PropertyGroup>
+
+  <!--
+  This target processes BinaryResource items, if any.  It creates temporary source files
+  (in the OutputPath dir), using mkasm.exe.  The generated source files are then compiled
+  into a satellite assembly, named $(AssemblyName).Resources.dll, and that satellite
+  assembly is added as a reference to the project assembly.
+
+  We *could* just add these generated source files directly to the Compile item set, which
+  would cause these files to be compiled directly into the current project's assembly.
+  This works; however, the Sing# compiler is significantly slower when processing these
+  files.  So instead, we create a resource assembly, using the C# compiler, and add that
+  assembly as a reference to the current project.
+
+  This is a batched target.  This entire target runs once for each group of BinaryResource
+  items that have the same combination of values for the metadata tags Namespace, ClassName,
+  FieldName, and Args.  This means that, if you declare more than one BinaryResource item
+  that has the same namespace and class name, then they will be compiled into the same file.
+
+  The following metadata fields are REQUIRED for all BinaryResource items:
+
+    Namespace - Specifies the namespace of the class generated.
+    ClassName - Specifies the name of the class generated.
+    FieldName - Specifies the name of the field generated, whose contents are the binary resource.
+
+  The following metadata fields are OPTIONAL:
+
+    OutputAsArray - If set to 'true', then mkasm will generate a byte[][] field, rather than byte[].
+    Args - Passed directly to mkasm, without interpretation.
+
+  Example:
+
+  <ItemGroup>
+    <BinaryResource Include="Resources\*.wav">
+      <ClassName>WavAudio</ClassName>
+      <Namespace>Microsoft.Singularity.Applications</Namespace>
+      <FieldName>AudioData></FieldName>
+      <OutputAsArray>true</OutputAsArray>
+    </BinaryResource>
+  </ItemGroup>
+
+
+  -->
+  <Target Name="ConvertBinaryResourcesToSourceFiles"
+          Inputs="@(BinaryResource);$(MSBuildProjectFullPath)"
+          Outputs="$(OutputPath)\$(AssemblyName).Resource.%(BinaryResource.Namespace).%(BinaryResource.ClassName).%(BinaryResource.FieldName).cs"
+          >
+    <MakeDir Directories="$(OutputPath)"/>
+
+
+    <!--
+    Ok, this is ugly, but I can't see a prettier way to do this.  We want to allow projects
+    that declare BinaryResource items to be able to specify whether the binary resources are
+    encoded as byte[] or as byte[][].  This is controlled by the /l option of mkasm.  One
+    approach that works, is to allow projects to declare a metadata tag 'Args' which is simply
+    passed directly to mkasm.  We do pass this metadata tag now, but it has a distinctly
+    un-XML-ish flavor.  We want to allow projects to control this behavior with a metadata tag,
+    such as <OutputAsArray>true</OutputAsArray>.  But there is no easy way to map that metadata
+    tag to different values, within the invocation of a single <Exec> task.  So we use two
+    <Exec> tasks, which are nearly identical except that one has "/l" in its command line, and
+    both have conditions that prevent them both from running.
+
+    This works, but it means that if we need to add any other metadata tags that map to command
+    line options for mkasm, we will have an exponential number of tasks, with the condition on
+    each task being some combination of build parameters.  That's nasty.
+    -->
+
+    <Exec
+      Condition="'%(BinaryResource.OutputAsArray)'=='true'"
+      Command="$(MKASM) /b /m /l /o:&quot;$(OutputPath)\$(AssemblyName).Resource.%(BinaryResource.Namespace).%(BinaryResource.ClassName).%(BinaryResource.FieldName).cs&quot; /n:%(BinaryResource.Namespace) /c:%(BinaryResource.ClassName) /f:%(BinaryResource.FieldName) %(BinaryResource.Args) @(BinaryResource->'&quot;%(Identity)&quot;',' ')"/>
+
+    <Exec
+      Condition="'%(BinaryResource.OutputAsArray)'!='true'"
+      Command="$(MKASM) /b /m /o:&quot;$(OutputPath)\$(AssemblyName).Resource.%(BinaryResource.Namespace).%(BinaryResource.ClassName).%(BinaryResource.FieldName).cs&quot; /n:%(BinaryResource.Namespace) /c:%(BinaryResource.ClassName) /f:%(BinaryResource.FieldName) %(BinaryResource.Args) @(BinaryResource->'&quot;%(Identity)&quot;',' ')"/>
+
+    <CreateItem Include="$(OutputPath)\$(AssemblyName).Resource.%(BinaryResource.Namespace).%(BinaryResource.ClassName).%(BinaryResource.FieldName).cs">
+      <Output TaskParameter="Include" ItemName="__binary_resource_sources"/>
+    </CreateItem>
+  </Target>
+
+  <!--
+  This target compiles all of the (C#) source files that were the products of 'mkasm',
+  from the ConvertBinaryResourcesToSourceFiles target.
+  -->
+  <Target Name="BuildBinaryResources"
+          Inputs="@(__binary_resource_sources)"
+          Outputs="$(BinaryResourceAssemblyPath)"
+          DependsOnTargets="ConvertBinaryResourcesToSourceFiles"
+          Condition="'@(BinaryResource)'!=''"
+          >
+
+    <Message Text="Compiling binary resource sources"/>
+    <Message Text="Inputs:"/>
+    <Message Text="    %(__binary_resource_sources.identity)"/>
+    <Message Text="BinaryResourceAssemblyPath - $(BinaryResourceAssemblyPath)"/>
+    <Exec Command="&quot;$(BUILDDIR)\csc.exe&quot; /t:library /out:&quot;$(BinaryResourceAssemblyPath)&quot; /nologo /nostdlib /r:&quot;$(APPRUNTIMEDIR)\Corlib.dll&quot; @(__binary_resource_sources->'&quot;%(Identity)&quot;',' ')"/>
+
+    <!-- Create Reference items, so that the IL compiler will bring in the IL assemblies we just created. -->
+    <CreateItem Include="$(BinaryResourceAssemblyPath)">
+      <Output ItemName="Reference" TaskParameter="Include"/>
+    </CreateItem>
+
+    <!-- And create __native_refs items for the native code generation step later. -->
+    <CreateItem Include="$(BinaryResourceAssemblyPath)">
+      <Output ItemName="__native_refs" TaskParameter="Include"/>
+    </CreateItem>
+
+  </Target>
+
+
+
+  <Target Name="BuildContractMap"
+          DependsOnTargets="BuildAssembly"
+          Inputs="$(OutputAssemblyPath)"
+          Outputs="$(OutputPath)\$(AssemblyName).tmf"
+          Condition="'$(GenerateContractMap)'=='true'">
+    <Exec Command="$(ILDASM) &quot;$(OutputAssemblyPath)&quot; /text &gt;&quot;$(OutputPath)\$(AssemblyName).ila&quot;"/>
+    <Exec Command="&quot;$(BUILDDIR)\mkcontagmap.exe&quot; &lt; &quot;$(OutputPath)\$(AssemblyName).ila&quot; &gt; &quot;$(OutputPath)\$(AssemblyName).tmf&quot;"/>
+  </Target>
+
+  <Target Name="CreateStrongName" Condition="'$(NoStrongName)'!='true'">
+    <MSBuild Projects="$(SINGULARITY_ROOT)\Build\BuildKey.proj" StopOnFirstFailure="$(StopOnFirstFailure)"/>
+  </Target>
+
+  <Target Name="GetDocumentationFilePath" Outputs="$(_DocumentationFile)">
+  </Target>
+
+  <ItemGroup>
+    <FilesToClean Include="$(OutputAssemblyPath)"/>
+    <FilesToClean Include="$(OutputAssemblySymbolPath)"/>
+
+  </ItemGroup>
+
+  <Target Name="Clean" DependsOnTargets="$(CleanDependsOn)">
+    <Delete Files="@(FilesToClean)"/>
+    <Delete Files="@(__binary_resource_sources)"/>
+    <Delete Files="$(BinaryResourceAssemblyPath)"/>
+    <Delete Files="$(OutputPath)\$(AssemblyName).Resource.%(BinaryResource.Namespace).%(BinaryResource.ClassName).%(BinaryResource.FieldName).cs"/>
+  </Target>
+
+  <PropertyGroup>
+    <!-- This is a hint to VS to not create the xxx.vshost.exe -->
+    <UseVSHostingProcess>false</UseVSHostingProcess>
+  </PropertyGroup>
+
+  <Target Name="ShowCommands">
+    <MSBuild Projects="@(ProjectReference);@(DependentProject)" Targets="ShowCommands"/>
+    <Message Text="$(CompilerTool) $(CompilerTargetFlags) $(CompilerFlags) /debug @(ReferencePath->'/lib:&quot;%(Identity)&quot;', ' ') @(Reference->'/r:&quot;%(Identity)&quot;',' ') @(Compile->'&quot;%(Identity)&quot;,' ')"/>
+  </Target>
+
+  <Target Name="GetContentItems" Outputs="@(Content->'%(fullpath)')"/>
+
+  <Import Condition="'$(SingularityCustomBuildToolsIncluded)'==''" Project="CustomBuildTools.targets"/>
+
+</Project>
+

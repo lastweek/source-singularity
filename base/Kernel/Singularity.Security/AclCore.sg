@@ -1,0 +1,505 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using System.Text;
+    using System.Text.RegularExpressions;
+    using System.Collections;
+    using Microsoft.Contracts;
+    using Microsoft.Singularity.Security;
+    using Microsoft.Singularity.Security.AccessControl;
+    using Microsoft.Singularity.Channels;
+
+    /// <summary>
+    /// Access control implementation core.
+    /// </summary>
+
+    public interface IAclCoreSupport
+    {
+        string Expand(string! path);
+    }
+
+    public class AclCore
+    {
+        public enum CacheLevel {All, Regex, Expn, None}
+
+        private Cache! cache;
+        private AclConverter! converter;
+        private Principal self = Principal.Self();
+        private ulong KernelPrincipalID = 1;
+        private bool securityDisabled = false;
+        private string coreName;
+        private CacheLevel cacheLevel = CacheLevel.All;
+
+        private const int AclCacheMaxEntries = 200;
+        private const int AclCacheExpirySeconds = 15 * 60;
+        private const int AclCachePrunePercent = 20;
+        private const int ExpnCacheMaxEntries = 100;
+        private const int ExpnCacheExpirySeconds = 60 * 60;
+
+        private ulong nfast = 0;
+        private ulong nregex = 0;
+        private ulong nexpn = 0;
+        private ulong nfull = 0;
+        private ulong nfail = 0;
+
+#if DO_TIMING
+        private Statistics fastStats = new Statistics("Acl fast ok:");
+        private Statistics regexStats = new Statistics("Acl rgxp ok:");
+        private Statistics expnStats = new Statistics("Acl expn ok:");
+        private Statistics fullStats = new Statistics("Acl full ok:");
+        private Statistics failureStats = new Statistics("Acl fail:   ");
+#endif
+
+#if !SINGULARITY_PROCESS
+        public static Principal EndpointPeer(Endpoint*! in ExHeap ep)
+        {
+            return PrincipalImpl.MakePrincipal(ep->PeerPrincipalHandle.val);
+        }
+#else
+        public static Principal EndpointPeer(Endpoint*! in ExHeap ep)
+        {
+            return Principal.EndpointPeer(ep);
+        }
+#endif
+
+        [NotDelayed]
+        public AclCore(string _coreName, IAclCoreSupport _support)
+        {
+            this(_coreName, _support,
+                    AclCacheMaxEntries, AclCacheExpirySeconds,
+                    ExpnCacheMaxEntries, ExpnCacheExpirySeconds);
+        }
+
+        [NotDelayed]
+        public AclCore(string _coreName, IAclCoreSupport _support,
+                       int aclCacheMaxEntries, int aclCacheExpirySeconds,
+                       int expnCacheMaxEntries, int expnCacheExpirySeconds)
+        {
+            //
+            // This implementation consists of two caches, a cache of regular expression object
+            // (indexed by ACL) and a cache of expansion subexpressions (indexed by expr name).
+            // Both caches are objects of type Cache and can be enabled, disabled and flushed
+            // through the methods of the cache object.
+            // 
+            this.coreName = _coreName;
+            this.cache = new Cache(aclCacheMaxEntries, aclCacheExpirySeconds,
+                                   AclCachePrunePercent, "Acl cache:       ");
+            this.converter = new AclConverter(_support, expnCacheMaxEntries, expnCacheExpirySeconds);
+
+            base();
+#if !SINGULARITY_PROCESS
+            PrincipalImpl.RegisterAclCore(this);
+#endif
+        }
+
+        public void SetCacheLevel (CacheLevel val) {
+            cacheLevel = val;
+        }
+
+        public bool Disable { set { securityDisabled = value; } }
+
+        public void DumpStats(StringBuilder! sb)
+        {
+            if (coreName != null)
+                sb.AppendFormat("[{0}]\n", coreName);
+#if DO_TIMING
+            fastStats.DumpStats(sb);
+            regexStats.DumpStats(sb);
+            gCacheStats.DumpStats(sb);
+            fullStats.DumpStats(sb);
+            failureStats.DumpStats(sb);
+#endif
+            sb.AppendFormat("Acl checks:  fast:{0}, regex:{1}, expn:{2}, full:{3}, fail:{4}\n",
+                                nfast, nregex, nexpn, nfull, nfail);
+            cache.DumpStats(sb);
+            converter.DumpStats(sb);
+        }
+
+        public void ClearStats()
+        {
+#if DO_TIMING
+            fastStats.Clear();
+            regexStats.Clear();
+            fullStats.Clear();
+            expnStats.Clear();
+            failureStats.Clear();
+#endif
+            nfast = 0;
+            nregex = 0;
+            nexpn = 0;
+            nfull = 0;
+            nfail = 0;
+            cache.ResetStats();
+            converter.ClearStats();
+        }
+
+        public void FlushCache()
+        {
+            cache.Prune(true);
+            converter.FlushCache();
+        }
+
+        public AclConverter! Converter { get { return converter; }}
+
+        // Returns true if id doesn't require an access check, that is the id gets
+        // access to everything. For now the security service and the kernel always
+        // has access later, we might choose to allow the security service to have
+        // access, but not necessarily the kernel.  In this case, we'd have
+        // to allow the security service to deliver upcalls for expansion information
+        // with a non-kernel principalId.
+
+        enum Result {Failure, Full, Expn, Regex, Fast}
+
+        public bool CheckAccess(string acl, AccessMode mode, Principal principal)
+        {
+            if (securityDisabled)
+                return true;
+
+            if (principal.Equal(self))
+                return true;
+
+            return CheckAccessBody(acl, mode, principal);
+        }
+
+        // call here to avoid "securityDisabled" and "self" tests above
+        public bool CheckAccessBody(string acl, AccessMode mode, Principal principal)
+        {
+
+            if (acl == null)
+                return false;
+
+#if DO_TIMING
+            ulong start = Processor.CycleCount;
+#endif
+
+            Result res = Result.Failure;
+            try {
+                // check if we have the acl in the cache
+                string principalStr = null;
+                ulong prinPerm = principal.Val;
+                if (mode != null)
+                    prinPerm = prinPerm + ((ulong)(mode.Num) << 48);
+                CacheEntry ce = (CacheEntry) cache.GetEntry(acl);
+                if (ce != null && !ce.Expired) {
+                    if (ce.Eval(prinPerm) && cacheLevel == CacheLevel.All) {
+                        res = Result.Fast;
+                    }
+                    else {
+                        principalStr = PrincipalAndMode((!)principal.GetName(), mode);
+                        if (ce.FullEval(principalStr, prinPerm) && cacheLevel <= CacheLevel.Regex) {
+                            res = Result.Regex;
+                        }
+                    }
+                }
+
+                bool secondPass = (cacheLevel==CacheLevel.None);
+                while (res == Result.Failure) {
+                    // Not in the cache, no regex match, or expired: go and construct it.
+                    // Take one pass using the expansion cache, otherwise (second pass) start from scratch.
+                    // Thus, we cache positive results, but refresh to avoid false negatives.
+                    DateTime minExpiry;
+                    string! expansion = converter.Convert(acl, secondPass, out minExpiry);
+                    if (ce != null && ce.Expansion == expansion) {
+                        // Old expansion was the same, update expiry to save existing cached
+                        // regex evaluations.
+                        ce.ResetExpiry(cache, minExpiry);
+                    }
+
+                    if (principalStr == null)
+                        principalStr = PrincipalAndMode((!)principal.GetName(), mode);
+                    ce = new CacheEntry(cache, expansion, minExpiry);
+                    cache.AddEntry(acl, ce);
+                    if (ce.FullEval(principalStr, prinPerm)) {
+                        if (secondPass)
+                            res = Result.Full;
+                        else
+                            res = Result.Expn;
+                    }
+                    else if (secondPass)
+                        break;
+                    else
+                        secondPass = true;
+                }
+            }
+            catch (Exception e) {
+                DebugStub.Print("Exception: {0}", __arglist(e.Message));
+                res = Result.Failure;
+            }
+
+
+#if DO_TIMING
+            diff = Processor.CycleCount - start;
+            switch (res) {
+                case Result.Fast:
+                    fastStats.Add(diff);
+                    nfast++;
+                    break;
+                case Result.Regex:
+                    regexStats.Add(diff);
+                    nregex++;
+                    break;
+                case Result.Expn:
+                    expnStats.Add(diff);
+                    nexpn++;
+                    break;
+                case Result.Full:
+                    fullStats.Add(diff);
+                    nfull++;
+                    break;
+                case Result.Failure:
+                    failureStats.Add(diff);
+                    nfail++;
+                    break;
+            }
+#else
+            switch (res) {
+                case Result.Fast:
+                    nfast++;
+                    break;
+                case Result.Regex:
+                    nregex++;
+                    break;
+                case Result.Expn:
+                    nexpn++;
+                    break;
+                case Result.Full:
+                    nfull++;
+                    break;
+                case Result.Failure:
+                    nfail++;
+                    break;
+            }
+#endif
+            return (res != Result.Failure);
+        }
+
+        // This is for testing, so that we can supply principalNames without requiring
+        // they be existing in the kernel service.  This should be very similar to the
+        // CheckAccess method above.  Do not mix the two!!!  Caller should maintain a
+        // 1-to-1 mapping between id's and principal names.
+        public bool CheckAccess(string acl, AccessMode mode, ulong principalId, string! principalName)
+        {
+            if (securityDisabled)
+                return true;
+
+            if (acl == null)
+                return false;
+
+#if !SINGULARITY_PROCESS
+            if (principalId == self.Val)
+                return true;
+#else
+            if (principalId == KernelPrincipalID)
+                return true;
+#endif
+
+
+#if DO_TIMING
+            ulong start = Processor.CycleCount;
+#endif
+            Result res = Result.Failure;
+            try {
+                // check if we have the acl in the cache
+                string principalStr = null;
+                ulong prinPerm = principalId;
+                if (mode != null)
+                    prinPerm = prinPerm + ((ulong)(mode.Num) << 48);
+                CacheEntry ce = (CacheEntry) cache.GetEntry(acl);
+                if (ce != null && !ce.Expired) {
+                    if (ce.Eval(prinPerm) && cacheLevel == CacheLevel.All) {
+                        res = Result.Fast;
+                    }
+                    else {
+                        principalStr = PrincipalAndMode(principalName, mode);
+                        if (ce.FullEval(principalStr, prinPerm) && cacheLevel <= CacheLevel.Regex) {
+                            res = Result.Regex;
+                        }
+                    }
+                }
+
+                bool secondPass = (cacheLevel==CacheLevel.None);
+                while (res == Result.Failure) {
+                    // Not in the cache, no regex match, or expired: go and construct it.
+                    // Take one pass using the expansionCache, otherwise (second pass) start from scratch.
+                    // Thus, we cache positive results, but refresh to avoid false negatives.
+                    DateTime minExpiry;
+                    string! expansion = converter.Convert(acl, secondPass, out minExpiry);
+                    if (ce != null && ce.Expansion == expansion) {
+                        // Old expansion was the same, update expiry to save existing cached
+                        // regex evaluations.
+                        ce.ResetExpiry(cache, minExpiry);
+                    }
+                    if (principalStr == null)
+                        principalStr = PrincipalAndMode(principalName, mode);
+                    ce = new CacheEntry(cache, expansion, minExpiry);
+                    cache.AddEntry(acl, ce);
+                    if (ce.FullEval(principalStr, prinPerm)) {
+                        if (secondPass)
+                            res = Result.Full;
+                        else
+                            res = Result.Expn;
+                    }
+                    else if (secondPass)
+                        break;
+                    else
+                        secondPass = true;
+                }
+            }
+            catch (Exception e) {
+                DebugStub.Print("Exception: {0}", __arglist(e.Message));
+                res = Result.Failure;
+            }
+
+#if DO_TIMING
+            diff = Processor.CycleCount - start;
+            switch (res) {
+                case Result.Fast:
+                    fastStats.Add(diff);
+                    nfast++;
+                    break;
+                case Result.Regex:
+                    regexStats.Add(diff);
+                    nregex++;
+                    break;
+                case Result.Expn:
+                    expnStats.Add(diff);
+                    nexpn++;
+                    break;
+                case Result.Full:
+                    fullStats.Add(diff);
+                    nfull++;
+                    break;
+                case Result.Failure:
+                    failureStats.Add(diff);
+                    nfail++;
+                    break;
+            }
+#else
+            switch (res) {
+                case Result.Fast:
+                    nfast++;
+                    break;
+                case Result.Regex:
+                    nregex++;
+                    break;
+                case Result.Expn:
+                    nexpn++;
+                    break;
+                case Result.Full:
+                    nfull++;
+                    break;
+                case Result.Failure:
+                    nfail++;
+                    break;
+            }
+#endif
+            return (res != Result.Failure);
+        }
+
+        internal class CacheEntry : ICacheValue
+        {
+            private string! expansion;
+            private Regex! regex;
+            private Hashtable! evalCache;
+
+            private const int MaxCachedEvals = 50;
+
+            public CacheEntry (Cache! cache, string! _expansion, DateTime minExpiry)
+            {
+                this.regex = new Regex(_expansion);
+                this.evalCache = new Hashtable();
+                this.expansion = _expansion;
+                base(cache, minExpiry);
+            }
+
+            public string! Expansion { get { return this.expansion; } }
+
+            public bool Eval(ulong prinPerm)
+            {
+                return (evalCache[prinPerm] != null);
+            }
+
+            public bool FullEval(string! principalStr, ulong prinPerm)
+
+            {
+                bool result = regex.IsMatch(principalStr);
+                if (result) {
+                    // note that hash tables are multiple-reader safe
+                    lock (evalCache) {
+                        if (evalCache.Count >= MaxCachedEvals) {
+                            evalCache.Clear();      // just clear the HT if we've reached the limit
+                        }
+                        evalCache[prinPerm] = "";
+                    }
+                }
+                return result;
+            }
+        }
+
+        private string! PrincipalAndMode(string! principalName, AccessMode mode)
+        {
+            if (mode == null)
+                return principalName;
+            StringBuilder sb = new StringBuilder();
+            sb.Append(principalName);
+            sb.Append("@");
+            sb.Append(mode.Val);
+            return sb.ToString();
+        }
+
+#if DO_TIMING
+        internal class Statistics
+        {
+            private ulong min;
+            private ulong max;
+            private ulong sum;
+            private ulong count;
+
+            public Statistics()
+            {
+                Clear();
+            }
+
+            [Delayed]
+            public void Clear()
+            {
+                min = 0;
+                max = 0;
+                sum = 0;
+                count = 0;
+            }
+
+            public void Add(ulong sample)
+            {
+                count++;
+                if (min == 0 || sample < min) {
+                    min = sample;
+                }
+                if (sample > max) {
+                    max = sample;
+                }
+                sum += sample;
+            }
+
+            public public void DumpStats(StringBuilder! sb)
+            {
+                ulong mean;
+                if (count == 0)
+                    mean = 0;
+                else
+                    mean = sum/(ulong)count;
+                sb.AppendFormat("N:{1}, Min:{2}, Max:{3}, Mean:{4}\n",
+                                     count, min, max, mean);
+            }
+        }
+#endif
+    }
+}
+
+

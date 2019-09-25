@@ -1,0 +1,45 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\System.Web\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>System.Web</AssemblyName>
+    <OutputType>Library</OutputType>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+    <Language>C#</Language>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="HttpException.cs" />
+    <Compile Include="WorkerRequest.cs" />
+    <Compile Include="HttpServerUtility.cs" />
+    <Compile Include="Hosting\IApplicationHost.cs" />
+    <Compile Include="Hosting\IRegisteredObject.cs" />
+    <Compile Include="Hosting\SimpleWorkerRequest.cs" />
+    <Compile Include="Hosting\SimpleApplicationHost.cs" />
+    <Compile Include="Util\StringUtil.cs" />
+    <Compile Include="Util\SymbolEqualComparer.cs" />
+    <Compile Include="Util\SymbolHashCodeProvider.cs" />
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <!-- <ProjectReference Include="$(SINGULARITY_ROOT)\Applications\Runtime\System.Compiler.Runtime.csproj"/> -->
+  </ItemGroup>
+  
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>
+
+

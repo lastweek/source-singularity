@@ -1,0 +1,467 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Manifest.cs
+//
+//  Note:   Creates and binds endpoints using a manifest.
+//
+
+using System;
+using System.Text;
+using System.Collections;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Applications
+{
+
+    /// <summary>
+    /// In-memory representation of application manifest
+    /// Objects in manifest are represented as XmlNodes
+    /// </summary>
+    public class Manifest
+    {
+        /// <summary>
+        /// We treat the application manifest as a collection of
+        /// key, value pairs.
+        /// </summary>
+
+
+        private const string pipeContract = "Microsoft.Singularity.Io.UnicodePipeContract";
+
+        private string name;
+        private string path;
+        private string manifestVersion; 
+        private string manifestPublicKey; 
+        
+        private readonly XmlNode!       applicationNode;
+        private readonly XmlNode!       processNode;
+        private readonly XmlNode        actionNode;
+        private readonly XmlNode        categoriesNode;
+        private readonly XmlNode        assembliesNode;
+        private readonly XmlNode        stringParametersNode;
+        private readonly XmlNode        stringArrayParametersNode;
+        private readonly XmlNode        longParametersNode;
+        private readonly XmlNode        boolParametersNode;
+        private static StringBuilder    sb;
+
+        /// <summary>
+        /// Create a manifest object from the given xml representation
+        /// </summary>
+
+        [Microsoft.Contracts.NotDelayed]
+        public Manifest(byte[] xml)
+        {
+
+            XmlReader xmlReader = new XmlReader();
+            if (xmlReader == null) throw new Exception("Unable to allocate new XmlReader"); 
+            XmlNode! doc = (!)xmlReader.Parse(xml);
+            this(doc);
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public Manifest(XmlNode! doc)
+        {
+            XmlNode app = (!)doc.GetChild("application");
+            name = app["name"];
+            XmlNode proc = null;
+            foreach (XmlNode! process in app.Children) {
+                if (process.Name != "process") {
+                    continue;
+                }
+                if (process.GetAttribute("main", "false") == "true") {
+                    path = process["path"];
+                    manifestVersion = process["version"];
+                    manifestPublicKey = process["publickey"];
+                    proc = process;
+                    break;
+                }
+            }
+            applicationNode = app;
+            XmlNode! processNode = this.processNode = (!)proc;
+            base();
+
+            categoriesNode = processNode.GetChild("categories");
+            assembliesNode = processNode.GetChild("assemblies");
+
+            if (categoriesNode != null) {
+                    return;
+            }
+            else {
+#if VERBOSE
+                DebugStub.WriteLine("no category found in Manifest");
+#endif
+            }
+
+
+        }
+
+        public XmlNode GetCategoriesNode()
+        {
+            return categoriesNode;
+        }
+
+
+        public XmlNode AssembliesNode
+        {
+            get {
+                return assembliesNode;
+            }
+        }
+
+        public string Name
+        {
+            get {
+                return name;
+            }
+        }
+
+        public string Version
+        {
+            get {
+                return manifestVersion;
+            }
+        }
+
+        public string PublicKey
+        {
+            get {
+                return manifestPublicKey;
+            }
+        }
+
+        public string Path
+        {
+            get {
+                return path;
+            }
+        }
+
+        public  string  GetHelpMessage(XmlNode categoryNode)
+        {
+                return categoryNode == null?  null :  categoryNode.GetAttribute("HelpMessage", null);
+        }
+
+
+        // given an action find the corresponding category node
+        public  XmlNode GetCategoryNode(string actionName) {
+            if (categoriesNode == null) {
+                return null;
+            }
+            if (actionName == null) {
+                foreach (XmlNode! c in categoriesNode.Children) {
+                    string name = c.GetAttribute("name","");
+                    if ( name != "console") return c;
+                    bool present = c.GetAttribute("DefaultAction",false);
+                    if (present) {
+                        return c;
+                    }
+               }
+               return null;
+            }
+            else {
+                foreach (XmlNode! c in categoriesNode.Children) {
+                    string a = c.GetAttribute("Action",null);
+                    if (a != null && a == actionName) {
+                        return c;
+                    }
+                }
+                return null;
+            }
+        }
+
+        // Finds a category node by name
+        public  XmlNode GetCategoryNodeByName(string! name) {
+            if (categoriesNode == null) {
+                return null;
+            }
+
+            foreach (XmlNode! c in categoriesNode.Children) {
+                string a = c.GetAttribute("name",null);
+                if (a != null && a == name) {
+                    return c;
+                }
+            }
+            return null;
+        }
+
+        public  XmlNode GetBoolParameterNode(XmlNode! category)
+        {
+            return category.GetChild("BoolParameters");
+        }
+
+        public  XmlNode GetStringArrayParameterNode(XmlNode! category)
+        {
+            return category.GetChild("StringArrayParameters");
+        }
+
+        public  XmlNode GetStringParameterNode(XmlNode! category)
+        {
+            return category.GetChild("StringParameters");
+        }
+
+        public  XmlNode GetLongParameterNode(XmlNode! category)
+        {
+            return category.GetChild("LongParameters");
+        }
+
+        public bool HasParameters()
+        {
+            return (categoriesNode != null);
+        }
+
+        private  int GetPipeIndex(string action, string! direction,  string! desiredKind)
+        {
+            // walk the XmlTree looking InputPipe or  UnicodePipe co
+            // these will be used by the binder to setup and transfer to
+            // the starting process much like what is done for drivers
+
+            XmlNode categoryNode = GetCategoryNode(action);
+            if (categoryNode == null) {
+                Console.WriteLine("No endpoints in console app!");
+                return -1;
+            }
+
+            XmlNode endpoints = categoryNode.GetChild("endpoints");
+            if (endpoints == null) {
+                return -1;
+            }
+            int endpointCount = endpoints.GetAttribute("length", 0);
+            if (endpointCount == 0) {
+                return -1;
+            }
+
+            string manifestKind;
+            foreach (XmlNode! ep in endpoints.Children) {
+                if (ep.Name == direction) {
+                    manifestKind = ep.GetAttribute("Kind", "");
+                    if (manifestKind == desiredKind) {
+                        int idx = ep.GetAttribute("id",-1);
+                        //DebugStub.WriteLine("Found {0} at index {1}", __arglist(direction,idx));
+                        return idx;
+                    }
+                }
+            }
+
+           //the code below this line should be removed when everything is converted over
+            DebugStub.WriteLine("No {0} endpoint found looking for old form", __arglist(direction));
+
+            if (desiredKind == "control") {
+               return -1;
+            }
+
+            foreach (XmlNode! endpoint in endpoints.Children) {
+                string! contract
+                    = (!)endpoint.GetAttribute("contractName", "");
+                int index = endpoint.GetAttribute("id", -1);
+
+                // TODO: should really look at Imp vs Exp as well
+                if (endpoint.Name == "endpoint") {
+                    if (direction == "inputPipe") {
+                        if (contract == pipeContract && index == 0) {
+                            return 0;
+                        }
+                    }
+                    else {
+                        if (contract == pipeContract && index == 1) {
+                            return 1;
+                        }
+                    }
+                }
+            }
+
+            return -1;
+        }
+
+
+        public  int GetOutputPipeIndex(string action, string! desiredKind)
+        {
+            return GetPipeIndex(action, "outputPipe", desiredKind);
+        }
+
+        public  int GetInputPipeIndex(string action, string! desiredKind)
+        {
+            return GetPipeIndex(action, "inputPipe", desiredKind);
+        }
+
+
+        public int SetEndpoints(Process process, string action, bool show)
+        {
+            // walk the XmlTree looking endpoints
+            // these will be used by the binder to setup and transfer to
+            // the starting process much like what is done for drivers
+
+            XmlNode categoryNode = GetCategoryNode(action);
+            if (categoryNode == null) {
+                Console.WriteLine("No endpoints in console app!");
+                //DebugStub.Break();
+                return 0;
+            }
+
+            XmlNode endpoints = categoryNode.GetChild("endpoints");
+            if (endpoints == null) {
+                //DebugStub.Break();
+                return 0;
+            }
+            int endpointCount = endpoints.GetAttribute("length", 0);
+            if (endpointCount == 0) {
+                DebugStub.Break();
+                return 0;
+            }
+
+            //fill in ep set
+            foreach (XmlNode! endpoint in endpoints.Children) {
+                string! contract
+                    = (!)endpoint.GetAttribute("contractName", "");
+                int index = endpoint.GetAttribute("id", -1);
+
+                if (endpoint.Name == "endpoint") {
+                    // TODO: FIXFIX -- if it is a pipe ignore it for now
+                    if (show) {
+                        Console.WriteLine(" endpoint({0}): {1}", index, contract);
+                    }
+                    else {
+                        if (contract != pipeContract) {
+                            // get a pre-bound generic endpoint to a service from the
+                            // resource tracker
+                            if (process == null) {
+                                throw new Exception("Process arg was null.");
+                            }
+                            if (!Binder.BindServiceUser(process, index, contract, endpoint)) {
+                                DebugStub.WriteLine("SetEndpoints Binder.BindServiceUser failed for {0} @ index {1}", __arglist(contract, index));
+                                return -1;
+                            }
+                        }
+                        else {
+                            DebugStub.WriteLine("shell.manifest.SetEndpoints: skipping pipe at {0}", __arglist(index));
+                        }
+                    }
+                }
+            }
+            return endpointCount;
+        }
+        
+        /// <summary>
+        /// Finds the index of a custom endpoint in a manifest.  The caller provides the name of the
+        /// application category (such as "console" or "Service"), and the name of the contract of
+        /// the endpoint.
+        /// </summary>
+        /// <param name="category">The name of a category, such as "Service".  Case is significant.</param>
+        /// <param name="contractName">The full name of a contract type, as specified in the manifest.
+        /// For example, "Microsoft.Singularity.ServiceManager.ManagedServiceContract".</param>
+        /// <returns>The index of the endpoint, or -1 if none was found.</returns>
+        public int FindCustomEndpointIndex(string! categoryName, string! contractName)
+        {
+            XmlNode categoryNode = GetCategoryNodeByName(categoryName);
+            if (categoryNode == null)
+                return -1;
+            
+            return FindCustomEndpointIndex(categoryNode, contractName);
+        }
+        
+        /// <summary>
+        /// Finds the index of a custom endpoint in a manifest.  The caller provides a reference to
+        /// the XmlNode of the category, such as returned from the GetCategoryNodeByName, and the 
+        /// name of the contract of the endpoint.
+        /// </summary>
+        /// <param name="category">A reference to the XmlNode of a manifest, referring to a 'category' element.</param>
+        /// <param name="contractName">The full name of a contract type, as specified in the manifest.
+        /// For example, "Microsoft.Singularity.ServiceManager.ManagedServiceContract".</param>
+        /// <returns>The index of the endpoint, or -1 if none was found.</returns>
+        public int FindCustomEndpointIndex(XmlNode! categoryNode, string! contractName)
+        {
+            foreach (XmlNode! endpointsNode in categoryNode.Children) {
+                if (endpointsNode.Name != "endpoints")
+                    continue;
+                    
+                foreach (XmlNode! endpointNode in endpointsNode.Children) {
+                    if (endpointNode.Name != "customEndpoint")
+                        continue;
+                        
+                    string idString = endpointNode.GetAttribute("id", "");
+                    if (idString == null || idString.Length == 0)
+                        continue;
+                    
+                    int endpointIndex;
+                    try {
+                        endpointIndex = Int32.Parse(idString);
+                    }
+                    catch {
+                        continue;
+                    }
+                    
+                    string nodeContractName = endpointNode.GetAttribute("contractName", "");
+                    if (nodeContractName != null && nodeContractName == contractName) {
+                        return endpointIndex;
+                    }                
+                }
+            }
+            
+            return -1;
+        }
+
+        
+
+#if false
+        public override string! ToString()
+        {
+            StringBuilder sb = new StringBuilder();
+
+            sb.AppendFormat("<application name=\"{0}\">", Name);
+
+            // the main executable
+            sb.AppendFormat("<process main=\"true\" path=\"{0}\"/>", Path);
+
+            foreach (DataItem item in data.Values) {
+                if (item.Directory == null) {
+                    sb.AppendFormat("<data name=\"{0}\" value=\"{1}\"/>",
+                                    item.Name, item.Value);
+                }
+                else {
+                    sb.AppendFormat("<data namespace=\"{0}\" name=\"{1}\" value=\"{2}\"/>",
+                                    item.Directory, item.Name, item.Value);
+                }
+            }
+
+            sb.Append("</process>");
+            sb.Append("</application>");
+            sb.Append("<signature>");
+            sb.Append("</signature>");
+
+            return sb.ToString();
+        }
+
+        public byte[] Serialize()
+        {
+            return (new UTF8Encoding()).GetBytes(ToString());
+        }
+#endif
+    }
+
+    public class ManifestException : Exception {
+        public ManifestException() 
+            : base("ManifestException") 
+        {
+        }
+
+        public ManifestException(string message) 
+            : base(message) 
+        {
+        }
+
+        public ManifestException(string message, Exception innerException)
+            : base(message, innerException) 
+        {
+        }
+    }
+}

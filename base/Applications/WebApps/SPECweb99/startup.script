@@ -1,0 +1,18 @@
+# This script gets run whenever Shell starts.
+# For now, this is a crude approximation of a startup environment.
+# In the short-term, this is mostly useful for automating testing a sequence of commands.
+# Such as:
+
+# ipconfig '/dev/nic0' '192.168.0.80' '255.255.255.0' '192.168.0.1'
+# ipconfig '@dhcp' '/dev/nic0' 'start'
+# cred '@add' '.\test' 'some-password-here'
+# net '@mount' '/distro' '\\192.168.0.12\distro'
+
+# '-c:128'
+fatcontrol '@mount' '-c:700' '-d:4096' '-f:4096' '/dev/vol0.1' '/fs'
+ipconfig '@dhcp' '/dev/nic0' 'start'
+ipconfig '@show'
+perfcnt '-g'
+# '-v'
+cassini '-app=SPECWeb99WebApp.x86' &
+

@@ -1,0 +1,45 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Runtime.CompilerServices
+{
+
+    // This Enum matches the miImpl flags defined in corhdr.h. It is used to specify
+    // certain method properties.
+
+    //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplOptions"]/*' />
+    [Flags]
+    public enum MethodImplOptions
+    {
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplOptions.Unmanaged"]/*' />
+        Unmanaged       =   0x0004,
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplOptions.ForwardRef"]/*' />
+        ForwardRef      =   0x0010,
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplOptions.InternalCall"]/*' />
+        InternalCall    =   0x1000,
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplOptions.Synchronized"]/*' />
+        Synchronized    =   0x0020,
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplOptions.NoInlining"]/*' />
+        NoInlining      =   0x0008,
+    }
+
+    // Custom attribute to specify additional method properties.
+    //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor, Inherited = false)]
+    sealed public class MethodImplAttribute : Attribute
+    {
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplAttribute.MethodImplAttribute"]/*' />
+        public MethodImplAttribute(MethodImplOptions methodImplOptions);
+
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplAttribute.MethodImplAttribute1"]/*' />
+        public MethodImplAttribute(short value);
+
+        //| <include file='doc\MethodImplAttribute.uex' path='docs/doc[@for="MethodImplAttribute.MethodImplAttribute2"]/*' />
+        public MethodImplAttribute();
+    }
+}

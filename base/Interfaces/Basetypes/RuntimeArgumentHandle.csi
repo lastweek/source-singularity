@@ -1,0 +1,15 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+    public struct RuntimeArgumentHandle
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+    }
+}

@@ -1,0 +1,40 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+<!--
+##############################################################################
+# We need to compile the security code in two phases, due to the circular    #
+# dependency between the security service and the name service.              #
+##############################################################################
+-->
+  
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>SecurityService</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Principal.sg" />
+    <Compile Include="PrincipalImpl.sg" />
+    <Compile Include="SecurityDiagnostics.sg" />    
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.Kernel.csproj" />
+    <ProjectReference Include="..\..\Singularity.Io\IoSystem.csproj" />
+    <ProjectReference Include="..\..\Singularity.Loader\Loader.csproj" />
+    <ProjectReference Include="..\..\Singularity.Security\Security.csproj" />
+    <ProjectReference Include="..\..\Singularity.Directory\Directory.csproj" />
+    <ProjectReference Include="..\..\SpecSharp.Contracts\Kernel.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+</Project>

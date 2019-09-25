@@ -1,0 +1,875 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DirectoryEntry.sg
+//
+//  Note:
+//
+//  Based on page 23 of "Microsoft Extensible Firmware
+//  Initiative FAT32 File System Specification", Version 1.03,
+//  December 6, 2000, Microsoft Corporation.
+
+using System.Runtime.InteropServices;
+using System;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal pointerfree struct DirectoryEntry
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        internal const uint Length = 32;
+
+        internal const byte Name00FreeEntry     = 0xe5;
+        internal const byte Name00LastFreeEntry = 0x00;
+        internal const byte Name00ReallyE5      = 0x05; // Kanji mapping
+
+        internal const byte AsciiSpace  = 0x20;
+        internal const byte AsciiPeriod = 0x2e;
+
+        internal const byte AttributeReadOnly  = 0x01;
+        internal const byte AttributeHidden    = 0x02;
+        internal const byte AttributeSystem    = 0x04;
+        internal const byte AttributeVolumeId  = 0x08;
+        internal const byte AttributeDirectory = 0x10;
+        internal const byte AttributeArchive   = 0x20;
+        internal const byte AttributeLongName  = (byte)(AttributeReadOnly |
+                                                        AttributeHidden |
+                                                        AttributeSystem |
+                                                        AttributeVolumeId);
+        internal const byte AttributeLongNameMask = (byte)(AttributeLongName |
+                                                           AttributeDirectory |
+                                                           AttributeArchive);
+
+        // Mutable attributes on a file or directory
+        internal const byte AttributeMutable   = (byte)(AttributeReadOnly |
+                                                         AttributeHidden |
+                                                         AttributeSystem);
+
+        private  const int DayShift   = 0;
+        private  const int DayWidth   = 5;
+        private  const int MonthShift = 5;
+        private  const int MonthWidth = 4;
+        private  const int YearShift  = 9;
+        private  const int YearWidth  = 7;
+        private  const int BaseYear   = 1980;
+
+        private  const int TwoSecondShift = 0;
+        private  const int TwoSecondWidth = 5;
+        private  const int MinuteShift    = 5;
+        private  const int MinuteWidth    = 6;
+        private  const int HourShift      = 11;
+        private  const int HourWidth      = 5;
+
+        internal const int ShortNameMaxLength      = 12;    // 8.3
+        internal const int ShortNameEntryLength    = 11;    // 8 + 3;
+        internal const int ShortNameMaxBaseName    = 8;
+        internal const int ShortNameMaxExtension   = 3;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Members
+
+        private  byte   name00;                         // 0..10
+        private  byte   name01;
+        private  byte   name02;
+        private  byte   name03;
+        private  byte   name04;
+        private  byte   name05;
+        private  byte   name06;
+        private  byte   name07;
+        private  byte   name08;
+        private  byte   name09;
+        private  byte   name10;
+        private  byte   attribute;                      // 11
+        private  byte   NtReserved;                     // 12
+        private  byte   CreationTimeTenths;             // 13
+        private  ushort creationTime;                   // 14..15
+        private  ushort creationDate;                   // 16..17
+        private  ushort lastAccessDate;                 // 18..19
+        private  ushort firstClusterHi;                 // 20..21
+        private  ushort lastWriteTime;                  // 22..23
+        private  ushort lastWriteDate;                  // 24..25
+        private  ushort firstClusterLo;                 // 26..27
+        private  uint   fileSize;                       // 28..31
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal bool IsFreeEntry
+        {
+            get { return name00 == Name00FreeEntry; }
+        }
+
+        internal bool IsFinalFreeEntry
+        {
+            get { return name00 == Name00LastFreeEntry; }
+        }
+
+        internal bool IsLongEntry
+        {
+            get {
+                return ((attribute == AttributeLongName) &&
+                        !IsFinalFreeEntry && !IsFreeEntry);
+            }
+        }
+
+        internal bool IsShortEntry
+        {
+            get {
+                return ((attribute != AttributeLongName) &&
+                        ((attribute & AttributeVolumeId) == 0) &&
+                        !IsFreeEntry && !IsFinalFreeEntry);
+            }
+        }
+
+        internal bool IsFile
+        {
+            get {
+                return ((attribute & (AttributeDirectory | AttributeVolumeId))
+                        == 0);
+            }
+        }
+
+        internal bool IsDirectory
+        {
+            get {
+                return ((attribute & (AttributeDirectory | AttributeVolumeId))
+                         == AttributeDirectory);
+            }
+        }
+
+        internal bool IsVolumeId
+        {
+            get {
+                return ((attribute & (AttributeDirectory | AttributeVolumeId))
+                         == AttributeVolumeId);
+            }
+        }
+
+        internal bool IsParentPointer
+        {
+            get {
+                return (IsDirectory &&
+                        this.name00 == AsciiPeriod &&
+                        this.name01 == AsciiPeriod &&
+                        this.name02 == AsciiSpace  &&
+                        this.name03 == AsciiSpace  &&
+                        this.name04 == AsciiSpace  &&
+                        this.name05 == AsciiSpace  &&
+                        this.name06 == AsciiSpace  &&
+                        this.name07 == AsciiSpace  &&
+                        this.name08 == AsciiSpace  &&
+                        this.name09 == AsciiSpace  &&
+                        this.name10 == AsciiSpace);
+            }
+        }
+
+        internal bool IsSelfPointer
+        {
+            get {
+                return (IsDirectory &&
+                        this.name00 == AsciiPeriod &&
+                        this.name01 == AsciiSpace  &&
+                        this.name02 == AsciiSpace  &&
+                        this.name03 == AsciiSpace  &&
+                        this.name04 == AsciiSpace  &&
+                        this.name05 == AsciiSpace  &&
+                        this.name06 == AsciiSpace  &&
+                        this.name07 == AsciiSpace  &&
+                        this.name08 == AsciiSpace  &&
+                        this.name09 == AsciiSpace  &&
+                        this.name10 == AsciiSpace);
+            }
+        }
+
+        ushort CreationTime
+        {
+            get { return ByteOrder.LittleEndianToHost(creationTime); }
+            set { creationTime = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        ushort CreationDate
+        {
+            get { return ByteOrder.LittleEndianToHost(creationDate); }
+            set { creationDate = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        ushort LastAccessDate
+        {
+            get { return ByteOrder.LittleEndianToHost(lastAccessDate); }
+            set { lastAccessDate = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        public DateTime CreationDateTime
+        {
+            get {
+                ushort date = ByteOrder.LittleEndianToHost(creationDate);
+                ushort time = ByteOrder.LittleEndianToHost(creationTime);
+                return  GenDateTime(date,time);
+            }
+        }
+
+
+        public DateTime LastWriteDateTime
+        {
+            get {
+                ushort date = ByteOrder.LittleEndianToHost(lastWriteDate);
+                ushort time = ByteOrder.LittleEndianToHost(lastWriteTime);
+                return  GenDateTime(date,time);
+            }
+        }
+
+        public DateTime LastAccessDateTime
+        {
+            get {
+                ushort date = ByteOrder.LittleEndianToHost(lastAccessDate);
+                return  GenDate(date);
+            }
+        }
+
+        internal uint FirstCluster
+        {
+            get {
+                return (((uint)ByteOrder.LittleEndianToHost(firstClusterHi)) << 16) + ByteOrder.LittleEndianToHost(firstClusterLo);
+            }
+            set {
+                firstClusterHi = ByteOrder.HostToLittleEndian((ushort)(value >> 16));
+                firstClusterLo = ByteOrder.HostToLittleEndian((ushort)(value & 0xffff));
+            }
+        }
+
+        ushort LastWriteTime
+        {
+            get { return ByteOrder.LittleEndianToHost(lastWriteTime); }
+            set { lastWriteTime = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        ushort LastWriteDate
+        {
+            get { return ByteOrder.LittleEndianToHost(lastWriteDate); }
+            set { lastWriteDate = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        uint FileSize
+        {
+            internal get { return ByteOrder.LittleEndianToHost(fileSize); }
+            set { fileSize = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        DateTime GenDateTime( ushort date, ushort time)
+        {
+            DateTime dateTime = new DateTime(0);
+            // datetime starts at 1/1/1/ so subtract 1 from year/month/day
+            dateTime = dateTime.AddYears((date >> YearShift) + BaseYear -1);
+            dateTime = dateTime.AddMonths( ((date >> MonthShift) & 0x0f) -1 );
+            dateTime = dateTime.AddDays((date & 0x1f) -1);
+            dateTime = dateTime.AddHours(time >> HourShift);
+            dateTime = dateTime.AddMinutes((time >> MinuteShift) & 0x03f );
+            dateTime = dateTime.AddSeconds((time & 0x01f) * 2);
+            return dateTime;
+        }
+
+        DateTime GenDate( ushort date)
+        {
+            DateTime dateTime = new DateTime(0);
+            dateTime = dateTime.AddYears((date >> YearShift) + BaseYear -1 );
+            dateTime = dateTime.AddMonths(((date >> MonthShift) & 0x0f) -1 );
+            dateTime = dateTime.AddDays((date & 0x1f) -1);
+            return dateTime;
+        }
+
+        ushort MakeDate(DateTime when)
+            requires when.Year >= BaseYear;
+        {
+            // We could be in 1979 because of timezone, but we're not obliged
+            // to support such legacy and we're certainly not writing files
+            // with this datestamp...
+            return (ushort) (((when.Year - BaseYear) << YearShift) |
+                             (when.Month << MonthShift) |
+                             (when.Day   << DayShift));
+        }
+
+        ushort MakeTime(DateTime when)
+        {
+            return (ushort) ((when.Hour   << HourShift)   |
+                             (when.Minute << MinuteShift) |
+                             ((when.Second / 2) << TwoSecondShift));
+        }
+
+        byte MakeTenths(DateTime when)
+        {
+            // The spec calls this value tenths.
+            // It's plainly hundredths from the definition.
+            int tenths = (when.Second % 2) * 100 + when.Millisecond / 10;
+            return (byte)tenths;
+        }
+
+        internal void Invalidate(bool toBeLastEntry)
+        {
+            this.name00 = toBeLastEntry ? Name00LastFreeEntry : Name00FreeEntry;
+            this.name01 = this.name02 = this.name03 = this.name04 = 0;
+            this.name05 = this.name06 = this.name07 = this.name08 = 0;
+            this.name09 = this.name10 = 0;
+            this.attribute          = 0;
+            this.CreationTimeTenths = 0;
+            this.creationTime       = 0;
+            this.creationDate       = 0;
+            this.lastAccessDate     = 0;
+            this.lastWriteTime      = 0;
+            this.lastWriteDate      = 0;
+            this.firstClusterLo     = 0;
+            this.firstClusterHi     = 0;
+            this.fileSize           = 0;
+        }
+
+        private void Initialize(char[]! in ExHeap shortNameEntry,
+                                byte              attributes,
+                                uint              cluster)
+            requires shortNameEntry.Length == ShortNameEntryLength;
+        {
+            this.CopyShortNameEntry(shortNameEntry);
+            this.SetInitialMetaData(attributes, cluster);
+        }
+
+        private void SetInitialMetaData(byte attributes,
+                                        uint cluster)
+        {
+            DateTime now  = DateTime.Now;
+            ushort   time = MakeTime(now);
+            ushort   date = MakeDate(now);
+
+            this.attribute          = attributes;
+            this.NtReserved         = 0;
+            this.FirstCluster       = cluster;
+            this.CreationDate       = date;
+            this.CreationTime       = time;
+            this.CreationTimeTenths = MakeTenths(now);
+            this.LastAccessDate     = date;
+            this.LastWriteTime      = time;
+            this.LastWriteDate      = date;
+            this.FileSize           = 0;
+        }
+
+        /// <remarks> Properties for mutable attribute bits
+        /// (ReadOnly, System, Hidden) </remarks>
+        internal byte MutableAttributes
+        {
+            get {
+                return (byte)(this.attribute & AttributeMutable);
+            }
+            set {
+                int tmp = (this.attribute & AttributeMutable) | value;
+                this.attribute = (byte)tmp;
+            }
+        }
+
+        internal void InitializeAsDirectory(char[]! in ExHeap validName,
+                                            uint cluster)
+        {
+            Initialize(validName, AttributeDirectory, cluster);
+        }
+
+        internal void InitializeAsFile(char[]! in ExHeap validName,
+                                       uint cluster)
+        {
+            Initialize(validName, AttributeArchive, cluster);
+        }
+
+        internal void InitializeAsVolumeId(char[]! in ExHeap validName)
+        {
+            Initialize(validName, AttributeVolumeId, 0);
+        }
+
+        internal void InitializeAsParentPointer(uint parentCluster)
+        {
+            this.name00 = this.name01 = AsciiPeriod;
+            this.name02 = this.name03 = this.name04 = AsciiSpace;
+            this.name05 = this.name06 = this.name07 = AsciiSpace;
+            this.name08 = this.name09 = this.name10 = AsciiSpace;
+
+            this.attribute    = AttributeDirectory;
+            this.NtReserved   = 0;
+            this.FirstCluster = parentCluster;
+
+            DateTime now  = DateTime.Now;
+            ushort   time = MakeTime(now);
+            ushort   date = MakeDate(now);
+
+            this.CreationDate       = date;
+            this.CreationTime       = time;
+            this.CreationTimeTenths = MakeTenths(now);
+            this.LastAccessDate     = date;
+            this.LastWriteTime      = time;
+            this.LastWriteDate      = date;
+            this.FileSize           = 0;
+        }
+
+        internal void InitializeAsSelfPointer(uint firstCluster)
+        {
+            this.name00 = AsciiPeriod;
+            this.name01 = this.name02 = this.name03 = this.name04 = AsciiSpace;
+            this.name05 = this.name06 = this.name07 = this.name08 = AsciiSpace;
+            this.name09 = this.name10 = AsciiSpace;
+
+            this.attribute    = AttributeDirectory;
+            this.NtReserved   = 0;
+            this.FirstCluster = firstCluster;
+
+            DateTime now  = DateTime.Now;
+            ushort   time = MakeTime(now);
+            ushort   date = MakeDate(now);
+
+            this.CreationDate       = date;
+            this.CreationTime       = time;
+            this.CreationTimeTenths = MakeTenths(now);
+            this.LastAccessDate     = date;
+            this.LastWriteTime      = time;
+            this.LastWriteDate      = date;
+            this.FileSize           = 0;
+        }
+
+        internal bool UpdateAccessTime()
+        {
+            ushort now = MakeDate(DateTime.Now);
+            if (this.LastAccessDate != now) {
+                this.LastAccessDate = now;
+                return true;
+            }
+            return false;
+        }
+
+        internal bool UpdateFileSize(uint newFileBytes)
+        {
+            bool updated = this.UpdateWriteTime();
+            if (this.FileSize != newFileBytes) {
+                this.FileSize = newFileBytes;
+                updated = true;
+            }
+            return updated;
+        }
+
+        internal bool UpdateFirstCluster(uint firstCluster)
+        {
+            bool updated = this.UpdateWriteTime();
+            if (this.FirstCluster != firstCluster) {
+                assert this.FirstCluster == 0;
+                this.FirstCluster = firstCluster;
+                updated = true;
+            }
+            return updated;
+        }
+
+        internal bool UpdateWriteTime()
+        {
+            DateTime now  = DateTime.Now;
+            ushort   date = MakeDate(now);
+            ushort   time = MakeTime(now);
+            if (this.LastWriteTime != time ||
+                this.LastWriteDate != date) {
+                this.LastWriteTime  = time;
+                this.LastWriteDate  = date;
+                this.LastAccessDate = date;
+                return true;
+            }
+            return false;
+        }
+
+        internal static bool ValidShortNameCharacter(char c)
+        {
+            // Page 24 of FAT spec.
+
+            if (c > 127) {
+                return true;
+            }
+            if ((c < 0x20) || (c == 0x22) || (c >= 0x2a && c <= 0x2c) ||
+                (c == 0x2e) || (c == 0x2f) || (c >= 0x3a && c <= 0x3f) ||
+                (c >= 0x5b && c <= 0x5d)) {
+                return false;
+            }
+            return true;
+        }
+
+        internal static bool ValidShortName(char[]! in ExHeap name)
+        {
+            if (name.Length == 0 || name.Length > ShortNameMaxLength) {
+                return false;
+            }
+            else if (name[0] == '.') {
+                // Dot in position zero reserved for Directory names ".", ".."
+                return false;
+            }
+
+            int dotLocation = -1;
+
+            for (int i = 0; i < name.Length; i++) {
+                char c = Char.ToUpper(name[i]);
+                if (ValidShortNameCharacter(c)) {
+                    continue;
+                }
+                else if (c == '.') {
+                    if (dotLocation > 0) {
+                        // Two dots are not permitted in name.
+                        return false;
+                    }
+                    dotLocation = i;
+                }
+            }
+
+            if (dotLocation > 0) {
+                if (name.Length - dotLocation > ShortNameMaxExtension + 1) {
+                    // File extension is too long.
+                    return false;
+                }
+                else if (dotLocation > ShortNameMaxBaseName) {
+                    // File base name is too long.
+                    return false;
+                }
+            }
+            else if (name.Length > ShortNameMaxBaseName) {
+                // File base name is too long without a dot.
+                return false;
+            }
+            return true;
+        }
+
+        internal static bool ValidPackedName(char[]! in ExHeap shortName)
+        {
+            if (shortName.Length != ShortNameEntryLength) {
+                return false;
+            }
+            if (shortName[ShortNameMaxBaseName] == '.' ||
+                shortName[ShortNameMaxBaseName - 1] == '.' ||
+                shortName[0] == '.') {
+                return false;
+            }
+            for (int i = 0; i < shortName.Length; i++) {
+                char c = Char.ToUpper(shortName[i]);
+                if (!ValidShortNameCharacter(c)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary> Returns the length of the provided name
+        /// excluding any trailing spaces. </summary>
+        private static int UnpaddedLength(char[]! in ExHeap shortName)
+        {
+            int l = shortName.Length;
+            while (l > 0) {
+                if (shortName[l - 1] != ' ') {
+                    return l;
+                }
+                l--;
+            }
+            return 0;
+        }
+
+        internal void CopyShortNameEntry(char[]! in ExHeap shortNameEntry)
+            requires shortNameEntry.Length == ShortNameEntryLength;
+        {
+            name00 = (byte)Char.ToUpper(shortNameEntry[0]);
+            name01 = (byte)Char.ToUpper(shortNameEntry[1]);
+            name02 = (byte)Char.ToUpper(shortNameEntry[2]);
+            name03 = (byte)Char.ToUpper(shortNameEntry[3]);
+            name04 = (byte)Char.ToUpper(shortNameEntry[4]);
+            name05 = (byte)Char.ToUpper(shortNameEntry[5]);
+            name06 = (byte)Char.ToUpper(shortNameEntry[6]);
+            name07 = (byte)Char.ToUpper(shortNameEntry[7]);
+            name08 = (byte)Char.ToUpper(shortNameEntry[8]);
+            name09 = (byte)Char.ToUpper(shortNameEntry[9]);
+            name10 = (byte)Char.ToUpper(shortNameEntry[10]);
+        }
+
+        /// <summary> Packs short name into directory entry. </summary>
+        /// <param name="validShortName"> Name to be packed.  The name may be
+        /// padded with trailing spaces. </param>
+        internal void PackShortName(char[]! in ExHeap validShortName)
+        {
+            int upLength = UnpaddedLength(validShortName);
+            int dot      = upLength;
+
+            for (int i = upLength - 1; i >= 0; i--) {
+                if (validShortName[i] == '.') {
+                    dot = i;
+                    break;
+                }
+            }
+
+            // Valid name assertions (weak)
+            assert dot != 0;
+            assert dot <= ShortNameMaxBaseName;
+            assert upLength - dot - 1 <= ShortNameMaxExtension;
+
+            // Mark all characters as space to signify empty.
+            name00 = name01 = name02 = name03 = name04 = name05 = (byte)' ';
+            name06 = name07 = name08 = name09 = name10 = (byte)' ';
+
+            switch (dot) {
+                case 8:
+                    name07 = (byte)Char.ToUpper(validShortName[7]);
+                    goto case 7;
+                case 7:
+                    name06 = (byte)Char.ToUpper(validShortName[6]);
+                    goto case 6;
+                case 6:
+                    name05 = (byte)Char.ToUpper(validShortName[5]);
+                    goto case 5;
+                case 5:
+                    name04 = (byte)Char.ToUpper(validShortName[4]);
+                    goto case 4;
+                case 4:
+                    name03 = (byte)Char.ToUpper(validShortName[3]);
+                    goto case 3;
+                case 3:
+                    name02 = (byte)Char.ToUpper(validShortName[2]);
+                    goto case 2;
+                case 2:
+                    name01 = (byte)Char.ToUpper(validShortName[1]);
+                    goto case 1;
+                case 1:
+                    name00 = (byte)Char.ToUpper(validShortName[0]);
+                    break;
+            }
+
+            switch (upLength - dot - 1) {
+                case 3:
+                    name10 = (byte)Char.ToUpper(validShortName[dot + 3]);
+                    goto case 2;
+                case 2:
+                    name09 = (byte)Char.ToUpper(validShortName[dot + 2]);
+                    goto case 1;
+                case 1:
+                    name08 = (byte)Char.ToUpper(validShortName[dot + 1]);
+                    goto case 0;
+                case 0:  break;
+                case -1: break;
+                default:
+                    DebugStub.Break();
+                    break;
+            }
+
+            int bl = GetBaseLength();
+            int tl = GetTailLength();
+            assert ((bl + tl + 1 == upLength) ||       // Dot present.
+                    (dot == upLength && dot == bl));   // No dot.
+        }
+
+        private int GetTailLength()
+        {
+            if (name10 != AsciiSpace) return 3;
+            if (name09 != AsciiSpace) return 2;
+            if (name08 != AsciiSpace) return 1;
+            return 0;
+        }
+
+        private int GetBaseLength()
+        {
+            if (name07 != AsciiSpace) return 8;
+            if (name06 != AsciiSpace) return 7;
+            if (name05 != AsciiSpace) return 6;
+            if (name04 != AsciiSpace) return 5;
+            if (name03 != AsciiSpace) return 4;
+            if (name02 != AsciiSpace) return 3;
+            if (name01 != AsciiSpace) return 2;
+            if (name00 != AsciiSpace) return 1;
+            return 0;
+        }
+
+        public int GetPathLength()
+        {
+            int head = GetBaseLength();
+            int tail = GetTailLength();
+            return (tail == 0) ? head : head + tail + 1;
+        }
+
+        private void CopyBase(int length, char []! in ExHeap s)
+            requires s.Length >= length;
+            requires length > 0;
+        {
+            switch (length) {
+                case 8: s[7] = (char)name07; goto case 7;
+                case 7: s[6] = (char)name06; goto case 6;
+                case 6: s[5] = (char)name05; goto case 5;
+                case 5: s[4] = (char)name04; goto case 4;
+                case 4: s[3] = (char)name03; goto case 3;
+                case 3: s[2] = (char)name02; goto case 2;
+                case 2: s[1] = (char)name01; break;
+                case 1: break;
+            }
+            if (name00 == Name00ReallyE5) {
+                s[0] = (char)((byte)0xe5);
+            }
+            else {
+                s[0] = (char)name00;
+            }
+        }
+
+        private void CopyTail(int offset, int length, char[]! in ExHeap s)
+            requires offset + length == s.Length;
+        {
+            switch (length) {
+                case 3: s[offset + 2] = (char)name10; goto case 2;
+                case 2: s[offset + 1] = (char)name09; goto case 1;
+                case 1: s[offset + 0] = (char)name08; break;
+                case 0: break;
+            }
+        }
+
+        internal char[]! in ExHeap GetPath()
+        {
+            int baseLength = GetBaseLength();
+            int tailLength = GetTailLength();
+
+            if (tailLength == 0) {
+                char[] in ExHeap path = new [ExHeap] char [baseLength];
+                CopyBase(baseLength, path);
+                return path;
+            }
+            else {
+                char[] in ExHeap path =
+                    new [ExHeap] char [baseLength + tailLength + 1];
+                CopyBase(baseLength, path);
+                path[baseLength] = (char)AsciiPeriod;
+                CopyTail(baseLength + 1, tailLength, path);
+                return path;
+            }
+        }
+
+        private byte ChecksumStep(byte sum, byte newValue)
+        {
+            int s = (int)sum;
+            int t = ((s & 1) << 7) + (s >> 1);
+            return (byte) ((int)t + (int)newValue);
+        }
+
+        internal byte Checksum
+        {
+            get {
+                byte sum = 0;
+                sum = ChecksumStep(sum, name00);
+                sum = ChecksumStep(sum, name01);
+                sum = ChecksumStep(sum, name02);
+                sum = ChecksumStep(sum, name03);
+                sum = ChecksumStep(sum, name04);
+                sum = ChecksumStep(sum, name05);
+                sum = ChecksumStep(sum, name06);
+                sum = ChecksumStep(sum, name07);
+                sum = ChecksumStep(sum, name08);
+                sum = ChecksumStep(sum, name09);
+                sum = ChecksumStep(sum, name10);
+                return sum;
+            }
+        }
+
+        internal int GetDirHashCode()
+        {
+            int sum = 0;
+            int length = GetBaseLength();
+            sum = length * 9601;
+
+            switch (GetBaseLength()) {
+                case 8: sum += (int)name07; goto case 7;
+                case 7: sum += (int)name06; goto case 6;
+                case 6: sum += (int)name05; goto case 5;
+                case 5: sum += (int)name04; goto case 4;
+                case 4: sum += (int)name03; goto case 3;
+                case 3: sum += (int)name02; goto case 2;
+                case 2: sum += (int)name01; goto case 1;
+                case 1:
+                    if (name00 == Name00ReallyE5) {
+                        sum += 0xe5;
+                    }
+                    else {
+                        sum += (int)name00;
+                    }
+                    break;
+                case 0: break;
+            }
+
+            length = GetTailLength();
+            sum = sum + length * 10313;
+            switch (GetTailLength()) {
+                case 3: sum += (int)name10; goto case 2;
+                case 2: sum += (int)name09; goto case 1;
+                case 1: sum += (int)name08; break;;
+                case 0: break;
+            }
+            return sum & DHashtable.MaxKeyValue;
+        }
+
+        internal static int GetDirHashCode(char []! in ExHeap shortName)
+        {
+            if (shortName.Length == ShortNameEntryLength &&
+                shortName[ShortNameMaxBaseName] != '.' &&
+                shortName[ShortNameMaxBaseName - 1] != '.') {
+                // Name looks like it is already packed - it's 11 characters
+                // long and not 8.2 nor 7.3.  There are no other valid
+                // short names that are 11 characters long.
+                DirectoryEntry de = new DirectoryEntry();
+                de.name00 = (byte)Char.ToUpper(shortName[0]);
+                de.name01 = (byte)Char.ToUpper(shortName[1]);
+                de.name02 = (byte)Char.ToUpper(shortName[2]);
+                de.name03 = (byte)Char.ToUpper(shortName[3]);
+                de.name04 = (byte)Char.ToUpper(shortName[4]);
+                de.name05 = (byte)Char.ToUpper(shortName[5]);
+                de.name06 = (byte)Char.ToUpper(shortName[6]);
+                de.name07 = (byte)Char.ToUpper(shortName[7]);
+                de.name08 = (byte)Char.ToUpper(shortName[8]);
+                de.name09 = (byte)Char.ToUpper(shortName[9]);
+                de.name10 = (byte)Char.ToUpper(shortName[10]);
+                return de.GetDirHashCode();
+            }
+            else {
+                DirectoryEntry de = new DirectoryEntry();
+                de.PackShortName(shortName);
+                return de.GetDirHashCode();
+            }
+        }
+
+        internal bool HasName(char []! in ExHeap name)
+        {
+            if (name.Length == ShortNameEntryLength &&
+                name[ShortNameMaxBaseName] != '.' &&
+                name[ShortNameMaxBaseName - 1] != '.') {
+                // Name looks like it is already packed - it's 11 characters
+                // long and not 8.2 nor 7.3.  There are no other valid
+                // short names that are 11 characters long.
+                return (this.name00 == (byte)Char.ToUpper(name[0]) &&
+                        this.name01 == (byte)Char.ToUpper(name[1]) &&
+                        this.name02 == (byte)Char.ToUpper(name[2]) &&
+                        this.name03 == (byte)Char.ToUpper(name[3]) &&
+                        this.name04 == (byte)Char.ToUpper(name[4]) &&
+                        this.name05 == (byte)Char.ToUpper(name[5]) &&
+                        this.name06 == (byte)Char.ToUpper(name[6]) &&
+                        this.name07 == (byte)Char.ToUpper(name[7]) &&
+                        this.name08 == (byte)Char.ToUpper(name[8]) &&
+                        this.name09 == (byte)Char.ToUpper(name[9]) &&
+                        this.name10 == (byte)Char.ToUpper(name[10]));
+            }
+            else {
+                DirectoryEntry de = new DirectoryEntry();
+                de.PackShortName(name);
+                return (this.name00 == de.name00 &&
+                        this.name01 == de.name01 &&
+                        this.name02 == de.name02 &&
+                        this.name03 == de.name03 &&
+                        this.name04 == de.name04 &&
+                        this.name05 == de.name05 &&
+                        this.name06 == de.name06 &&
+                        this.name07 == de.name07 &&
+                        this.name08 == de.name08 &&
+                        this.name09 == de.name09 &&
+                        this.name10 == de.name10);
+            }
+        }
+    }
+}

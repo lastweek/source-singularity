@@ -1,0 +1,612 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+//
+//This program is a tool for managing instances of the SMB client service.
+//The tool allows users to list running instances of the SMB client process,
+//to display their configuration and status, and to create new SMB client
+//processes.
+//
+//This program provides some of the functionality of the Windows "net" command,
+//such as "net use" command, etc.
+//
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.Net.IP;
+using NetStack.Contracts;
+using NetStack.Channels.Public;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+using Smb.PublicChannels;
+
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications.Network
+{
+#if !false
+    [ConsoleCategory(HelpMessage="Show help for SMB control client", DefaultAction=true)]
+    internal class DefaultCommand {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal DefaultCommand();
+
+        internal int AppMain()
+        {
+			Console.WriteLine("Specify a command to execute, or '-?' for a list of commands.");
+			return 0;
+        }
+    }
+#endif
+    
+    [ConsoleCategory(Action="list", HelpMessage="List active SMB client processes" )]
+    internal class ListClientsParameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+        
+        //[BoolParameter("v", Mandatory=false, HelpMessage="List details about each client")]
+        public bool Verbose = true;
+
+        reflective internal ListClientsParameters();
+
+        internal int AppMain()
+        {
+			try {
+				SmbClientManagerContract.Imp! manager = SmbControl.ConnectSmbClientManagerRequired();
+				try {
+				
+					manager.SendEnumClients();
+					
+					switch receive {
+						case manager.ClientList(char[][]! in ExHeap mountPaths):
+						
+							for (int i = 0; i < mountPaths.Length; i++) {
+								expose (mountPaths[i]) {
+									char[] in ExHeap exmountPath = mountPaths[i];
+									if (exmountPath == null)
+										continue;
+										
+									string! mountPath = Bitter.ToString2(exmountPath);
+									SmbControl.ShowClientInfo(manager, mountPath);
+								}
+							}
+							
+							delete mountPaths;
+							return 0;						
+							
+						case manager.RequestFailed(errorCode, optionalErrorText):
+							SmbControl.ShowRequestFailed(errorCode, optionalErrorText);
+							delete optionalErrorText;
+							return -1;
+					}				
+				}
+				finally {
+					delete manager;
+				}
+				
+			}
+			catch (Exception ex) {
+				SmbControl.ShowException(ex);
+				return 1;
+			}
+		}
+    }
+    
+    [ConsoleCategory(Action="info", HelpMessage="Shows the status of an SMB client, given its mount path.")]
+    internal class ShowInfoCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+        
+        reflective internal ShowInfoCommand();
+        
+        [StringParameter("mountpath", Mandatory=true, Position=0, HelpMessage="The mount path of the SMB filesystem to query, e.g. /foo.")]
+        internal string MountPath;
+
+        internal int AppMain()
+        {
+			try {
+				SmbControl.ShowClientInfo((!)MountPath);
+				return 0;
+			}
+			catch (Exception ex) {
+				SmbControl.ShowException(ex);
+				return 1;
+			}
+				
+		}
+    }
+
+    [ConsoleCategory(Action="unmount", HelpMessage="Disconnect an SMB client process from the Singularity namespace.")]
+    internal class UnmountCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+		[StringParameter("mountpath", Mandatory=true, Position=0, HelpMessage="The mount path of SMB client, e.g. /files")]
+		public string MountPath;
+
+        reflective internal UnmountCommand();
+
+        internal int AppMain()
+		{
+			try {
+				string! mountPath = (!)this.MountPath;
+				
+				SmbClientManagerContract.Imp manager = SmbControl.ConnectSmbClientManager();
+				if (manager == null)
+					return -1;
+					
+				try {
+					manager.SendStopClient(Bitter.FromString2(mountPath));
+					
+					switch receive {
+						case manager.Ok():
+							break;
+							
+						case manager.RequestFailed(SmbErrorCode error, char[] in ExHeap errortext):
+							delete errortext;
+							break;
+					}
+				
+				}
+				finally {
+					delete manager;
+				}
+				
+				return 0;
+			}
+			catch (Exception ex) {
+				SmbControl.ShowException(ex);
+				return 1;
+			}
+		}		
+    }
+
+#if false // disabled for now
+    [ConsoleCategory(Action="reset", HelpMessage="Resets an SMB client, causing it to disconnect and reconnect.")]
+    internal class ResetCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+		[StringParameter("clientid", HelpMessage="The local mount path, or control endpoint, of the SMB filesystem to reset.", Mandatory=true, Position=0)]
+		public string ClientId;
+		
+		reflective internal ResetCommand();
+		
+		int AppMain()
+		{
+			try {
+				SmbClientControlContract.Imp! control = SmbControl.BindSmbControlClient(ClientId);
+				try {
+					control.SendReconnect();
+					switch receive {
+						case control.AckReconnect():
+							Console.WriteLine("Successfully sent reset/reconnect request to SMB client.");
+							return 0;
+							
+						case control.ChannelClosed():
+							Console.WriteLine("SMB client reset channel before responding.");
+							return -1;
+					}
+				}
+				finally {
+					delete control;
+				}
+			}
+			catch (Exception ex) {
+				SmbControl.ShowException(ex);
+				return -1;
+			}
+		}
+    }
+#endif
+    
+    [ConsoleCategory(Action="mount", HelpMessage="Create a mapping to an SMB file share.")]
+    internal class MountCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+		[StringParameter("mountpath", Mandatory=true, Position=0, HelpMessage="The local path at which to mount the remote namespace, e.g. /foo")]
+		public string MountPath;
+
+		[StringParameter("unc", Mandatory=true, Position=1, HelpMessage=@"The UNC path of the share, e.g. \\server\share")]
+		public string UncPath;
+		
+		[StringParameter("user", Mandatory=false, HelpMessage="The [domain\\]username to use when authenticating.")]
+		public string CredentialsName;
+		
+		[StringParameter("tag", Mandatory=false, HelpMessage="If 'user' is specified, this parameter allows you to pass a credentials tag.")]
+		public string Tag;
+		
+        reflective internal MountCommand();
+
+        internal int AppMain()
+        {
+			try {
+				string! unc = (!)this.UncPath;
+				string! mountpath = (!)this.MountPath;
+
+				if (mountpath.Length == 0 || mountpath[0] != '/')
+					throw new Exception("The mount path is invalid.  It must be an absolute path.");
+
+				SmbClientManagerContract.Imp manager = SmbControl.ConnectSmbClientManager();
+				if (manager == null)
+					return -1;
+
+				try {
+					SmbClientConfig config = new SmbClientConfig();
+					config.UncPath = Bitter.FromString2(unc);
+					config.MountPath = Bitter.FromString2(mountpath);
+					config.CredentialsName = Bitter.FromString2(this.CredentialsName != null ? this.CredentialsName : "");
+					config.Tag = Bitter.FromString2(this.Tag != null ? this.Tag : "");
+									
+					manager.SendCreateClient(config);
+					
+					switch receive {
+						case manager.Ok():
+							Console.WriteLine("Filesystem mapping has been created.");
+							Console.WriteLine("");
+							Console.WriteLine("Be advised!  Creating the mapping (mount point) does NOT mean");
+							Console.WriteLine("that the local SMB redirector (client) has been able to connect");
+							Console.WriteLine("to the remote file server.  The mapping represents the goal state;");
+							Console.WriteLine("you can see the current state by using the 'net @list' command.");
+							break;
+							
+						case manager.RequestFailed(SmbErrorCode error, char[] in ExHeap errortext):
+							Console.WriteLine("The request failed.");
+							Console.WriteLine("Error: {0} {1}", error, Bitter.ToString(errortext));
+							delete errortext;
+							return -1;
+							
+						case manager.ChannelClosed():
+							Console.WriteLine("SMB client closed channel before responding!");
+							return -1;
+					}
+				}
+				finally {
+					delete manager;
+				}
+				
+			}
+			catch (Exception ex) {
+				SmbControl.ShowException(ex);
+			}		
+			
+			return 0;
+		}
+    }
+    
+    class SmbControl
+    {
+		static void ParseUncPath(string! unc, out string! server, out string! resource)
+		{
+			if (!unc.StartsWith("\\\\"))
+				throw new Exception(String.Format("The UNC path '{0}' is invalid.  All UNC paths must begin with '\\\\'.", unc));
+			
+			int separator = unc.IndexOf('\\', 2);
+			assert (separator < 0) || (separator >= 2);
+			if (separator < 0 || separator == 2)
+				throw new Exception(String.Format("The UNC path '{0}' is invalid.  The server name is missing.", unc));
+			
+			if (separator + 1 == unc.Length)
+				throw new Exception(String.Format("The UNC path '{0}' is invalid.  The resource name is missing.", unc));
+			
+			server = unc.Substring(2, separator - 2);
+			resource = unc.Substring(separator + 1);
+		}
+		
+		
+		public static SmbClientManagerContract.Imp! ConnectSmbClientManagerRequired()
+		{
+			SmbClientManagerContract.Imp manager = ConnectSmbClientManager();
+			if (manager == null)
+				throw new Exception("Failed to connect to SMB client manager service.");
+			return manager;
+		}
+		
+		// This method connects to the SMB Client Manager service.
+		// If it cannot connect to the service, it prints an error message on the text console
+		// and returns null.
+		public static SmbClientManagerContract.Imp ConnectSmbClientManager()
+		{
+			DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+		
+			try {
+				SmbClientManagerContract.Imp! manager;
+				SmbClientManagerContract.Exp! manager_exp;
+				SmbClientManagerContract.NewChannel (out manager, out manager_exp);
+				
+				ErrorCode error;
+				if (!SdsUtils.Bind(SmbClientManagerContract.ManagerControlPath, rootds, manager_exp, out error)) {
+					Console.WriteLine("Failed to connect to SMB client manager service.");
+					Console.WriteLine("Error: " + SdsUtils.ErrorCodeToString(error));
+					delete manager;
+				    return null;
+				}
+				
+				manager.RecvSuccess();
+				return manager;
+				
+			}
+			finally {
+				delete rootds;
+			}				
+		}
+		
+		
+		static void DebugLine(string msg)
+		{
+			DebugStub.WriteLine("SMBCONTROL: " + msg);
+		}
+		
+		static void DebugLine(string format, params object[] args)
+		{
+			DebugLine(String.Format(format, args));
+		}
+		
+		static void Bind(string! path, [Claims]ServiceContract.Exp! exp)
+		{
+			DirectoryServiceContract.Imp! rootdir = DirectoryService.NewClientEndpoint();
+			try {
+				ErrorCode errorCode;
+				if (SdsUtils.Bind(path, rootdir, exp, out errorCode)) {
+					return;
+				}
+				else {
+					delete rootdir;
+					throw new Exception(String.Format("Failed to bind to path '{0}'.  ErrorCode = {1}.", path, SdsUtils.ErrorCodeToString(errorCode)));
+				}
+			}
+			finally {
+				delete rootdir;
+			}
+		}
+
+		static DirectoryServiceContract.Imp! BindDirectory(string! path)
+		{
+			DirectoryServiceContract.Exp! dir_exp;
+			DirectoryServiceContract.Imp! dir_imp;
+			DirectoryServiceContract.NewChannel(out dir_imp, out dir_exp);
+			
+			DirectoryServiceContract.Imp! rootdir = DirectoryService.NewClientEndpoint();
+			
+			ErrorCode errorCode;
+			if (SdsUtils.Bind(path, rootdir, dir_exp, out errorCode)) {
+				delete rootdir;
+				dir_imp.RecvSuccess();
+				return dir_imp;
+			}
+			else {
+				delete rootdir;
+				delete dir_imp;
+				throw new Exception(String.Format("Failed to bind to directory '{0}'.  ErrorCode = {1}.", path, SdsUtils.ErrorCodeToString(errorCode)));
+			}
+		}
+		
+		static EnumerationRecords[]! in ExHeap EnumerateDirectory(string! path)
+		{
+			DirectoryServiceContract.Imp! dir = BindDirectory(path);
+			
+			try {
+				ErrorCode error;
+				EnumerationRecords[] in ExHeap records = SdsUtils.EnumerateDirectory(dir, out error);
+				if (records != null)
+					return records;
+				throw new Exception(String.Format("Failed to enumerate contents of path '{0}': {1}", SdsUtils.ErrorCodeToString(error)));
+			}
+			finally {
+				delete dir;
+			}
+		}
+		
+		static internal SmbClientControlContract.Imp! BindSmbControlClient(string! mountPath)
+		{
+			SmbClientManagerContract.Imp! manager = ConnectSmbClientManagerRequired();
+			try {
+				return BindSmbControlClient(manager, mountPath);
+			}
+			finally {
+				delete manager;
+			}
+		}
+		
+		static internal SmbClientControlContract.Imp! BindSmbControlClient(SmbClientManagerContract.Imp! manager, string! mountPath)
+		{
+			SmbClientControlContract.Imp! control_imp;
+			SmbClientControlContract.Exp! control_exp;
+			SmbClientControlContract.NewChannel(out control_imp, out control_exp);
+		
+			manager.SendBindClient(Bitter.FromString2(mountPath), control_exp);
+			
+			switch receive {
+				case manager.Ok():
+					control_imp.RecvSuccess();
+					return control_imp;
+					
+				case manager.RequestFailed(errorcode, optionalErrorText):
+					string local_errorText = Bitter.ToString(optionalErrorText);
+					delete optionalErrorText;
+					throw new Exception(String.Format("Failed to bind to SMB control endpoint for mount path '{0}': {1} {2}", mountPath, errorcode.ToString(), local_errorText));
+			}
+		}
+		
+		
+		internal static void ShowClientInfo(string! mountPath)
+		{
+			SmbClientManagerContract.Imp! manager = ConnectSmbClientManagerRequired();
+			try {
+				ShowClientInfo(manager, mountPath);
+			}
+			finally {
+				delete manager;
+			}
+		}
+		
+		internal static void ShowClientInfo(SmbClientManagerContract.Imp! manager, string! clientId)
+		{		
+			Console.WriteLine("SMB client:");
+			
+			try {
+				try {
+					
+					manager.SendQueryClientConfig(Bitter.FromString2(clientId));
+					
+					const string format = "    {0,-20} : {1}";
+							
+					switch receive
+					{
+						case manager.ClientConfigReport(SmbClientConfig config):
+							Console.WriteLine(format, "UNC path", Bitter.ToString2(config.UncPath));
+							Console.WriteLine(format, "Mount path", Bitter.ToString2(config.MountPath));						
+							Console.WriteLine(format, "User name", Bitter.ToString2(config.CredentialsName));
+							config.Dispose();
+							break;
+							
+						case manager.RequestFailed(code, text):
+							Console.WriteLine("Failed to query client configuration.");
+							SmbControl.ShowRequestFailed(code, text);
+							delete text;
+							break;
+							
+						case manager.ChannelClosed():
+							Console.WriteLine("SMB service closed channel without responding to control query.");
+							break;
+					}
+
+					manager.SendQueryClientStatus(Bitter.FromString2(clientId));
+					
+					switch receive {
+						case manager.ClientStatusReport(SmbClientStatus status):
+						
+							string! connectionStatusText = ToString(status.ConnectionStatus);
+							if (status.ConnectionStatus == SmbClientConnectionStatus.Disconnected) {
+								connectionStatusText = connectionStatusText + " (reason: " + ToString(status.ReasonDisconnected) + ")";
+							}
+						
+							Console.WriteLine(format, "Connection status", connectionStatusText);
+							if (status.ServerMachineName != null)		Console.WriteLine(format, "Server machine name", Bitter.ToString(status.ServerMachineName));
+							if (status.ServerDomainName != null)		Console.WriteLine(format, "Server domain name", Bitter.ToString(status.ServerDomainName));
+							if (status.ServerOperatingSystem != null)	Console.WriteLine(format, "Server OS", Bitter.ToString(status.ServerOperatingSystem));
+							if (status.ActiveCredentialsName != null)	Console.WriteLine(format, "Active Credentials", Bitter.ToString2(status.ActiveCredentialsName));
+							
+							status.Dispose();
+							break;
+							
+						case manager.RequestFailed(code, text):
+							Console.WriteLine("Failed to query client status.");
+							SmbControl.ShowRequestFailed(code, text);
+							delete text;
+							break;
+							
+						case manager.ChannelClosed():
+							Console.WriteLine("Error - Control channel was closed.");
+							break;
+					}
+					
+				}
+				finally {
+				}
+				
+			}
+			catch (Exception ex) {
+				// Console.WriteLine("Failed to bind to control endpoint '{0}'.", ex);
+				ShowException(ex);
+			}
+			
+			Console.WriteLine("");
+		}
+
+		static string! ToStringOrNull(char[] in ExHeap str)
+		{
+		    if (str != null)
+		        return Bitter.ToString2(str);
+		    else
+		        return "(null)";
+		}
+		
+		static string! ToString(SmbClientConnectionStatus status)
+		{
+			switch (status)
+			{
+				case SmbClientConnectionStatus.Disconnected: return "Disconnected";
+				case SmbClientConnectionStatus.Negotiating: return "Negotiating";				
+				case SmbClientConnectionStatus.TransportConnecting: return "Connecting";
+				case SmbClientConnectionStatus.Authenticating: return "Authenticating";
+				case SmbClientConnectionStatus.Connected: return "Connected";
+				default: return "Unknown (" + ((int)status).ToString() + ")";
+			}
+		}		
+		
+		static string! ToString(SmbReasonDisconnected reason)
+		{
+			switch (reason)
+			{
+				case SmbReasonDisconnected.Idle:					return "Idle";
+				case SmbReasonDisconnected.TransportConnectFailed:	return "Failed to connect transport";
+				case SmbReasonDisconnected.NegotiationFailed:		return "Negotiation failed";
+				case SmbReasonDisconnected.ResourceConnectFailed:	return "Resource connect rejected";
+				case SmbReasonDisconnected.AuthenticationFailed:	return "Authentication failed";
+				case SmbReasonDisconnected.AuthorizationFailed:		return "Authorization failed";
+				case SmbReasonDisconnected.NoResponse:				return "No response from server";
+				case SmbReasonDisconnected.ProtocolViolation:		return "Protocol violation";
+				case SmbReasonDisconnected.TransportFailure:		return "Transport failure";
+				default: return "Unknown (" + ((int)reason).ToString() + ")";
+			}
+		}		
+		
+		internal static void ShowException(Exception! chain)
+		{
+			Exception current = chain;
+			while (current != null)
+			{
+				Console.WriteLine("{0}: {1}", current.GetType().FullName, current.Message);
+				current = current.InnerException;
+			}
+		}
+		
+		internal static void ShowRequestFailed(SmbErrorCode code, char[] in ExHeap optionalErrorText)
+		{
+			if (optionalErrorText != null)
+				Console.WriteLine("Error: SmbErrorCode.{0} : {1}", code, Bitter.ToString2(optionalErrorText));
+			else
+				Console.WriteLine("Error: SmbErrorCode.{0}", code);
+		}
+    }
+}

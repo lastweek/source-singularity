@@ -1,0 +1,33 @@
+* This script contains commands that can be executed in
+* automated bvts when the debugger halts for user input during
+* automated tests.
+*
+* Echo something unique that we can grep for in the debugger
+* log to detect failure.
+.echo BROKE_INTO_DEBUGGER
+* Display the symbol path - Drive B:\ is mapped to %BinPath%
+!envvar BinPath
+.sympath
+lsa @eip
+r
+rF
+.lines -e
+kp
+.frame 0
+dv
+.frame 1
+dv
+.frame 2
+dv
+* Show all stacks
+~*kd
+* Show exception context
+.exr -1
+* If we have the crash dumper extension, lets use it.
+!singx86.crashdump -t
+!singx86.log
+!singx86.crashdump -r -x -s dump.dmp
+!singx64.crashdump -t
+!singx64.log
+!singx64.crashdump -r -x -s dump64.dmp
+qq

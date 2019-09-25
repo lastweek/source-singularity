@@ -1,0 +1,455 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ConsoleOutput.sg
+//
+//  Note:   Uses /dev/conout to display console output.
+//
+
+namespace Microsoft.Singularity.Io
+{
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.V1.Services;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Directory;
+
+    using System;
+    using System.Text;
+    using System.Globalization;
+    using System.Runtime.CompilerServices;
+
+    using System.Runtime.InteropServices;
+
+    public sealed class ConsoleOutput : ITracked
+    {
+        private static TContainer<ConsoleOutput> consoleContainer;
+
+        private struct PipeData : ITracked {
+            public UnicodePipeContract.Imp channel;
+            public void Dispose()
+            {
+                delete channel;
+            }
+            void ITracked.Acquire() {}
+            void ITracked.Release() {}
+            public void Expose() {}
+            public void UnExpose() {}
+
+            public UnicodePipeContract.Imp:READY Swap([Claims] UnicodePipeContract.Imp:READY newPipe) {
+                expose (this) {
+                    UnicodePipeContract.Imp result = this.channel;
+                    this.channel = newPipe;
+                    return result;
+                }
+            }
+        }
+
+        //
+        //private struct DeviceData : ITracked {
+        //  public ConsoleDeviceContract.Imp:Ready channel;
+        //  public void Dispose()
+        //  {
+        //      delete channel;
+        //  }
+        //  void ITracked.Acquire() {}
+        //  void ITracked.Release() {}
+        //  public void Expose() {}
+        //  public void UnExpose() {}
+        //}
+        //
+
+        private char[]! in ExHeap side;
+        private PipeData pipe;
+        //
+        //private DeviceData device;
+        //
+        private ConsoleOutput([Claims] UnicodePipeContract.Imp? pipe)
+        {
+            this.side = new[ExHeap] char [280];
+            this.pipe.channel = pipe;
+        }
+
+        private static UnicodePipeContract.Imp GetPipe()
+        {
+            UnicodePipeContract.Imp con = null;
+
+            Endpoint* in ExHeap pipeep = Process.GetStartupEndpoint(1);
+            if (pipeep != null) {
+                con = pipeep as UnicodePipeContract.Imp;
+                if (con == null) {
+                    Process.RetStartupEndpoint(1,pipeep);
+                    return null;
+                }
+                return con;
+            }
+            return null;
+        }
+
+        public static void Initialize()
+        {
+            //
+            //ConsoleDeviceContract.Imp imp = null;
+//
+            //imp = OpenConsole("/dev/video-text");
+            //if (imp == null) {
+            //  imp = OpenConsole("/dev/conout");
+            //  if (imp == null) {
+            //      DebugStub.Print("Couldn't open console.\n");
+            //      return;
+            //  }
+            //}
+            //
+            UnicodePipeContract.Imp pipe = GetPipe();
+            ConsoleOutput co = new ConsoleOutput(pipe);
+            consoleContainer = new TContainer<ConsoleOutput>(co);
+        }
+
+        public void Dispose()
+        {
+            this.pipe.Dispose();
+            // this.device.Dispose();
+            delete this.side;
+        }
+
+        void ITracked.Acquire() {
+            //Tracing.Log(Tracing.Debug,"ConsoleOutput.Acquire");
+        }
+        void ITracked.Release() {
+            //Tracing.Log(Tracing.Debug,"ConsoleOutput.Release");
+        }
+        void ITracked.Expose() {
+            //Tracing.Log(Tracing.Debug,"ConsoleOutput.Expose");
+        }
+        void ITracked.UnExpose() {
+            //Tracing.Log(Tracing.Debug,"ConsoleOutput.UnExpose");
+        }
+
+        public static void Finalize()
+        {
+            TContainer<ConsoleOutput> chandle = consoleContainer;
+            consoleContainer = null;
+
+            if (chandle == null) return;
+
+            ConsoleOutput co = chandle.Acquire();
+            if (co != null) co.Dispose();
+        }
+
+        //
+        //private static ConsoleDeviceContract.Imp
+        //OpenConsoleInternal(DirectoryServiceContract.Imp! nsImp,
+        //                  [Claims] char[]! in ExHeap    deviceName)
+        //{
+        //  ConsoleDeviceContract.Exp! exp;
+        //  ConsoleDeviceContract.Imp! imp;
+        //  ConsoleDeviceContract.NewChannel(out imp, out exp);
+//
+        //  nsImp.SendBind(deviceName, exp);
+        //  switch receive {
+        //      case nsImp.AckBind():
+        //          return imp;
+        //          break;
+        //      case nsImp.NakBind(rejectImp, error):
+        //          delete rejectImp;
+        //          delete imp;
+        //          break;
+        //      case nsImp.ChannelClosed():
+        //          throw new Exception("Channel closed during Console bind.");
+        //          delete imp;
+        //          break;
+        //      case nsImp.NakBindReparse(path, rest, linked, backExp):
+        //          assert linked == true;
+        //          assert rest   == null;
+        //          delete backExp;
+        //          delete imp;
+//
+        //          return OpenConsoleInternal(nsImp, path);
+        //          break;
+        //  }
+        //  return null;
+        //}
+//
+        //private static ConsoleDeviceContract.Imp OpenConsole(string! devName)
+        //{
+        //  DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+        //  ConsoleDeviceContract.Imp imp =
+        //      OpenConsoleInternal(ns, Bitter.FromString2(devName));
+        //  delete ns;
+//
+        //  if (imp != null) {
+        //      switch receive {
+        //          case imp.Success():
+        //              break;
+        //          case imp.ContractNotSupported():
+        //              throw new Exception("ConsoleOutput: ContractNotSupported");
+        //              break;
+        //          case imp.ChannelClosed():
+        //              throw new Exception("ConsoleOutput: ChannelClosed");
+        //              break;
+        //      }
+        //  }
+        //  return imp;
+        //}
+//
+        //public static void Clear()
+        //{
+        //  if (consoleContainer == null) return;
+//
+        //  ConsoleOutput co = consoleContainer.Acquire();
+//
+        //  expose (co) {
+        //      ConsoleDeviceContract.Imp ep = co.device.channel;
+        //      if (ep != null) {
+        //          ep.SendClear();
+        //          switch receive {
+        //          case ep.AckClear():
+        //              break;
+        //          case ep.NakClear():
+        //              break;
+        //          case ep.ChannelClosed():
+        //              delete ep;
+        //              co.device.channel = null;
+        //              break;
+        //          }
+        //      }
+        //  }
+        //  consoleContainer.Release(co);
+        //}
+//
+        //public static void CursorFlash()
+        //{
+        //  if (consoleContainer == null) return;
+//
+        //  ConsoleOutput co = consoleContainer.Acquire();
+//
+        //  expose (co) {
+        //      ConsoleDeviceContract.Imp ep = co.device.channel;
+        //      if (ep != null) {
+        //          ep.SendCursorFlash();
+        //          switch receive {
+        //          case ep.AckCursorFlash():
+        //              break;
+        //          case ep.NakCursorFlash():
+        //              break;
+        //          case ep.ChannelClosed():
+        //              delete ep;
+        //              co.device.channel = null;
+        //              break;
+        //          }
+        //      }
+        //  }
+        //  consoleContainer.Release(co);
+        //}
+//
+        //public static void CursorHide()
+        //{
+        //  if (consoleContainer == null) return;
+//
+        //  ConsoleOutput co = consoleContainer.Acquire();
+//
+        //  expose (co) {
+        //      ConsoleDeviceContract.Imp ep = co.device.channel;
+        //      if (ep != null) {
+        //          ep.SendCursorHide();
+        //          switch receive {
+        //          case ep.AckCursorHide():
+        //              break;
+        //          case ep.NakCursorHide():
+        //              break;
+        //          case ep.ChannelClosed():
+        //              delete ep;
+        //              co.device.channel = null;
+        //              break;
+        //          }
+        //      }
+        //  }
+        //  consoleContainer.Release(co);
+        //}
+//
+        //public static void CursorShow()
+        //{
+        //  if (consoleContainer == null) return;
+//
+        //  ConsoleOutput co = consoleContainer.Acquire();
+//
+        //  expose (co) {
+        //      ConsoleDeviceContract.Imp ep = co.device.channel;
+        //      if (ep != null) {
+        //          ep.SendCursorShow();
+        //          switch receive {
+        //          case ep.AckCursorShow():
+        //              break;
+        //          case ep.NakCursorShow():
+        //              break;
+        //          case ep.ChannelClosed():
+        //              delete ep;
+        //              co.device.channel = null;
+        //              break;
+        //          }
+        //      }
+        //  }
+        //  consoleContainer.Release(co);
+        //}
+        //
+
+        public static char[]! in ExHeap Write([Claims] char[]! in ExHeap buffer,
+                                              int index, int count)
+        {
+            if (consoleContainer == null) return buffer;
+            ConsoleOutput co = consoleContainer.Acquire();
+            try {
+                expose (co) {
+                    if (co.pipe.channel != null) {
+                        return Write(buffer, index, count, ref co.pipe);
+                    }
+                    else {
+                        return buffer;
+                    }
+                }
+            }
+            finally {
+                consoleContainer.Release(co);
+            }
+        }
+
+        //
+        //private static char[]! in ExHeap Write([Claims] char[]! in ExHeap buffer,
+        //                                     int index, int count,
+        //                                     ref DeviceData device)
+        //{
+        //  expose (device) {
+        //      ConsoleDeviceContract.Imp channel = device.channel;
+        //      if (channel != null) {
+        //          channel.SendWrite(buffer, index, count);
+        //          switch receive {
+        //          case channel.AckWrite(localside):
+        //              return localside;
+//
+        //          case channel.NakWrite(localside):
+        //              return localside;
+//
+        //          case channel.ChannelClosed():
+        //              delete channel;
+        //              device.channel = null;
+        //              return new[ExHeap] char[0];
+        //          }                      
+        //      }
+        //      else {
+        //          return buffer;
+        //      }
+        //  }
+        //}
+        //
+
+        private static char[]! in ExHeap Write([Claims] char[]! in ExHeap buffer,
+                                               int index, int count,
+                                               ref PipeData pipe)
+        {
+            expose (pipe) {
+                UnicodePipeContract.Imp channel = pipe.channel;
+                if (channel != null) {
+                    //                    char[]! in ExHeap buffer=Bitter.FromString2(value);
+                    channel.SendWrite(buffer, index, count);
+                    switch receive { 
+                    case channel.AckWrite(i_buffer):
+                        return i_buffer;
+                    
+                    case channel.ChannelClosed():
+                        delete channel;
+                        pipe.channel = null;
+                        return new[ExHeap] char[0];
+
+                    case unsatisfiable:
+                        DebugStub.Break();
+                        throw new Exception("Pipe unsatisfiable "); 
+                    }
+                }
+                else {
+                    return buffer;
+                }
+            }
+        }
+
+        public static void Write(char[]! buffer, int index, int count)
+        {
+            if (consoleContainer == null) return;
+
+            ConsoleOutput co = consoleContainer.Acquire();
+
+            expose (co) {
+                char[] in ExHeap side = co.side;
+
+                if (side.Length < count) {
+                    delete side;
+                    co.side = side = new[ExHeap] char [count];
+                }
+
+                for (int i = 0; i < count; i++) {
+                    side[i] = buffer[index + i];
+                }
+
+                if (co.pipe.channel != null) {
+                    co.side = Write(side, index, count, ref co.pipe);
+                }
+                //
+                //else {
+                //  co.side = Write(side, index, count, ref co.device);
+                //}
+                //
+            }
+            consoleContainer.Release(co);
+        }
+
+        public static void Write(String! value)
+        {
+            if (consoleContainer == null) return;
+
+            ConsoleOutput co = consoleContainer.Acquire();
+
+            expose (co) {
+
+                char[] in ExHeap side = co.side;
+                if (side.Length < value.Length) {
+                    delete side;
+                    co.side = side = new[ExHeap] char [value.Length];
+                }
+
+                for (int i = 0; i < value.Length; i++) {
+                    side[i] = value[i];
+                }
+
+                if (co.pipe.channel != null) {
+                    co.side = Write(side, 0, value.Length, ref co.pipe);
+                }
+                //
+                //else {
+                //  co.side = Write(side, 0, value.Length, ref co.device);
+                //}
+                //
+            }
+            consoleContainer.Release(co);
+            return;
+        }
+
+        public static UnicodePipeContract.Imp:READY Swap([Claims] UnicodePipeContract.Imp:READY newOutput) {
+            if (consoleContainer == null) {
+                delete newOutput;
+                return null;
+            }
+
+            ConsoleOutput co = consoleContainer.Acquire();
+
+            UnicodePipeContract.Imp result;
+            expose(co) {
+                result = co.pipe.Swap(newOutput);
+            }
+            consoleContainer.Release(co);
+            return result;
+        }
+
+    }
+}

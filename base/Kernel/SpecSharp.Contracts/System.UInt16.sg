@@ -1,0 +1,14 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace System
+{
+
+    public struct UInt16 {
+
+        public String! ToString();
+    }
+}

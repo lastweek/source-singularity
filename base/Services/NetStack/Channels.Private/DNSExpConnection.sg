@@ -1,0 +1,156 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Provider-side helper for the DNS Channel Contract
+//
+
+using System;
+using System.Collections;
+using System.Net.IP;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+using NetStack.Contracts;
+using NetStack.Runtime;
+
+using Dns = NetStack.Protocols.Dns;
+
+namespace NetStack.Channels.Private
+{
+    public class DNSExpConnection
+    {
+        private TRef<DNSContract.Exp:ReadyState>! chanEP;
+        private IPModule! ip;
+
+        public void Run()
+        {
+            DNSContract.Exp! ep = chanEP.Acquire();
+
+            while (true) {
+                switch receive {
+                    case ep.AddNameServer(uint address) :
+                    {
+                        ip.HostConfiguration.AddNameServer(new IPv4(address));
+                        ep.SendAck();
+                    }
+                    break;
+
+                    case ep.RemoveNameServer(uint address) :
+                    {
+                        ip.HostConfiguration.DeleteNameServer(new IPv4(address));
+                        ep.SendAck();
+                    }
+                    break;
+
+                    case ep.RotateNameServers() :
+                    {
+                        ip.HostConfiguration.RotateNameServers();
+                        ep.SendAck();
+                    }
+                    break;
+
+                    case ep.GetCurrentNameServer() :
+                    { ep.SendAddress((uint)ip.HostConfiguration.GetCurrentNameServer()); }
+                    break;
+
+                    case ep.GetNameServers() :
+                    {
+                        ArrayList serverList = new ArrayList();
+                        IEnumerable servers = ip.HostConfiguration.NameServers();
+
+                        foreach (IPv4 server in servers) {
+                            serverList.Add((uint)server);
+                        }
+
+                        uint[] in ExHeap addresses = new [ExHeap] uint[serverList.Count];
+
+                        // ArrayList.CopyTo in this context ends up attempting
+                        // an unimplemented array-copying operation, so do the
+                        // copy by hand...
+                        for (int i = 0; i < serverList.Count; i++) {
+                            addresses[i] = (uint)(!)serverList[i];
+                        }
+
+                        ep.SendAddressList(addresses);
+                    }
+                    break;
+
+                    case ep.Resolve(char[] in ExHeap repName) :
+                    {
+                        IPv4HostEntry hostEntry;
+                        BasicDnsClient client = new BasicDnsClient();
+                        string name = Bitter.ToString(repName);
+                        BasicDnsClient.StatusCode result = client.Resolve(name,
+                                                                          out hostEntry);
+                        delete repName; // Don't forget this!
+
+                        if (result != BasicDnsClient.StatusCode.Success) {
+                            ep.SendNotFound();
+                        }
+                        else {
+                            assert hostEntry != null;
+
+                            // Convert the alias strings
+                            char[][] in ExHeap aliases = new[ExHeap] char[hostEntry.Aliases.Length][];
+                            for (int i = 0; i < hostEntry.Aliases.Length; ++i) {
+                                expose (aliases[i]) {
+                                    delete aliases[i]; // checker doesn't know its null.
+                                    aliases[i] = Bitter.FromString(hostEntry.Aliases[i]); 
+                                }
+                            }
+
+                            // Convert the IP addresses
+                            IPv4[] addrs = hostEntry.AddressList;
+                            uint[] in ExHeap addrsAsUint = new[ExHeap] uint[addrs.Length];
+
+                            for (int i = 0; i < addrs.Length; ++i) {
+                                addrsAsUint[i] = (uint)addrs[i];
+                            }
+
+                            ep.SendDNSResults(addrsAsUint, aliases);
+                        }
+                    }
+                    break;
+
+                    case ep.IsValidName(char[] in ExHeap name) :
+                    {
+                        bool isValid;
+                        if (name != null) {
+                            isValid = Dns.Format.IsSafeDnsName(Bitter.ToString2(name));
+                            delete name;
+                        }
+                        else {
+                            isValid = false;
+                        }
+                        ep.SendIsValid(isValid);
+                    }
+                    break;
+
+                    case unsatisfiable :
+                        delete ep;
+                        return; // Shut down our thread
+                    break;
+                }
+            }
+        }
+
+        public DNSExpConnection([Claims]DNSContract.Exp:ReadyState! ep)
+        {
+            chanEP = new TRef<DNSContract.Exp:ReadyState>(ep);
+            ip = (IPModule!)Core.Instance().GetProtocolByName("IP");
+            base();
+        }
+
+        public void Start()
+        {
+            Thread newThread = new Thread(new ThreadStart(Run));
+            newThread.Start();
+        }
+    }
+}

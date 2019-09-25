@@ -1,0 +1,356 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Disk.sg
+//
+//  Reads and manages volumes and Partitions on the system
+//
+//  Useful links:
+//     http://www.ata-atapi.com/hiwtab.htm
+//     http://www.win.tue.nl/~aeb/partitions/
+
+using System;
+using System.Collections;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+
+namespace Microsoft.Singularity.Services.VolumeManager
+{
+    [StructLayout(LayoutKind.Sequential, Pack=4)]
+    internal pointerfree struct PartitionDescriptor
+    {
+        public  byte   BootIndicator;
+        private byte   chsStartHead;
+        private byte   chsStartSector;
+        private byte   chsStartCylinder;
+        public  byte   SystemId;
+        private byte   chsEndHead;
+        private byte   chsEndSector;
+        private byte   chsEndCylinder;
+        private uint   leStartSector;
+        private uint   leTotalSector;
+
+        private static byte GetChsSector(byte sectorByte)
+        {
+            return (byte)(sectorByte & 0x3f);
+        }
+
+        private static ushort GetChsCylinder(byte sectorByte,
+                                             byte cylinderByte)
+        {
+            return (ushort)
+                ((((int)sectorByte & 0xc0) << 2) + (int)cylinderByte);
+        }
+
+        public byte ChsStartHead
+        {
+            get { return chsStartHead; }
+        }
+
+        public byte ChsStartSector
+        {
+            get { return GetChsSector(chsStartSector); }
+        }
+
+        public ushort ChsStartCylinder
+        {
+            get { return GetChsCylinder(chsStartSector, chsStartCylinder); }
+        }
+
+        public byte ChsEndHead
+        {
+            get { return chsEndHead; }
+        }
+
+        public byte ChsEndSector
+        {
+            get { return GetChsSector(chsEndSector); }
+        }
+
+        public ushort ChsEndCylinder
+        {
+            get { return GetChsCylinder(chsEndSector, chsEndCylinder); }
+        }
+
+        public uint StartSector
+        {
+            get { return ByteOrder.LittleEndianToHost(leStartSector); }
+            set { leStartSector = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        public uint TotalSector
+        {
+            get { return ByteOrder.LittleEndianToHost(leTotalSector); }
+            set { leTotalSector = ByteOrder.HostToLittleEndian(value); }
+        }
+    }
+
+    public class Disk
+    {
+        public const byte SystemIdFat16Extended    = 0x05;
+        public const byte SystemIdFat32ExtendedLba = 0x0f;
+
+        public const byte Byte510Signature = 0x55;
+        public const byte Byte511Signature = 0xaa;
+
+        public const int  Descriptor0Offset = 0x1be;
+        public const int  DescriptorSize    = 16;
+        public const int  DescriptorMax     = 4;
+
+        public const int  BytesPerSector    = 512;
+
+        private String diskName;
+        private ArrayList partitions;   // Holds boxed PartitionDescriptor's
+        private TRef<VolumeManagerContract.Exp:Accept> VolExp;
+
+        public void MakeTRef([Claims]VolumeManagerContract.Exp:Accept! imp)
+                  requires imp.InState(VolumeManagerContract.Accept.Value);
+        {
+            VolExp = new TRef<VolumeManagerContract.Exp:Accept> (imp);
+        }
+
+        public VolumeManagerContract.Exp:Accept! AcquireTRef()
+        {
+            assert VolExp != null;
+            VolumeManagerContract.Exp:Accept exp = VolExp.Acquire();
+            VolExp = null;
+            return exp;
+        }
+
+        internal int PartitionCount
+        {
+            get { return (partitions == null) ? 0 : partitions.Count; }
+        }
+
+        internal bool GetPartition(int partitionId,
+                                   out PartitionDescriptor pd)
+        {
+            if (partitions != null && partitionId < partitions.Count) {
+                pd = (PartitionDescriptor) (!)partitions[partitionId];
+                return true;
+            }
+            pd = new PartitionDescriptor();
+            return false;
+        }
+
+        private static byte[] in ExHeap
+        ReadSector(DiskDeviceContract.Imp:Ready! imp, ulong sectorNumber)
+        {
+            byte[]! in ExHeap outBuffer = new [ExHeap] byte[BytesPerSector];
+            imp.SendRead(outBuffer, 0, BytesPerSector, sectorNumber);
+            switch receive {
+                case imp.RecvAckRead(inBuffer):
+                    return inBuffer;
+                case imp.RecvNakRead():
+                    return null;
+                case imp.ChannelClosed():
+                    DebugStub.WriteLine("Disk closed channel on volume manager.");
+                    return null;
+            }
+        }
+
+        public bool Initialize(string! diskName)
+        {
+            this.diskName = diskName;
+            DiskDeviceContract.Imp imp;
+
+            // Open a connection to the disk
+            imp = OpenDisk(diskName);
+            if (imp == null) {
+                return false;
+            }
+
+            byte[] in ExHeap mbrBuffer = ReadSector(imp, 0);
+            try {
+                if (mbrBuffer != null) {
+                    try {
+                        partitions = ParseMasterBootRecord(imp, mbrBuffer);
+                    }
+                    finally {
+                        delete mbrBuffer;
+                    }
+                }
+                else {
+                    throw new Exception("Didn't get AckRead on MBR");
+                }
+            }
+            finally {
+                delete imp;
+            }
+
+            return true;
+        }
+
+        public static ArrayList
+        ParseMasterBootRecord(DiskDeviceContract.Imp:Ready! imp,
+                              byte[]! in ExHeap             mbrRecord)
+        {
+            // validate signature
+            Tracing.Log(Tracing.Debug,"Signature = {0:x2}{1:x2}\n",
+                        (UIntPtr)mbrRecord[510], (UIntPtr)mbrRecord[511]);
+            if (mbrRecord[510] != Byte510Signature ||
+                mbrRecord[511] != Byte511Signature) {
+                DebugStub.Print("Bad MBR signature ({0:x2}{1:x2})\n",
+                                __arglist(mbrRecord[510], mbrRecord[511]));
+                return null;   //not found
+            }
+
+            DebugStub.Print("MBR signature ({0:x2}{1:x2})\n",
+                            __arglist(mbrRecord[510], mbrRecord[511]));
+
+            ArrayList partitions = new ArrayList(4);
+
+            for (int i = 0; i < DescriptorMax; i++) {
+                ref PartitionDescriptor r = ref mbrRecord[Descriptor0Offset + i * DescriptorSize];
+
+                Tracing.Log(Tracing.Debug,
+                            "Partition: boot={0:x2}, StartSector={1}, Total={2}\n",
+                            r.BootIndicator, r.StartSector, r.TotalSector);
+                DebugStub.Print("  Partition: boot={0:x2}, StartSector={1}, Total={2} (CHS {3}.{4}.{5}--{6}.{7}.{8})\n",
+                                __arglist(r.BootIndicator,
+                                          r.StartSector,
+                                          r.TotalSector,
+                                          r.ChsStartCylinder,
+                                          r.ChsStartHead,
+                                          r.ChsStartSector,
+                                          r.ChsEndCylinder,
+                                          r.ChsEndHead,
+                                          r.ChsEndSector
+                                          ));
+
+                if (r.SystemId == SystemIdFat16Extended ||
+                    r.SystemId == SystemIdFat32ExtendedLba) {
+                    FetchAndParseExtendedPartition(imp, ref r, partitions);
+                }
+                else if (r.TotalSector != 0) {
+                    partitions.Add(r);
+                }
+            }
+
+            int count = 0;
+            foreach (Object o in partitions) {
+                PartitionDescriptor pd = (PartitionDescriptor) (!)o;
+                // The next non-null cast should be redundant because of
+                // assertion, but is required to silence compiler.
+                DebugStub.WriteLine("  Partition {0}, system={1}, start={2}, count = {3}", __arglist(
+                                  count++,
+                                  pd.SystemId, pd.StartSector, pd.TotalSector));
+            }
+
+            return partitions;
+        }
+
+        private static void
+        FetchAndParseExtendedPartition(DiskDeviceContract.Imp:Ready! imp,
+                                       ref PartitionDescriptor parent,
+                                       ArrayList! partitions)
+        {
+            DebugStub.Write("  Extended Partition system={0}, start={1}, count = {2}\n",
+                            __arglist(parent.SystemId,
+                                      parent.StartSector,
+                                      parent.TotalSector));
+
+            byte [] in ExHeap buffer = ReadSector(imp, (ulong)parent.StartSector);
+            if (buffer != null) {
+                try {
+                    ParseExtendedPartition(imp, ref parent, buffer, partitions);
+                }
+                finally {
+                    delete buffer;
+                }
+            }
+        }
+
+        private static void
+        ParseExtendedPartition(DiskDeviceContract.Imp:Ready! imp,
+                               ref PartitionDescriptor       parent,
+                               byte []! in ExHeap            sector,
+                               ArrayList!                    partitions)
+        {
+            // Check signature
+            if (sector[510] != Byte510Signature ||
+                sector[511] != Byte511Signature) {
+                DebugStub.Print("Bad Extended Partition signature {0:x2}{1:x2}\n",
+                                __arglist(sector[510], sector[511]));
+                return;
+            }
+
+            // Check first descriptor matches parent
+            ref PartitionDescriptor self = ref sector[Descriptor0Offset];
+
+            if (self.TotalSector == 0) {
+                DebugStub.Print("Zero sectors for extended partitions");
+                return;
+            }
+
+            self.StartSector += parent.StartSector;
+            partitions.Add(self);
+
+            // Check if second descriptor is also an extended partition
+            ref PartitionDescriptor child = ref sector[Descriptor0Offset + DescriptorSize];
+            if ((child.SystemId == SystemIdFat32ExtendedLba ||
+                 child.SystemId == SystemIdFat16Extended) &&
+                child.TotalSector != 0)
+            {
+                child.StartSector += parent.StartSector;
+                FetchAndParseExtendedPartition(imp, ref child, partitions);
+            }
+        }
+
+        private DiskDeviceContract.Imp:Ready OpenDisk(string! devName)
+        {
+            DiskDeviceContract.Exp! exp;
+            DiskDeviceContract.Imp! imp;
+            DiskDeviceContract.NewChannel(out imp, out exp);
+
+            // get NS endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            DebugStub.Print("Attempting to bind to {0}\n", __arglist(devName));
+
+            bool success = false;
+            ns.SendBind(Bitter.FromString2(devName),exp);
+            switch receive {
+                case ns.AckBind():
+                    DebugStub.Print("VolMgr: Bound to {0}.\n", __arglist(devName));
+                    success = true;
+                    break;
+                case ns.NakBind(rejected, error):
+                    DebugStub.Print("VolMgr: Failed to bind to {0}.\n", __arglist(devName));
+                    delete rejected;
+                    break;
+                case unsatisfiable:
+                    throw new Exception("Didn't Disk.RecvAckBind or Disk.RecvNakBind");
+                    break;
+            }
+
+            if (!success) {
+                Tracing.Log(Tracing.Debug,"OpenDisk lookup of {0} failed\n",devName);
+                delete imp;
+                delete ns;
+                return null;
+            }
+
+            switch receive {
+                case imp.Success():
+                    break;
+                case unsatisfiable:
+                    throw new Exception("Didn't Disk.RecvSuccess");
+                    break;
+            }
+
+            delete ns;
+            return imp;
+        }  //OpenDisk
+    } //
+} //namespace class

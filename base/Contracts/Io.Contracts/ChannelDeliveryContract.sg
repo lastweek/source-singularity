@@ -1,0 +1,45 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ChannelDeliveryContract.sg
+//  Note:   Contract definition for Channel Delivery mechansims
+//
+
+using System;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract ChannelDeliveryContract : ServiceContract
+    {
+        public const string ModuleName = "/service/channel-delivery";
+
+        public rep struct MemoryRegion
+        {
+            public UIntPtr Base;
+            public UIntPtr Length;
+
+            public void Initialize(UIntPtr baseAddress, UIntPtr length)
+            {
+                this.Base   = baseAddress;
+                this.Length = length;
+            }
+        }
+
+        // Signal our identity
+        out message Ready();
+
+        override state Start  : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+        }
+    }
+}

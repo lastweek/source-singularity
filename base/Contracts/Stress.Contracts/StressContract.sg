@@ -1,0 +1,62 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StressContract.sg
+//  Note:   Contract definition for the stress diagnostics
+//
+
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Stress.Contracts
+{
+    public rep struct ArgList : ITracked
+    {
+        public char[] in ExHeap arg;
+        public ArgList* in ExHeap next;
+
+        public ArgList([Claims] char[] in ExHeap arg, [Claims] ArgList* in ExHeap next)
+        {
+            this.arg = arg;
+            this.next = next;
+        }
+    }
+
+    public contract StressContract : ServiceContract
+    {
+        // The name you should use to look up this module using the NameServer.
+        public const string ModuleName = "/service/stress";
+
+        // Signal our identity
+        out message Ready();
+
+        // Send printable results back to client during a stress test
+        out message Print(char* opt(ExHeap[]) s);
+        in message AckPrint();
+
+        // Stress the garbage collector, send printable results
+        in message GcStress();
+        out message GcStressDone();
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            // GcStress? -> (Print! -> AckPrint?)* -> GcStressDone! -> ReadyState;
+            GcStress? -> GcStressState;
+        }
+
+        state GcStressState : one
+        {
+            Print! -> AckPrint? -> GcStressState;
+            GcStressDone! -> ReadyState;
+        }
+    }
+}

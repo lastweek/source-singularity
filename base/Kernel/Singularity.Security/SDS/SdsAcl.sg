@@ -1,0 +1,86 @@
+///////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SdsAcl.sg
+//
+//  Note:
+//
+
+namespace Microsoft.Singularity.Security.SDS
+{
+    using System;
+    using Microsoft.Contracts;
+    using Microsoft.Singularity.Security;
+
+    // This module supports path-based ACLs in the Singularity Directory Service.
+    // ACLs are kept in prefix-table adjoining the SDS data structures.
+    // This module contains a non-persistent implementation.  It can be subclassed to
+    // produce a persistent table.
+
+    // An ACL pattern can be null, which matches nothing.
+    // However, a null ACL can appear only at the root of the hierarchy, since
+    // null elsewhere implies that an ACL pattern should be inherited from a parent.
+
+    // An "effective" acl pattern is one that applies at a given path in the hierarchy.
+
+    // ACLs are <node, descendant> pairs associated with paths.
+    // Effective acl patterns are determined as follows:
+    //    if the node pattern is non-null, return it
+    //    if this is the root, return null
+    //    move to the parent in the hierarchy
+    //    if the descendant pattern is non-null, return it
+    //    iterate
+
+    public struct Acl
+    {
+        public static Acl nullAcl = new Acl();
+
+        private readonly string node;
+        private readonly string descendant;
+
+        public string Node { get { return node; } }
+        public string Descendant { get { return descendant; } }
+
+        public Acl(string val)
+        {
+            this.node = val;
+            this.descendant = null;
+        }
+
+        public Acl(string val1, string val2)
+        {
+            this.node = val1;
+            this.descendant = val2;
+        }
+    }
+
+    public interface IEffectiveAclRef {
+        // if GetCached returns false, the IEffectiveAclRef is invalid:
+        // call ISdsAcl::GetEffective to get a new one
+        bool GetCached (out string aclPattern);
+    }
+
+    public interface ISdsAcl
+    {
+        //
+        //All "path" variables here must start with "/", end with other than "/" (except for the
+        //root), and contain no repeated "/" characters.
+        //
+
+        // This method gets the effective acl for the argument path node.
+        // Effective ACLs are computed by tracing up to an non-null descendant ACL.
+        // Effective ACLs always have a null inherited component.
+        string GetEffective(string! path, out IEffectiveAclRef aclRef);
+
+        // This method gets the ACL stored for the designated path (e.g. not inherited)
+        Acl Get(string! path);
+
+        // This method sets an ACL for a path and the paths that inherit from it.
+        void Set(string! path, Acl acl);
+
+        // This method clears an ACL associated with a path;
+        void Clear(string! path);
+    }
+}

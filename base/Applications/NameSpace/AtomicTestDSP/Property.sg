@@ -1,0 +1,44 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+#if !SINGULARITY_PROCESS 
+namespace Microsoft.Singularity.Directory
+#else
+namespace Microsoft.Application.DSP
+#endif 
+{
+    public class Property
+    {
+        private string name;
+        private byte[] value;
+
+        public Property(string! name, byte[]! value)
+        {
+            this.name = name;
+            this.value = value;
+        }
+
+        public string! Name
+        {
+            get
+            {
+                return (!)name;
+            }
+        }
+
+        public byte[]! Value
+        {
+            get
+            {
+                return (!)value;
+            }
+            set
+            {
+                this.value = value;
+            }
+        }
+    }
+}

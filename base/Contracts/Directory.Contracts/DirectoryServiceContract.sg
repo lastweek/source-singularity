@@ -1,0 +1,340 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DirectoryServiceContract.sg
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Directory
+{
+    // enumeration of possible errors reported by any operation
+    public enum ErrorCode : uint
+    {
+        NoError                 = 0,
+        AccessDenied            = 1,
+        AlreadyExists           = 2,
+        BadArguments            = 3,
+        ContractNotSupported    = 4,
+        DirectoryNotEmpty       = 5,
+        NotFound                = 6,
+        ChannelClosed           = 7,
+        Unsatisfiable           = 8,
+        NotImplemented          = 9,
+        NotSupported            = 10,
+        CapacityReached         = 11,
+        InsufficientResources   = 12,
+        DirectoryFull           = 13,
+        NotDirectory            = 14,
+        NotLink                 = 15,
+        NotProvider             = 16,
+        NotFile                 = 17,
+        IsOpen                  = 18,
+        Unknown                 = 99,
+    }
+
+    // enumeration of the existing node types found in the namespace
+    // implementation and the filesystem
+    public enum NodeType
+    {
+        Directory               = 1,
+        File                    = 2,
+        IoMemory                = 4,
+        ServiceProvider         = 8,
+        SymLink                 = 16,
+        BadNode                 = 32,
+    }
+
+    // a REP struct used to return responses to find or notify.
+    public rep struct EnumerationRecords : ITracked
+    {
+        public char[]! in ExHeap Path; // short name within a directory
+        public NodeType Type; // its type
+    }
+    // a REP struct used to return responses to Get Attributes.
+    public rep struct FileAttributesRecord 
+    {
+        public long CreationTime;
+        public long LastAccessTime;
+        public long LastWriteTime;
+        public long FileSize;
+        public NodeType Type; // its type
+    }
+
+    public contract DirectoryServiceContract : ServiceContract
+    {
+
+        // REPARSE MESSAGES
+        // used for 2 different scenarios: DirectoryProvider and SymLink traversal
+        //  DirectoryProvider:
+        //      path=new directoryProvider to bind to to continue traversal
+        //      rest=suffix(P): the remainder of the initial path not yet parsed.
+        //  SymLink
+        //      path=contents of the symbolic link
+        //      rest=suffix(P): the remainder of the initial path not yet parsed.
+
+
+        // attempt to bind to an service exp endpoint
+        in     message Bind(char[]! in ExHeap path,
+                            ServiceContract.Exp:Start! exp);
+        out    message AckBind();
+        // attempt to return unused endpoint if possible
+        out    message NakBind(ServiceContract.Exp:Start exp,
+                               ErrorCode code);
+        out    message NakBindReparse(char[]! in ExHeap path,
+                               char[] in ExHeap rest,
+                               bool linkFound,
+                               ServiceContract.Exp:Start! exp);
+
+        // Find path and notify caller of any changes matching pattern over
+        // the imp endpoint supplied.
+        in     message Notify(char[]! in ExHeap path,
+                              char[]! in ExHeap pattern,
+                              bool sendExisting,
+                              NotifyContract.Imp:Start! imp);
+        out    message AckNotify();
+        out    message NakNotify(NotifyContract.Imp:Start! imp,
+                                 ErrorCode error);
+        out    message NakNotifyReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound,
+                               NotifyContract.Imp:Start imp);
+
+        // Enumerate the contents of the current directory
+        in     message BeginEnumeration();
+        in     message ReadEnumeration();
+        in     message EndEnumeration();
+
+        out    message EnumerationEntries (EnumerationRecords[]! in ExHeap results, bool moreEntries);
+        out    message EnumerationTerminated(ErrorCode error);
+
+        // given a path return its nodetype and if meaningful its length
+        in     message GetAttributes(char []! in ExHeap path);
+        out    message AckGetAttributes(FileAttributesRecord fileAttributes);
+        out    message NakGetAttributes(ErrorCode code);
+        out    message NakGetAttributesReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+
+        // given a path return the associated ACL if present
+        in     message QueryACL(char []! in ExHeap path, bool effective);
+        out    message AckQueryACL(char[] in ExHeap nodePattern, char[] in ExHeap descendantPattern);
+        out    message NakQueryACL(ErrorCode code);
+        out    message NakQueryACLReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+
+        // Greater permissions needed for ops below
+
+        // register a service's name serviceProvider endpoint with the SDS
+        in     message Register(char[]! in ExHeap path,
+                                ServiceProviderContract.Imp:Start! imp);
+        out    message AckRegister();
+        out    message NakRegister(ServiceProviderContract.Imp:Start imp,
+                                     ErrorCode error);
+        out    message NakRegisterReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound,
+                               ServiceProviderContract.Imp:Start! imp);
+
+        // Deregister a service's name from the SDS
+        in     message Deregister(char[]! in ExHeap path);
+        out    message AckDeregister(ServiceProviderContract.Imp:Start! imp);   // return deregistered endpoint
+        out    message NakDeregister(ErrorCode error);
+        out    message NakDeregisterReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+
+        // create dirName within the current directory
+        // the current directory is the one bound on this channel
+        in     message CreateDirectory(char []! in ExHeap dirName);
+        out    message AckCreateDirectory();
+        out    message NakCreateDirectory(ErrorCode code);
+        out    message NakCreateDirectoryReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+        // delete dirName within the current directory
+        // the current directory is the one bound on this channel
+        in     message DeleteDirectory(char []! in ExHeap dirName);
+        out    message AckDeleteDirectory();
+        out    message NakDeleteDirectory(ErrorCode code);
+        out    message NakDeleteDirectoryReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+        // create file within the current directory
+        // the current directory is the one bound on this channel
+        // file creation only applies to the FS
+        in     message CreateFile(char []! in ExHeap fileName);
+        out    message AckCreateFile();
+        out    message NakCreateFile(ErrorCode code);
+        out    message NakCreateFileReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+        // create and "open" or bind to fileName within the current directory
+        // the current directory is the one bound on this channel
+        // this is common enough pattern to supply an optimization
+        in     message CreateAndBindFile(char []! in ExHeap fileName,
+                                         FileContract.Exp:Start! exp);
+        out    message AckCreateAndBindFile();
+        out    message NakCreateAndBindFile(FileContract.Exp:Start! exp,
+                                            ErrorCode code);
+
+        // delete fileName within the current directory
+        // the current directory is the one bound on this channel
+        in     message DeleteFile(char []! in ExHeap fileName);
+        out    message AckDeleteFile();
+        out    message NakDeleteFile(ErrorCode code);
+        out    message NakDeleteFileReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+        // for the given path and permission, return the associated ACL if present
+
+        in     message StoreACL(char []! in ExHeap fileName,
+                    char[] in ExHeap nodePattern, char[] in ExHeap descendantPattern);
+        out    message AckStoreACL();
+        out    message NakStoreACL(ErrorCode code);
+        out    message NakStoreACLReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+        // create a symlink node at linkPath with value linkValue
+        // Upon traversal linkPath will be returned to client
+        // it is up to the client to interpret and re-submit bind
+        // see reparse messages below.
+
+        in     message CreateLink(char []! in ExHeap linkPath,
+                         char []! in ExHeap linkValue );
+        out    message AckCreateLink();
+        out    message NakCreateLink(ErrorCode code);
+        out    message NakCreateLinkReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+        // delete symlink node at linkPath
+        in     message DeleteLink(char []! in ExHeap linkPath);
+        out    message AckDeleteLink();
+        out    message NakDeleteLink(ErrorCode code);
+        out    message NakDeleteLinkReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+        // Get symlink value
+        in     message GetLinkValue(char []! in ExHeap linkPath);
+        out    message AckGetLinkValue(char []! in ExHeap linkPath);
+        out    message NakGetLinkValue(ErrorCode code);
+        out    message NakGetLinkValueReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound);
+
+
+        out    message Success();
+
+        ////////////////////////////////////////////////////////
+        // State  Machine
+        ////////////////////////////////////////////////////////
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Enumerate : one {
+            EnumerationTerminated!  -> Ready;
+            EnumerationEntries! -> EnumerateAck;
+        }
+
+        state EnumerateAck : one {
+            ReadEnumeration? -> Enumerate;
+             EndEnumeration? -> Ready;
+        }
+
+
+        state Ready: one
+        {
+            Bind? ->                (AckBind!
+                                     or NakBind!
+                                     or NakBindReparse!
+                                    ) -> Ready;
+
+            BeginEnumeration? ->     Enumerate;
+
+            CreateAndBindFile? ->   (AckCreateAndBindFile!
+                                     or NakCreateAndBindFile!
+                                    ) -> Ready;
+
+            CreateDirectory? ->     (AckCreateDirectory!
+                                     or NakCreateDirectory!
+                                     or NakCreateDirectoryReparse!
+                                    ) -> Ready;
+
+            CreateFile? ->          (AckCreateFile!
+                                     or NakCreateFile!
+                                     or NakCreateFileReparse!
+                                    ) -> Ready;
+
+            CreateLink? ->          (AckCreateLink!
+                                     or NakCreateLink!
+                                     or NakCreateLinkReparse!
+                                    ) -> Ready;
+
+
+            DeleteDirectory? ->     (AckDeleteDirectory!
+                                     or NakDeleteDirectory!
+                                     or NakDeleteDirectoryReparse!
+                                    ) -> Ready;
+
+            DeleteFile? ->          (AckDeleteFile!
+                                     or NakDeleteFile!
+                                     or NakDeleteFileReparse!
+                                    ) -> Ready;
+
+            DeleteLink? ->          (AckDeleteLink!
+                                     or NakDeleteLink!
+                                     or NakDeleteLinkReparse!
+                                    ) -> Ready;
+
+            Deregister? ->          (AckDeregister!
+                                     or NakDeregister!
+                                     or NakDeregisterReparse!
+                                    ) -> Ready;
+
+
+            GetAttributes? ->       (AckGetAttributes!
+                                      or NakGetAttributes!
+                                      or NakGetAttributesReparse!
+                                    ) -> Ready;
+
+            GetLinkValue? ->          (AckGetLinkValue!
+                                     or NakGetLinkValue!
+                                     or NakGetLinkValueReparse!
+                                    ) -> Ready;
+            Notify? ->              (AckNotify!
+                                     or NakNotify!
+                                     or NakNotifyReparse!
+                                    ) -> Ready;
+
+            QueryACL? ->            (AckQueryACL!
+                                     or NakQueryACL!
+                                     or NakQueryACLReparse!
+                                     ) -> Ready;
+
+            Register? ->            (AckRegister!
+                                     or NakRegister!
+                                     or NakRegisterReparse!
+                                    ) -> Ready;
+
+            StoreACL? ->            (AckStoreACL!
+                                     or NakStoreACL!
+                                     or NakStoreACLReparse!
+                                     ) -> Ready;
+       }
+   }
+}

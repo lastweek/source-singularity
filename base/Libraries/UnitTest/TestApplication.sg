@@ -1,0 +1,81 @@
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Generated test jig code
+
+using System;
+using System.Threading;
+
+using Microsoft.Singularity.UnitTest;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Test.Contracts;
+using Microsoft.Singularity.Configuration;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.UnitTest
+{
+    // stub for generated jig
+    public class TheModuleJig : ModuleJig
+    {
+        override public SuiteJig GetSuite(string! name, TestLog! log)
+        {
+            return null;
+        }
+    }
+}
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="ModuleTester", Action="test")]
+    internal class ModuleTest_Category {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [CustomEndpoint]
+        public readonly TRef<ModuleTesterContract.Exp:START> testerRef;
+
+        reflective internal ModuleTest_Category();
+
+        internal int AppMain() {
+            if (testerRef == null) {
+                DebugStub.WriteLine("TEST endpoint not setup");
+                throw new Exception("TEST endpoint not setup ");
+            }
+            ModuleTesterContract.Exp tester = testerRef.Acquire();
+            if (tester == null) {
+                DebugStub.WriteLine("TEST unable to acquite handle to test driver");
+                throw new Exception("Unable to acquire handle to the test driver");
+            }
+            ModuleJig jig = new TheModuleJig();
+            ModuleTester.RunTests(tester, jig);
+            return 0;
+        }
+    }
+
+    // Currently required to get process launch code generated.
+    [ConsoleCategory(HelpMessage="Run using the test framework", DefaultAction=true)]
+    internal class ModuleConsole_Category {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal ModuleConsole_Category();
+
+        internal int AppMain() {
+            Console.WriteLine("This is a test application and can only be run from the tester.");
+            return -1;
+        }
+    }
+}

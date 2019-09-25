@@ -1,0 +1,41 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Directory.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Directory
+{
+    public class DirNode
+    {
+    }
+
+    public class DirectoryService
+    {
+        // Return parameter is really: DirectoryService.Imp opt(ExHeap) *
+        public static unsafe SharedHeap.Allocation * NewClientEndpointEx();
+        public static unsafe SharedHeap.Allocation * NewClientWriteEndpointEx();
+
+        //
+        // Kernel only interfaces.
+        //
+
+        public static bool CreateDirectory(DirNode dirNode, string path);
+        public static bool CreateSymbolicLink(DirNode dirNode, string path, string link);
+        public static DirNode FindDirectory(string dirName, bool createIfNull);
+        public static void Initialize(XmlNode config);
+        public static bool RegisterIoMemory(DirNode node, string name, IoMemory ioMem);
+    }
+} // namespace Microsoft.Singularity.Directory

@@ -1,0 +1,7 @@
+# This script mounts a filesystem and creates the file set for
+# running the xbench script.
+
+fatcontrol '@format' '/dev/vol0.0'
+fatcontrol '@mount' '/dev/vol0.0' '/fs'
+wafgen99 '-v' '/fs'
+fatcontrol '@unmount' '/fs'

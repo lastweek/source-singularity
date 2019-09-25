@@ -1,0 +1,145 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using Smb.Shared;
+
+
+namespace Smb.Protocol
+{
+	[StructLayout(LayoutKind.Explicit, Pack=1, Size=37)]
+	pointerfree struct SmbHeader
+	{
+		[FieldOffset(0)] public byte FrameLength0;
+		[FieldOffset(1)] public byte FrameLength1;
+		[FieldOffset(2)] public byte FrameLength2;
+		[FieldOffset(3)] public byte FrameLength3;
+		[FieldOffset(4)] public byte Signature0;
+		[FieldOffset(5)] public byte Signature1;
+		[FieldOffset(6)] public byte Signature2;
+		[FieldOffset(7)] public byte Signature3;
+		[FieldOffset(8)] public byte Command;
+		[FieldOffset(9)] public byte ErrorClass;
+		[FieldOffset(10)] public byte Error1;
+		[FieldOffset(11)] public byte Error2;
+		[FieldOffset(12)] public byte Error3;
+		[FieldOffset(13)] public byte Flags1;
+		[FieldOffset(14)] public ushort Flags2;
+		[FieldOffset(16)] public ushort PidHigh;
+		[FieldOffset(18)] public uint Extra0;
+		[FieldOffset(22)] public uint Extra1;
+		[FieldOffset(26)] public ushort ExtraReserved;
+		[FieldOffset(28)] public ushort TreeId;
+		[FieldOffset(30)] public ushort ProcessId;
+		[FieldOffset(32)] public ushort UserId;
+		[FieldOffset(34)] public ushort MuxId;		
+		[FieldOffset(36)] public byte ParameterCount;
+		
+		// I can't believe it, but the length of this structure is 37!  THIRTY SEVEN!
+		// Not only is it not aligned to any sane boundary, like 4 or 8 bytes, but it's
+		// a freakin PRIME NUMBER!
+		public const int SizeOf = 37;
+		
+		public void SetSignature()
+		{
+			Signature0 = SmbSignature0;
+			Signature1 = SmbSignature1;
+			Signature2 = SmbSignature2;
+			Signature3 = SmbSignature3;	
+		}
+		
+		public bool IsSignatureValid()
+		{
+			return Signature0 == SmbSignature0
+				&& Signature1 == SmbSignature1
+				&& Signature2 == SmbSignature2
+				&& Signature3 == SmbSignature3;				
+		}
+		
+		
+		public const byte SmbSignature0 = 0xff;
+		public const byte SmbSignature1 = (byte)'S';
+		public const byte SmbSignature2 = (byte)'M';
+		public const byte SmbSignature3 = (byte)'B';
+		
+		public bool IsError
+		{
+			get {
+				return Error1 != 0 || Error2 != 0 || Error3 != 0;
+			}
+		}
+		
+		public NtStatus GetNtStatus()
+		{
+			if ((((SmbFlag2)Flags2) & SmbFlag2.UsingNtStatus) != 0) {
+				uint code = ((uint)ErrorClass)
+					| (((uint)Error1) << 8)
+					| (((uint)Error2) << 16)
+					| (((uint)Error3) << 24);
+				return (NtStatus)unchecked((int)code);
+			}
+			else {
+				return NtStatus.CodeNotMapped;
+			}
+		}
+		
+		public string! GetErrorText()
+		{
+			return SmbProtocol.GetErrorText(this.ErrorClass, this.Error1 | ((ushort)Error2 << 8));
+		}
+		
+		public int SmbMessageLength
+		{
+			get ensures result >= 0;
+			{
+				return (((int)this.FrameLength1) << 16)
+					| (((int)this.FrameLength2) << 8)
+					| ((int)this.FrameLength3);
+			}
+			
+			set requires value >= 0;
+			{
+				this.FrameLength0 = 0;
+				this.FrameLength1 = (byte)((value >> 16) & 0xff);
+				this.FrameLength2 = (byte)((value >> 8) & 0xff);
+				this.FrameLength3 = (byte)(value & 0xff);
+			}
+		}
+		
+
+		public bool IsRequest
+		{
+			get { return (this.Flags1 & (byte)SmbFlag1.IsResponse) == 0; }
+		}
+		
+		public bool IsResponse
+		{
+			get { return (this.Flags1 & (byte)SmbFlag1.IsResponse) != 0; }
+		}
+		
+		public int TotalMessageLength
+		{
+			get { return this.SmbMessageLength + 4; }
+			
+			set
+				requires value >= 4;
+				{ this.SmbMessageLength = value - 4; }
+		}
+		
+		public void Prepare(SmbCommand command, int parameterCount)
+			requires parameterCount >= 0;
+			requires parameterCount < 256;
+		{
+			this.SetSignature();
+			this.Command = (byte)command;
+			this.ParameterCount = (byte)parameterCount;
+		}
+		
+		public const int FramingHeaderLength = 4;
+	}
+}

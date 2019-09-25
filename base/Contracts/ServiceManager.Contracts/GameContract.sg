@@ -1,0 +1,84 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Contracts/ServiceManager.Contracts/GameContract.sg
+//
+//  Note:   String replace game contract
+//
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.ServiceManager
+{
+    public contract GamePlayerContract : ServiceContract
+    {
+        public const String ModuleName = "ReplaceGameService";
+
+        out message Success();
+
+        in  message Search(char[]! in ExHeap query);
+        in  message Overwrite(char[]! in ExHeap replacement, int position);
+        in  message Protect(int position);
+        in  message Score(char[]! in ExHeap query);
+
+        out message AckSearch(int position);
+        out message AckOverwrite();
+        out message AckProtect();
+        out message AckScore(int score);
+
+        override state Start : one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            Search? -> AckSearch! -> Action;
+            Score? -> AckScore! /* -> Truncate */ -> Ready;
+        }
+
+        state Action : one {
+            Overwrite? -> AckOverwrite! /* -> Snapshot */ -> Ready;
+            Protect? -> AckProtect! /* -> Truncate */ -> Ready;
+        }
+    }
+
+    public contract GameContract : ServiceContract
+    {
+        public const String ModuleName = "GameMaster";
+
+        out message Success();
+
+        in  message NewGame();
+        in  message Entry(GamePlayerContract.Exp:Start! player, int gameId);
+        in  message StartGame();
+        in  message EndGame();
+
+        out message AckNewGame(int gameId);
+        out message NakNewGame();
+        out message AckEntry();
+        out message NakEntry(GamePlayerContract.Exp:Start player);
+        out message AckStartGame();
+        out message AckEndGame();
+
+        override state Start : one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            NewGame? -> AckGameMaster;
+        }
+
+        state AckGameMaster : one {
+            AckNewGame! -> Play;
+            NakNewGame! -> Ready;
+        }
+
+        state Play : one {
+            Entry? -> (AckEntry! or NakEntry!) -> Play;
+            StartGame? -> AckStartGame! -> EndGame? -> AckEndGame! -> Ready;
+        }
+    }
+}

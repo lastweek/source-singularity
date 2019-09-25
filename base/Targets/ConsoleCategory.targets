@@ -1,0 +1,30 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+Projects that are "console" apps should import this targets file.
+
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <ApplicationCategory>Console</ApplicationCategory>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Applications\Transforms\AppTransforms.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+  </ItemGroup>
+
+  <Import Project="App.targets"/>
+  
+</Project>

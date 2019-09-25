@@ -1,0 +1,152 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using System.Diagnostics;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "link", Position=0, Mandatory=true)]
+        internal string symPath;
+
+        [StringParameter( "value", Position=1, Mandatory=true)]
+        internal string symValue;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SymbolicLink.AppMain(this);
+        }
+    }
+
+    public class SymbolicLink
+    {
+        private static int symlink(DirectoryServiceContract.Imp:Ready! rootNS, string! dir, string! name, string! link)
+        {
+           int result = -1;
+
+            DirectoryServiceContract.Imp! dirImp;
+            DirectoryServiceContract.Exp! dirExp;
+            DirectoryServiceContract.NewChannel(out dirImp, out dirExp);
+
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Bind(dir, rootNS, dirExp, out errorOut);
+            if (!ok) {
+                Console.WriteLine("Bind of {0} failed. reason: {1}\n",
+                                   dir,SdsUtils.ErrorCodeToString(errorOut) );
+                delete dirImp;
+                return -1;
+            }
+            else {
+                result = 0;
+            }
+
+            switch receive {
+                case dirImp.Success() :
+                    break;
+                case dirImp.ChannelClosed() :
+                    delete dirImp;
+                    return -1;
+                    break;
+                case unsatisfiable :
+                    delete dirImp;
+                    return -2;
+                    break;
+            }
+
+
+            //Console.WriteLine("creating link in dir "+dir+" with name="+name+" whose value="+link);
+            dirImp.SendCreateLink(Bitter.FromString2(name),Bitter.FromString2(link));
+            switch receive {
+                case dirImp.AckCreateLink() :
+                    result = 0;
+                    break;
+                case dirImp.NakCreateLink(error) :
+                    DebugStub.Break();
+                    break;
+                case dirImp.ChannelClosed():
+                    throw new Exception("Channel closed unexpectedly");
+            }
+
+            delete dirImp;
+            return result;
+        } //symlink
+
+
+        private static void tell()
+        {
+            Console.WriteLine("symlink <link name>  <link value>");
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+
+            string[] parts = null;
+            //FIXFIX xxx is needed to make null checker happy
+            string xxx = config.symPath;
+            if (xxx != null)
+                parts = xxx.Split('/');
+
+            if ((parts == null) || (parts.Length == 0)) {
+                Console.WriteLine(" no delimiter");
+                return -1;
+            }
+
+            string name = parts[parts.Length-1];
+            if (name == null) {
+                Console.WriteLine(" no delimiter");
+                return -1;
+            }
+            string dirName = "";
+            for (int i = (parts[0] == "") ? 1 : 0;
+                i < parts.Length-1; i++) {
+                dirName = dirName + "/" + parts[i];
+            }
+
+            Console.WriteLine("creating link in dir "+dirName+" with name="+name+" whose value="+config.symValue);
+
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire(); 
+            if (ds == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+            ds.RecvSuccess();
+    
+            int status = symlink(ds, dirName, name,(!)config.symValue);
+            //Console.WriteLine(args[0] + " returned " + status);
+            delete ds;
+            return status;
+        }
+    }//SymbolicLink
+}//namespace

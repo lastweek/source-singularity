@@ -1,0 +1,375 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note: internal node type used to support IoMemory images
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+
+    public class IoMemoryNode : Node
+    {
+        public IoMemory ioMemory;
+
+        public IoMemoryNode(IoMemory ioMem, string! name, Node! parent)
+        {
+            this.ioMemory = ioMem;
+            base(NodeType.IoMemory, name, parent);
+        }
+
+        /// <returns>
+        /// null on success, the service argument if it failed.
+        /// </returns>
+        public override ServiceContract.Exp Bind(StringBuilder! p,
+                                                 Principal pr,
+                                                 out bool success,
+                                                 out bool linkFound,
+                                                 out ErrorCode error,
+                                                 out bool reparse,
+                                                 out string link,
+                                                 [Claims]
+                                                 ServiceContract.Exp! service)
+        {
+            Kernel.Waypoint(3200);
+            reparse = false;
+            link = null;
+            success = false;
+            linkFound = false;
+
+            if (!(p.Length == 0)) {
+                error = ErrorCode.NotFound;
+                return service;
+            }
+
+            // The FileContract needs to be subdivided into Read and Write, then
+            // we can determine which permissions to use here.  For now, it must
+            // be the case that all  uses (if any) of IoMemory objects in the file system
+            // are read-only. [EPW]
+            if (!CheckAccess(DirPermissions.AccessModeRead, pr, service)) {
+                DebugStub.WriteLine("No access to IoMemoryNode.Bind");
+                error = ErrorCode.AccessDenied;
+                return service;
+            }
+
+#if !SINGULARITY_PROCESS
+            Tracing.Log(Tracing.Debug, "Starting stream IoMemory writer");
+
+            //send a bind message to the IoMemory FS with the endpoint and the cookie as args.
+            FileContract.Exp:Start fp = service as FileContract.Exp;
+            if (fp == null) {
+                success = false;
+                error = ErrorCode.ContractNotSupported;
+                return service;
+            }
+
+            Kernel.Waypoint(3201);
+
+            IoMemFSContract.Imp:Ready io = Directory.DirectoryService.AcquireIoFS();
+            if (io != null) {
+                Kernel.Waypoint(3202);
+                io.SendConnect(fp, (UIntPtr)ioMemory.VirtualAddress, ioMemory.Length);
+                Kernel.Waypoint(3203);
+                io.RecvAckConnect();
+                Kernel.Waypoint(3204);
+                Directory.DirectoryService.ReleaseIoFS(io);
+                success = true;
+            }
+            else {
+                DebugStub.Break();
+                delete fp;
+                success = false;
+            }
+            Kernel.Waypoint(3205);
+            error = ErrorCode.NoError;
+            return null;
+#endif
+            error = ErrorCode.NotImplemented;
+            return service;
+        }
+
+        /// <returns>
+        /// null on success, the sp argument if it failed.
+        /// </returns>
+        public override ServiceProviderContract.Imp Register(StringBuilder! p,
+                                      Principal pr,
+                                      [Claims]ServiceProviderContract.Imp! sp,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            // cannot register over an existing provider
+            reparse = false;
+            linkFound = false;
+            link = null;
+            error = ErrorCode.NotSupported;
+            return sp;
+        }
+
+        /// <returns>
+        /// The endpoint on success, null, if it fails.
+        /// </returns>
+        public override ServiceProviderContract.Imp:Start Deregister(StringBuilder! path,
+                                                               Principal pr,
+                                                               DirectoryServiceContract.Exp! ep,
+                                                               out bool linkFound,
+                                                               out ErrorCode error,
+                                                               out bool reparse,
+                                                               out string link
+                                                               )
+
+        {
+            link  = null;
+            linkFound = false;
+            reparse = false;
+            error = ErrorCode.NotSupported;
+            if (!(path.Length == 0)) {
+                return null;
+            }
+
+            // we are being removed
+            // the remove will fail!
+
+            // if we ever allow deregister of IoMemoryNode
+            // do not forget to add an access control check.
+            return null;
+        }
+
+
+        /// <returns>
+        /// if true returns length and node type, otherwise error
+        /// </returns>
+        public override bool GetAttributes(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link,
+                                        out long length,
+                                        out NodeType nodeType
+                                        )
+        {
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NoError;
+            nodeType = NodeType.IoMemory;
+            length = ioMemory.Length;
+            return true;
+        }
+
+
+        /// <returns>
+        /// null on success, the imp argument if it failed.
+        /// </returns>
+        public override NotifyContract.Imp Notify(StringBuilder! pathSpec,
+                                                  Principal pr,
+                                                  string! pattern,
+                                                  bool sendExisting,
+                                                  out bool linkFound,
+                                                  out ErrorCode error,
+                                                  out bool reparse,
+                                                  out string link,
+                                                  [Claims] NotifyContract.Imp! notifyImp)
+        {
+            // this method should never be called
+            error = ErrorCode.NotSupported;
+            reparse = false;
+            link = null;
+            linkFound = false;
+            return notifyImp;
+        }
+
+        public override FileContract.Imp CreateAndBindFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return null;
+        }
+
+        public override bool CreateDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return false;
+     }
+        public override bool CreateFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return false;
+        }
+
+        public override bool CreateLink(StringBuilder! p,
+                                        Principal pr,
+                                        string! value,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return false;
+        }
+        public override bool DeleteDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return false;
+        }
+        public override bool DeleteFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return false;
+        }
+        public override bool DeleteLink(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+            return false;
+        }
+
+        public override bool GetLinkValue(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+        {
+            linkFound = false;
+            error = ErrorCode.NotLink;
+            reparse = false;
+            link = null;
+            return false;
+        }
+
+        public override bool QueryACL(StringBuilder! p,
+                                      Principal pr,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link,
+                                      out Acl acl
+                                      )
+        {
+            linkFound = false;
+            error = ErrorCode.NoError;
+            reparse = false;
+            link = null;
+            acl = new Acl();
+
+            if (CheckAccess(DirPermissions.AccessModeRead, pr)) {
+                error = ErrorCode.AccessDenied;
+                return false;
+            }
+            acl = GetInstanceAcl();
+            return true;
+        }
+
+        public override bool StoreACL(StringBuilder! p,
+                                      Principal pr,
+                                      Acl acl,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            linkFound = false;
+            error = ErrorCode.NoError;
+            reparse = false;
+            link = null;
+
+            if (!CheckAccess(DirPermissions.AccessModeSetAcl, pr)) {
+                error = ErrorCode.AccessDenied;
+                return false;
+            }
+
+            SetInstanceAcl(acl);
+            return true;
+        }
+    }
+}

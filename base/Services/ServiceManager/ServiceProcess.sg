@@ -1,0 +1,326 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using System;
+using System.Collections;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.ServiceManager;
+//
+//using Microsoft.Singularity.Applications;
+//using Microsoft.Singularity.Xml;
+//
+
+namespace Microsoft.Singularity.Services.ServiceManager
+{
+    ///
+    //<summary>
+    //  This class tracks all of the state relevant to one specific service process
+    //  that the Service Manager has created.  The Service Manager may create more than
+    //  one process for each service, depending on the configuration, load, sanity, etc.
+    //  of the service.
+    //</summary>
+    //
+    internal sealed class ServiceProcess
+    {
+        public ServiceProcess(Service! service)
+        {
+            this.Service = service;
+            this.State = (ServiceProcessState)(-1);
+            this.controlEndpointState = ControlEndpointState.Disconnected;
+            this.eventChannelState = EventChannelState.Disconnected;
+            this.eventEndpointRef = null;
+            this.Health = ServiceHealth.Unknown;
+            this.Load = ServiceLoad.Unknown;
+            
+            this.dbgprefix = service.dbgprefix;
+            
+        }
+        
+        public string! dbgprefix;
+
+        private Process process;
+        
+        public Process Process
+        {
+            get { return process; }
+        }
+        
+        public void SetProcess(Process! process)
+        {
+            if (this.Process != null)
+                throw new InvalidOperationException("This ServiceProcess instance already has a system process.");
+                
+            this.process = process;
+            this.dbgprefix = ServiceManager.MakeDbgPrefix(this.Service.ServiceName + "/" + process.Id);
+        }
+        
+        public void ReleaseProcess()
+        {
+            if (this.process != null) {
+                this.process.Dispose(true);
+                this.process = null;
+            }
+            this.dbgprefix = this.Service.dbgprefix;
+        }
+        
+        public readonly Service! Service;
+        
+        public ServiceProcessState State;
+        // public bool IsTerminated;
+        public bool IsDefective;
+        
+        public ServiceHealth Health;
+        public ServiceLoad Load;
+    
+        /// <summary>
+        /// This variable only has meaning when _state == ServiceProcessState.Stopping
+        /// </summary>
+        public bool NeedSendStopControl;
+        
+        private ControlEndpointState controlEndpointState;
+        private TRef<ServiceProcessContract.Imp:Running> controlEndpointRef;
+
+        private EventChannelState eventChannelState;        
+        private TRef<ServiceEventContract.Exp:Ready> eventEndpointRef;
+        
+        public EventChannelState EventChannelState {
+            get { return eventChannelState; }
+        }
+
+        private bool currentConnectDirIsSet;
+        private TRef<DirectoryServiceContract.Exp:Ready> currentConnectDirRef;
+        private string currentConnectSubPath;
+        private DirectoryClientInfo currentConnectDirInfo;
+        private SchedulerTime currentConnectTimeStarted;
+        private SchedulerTime currentConnectTimeRoutedToService;
+
+        public bool HasCurrentConnectDir {
+            get { return currentConnectDirIsSet; }
+        }
+        
+        public void SetCurrentConnectDir(
+            [Claims]DirectoryServiceContract.Exp:Ready! dir,
+            DirectoryClientInfo! dirinfo,
+            string! subpath,
+            SchedulerTime timeStarted)
+        {
+            if (currentConnectDirIsSet)
+                throw new Exception("The current connect dir client is already set.");
+
+            currentConnectDirIsSet = true;
+            if (currentConnectDirRef != null) {
+                currentConnectDirRef.Release(dir);
+            }
+            else {
+                currentConnectDirRef = new TRef<DirectoryServiceContract.Exp:Ready>(dir);
+            }
+            currentConnectSubPath = subpath;
+            currentConnectDirInfo = dirinfo;
+            currentConnectTimeStarted = timeStarted;
+            currentConnectTimeRoutedToService = SchedulerTime.Now;
+        }
+        
+        public void GetCurrentConnectDir(
+            out DirectoryServiceContract.Exp:Ready! dir,
+            out DirectoryClientInfo! dirinfo)
+        {
+            string! subpath;
+            SchedulerTime timeStarted;
+            SchedulerTime timeRoutedToService;            
+            GetCurrentConnectDir(out dir, out dirinfo, out subpath, out timeStarted, out timeRoutedToService);
+        }
+        
+        public void GetCurrentConnectDir(
+            out DirectoryServiceContract.Exp:Ready! dir,
+            out DirectoryClientInfo! dirinfo,
+            out string! subpath,
+            out SchedulerTime timeStarted,
+            out SchedulerTime timeRoutedToService)
+        {
+            if (!currentConnectDirIsSet)
+                throw new Exception("The current connect dir client is not set.");
+                
+            assert currentConnectDirRef != null;
+            assert currentConnectSubPath != null;
+            assert currentConnectDirInfo != null;
+            currentConnectDirIsSet = false;
+            dir = currentConnectDirRef.Acquire();
+            subpath = currentConnectSubPath;     
+            dirinfo = currentConnectDirInfo;       
+            timeStarted = currentConnectTimeStarted;
+            timeRoutedToService = currentConnectTimeRoutedToService;
+        }
+        
+        public void SetControlEndpoint([Claims]ServiceProcessContract.Imp:Running! svcontrol)
+        {
+            if (controlEndpointState == ControlEndpointState.Ready) {
+                delete svcontrol;
+                throw new InvalidOperationException("Cannot set control endpoint; this service instance already has one.");
+            }
+            
+            controlEndpointState = ControlEndpointState.Ready;
+            
+            if (controlEndpointRef != null)
+                controlEndpointRef.Release(svcontrol);
+            else
+                controlEndpointRef = new TRef<ServiceProcessContract.Imp:Running>(svcontrol);
+        }
+        
+        public void CloseControlEndpoint()
+        {
+            if (controlEndpointState == ControlEndpointState.Ready) {
+                assert controlEndpointRef != null;
+                ServiceProcessContract.Imp! svcontrol = controlEndpointRef.Acquire();
+                delete svcontrol;
+            }
+            controlEndpointState = ControlEndpointState.Disconnected;                
+        }
+        
+        public bool ControlEndpointIsReady
+        {
+            get { return controlEndpointState == ControlEndpointState.Ready; }
+        }
+        
+        public ServiceProcessContract.Imp:Running! GetControlEndpoint(ControlEndpointState nextState)
+        {
+            if (nextState == ControlEndpointState.Ready)
+                throw new ArgumentException("'Ready' is not a valid next state for AcquireControlEndpoint.");
+                
+            if (controlEndpointState != ControlEndpointState.Ready)
+                throw new InvalidOperationException("Cannot acquire control endpoint; none has been set.");
+
+            assert controlEndpointRef != null;
+            controlEndpointState = nextState;
+            return controlEndpointRef.Acquire();
+        }
+        
+        public bool EventEndpointIsReady
+        {
+            get { return eventChannelState == EventChannelState.Ready; }
+        }
+        
+        public void SetEventEndpoint([Claims]ServiceEventContract.Exp! notify)
+        {
+            switch (eventChannelState) {
+                case EventChannelState.Ready:
+                    // This should not happen!  We already have one?!
+                    delete notify;
+                    throw new InvalidOperationException("Cannot set event endpoint; this service instance already has one.");
+                    
+                case EventChannelState.Disconnected:
+                case EventChannelState.WaitingEvent:
+                    break;
+                    
+                default:
+                    throw new InvalidStateException();
+            }
+            
+            if (eventEndpointRef != null)
+                eventEndpointRef.Release(notify);
+            else
+                eventEndpointRef = new TRef<ServiceEventContract.Exp:Ready>(notify);
+            eventChannelState = EventChannelState.Ready;
+        }
+        
+        public ServiceEventContract.Exp! GetEventEndpoint(EventChannelState nextState)
+        {
+            if (nextState == EventChannelState.Ready)
+                throw new Exception("State 'Ready' is not a valid next state for GetEventEndpoint.");
+                
+            if (eventChannelState != EventChannelState.Ready)
+                throw new InvalidOperationException("Cannot acquire event endpoint; none has been set.");
+            
+            assert eventEndpointRef != null;
+            eventChannelState = nextState;
+            ServiceEventContract.Exp! svevent = eventEndpointRef.Acquire();
+            return svevent;
+        }
+        
+        public void CloseEventEndpoint()
+        {
+            switch (eventChannelState) {
+                case EventChannelState.Disconnected:
+                    break;
+                    
+                case EventChannelState.Ready:
+                {
+                    assert eventEndpointRef != null;
+                    ServiceEventContract.Exp! svevent = eventEndpointRef.Acquire();
+                    delete svevent;
+                    eventChannelState = EventChannelState.Disconnected;
+                    break;
+                }
+                
+                case EventChannelState.WaitingEvent:
+                    eventChannelState = EventChannelState.Disconnected;
+                    break;
+                    
+                default:
+                    throw new InvalidStateException();
+            }
+        }
+
+        public void SetEventChannelState(EventChannelState newState)
+        {
+            if (newState == EventChannelState.Ready)
+                throw new ArgumentException("Cannot move event channel state to 'Ready' using this method.");
+            eventChannelState = newState;
+        }
+
+        public override string! ToString()
+        {
+            if (this.process != null)
+                return String.Format("[pid {0}]", this.process.Id.ToString());
+            else
+                return "[pid ??]";
+        }
+        
+        public void Dispose()
+        {
+            if (this.process != null) {
+                this.process.Dispose(true);
+                this.process = null;
+            }
+            CloseEventEndpoint();            
+        }
+    }
+
+
+    // The state of the control endpoint.
+    enum ControlEndpointState
+    {
+        Disconnected = 1,
+        Ready,
+        Connecting,
+        Stopping,
+    }
+
+    enum EventChannelState
+    {
+        /// <summary>
+        /// No event channel exists.  Either the service is not running, or the service does not
+        /// support an event channel.
+        /// </summary>
+        Disconnected = 1,
+        
+        /// <summary>
+        /// An event channel exists, and our side of it is parked in Service.eventEndpointRef.
+        /// The GetEventEndpoint method can be used to acquire the endpoint.
+        /// </summary>
+        Ready,
+        
+        /// <summary>
+        /// The event channel is created, and is in the ServiceManager.svevents endpoint map.
+        /// </summary>
+        WaitingEvent,
+    }    
+}

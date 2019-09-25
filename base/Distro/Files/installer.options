@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<installeroptions>
+  <machine>"x86"</machine>
+  <writeroot>"/fs"</writeroot>
+  <writebase>"installer"</writebase>
+  <niboptions>"/init/nib.options"</niboptions>
+  <nativelib>"/init/native/lib/"</nativelib>
+  <installedapps>"configuration/installedapps"</installedapps>
+  <assemblybase>"assemblies"</assemblybase>
+  <manifestbase>"manifest"</manifestbase>
+  <executablebase>"excutable"</executablebase>
+  <temp>"temp"</temp>
+
+  <assemblies>
+    <assembly>"/init/assemblies/Corlib.dll"</assembly>
+    <assembly>"/init/assemblies/Corlibsg.dll"</assembly>
+    <assembly>"/init/assemblies/Corlibsg.Vxx.dll"</assembly>
+    <assembly>"/init/assemblies/Directory.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/Io.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/Microsoft.SingSharp.Runtime.dll"</assembly>
+    <assembly>"/init/assemblies/Singularity.V1.dll"</assembly>
+    <assembly>"/init/assemblies/System.Compiler.Runtime.dll"</assembly>
+    <assembly>"/init/assemblies/NetStack.Channels.Public.dll"</assembly>
+    <assembly>"/init/assemblies/Diagnostics.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/MapPointProxy.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/SeattleTrafficProxy.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/PingPong.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/WebApps.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/NetStack.Contracts.dll"</assembly>
+    <assembly>"/init/assemblies/DirectoryService.Utils.dll"</assembly>
+    <assembly>"/init/assemblies/FileSystem.Utils.dll"</assembly>
+    <assembly>"/init/assemblies/System.Console.dll"</assembly>
+    <assembly>"/init/assemblies/System.IO.dll"</assembly>
+    <assembly>"/init/assemblies/System.Net.dll"</assembly>
+    <assembly>"/init/assemblies/System.Net.IP.dll"</assembly>
+    <assembly>"/init/assemblies/System.Web.dll"</assembly>
+    <assembly>"/init/assemblies/WebApps.dll"</assembly>
+    <assembly>"/init/assemblies/WebAppDriver.dll"</assembly>
+  </assemblies>
+</installeroptions>

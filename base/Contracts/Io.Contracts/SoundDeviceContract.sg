@@ -1,0 +1,45 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SoundDeviceContract.sg - Contract between apps and sound devices
+//
+
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract SoundDeviceContract : DeviceContract {
+        in message PlayPcm(byte* opt(ExHeap[]) buffer,
+                           int offset,
+                           int length,
+                           ushort sampleRate,
+                           bool stereo,
+                           bool signed,
+                           bool eightBit);
+        out message AckPlayPcm(byte[]! in ExHeap buffer);
+        out message NakPlayPcm(byte[]! in ExHeap buffer);
+
+        in message PlayWav(byte[]! in ExHeap buffer);
+        out message AckPlayWav(byte[]! in ExHeap buffer);
+        out message NakPlayWav(byte[]! in ExHeap buffer);
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one {
+            PlayPcm? -> (AckPlayPcm! or NakPlayPcm!) -> Ready;
+            PlayWav? -> (AckPlayWav! or NakPlayWav!) -> Ready;
+        }
+    }
+}

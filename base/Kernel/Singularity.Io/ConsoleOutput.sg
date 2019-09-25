@@ -1,0 +1,245 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ConsoleOutput.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Runtime.CompilerServices;  //StructAlign attribute
+using System.Runtime.InteropServices;   //structLayout attribute
+using System.GCs;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Hal;
+
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Io
+{
+
+    //////////////////////////////////////////////////////////////////////////
+    //
+    //  The ConsoleOutput class has a single message pump that manages messages
+    //  to/from the "/dev/conout" namespace and incoming play requests.
+    //
+    public class ConsoleOutput
+    {
+        private static HalScreen! screen;
+        private static Thread!    worker;
+        private static bool       stopWork;
+
+        public static void Initialize()
+        {
+            screen = (!)Console.Screen;
+            stopWork = false;
+            worker = Thread.CreateThread(null, new ThreadStart(Pump));
+            worker.Start();
+        }
+
+        public static void Finalize()
+        {
+            stopWork = true;
+            worker.Join();
+        }
+
+        public static void Pump()
+        {
+            byte[] side = new byte [160];
+
+            // Create a ServiceProvider channel
+            ServiceProviderContract.Imp! imp;
+            ServiceProviderContract.Exp! sp;
+            ServiceProviderContract.NewChannel(out imp, out sp);
+
+            // Connect the service provider to the namespace.
+            DirectoryServiceContract.Imp nc = DirectoryService.NewClientEndpoint();
+
+            // Register the device using the namespace.
+            try {
+                nc.SendRegister(Bitter.FromString2("/dev/conout"), imp);
+                switch receive {
+                    case nc.AckRegister():
+                        break;
+
+                    case nc.NakRegister(rejected, error):
+                        DebugStub.Break();
+                        if (rejected != null) {
+                            delete rejected;
+                        }
+                        break;
+
+                    case unsatisfiable:
+                        DebugStub.Print("unable to register /dev/conout with name service\n");
+                        DebugStub.Break();
+                        delete sp;
+                        return;
+                }
+            }
+            finally {
+                delete nc;
+            }
+            Tracing.Log(Tracing.Audit, "conout Registered");
+
+            // create a set of all client endpoints connected to the sound device
+            ESet<ConsoleDeviceContract.Exp:Ready> clients
+                = new ESet<ConsoleDeviceContract.Exp:Ready>();
+
+            try {
+                while (!stopWork) {
+                    switch receive {
+                        // Listen for new connections
+                        case sp.Connect(candidate): {
+                            ConsoleDeviceContract.Exp newClient
+                                = candidate as ConsoleDeviceContract.Exp;
+
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                clients.Add(newClient);
+                                sp.SendAckConnect();
+                            }
+                            else {
+                                sp.SendNackConnect(candidate);
+                            }
+                            break;
+                        }
+
+                        case ep.Clear() in clients: {
+                            screen.Clear();
+                            ep.SendAckClear();
+
+                            clients.Add(ep);    // add client endpoint back into set.
+                            break;
+                        }
+
+                        case ep.GetDisplayDimensions() in clients: {
+                            int columns, rows;
+                            screen.GetDisplayDimensions(out columns, out rows);
+                            ep.SendDisplayDimensions(columns, rows);
+                            clients.Add(ep);
+                            break;
+                        }
+
+                        case ep.GetCursorPosition() in clients: {
+                            int column, row;
+                            screen.GetCursorPosition(out column, out row);
+                            ep.SendCursorPosition(column, row);
+                            clients.Add(ep);
+                            break;
+                        }
+
+                        case ep.SetCursorPosition(column, row) in clients: {
+                            if (screen.SetCursorPosition(column, row)) {
+                                ep.SendAckSetCursorPosition();
+                            }
+                            else {
+                                ep.SendInvalidPosition();
+                            }
+                            clients.Add(ep);
+                            break;
+                        }
+
+                        case ep.SetCursorSize(cursorSize) in clients:
+                            if (cursorSize == CursorSize.Large) {
+                                screen.SetCursorSizeLarge();
+                            }
+                            else {
+                                screen.SetCursorSizeSmall();
+                            }
+                            ep.SendAckSetCursorSize();
+                            clients.Add(ep);
+                            break;
+
+                        case ep.Write(buffer, offset, count) in clients: {
+                            if (buffer != null) {
+                                if (side.Length < count) {
+                                    side = new byte [count];
+                                }
+                                for (int i = 0; i < count; i++) {
+                                    side[i] = (byte)buffer[offset + i];
+                                }
+                                screen.Write(side, 0, count);
+                            }
+                            ep.SendAckWrite(buffer);
+                            clients.Add(ep);    // add client endpoint back into set.
+                            break;
+                        }
+
+                        case ep.PutChar(char c) in clients:
+                            screen.PutChar(c);
+                            ep.SendAckPutChar();
+                            clients.Add(ep);
+                            break;
+
+                        case ep.PutCharAt(char c, int column, int row) in clients:
+                            if (screen.PutCharAt(c, column, row)) {
+                                ep.SendAckPutCharAt();
+                            }
+                            else {
+                                ep.SendInvalidPosition();
+                            }
+                            clients.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.ClearCursorToEndOfLine() in clients:
+                            screen.ClearCursorToEndOfLine();
+                            ep.SendAckClearCursorToEndOfLine();
+                            clients.Add(ep);
+                            break;
+
+                        case ep.CursorFlash() in clients: {
+                            screen.CursorFlash();
+                            ep.SendAckCursorFlash();
+                            clients.Add(ep);    // add client endpoint back into set.
+                            break;
+                        }
+
+                        case ep.CursorHide() in clients: {
+                            screen.CursorHide();
+                            ep.SendAckCursorHide();
+                            clients.Add(ep);    // add client endpoint back into set.
+                            break;
+                        }
+
+                        case ep.CursorShow() in clients: {
+                            screen.CursorShow();
+                            ep.SendAckCursorShow();
+                            clients.Add(ep);    // add client endpoint back into set.
+                            break;
+                        }
+                            // Listen for client departure
+                        case ep.ChannelClosed() in clients: {
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+                        }
+
+                        case unsatisfiable: {
+                            Tracing.Log(Tracing.Debug, "Received unknown message.");
+                            DebugStub.Break();
+                            stopWork = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            finally {
+                Tracing.Log(Tracing.Debug, "conout finished message pump.");
+                clients.Dispose();
+                delete sp;
+            }
+
+            Tracing.Log(Tracing.Audit, "Shutdown");
+        }
+    }
+}

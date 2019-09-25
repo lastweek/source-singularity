@@ -1,0 +1,81 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using FileSystem.Utils;
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Security.SDS;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Examine an effective acl", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "PathName", Mandatory=true, Position=0, HelpMessage="PathName argument.")]
+        internal string pathName;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return FsGetEffectiveAcl.AppMain(this);
+        }
+    }
+
+    public class FsGetEffectiveAcl
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+
+            ds.RecvSuccess();
+
+            ErrorCode errorOut;
+            Acl acl;
+            bool ok = SdsUtilsAcl.QueryACL((!)config.pathName, true, ds, out acl, out errorOut);
+            if (ok) {
+                if (acl.Node == null)
+                    Console.WriteLine("(null)");
+                else
+                    Console.WriteLine(acl.Node);
+            }
+
+            else Console.WriteLine("geteacl failed. reason({0})",SdsUtils.ErrorCodeToString(errorOut));
+
+            delete ds;
+            return ok ? 0 : 1;
+        }
+
+    } // class Test
+}

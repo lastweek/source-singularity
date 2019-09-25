@@ -1,0 +1,444 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ChannelIo.sg
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+using System;
+using System.Collections;
+using System.Threading;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    using ThreadPool = FatThreadPool;
+    using DirectoryContract = DirectoryServiceContract;
+
+    /// <summary>
+    /// The ChannelIoFeedbackContract provides a means of
+    /// interrupting the main request dispatcher thread to
+    /// either do useful work or instruct it to stop.
+    /// </summary>
+    internal contract ChannelIoFeedBackContract
+    {
+        in message  PollWaitingTuples();
+        out message AckPollWaitingTuples();
+
+        state RUNNING : one
+        {
+            PollWaitingTuples? -> AckPollWaitingTuples! -> RUNNING;
+        }
+    }
+
+    /// <summary>
+    /// Tuple for File endpoint and object instance.
+    ///
+    /// Used to store directory endpoint and object when an
+    /// asynchronous command has finished using them.
+    /// </summary>
+    internal class DirectoryTuple
+    {
+        TRef<DirectoryContract.Exp:Ready> dirExpHolder;
+        Directory directory;
+
+        internal DirectoryTuple([Claims] DirectoryContract.Exp:Ready! dirExp,
+                                Directory!                            directory)
+        {
+            this.dirExpHolder = new TRef<DirectoryContract.Exp:Ready>(dirExp);
+            this.directory    = directory;
+        }
+
+        internal DirectoryContract.Exp:Ready! AcquireDirectoryEndpoint()
+        {
+            return dirExpHolder.Acquire();
+        }
+
+        internal Directory! AcquireDirectory()
+        {
+            assert this.directory != null;
+            Directory! ret = this.directory;
+            this.directory = null;
+            return ret;
+        }
+    }
+
+    /// <summary>
+    /// Tuple for File endpoint and object instance.
+    ///
+    /// Used to store file endpoint and object when an
+    /// asynchronous command has finished using them.
+    /// </summary>
+    internal class FileTuple
+    {
+        TRef<FileContract.Exp:Ready> fileExpHolder;
+        File file;
+
+        internal FileTuple([Claims] FileContract.Exp:Ready! fileExp,
+                           File!                            file)
+        {
+            this.fileExpHolder = new TRef<FileContract.Exp:Ready>(fileExp);
+            this.file          = file;
+        }
+
+        internal FileContract.Exp:Ready! AcquireFileEndpoint()
+        {
+            return fileExpHolder.Acquire();
+        }
+
+        internal File! AcquireFile()
+        {
+            assert this.file != null;
+            File! ret = this.file;
+            this.file = null;
+            return ret;
+        }
+    }
+
+    internal sealed class ChannelIo
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+        private const int WorkerThreads = 8;
+        private const int MaxWorkItems  = 32 * WorkerThreads;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Member variables
+
+        TRef<FatClientContract.Exp:Running>         mgrExpTRef;
+        TRef<ServiceProviderContract.Exp:Start>     spExpTRef;
+        TRef<ChannelIoFeedBackContract.Exp:RUNNING> feedbackExpTRef;
+        TRef<ChannelIoFeedBackContract.Imp:RUNNING> feedbackImpTRef;
+
+        Queue fileTupleQueue = new Queue();
+        Queue dirTupleQueue  = new Queue();
+
+        ThreadPool threadPool;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+        [ Microsoft.Contracts.NotDelayed ]
+        internal ChannelIo(
+            [Claims] FatClientContract.Exp:Running!     managerExp,
+            [Claims] ServiceProviderContract.Exp:Start! spExp
+            )
+        {
+            spExpTRef  = new TRef<ServiceProviderContract.Exp:Start>(spExp);
+            mgrExpTRef = new TRef<FatClientContract.Exp:Running>(managerExp);
+
+            ChannelIoFeedBackContract.Imp! feedbackImp;
+            ChannelIoFeedBackContract.Exp! feedbackExp;
+            ChannelIoFeedBackContract.NewChannel(out feedbackImp,
+                                                 out feedbackExp);
+            feedbackImpTRef =
+                new TRef<ChannelIoFeedBackContract.Imp:RUNNING(feedbackImp);
+            feedbackExpTRef =
+                new TRef<ChannelIoFeedBackContract.Exp:RUNNING(feedbackExp);
+
+            threadPool = new ThreadPool(WorkerThreads, MaxWorkItems);
+        }
+
+        internal void EnqueueTuple(
+            [Claims] FileContract.Exp:Ready! fileExp,
+            File!                            file,
+            bool                             wakeUp
+            )
+        {
+            FileTuple t = new FileTuple(fileExp, file);
+            lock (fileTupleQueue) {
+                fileTupleQueue.Enqueue(t);
+            }
+
+            if (wakeUp) {
+                ChannelIoFeedBackContract.Imp f = feedbackImpTRef.Acquire();
+                f.SendPollWaitingTuples();
+                f.RecvAckPollWaitingTuples();
+                feedbackImpTRef.Release(f);
+            }
+        }
+
+        internal void
+        EnqueueTuple(
+            [Claims] DirectoryContract.Exp:Ready! directoryExp,
+            Directory!                            directory,
+            bool                                  wakeUp
+            )
+        {
+            DirectoryTuple t = new DirectoryTuple(directoryExp, directory);
+            lock (dirTupleQueue) {
+                dirTupleQueue.Enqueue(t);
+            }
+
+            if (wakeUp) {
+                ChannelIoFeedBackContract.Imp f = feedbackImpTRef.Acquire();
+                f.SendPollWaitingTuples();
+                f.RecvAckPollWaitingTuples();
+                feedbackImpTRef.Release(f);
+            }
+        }
+
+        internal void
+        PollAvailableFileTuples(EMap<FileContract.Exp:Ready, File!>! fileMap)
+        {
+            lock (fileTupleQueue) {
+                int remain = fileTupleQueue.Count;
+                while (remain-- > 0) {
+                    FileTuple! t = (!)(FileTuple)fileTupleQueue.Dequeue();
+                    fileMap.Add(t.AcquireFileEndpoint(), t.AcquireFile());
+                }
+            }
+        }
+
+        internal void
+        PollAvailableDirectoryTuples(
+            EMap<DirectoryContract.Exp:Ready, Directory!>! directoryMap
+            )
+        {
+            lock (dirTupleQueue) {
+                int remain = dirTupleQueue.Count;
+                while (remain-- > 0) {
+                    DirectoryTuple! t =
+                        (!)(DirectoryTuple)dirTupleQueue.Dequeue();
+                    directoryMap.Add(t.AcquireDirectoryEndpoint(),
+                                     t.AcquireDirectory());
+                }
+            }
+        }
+
+        private void EnqueueCommand([Claims] AsyncCommand! command)
+        {
+            threadPool.QueueUserWorkItem(command);
+        }
+
+        internal void Run()
+        {
+            ChannelIoFeedBackContract.Exp! feedbackExp =
+                feedbackExpTRef.Acquire();
+
+            FatClientContract.Exp! managerExp = mgrExpTRef.Acquire();
+            ServiceProviderContract.Exp! spExp = spExpTRef.Acquire();
+
+            EMap<DirectoryServiceContract.Exp:Ready, Directory!> dirMap =
+                new EMap<DirectoryServiceContract.Exp:Ready, Directory!>();
+            EMap<FileContract.Exp:Ready, File!> fileMap =
+                new EMap<FileContract.Exp:Ready, File!>();
+
+            bool shutdown = false;
+            try {
+                while (shutdown == false) {
+                    switch receive {
+                        //
+                        // Process-local feedback messages
+                        //
+                        case feedbackExp.PollWaitingTuples():
+                            feedbackExp.SendAckPollWaitingTuples();
+                            PollAvailableDirectoryTuples(dirMap);
+                            PollAvailableFileTuples(fileMap);
+                            break;
+
+                        case feedbackExp.ChannelClosed():
+                            // This should never happen
+                            DebugStub.Break();
+                            shutdown = true;
+                            break;
+
+                        //
+                        // Directory contract endpoint messages
+                        //
+                        case dirExp.Bind(path, serviceExp) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new BindCommand(this, dirExp, dir,
+                                                path, serviceExp)
+                                    );
+                            break;
+
+                        case dirExp.Notify(path, pattern, announce, notifyImp) in dirMap ~> dir:
+                            delete path;
+                            delete pattern;
+                            dirExp.SendNakNotify(
+                                notifyImp,
+                                ErrorCode.ContractNotSupported
+                                );
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.BeginEnumeration() in dirMap ~> dir:
+                            EnqueueCommand(
+                                new EnumerateCommand(this, dirExp, dir)
+                                );
+                            break;
+
+                        case dirExp.GetAttributes(path) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new GetAttributesCommand(this, dirExp, dir,
+                                                         path)
+                                );
+                            break;
+
+                        case dirExp.QueryACL(path, effective) in dirMap ~> dir:
+                            delete path;
+                            dirExp.SendNakQueryACL(ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.Register(path, childImp) in dirMap ~> dir:
+                            delete path;
+                            dirExp.SendNakRegister(childImp,
+                                                   ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.Deregister(path) in dirMap ~> dir:
+                            delete path;
+                            dirExp.SendNakDeregister(ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.CreateDirectory(path) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new CreateDirectoryCommand(this, dirExp, dir,
+                                                           path)
+                                );
+                            break;
+
+                        case dirExp.DeleteDirectory(path) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new DeleteDirectoryCommand(this, dirExp, dir,
+                                                           path)
+                                );
+                            break;
+
+                        case dirExp.CreateFile(path) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new CreateFileCommand(this, dirExp, dir, path)
+                                );
+                            break;
+
+                        case dirExp.CreateAndBindFile(path, fileImp) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new CreateAndBindFileCommand(this, dirExp, dir,
+                                                             path, fileImp)
+                                );
+                            break;
+
+                        case dirExp.DeleteFile(path) in dirMap ~> dir:
+                            EnqueueCommand(
+                                new DeleteFileCommand(this, dirExp, dir, path)
+                                );
+                            break;
+
+                        case dirExp.StoreACL(path, aclThis, aclInherited) in dirMap ~> dir:
+                            delete path;
+                            delete aclThis;
+                            delete aclInherited;
+                            dirExp.SendNakStoreACL(ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.CreateLink(linkPath, linkValue) in dirMap ~> dir:
+                            delete linkPath;
+                            delete linkValue;
+                            dirExp.SendNakCreateLink(ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.DeleteLink(linkPath) in dirMap ~> dir:
+                            delete linkPath;
+                            dirExp.SendNakDeleteLink(ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.GetLinkValue(linkPath) in dirMap ~> dir:
+                            delete linkPath;
+                            dirExp.SendNakGetLinkValue(ErrorCode.NotSupported);
+                            dirMap.Add(dirExp, dir);
+                            break;
+
+                        case dirExp.ChannelClosed() in dirMap ~> dir:
+                            dir.Close();
+                            delete dirExp;
+                            break;
+
+                        //
+                        // File contract messages
+                        //
+                        case fileExp.Read(buffer, bufferOffset, fileOffset, maxLength) in fileMap ~> file:
+                            EnqueueCommand(
+                                new FileReadCommand(this, fileExp, file,
+                                                    buffer, bufferOffset,
+                                                    fileOffset, maxLength)
+                                );
+                            break;
+
+                        case fileExp.Write(buffer, bufferOffset, fileOffset, maxLength) in fileMap ~> file:
+                            EnqueueCommand(
+                                new FileWriteCommand(this, fileExp, file,
+                                                     buffer, bufferOffset,
+                                                     fileOffset, maxLength)
+                                );
+                            break;
+
+                        case fileExp.Close() in fileMap ~> file:
+                            file.Close();
+                            delete fileExp;
+                            break;
+
+                        case fileExp.ChannelClosed() in fileMap ~> file:
+                            file.Close();
+                            delete fileExp;
+                            break;
+
+                        //
+                        // ServiceProvider messages
+                        //
+                        case spExp.Connect(serviceExp):
+                            DirectoryServiceContract.Exp dsExp =
+                                serviceExp as DirectoryServiceContract.Exp;
+                            if (dsExp == null) {
+                                spExp.SendNackConnect(serviceExp);
+                            }
+                            else {
+                                spExp.SendAckConnect();
+                                dsExp.SendSuccess();
+                                dirMap.Add(dsExp,
+                                           Directory.OpenRootDirectory());
+                            }
+                            break;
+
+                        case spExp.ChannelClosed():
+                            DebugStub.Print("ServiceProvider closed.\n");
+                            DebugStub.Break();
+                            break;
+
+                        //
+                        // FatClientContract messages
+                        //
+                        case managerExp.Unmount(force):
+                            // We should check whether anyone is using
+                            // filesystem before unmounting.
+                            shutdown = true;
+                            managerExp.SendSuccess();
+                            break;
+                        case managerExp.ChannelClosed():
+                            shutdown = true;
+                            break;
+                    }
+                }
+                this.threadPool.Shutdown();
+            }
+            finally {
+                delete managerExp;
+                delete spExp;
+                delete feedbackExp;
+                dirMap.Dispose();
+                fileMap.Dispose();
+            }
+        }
+    }
+}

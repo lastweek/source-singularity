@@ -1,0 +1,126 @@
+###############################################################################
+#
+# Microsoft Research Singularity Project.
+#
+# Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+
+# This document contains a list of known DHCP options and is
+# used to generate appropriate classes in the C# DHCP
+# implementation.
+#
+# Sources for codes and interpretations is taken from:
+#      RFC 2132 DHCP Options and BOOTP Vendor Extensions
+#      S.Alexander and R.Droms, March 1997.
+#          http://www.ietf.org/rfc/rfc2132.txt?number=2132
+#
+#      IANA BOOTP and DHCP Parameters
+#          http://www.iana.org/assignments/bootp-dhcp-parameters
+#
+#
+# The format of the entries in this file is:
+#
+#       Column 1 Option Code
+#       Column 2 Option Name
+#       Column 3 Data type
+#
+# Valid data types are:   Byte       MultiByte
+#                         Word       MultiWord
+#                         DWord      MultiDWord
+#                         IPv4       MultiIPv4
+#                         String
+#
+
+# -----------------------------------------------------------------------------
+# Basic Options
+# -----------------------------------------------------------------------------
+1   SubnetMask                          IPv4
+2   TimeOffset                          DWord
+3   Router                              MultiIPv4
+4   TimeServer                          MultiIPv4
+5   NameServer                          MultiIPv4
+6   DomainNameServer                    MultiIPv4
+7   LogServer                           MultiIPv4
+8   CookieServer                        MultiIPv4
+9   LprServer                           MultiIPv4
+10  ImpressServer                       MultiIPv4
+11  ResourceLocationServer              MultiIPv4
+12  HostName                            String
+13  BootFileSize                        Word
+14  MeritDumpFile                       String
+15  DomainName                          String
+16  SwapServer                          IPv4
+17  RootPath                            String
+18  ExtensionsPath                      String
+
+# -----------------------------------------------------------------------------
+# IP Layer Parameters per Host
+# -----------------------------------------------------------------------------
+19  IPForwarding                        Byte
+20  ForwardRemoteSourceRoute            Byte
+21  PolicyFilter                        MultiIPv4
+22  MaximumDatagramReassembly           Word
+23  DefaultTtl                          Byte
+24  PathMtuAgingTimeout                 DWord
+25  PathMtuPlateauTable                 MultiWord
+
+# -----------------------------------------------------------------------------
+# IP Layer Parameters per Interface
+# -----------------------------------------------------------------------------
+26  InterfaceMtu                        Word
+27  AllSubnetsLocal                     Byte
+28  BroadcastAddress                    IPv4
+29  MaskDiscovery                       Byte
+30  MaskSupplier                        Byte
+31  RouterDiscovery                     Byte
+32  RouterSolicitationAddress           IPv4
+33  StaticRoutes                        MultiIPv4
+
+# -----------------------------------------------------------------------------
+# Link Layer Parameters per Interface
+# -----------------------------------------------------------------------------
+34  TrailerEncapsulate                  Byte
+35  ArpCacheTimeout                     DWord
+36  EthernetEncapsulation               Byte
+
+# -----------------------------------------------------------------------------
+# TCP Parameters
+# -----------------------------------------------------------------------------
+37 TcpDefaultTtl                        Byte
+38 TcpKeepalive                         Byte
+39 TcpKeepaliveGarbage                  Byte
+
+# -----------------------------------------------------------------------------
+# Application and Service Parameters
+# -----------------------------------------------------------------------------
+40 NisDomain                            String
+41 NisServers                           MultiIPv4
+42 NtpServers                           MultiIPv4
+43 VendorSpecific                       MultiByte
+44 NetBiosNameServer                    MultiIPv4
+45 NetBiosDistributionServer            MultiIPv4
+46 NetBiosType                          Byte
+47 NetBiosScope                         MultiDWord
+48 XWindowsFontServer                   MultiIPv4
+49 XWindowsDisplayManager               MultiIPv4
+
+# -----------------------------------------------------------------------------
+# DHCP Extensions
+# -----------------------------------------------------------------------------
+50 RequestedIPAddress                   IPv4
+51 IPAddressLeaseTime                   DWord
+52 OverloadIndicator                    Byte
+53 MessageType                          Byte
+54 ServerID                             IPv4
+55 ParameterRequest                     MultiByte
+56 Message                              String
+57 MaximumMessageSize                   Word
+58 RenewalTime                          DWord
+59 RebindingTime                        DWord
+60 ClassID                              String
+61 ClientID                             MultiByte
+
+116 AutoConfigure                       Byte
+
+###############################################################################

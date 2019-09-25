@@ -1,0 +1,926 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.UnitTest;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Test.Contracts;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Eventing;
+using Microsoft.Singularity.TestEvent;
+
+namespace Microsoft.Singularity
+{
+
+    [TestClass]
+    public class EventTest : TestClass
+    {
+        uint Loops = 1000;
+
+        // needed to workaround Phoenix MSIL/PDB reader bug
+        public EventTest()
+        {
+        }
+
+        [ClassInitialize]
+        public void Init()
+        {
+            DetermineLoopCount();
+        }
+
+
+        internal TimeSpan LogEntryLoop(TestEv Log, ref uint succeeded)
+        {
+            succeeded = 0;
+            DateTime startTime = DateTime.Now;
+            //DebugStub.Break();
+            if (Log != null) {
+
+                for (int i = 0; i < Loops; i++) {
+                    if (Log.Log(i)) {
+                        succeeded += 1;
+                    }
+                }
+            }
+            DateTime endTime = DateTime.Now;
+            TimeSpan t = endTime-startTime;
+            return t;
+        }
+
+        internal void DetermineLoopCount()
+        {
+
+            TestEv Log;
+            uint succeeded = 0;
+
+            Console.WriteLine("Determining the number of iterations");
+
+            Log = TestEv.Create("Test calibration",
+                                64*1024,
+                                QualityOfService.RecyclableEvents,
+                                EventSource.ENABLE_ALL_MASK);
+
+            if (Log == null) {
+
+                Console.WriteLine("Failure to create test", DateTime.Now);
+                return;
+            }
+
+            TimeSpan t;
+            do {
+
+                Loops *= 10;
+                t = LogEntryLoop(Log, ref succeeded);
+                Console.WriteLine("Loop of {0} completed in {1} msec", Loops, t.TotalMilliseconds);
+
+            } while (t.TotalMilliseconds < 1000);
+
+            Console.WriteLine("Calibration completed. Tests will perform {0} operations",Loops);
+
+        }
+
+        internal class QueryContext : EnumerationContext{
+
+            public Int32 PreviousValue = -1;
+            public int Count = 0;
+            public bool Forward;
+
+            public QueryContext(bool forward)
+            {
+                Forward = forward;
+            }
+        }
+
+        static internal bool fieldDelegate(FieldDescriptor fieldDescriptor,
+                                           object obj,
+                                           ref EnumerationContext context)
+        {
+            if ((fieldDescriptor != null) && (obj != null)) {
+
+                Console.WriteLine("    {0}:{1}:{2} = {3}",
+                                          fieldDescriptor.Offset,
+                                          fieldDescriptor.GetTypeName(),
+                                          fieldDescriptor.Name,
+                                          obj.ToString());
+            }
+
+            return true;
+        }
+
+
+        static internal bool EntryDelegate(EventDescriptor currentEntry,
+                                           QueryBuffer buffer,
+                                           ref EnumerationContext context)
+        {
+
+            QueryContext ctx = context as QueryContext;
+
+            if (ctx == null) {
+
+                Console.WriteLine("Invalid context received");
+                DebugStub.Break();
+                return true;
+            }
+
+
+            object o = null;
+
+            if ((currentEntry != null) && (buffer != null)) {
+
+                o = currentEntry.GetProperty(buffer, "EventId");
+            }
+
+            if (o == null) {
+
+                Console.WriteLine("Invalid property read");
+                DebugStub.Break();
+                return true;
+            }
+
+            Int32 value = (Int32)o;
+
+            ctx.Count += 1;
+
+            if (ctx.PreviousValue != -1) {
+
+               if (ctx.Forward) {
+
+                   if (ctx.PreviousValue != (value - 1)) {
+
+                        Console.WriteLine("Invalid sequence {0} != {1}", ctx.PreviousValue, (value - 1));
+                        DebugStub.Break();
+                   }
+
+               } else {
+
+                   if (ctx.PreviousValue != (value + 1)) {
+
+                        Console.WriteLine("Invalid sequence {0} != {1}", ctx.PreviousValue, (value + 1));
+                        DebugStub.Break();
+                   }
+               }
+            }
+
+            ctx.PreviousValue = value;
+            return true;
+        }
+
+        internal void TestQuery(TestEv Log, bool forward)
+        {
+            if ((Log != null) && (Log.Storage != null)) {
+
+                QuerySession query = new QuerySession();
+
+                QueryContext context = new QueryContext(forward);
+                EnumerationContext enumContext = context;
+
+
+                if ((query != null) && (context != null) &&
+                     query.Initialize(Log.Storage, forward)) {
+
+                    query.EnumerateEntries(new QueryEntryDelegate(EntryDelegate),
+                                           ref enumContext);
+                }
+                Console.WriteLine("Enumeration returned {0} entries. Last value = {1}",
+                                  context.Count,
+                                  context.PreviousValue);
+            }
+
+        }
+
+        internal bool TestQueryLimit(TestEv Log, UIntPtr queryHandle, bool forward, int limit)
+        {
+            if ((Log != null) && (Log.Storage != null)) {
+#if TEST_QUERY
+                QuerySession query = new QuerySession();
+
+                if ((query != null) && query.Initialize(Log.Storage, forward)) {
+
+                    query.EnumerateEntries(new QueryEntryDelegate(EntryDelegate));
+                }
+
+
+                int value = 0;
+                unsafe {
+
+                    UIntPtr type;
+                    ulong timeStamp;
+                    ushort size;
+                    byte [] memoryBuffer = new byte[256];
+
+                    UIntPtr entryHandle;
+
+                    fixed(byte * buffer = &memoryBuffer[0]) {
+
+                        entryHandle = Log.Storage.QueryNextEntry(queryHandle,
+                            &type,
+                            &timeStamp,
+                            &size,
+                            buffer,
+                            256);
+
+                        value = *((int *)buffer);
+                    }
+
+                    if (entryHandle != 0) {
+
+                        if (forward) {
+
+                        } else {
+
+                            //  Check for the invariant on walking the entries
+                            //  backward. We should not see any of the new entries
+                            //  after we started the query
+
+                            if (value > limit) {
+
+                                Console.WriteLine("Invalid entry {0} != {1}", value, limit);
+                                DebugStub.Break();
+                            }
+
+                        }
+
+                        return true;
+
+                    } else {
+
+                        return false;
+                    }
+                }
+#endif // TEST_QUERY
+            }
+
+            return false;
+        }
+
+        internal TimeSpan LogQueryEntryLoop(TestEv Log,
+                                            uint loops,
+                                            uint queryStep,
+                                            bool forward,
+                                            ref uint succeeded, ref uint queried)
+        {
+            succeeded = 0;
+            DateTime startTime = DateTime.Now;
+            UIntPtr queryHandle = 0;
+            queried = 0;
+            if (Log != null) {
+
+                for (int i = 0; i < loops; i++) {
+
+                    if (Log.Log(i)) {
+
+                        succeeded += 1;
+                    }
+
+                    if (i == queryStep) {
+
+                        // Start query at this point in log. Verify the consistency of entries
+                        // as we add more items to the log
+
+                        if (Log.Storage != null) {
+
+                            queryHandle = Log.Storage.CreateQueryView(forward);
+                        }
+                    }
+
+                    if (queryHandle != 0) {
+
+                        if (TestQueryLimit(Log, queryHandle, forward, (int)queryStep)) {
+
+                            queried += 1;
+                        }
+                    }
+                }
+            }
+            DateTime endTime = DateTime.Now;
+            TimeSpan t = endTime-startTime;
+
+            if (queryHandle != 0) {
+
+                if ((Log != null) && (Log.Storage != null)) {
+                    Log.Storage.DeleteQueryView(queryHandle);
+                }
+            }
+
+            return t;
+        }
+
+
+        internal TimeSpan TestQueryPermutations(string testName,
+            uint storageSize,
+            uint storageOptions,
+            uint sourceOptions,
+            uint loopCount,
+            uint queryStep,
+            bool forward,
+            uint wrapThreshold)
+        {
+
+            TestEv Log;
+            uint succeeded = 0;
+            uint queried = 0;
+            bool errorOccured;
+            TimeSpan t;
+
+            do {
+
+                errorOccured = false;
+
+                Log = TestEv.Create(testName, storageSize, storageOptions, sourceOptions);
+
+                if (Log == null) {
+
+                    Console.WriteLine("Failure to create test");
+                    return TimeSpan.Zero;
+                }
+
+                t = LogQueryEntryLoop(Log,
+                                       loopCount,
+                                       queryStep,
+                                       forward,
+                                       ref succeeded,
+                                       ref queried);
+
+                if (succeeded != loopCount) {
+
+                    Console.WriteLine("Failure to log entries. {0} succeeded instead of {1}",
+                                      succeeded,
+                                      loopCount);
+                    errorOccured = true;
+                    DebugStub.Break();
+                }
+
+                if (forward) {
+
+                    if ((queried == 0) && (queryStep != loopCount)) {
+
+                        Console.WriteLine("Invalid test invariant: Step = {0}, Queried = {1}, Loops = {2}",
+                                          queryStep,
+                                          queried,
+                                          loopCount);
+                        errorOccured = true;
+                        DebugStub.Break();
+
+                    }
+
+                } else {
+
+                    if (((queryStep + queried) != loopCount)
+                            &&
+                        ((queryStep + 1) != queried)
+                            &&
+                        (loopCount < wrapThreshold)) {
+
+                        Console.WriteLine("Invalid test invariant: Step = {0}, Queried = {1}, Loops = {2}",
+                                          queryStep,
+                                          queried,
+                                          loopCount);
+                        errorOccured = true;
+                        DebugStub.Break();
+                    }
+                }
+
+                if (errorOccured) {
+
+                    if (t.TotalMilliseconds != 0) {
+
+                        Console.WriteLine("Succeeded = {0}. Queried = {1}. Elapsed time {2} msec. Rate = {3} KOps/sec\n",
+                                           succeeded,
+                                           queried,
+                                           t.TotalMilliseconds,
+                                           Loops/t.TotalMilliseconds);
+                    } else {
+
+                        Console.WriteLine("Succeeded = {0}. Queried = {1}. Elapsed time {2} msec\n",
+                                           succeeded,
+                                           queried,
+                                           t.TotalMilliseconds);
+                    }
+                }
+
+            } while (errorOccured);
+
+            return t;
+
+        }
+
+
+
+        internal TimeSpan TestLoop(string testName, uint storageSize, uint storageOptions, uint sourceOptions)
+        {
+
+            TestEv Log;
+            uint succeeded = 0;
+
+            Console.WriteLine("Test {0}: StorageSize={1} bytes, StorageOptions={2:x}, SourceOptions={3:x}",
+                              testName,
+                              storageSize,
+                              storageOptions,
+                              sourceOptions);
+
+            Log = TestEv.Create(testName, storageSize, storageOptions, sourceOptions);
+
+            if (Log == null) {
+
+                Console.WriteLine("Failure to create test");
+                return TimeSpan.Zero;
+            }
+
+            TimeSpan t = LogEntryLoop(Log, ref succeeded);
+
+            if (t.TotalMilliseconds != 0) {
+
+                Console.WriteLine("Succeeded = {0}. Elapsed time {1} msec. Rate = {2} KOps/sec\n",
+                                   succeeded,
+                                   t.TotalMilliseconds,
+                                   Loops/t.TotalMilliseconds);
+            } else {
+
+                Console.WriteLine("Succeeded = {0}. Elapsed time {1} msec\n",
+                                   succeeded,
+                                   t.TotalMilliseconds);
+            }
+
+            TestQuery(Log, false);
+            TestQuery(Log, true);
+
+            return t;
+
+        }
+
+        [TestMethod]
+        public void TestMonitoring()
+        {
+            TestEv Log;
+
+            Console.WriteLine("Test Monitoring.Log(Monitoring.Provider.Processor...)");
+
+            DateTime startTime = DateTime.Now;
+
+            for (int i = 0; i < Loops; i++) {
+
+                Monitoring.Log(Monitoring.Provider.Processor,
+                              (ushort)2, 0,
+                              (uint)0, 0, 0, 0, 0);
+
+            }
+
+            DateTime endTime = DateTime.Now;
+            TimeSpan t = endTime-startTime;
+
+            Console.WriteLine("Elapsed time {0} msec. Rate = {1} KOps/sec\n",
+                               t.TotalMilliseconds,
+                               Loops/t.TotalMilliseconds);
+        }
+
+        [TestMethod]
+        public void TestTracing()
+        {
+            TestEv Log;
+
+            Console.WriteLine("Test Tracing.Log(Tracing.Debug,string[100])");
+
+            DateTime startTime = DateTime.Now;
+
+            for (int i = 0; i < Loops; i++) {
+
+                Tracing.Log(Tracing.Debug, //100 chars  
+                 "____________________________________________________________________________________________________");
+            }
+
+            DateTime endTime = DateTime.Now;
+            TimeSpan t = endTime-startTime;
+
+            Console.WriteLine("Elapsed time {0} msec. Rate = {1} KOps/sec\n",
+                               t.TotalMilliseconds,
+                               Loops/t.TotalMilliseconds);
+
+            Console.WriteLine("Test Tracing.Log(Tracing.Debug,string[1])");
+
+            startTime = DateTime.Now;
+
+            for (int i = 0; i < Loops; i++) {
+
+                Tracing.Log(Tracing.Debug,"1");
+            }
+
+            endTime = DateTime.Now;
+            t = endTime-startTime;
+
+            Console.WriteLine("Elapsed time {0} msec. Rate = {1} KOps/sec\n",
+                               t.TotalMilliseconds,
+                               Loops/t.TotalMilliseconds);
+
+            //  one argument
+
+            Console.WriteLine("Test Tracing.Log(Tracing.Debug,Event={0})");
+
+            startTime = DateTime.Now;
+
+            for (int i = 0; i < Loops; i++) {
+
+                Tracing.Log(Tracing.Debug,"Event={0}", 100);
+            }
+
+            endTime = DateTime.Now;
+            t = endTime-startTime;
+
+            Console.WriteLine("Elapsed time {0} msec. Rate = {1} KOps/sec\n",
+                               t.TotalMilliseconds,
+                               Loops/t.TotalMilliseconds);
+
+            //  two arguments
+
+            Console.WriteLine("Test Tracing.Log(Tracing.Debug,Event1={0}, Event2={1})");
+
+            startTime = DateTime.Now;
+
+            for (int i = 0; i < Loops; i++) {
+
+                Tracing.Log(Tracing.Debug,"Event1={0}, Event2={1}", 100, 200);
+            }
+
+            endTime = DateTime.Now;
+            t = endTime-startTime;
+
+            Console.WriteLine("Elapsed time {0} msec. Rate = {1} KOps/sec\n",
+                               t.TotalMilliseconds,
+                               Loops/t.TotalMilliseconds);
+            //  three arguments
+
+            Console.WriteLine("Test Tracing.Log(Tracing.Debug,Event1={0}, Event2={1}, Event3={2})");
+
+            startTime = DateTime.Now;
+
+            for (int i = 0; i < Loops; i++) {
+
+                Tracing.Log(Tracing.Debug,"Event1={0}, Event2={1}, Event3={2}", 100, 200, 300);
+            }
+
+            endTime = DateTime.Now;
+            t = endTime-startTime;
+
+            Console.WriteLine("Elapsed time {0} msec. Rate = {1} KOps/sec\n",
+                               t.TotalMilliseconds,
+                               Loops/t.TotalMilliseconds);
+
+        }
+
+        [TestMethod]
+        public void TestRecNoStack4()
+        {
+            TestLoop("TestLogger:TestRecyclable-NoStacks-4k",
+                     4096,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecNoStack64()
+        {
+            TestLoop("TestLogger:TestRecyclable-NoStacks-64k",
+                     4096 * 16,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecNoStack1M()
+        {
+            TestLoop("TestLogger:TestRecyclable-NoStacks-1M",
+                     1024*1024,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecNoStack10M()
+        {
+            TestLoop("TestLogger:TestRecyclable-NoStacks-10M",
+                     10*1024*1024,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecStack4()
+        {
+            TestLoop("TestLogger:TestRecyclable-Stacks-4k",
+                     4096,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecStack64()
+        {
+            TestLoop("TestLogger:TestRecyclable-Stacks-64k",
+                     4096 * 16,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecStack1M()
+        {
+            TestLoop("TestLogger:TestRecyclable-Stacks-1M",
+                     1024*1024,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestRecStack10M()
+        {
+            TestLoop("TestLogger:TestRecyclable-Stacks-10M",
+                     10*1024*1024,
+                     QualityOfService.RecyclableEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestPermNoStack4()
+        {
+            TestLoop("TestLogger:TestPermanent-NoStacks-4k",
+                     4096,
+                     QualityOfService.PermanentEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestPermNoStack64()
+        {
+            TestLoop("TestLogger:TestPermanent-NoStacks-64k",
+                     4096 * 16,
+                     QualityOfService.PermanentEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+
+        [TestMethod]
+        public void TestPermNoStack1M()
+        {
+            TestLoop("TestLogger:TestPermanent-NoStacks-1M",
+                     1024*1024 ,
+                     QualityOfService.PermanentEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+
+        [TestMethod]
+        public void TestPermNoStack10M()
+        {
+            TestLoop("TestLogger:TestPermanent-NoStacks-10M",
+                     1024*1024 * 10,
+                     QualityOfService.PermanentEvents,
+                     EventSource.ENABLE_ALL_MASK);
+        }
+
+
+        [TestMethod]
+        public void TestPermStack4()
+        {
+            TestLoop("TestLogger:TestPermanent-Stacks-4k",
+                     4096,
+                     QualityOfService.PermanentEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+        [TestMethod]
+        public void TestPermStack64()
+        {
+            TestLoop("TestLogger:TestPermanent-Stacks-64k",
+                     4096 * 16,
+                     QualityOfService.PermanentEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+
+        [TestMethod]
+        public void TestPermStack1M()
+        {
+            TestLoop("TestLogger:TestPermanent-Stacks-1M",
+                     1024*1024 ,
+                     QualityOfService.PermanentEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+
+        [TestMethod]
+        public void TestPermStack10M()
+        {
+            TestLoop("TestLogger:TestPermanent-Stacks-10M",
+                     1024*1024 * 10,
+                     QualityOfService.PermanentEvents,
+                     EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK);
+        }
+
+
+        [TestMethod]
+        public void TestRecDisabled()
+        {
+            TestLoop("TestLogger:TestRecyclable-Disabled-4k",
+                     4096,
+                     QualityOfService.RecyclableEvents,
+                     0);
+        }
+
+        [TestMethod]
+        public void ExhaustiveQueryTest()
+        {
+            TimeSpan t;
+
+            for (uint i = 1; i < 150; i += 1) {
+
+                Console.WriteLine("Iteration {0}", i);
+
+                for (uint j = 0; j <= i; j += 1) {
+
+                    t = TestQueryPermutations("TestLogger:BackQueryPermutations:"+i+":"+j,
+                             4096,
+                             QualityOfService.RecyclableEvents,
+                             EventSource.ENABLE_ALL_MASK,
+                             i,
+                             j,
+                             false,
+                             100);
+
+                    if (t.TotalMilliseconds > 1000) {
+
+                        Console.WriteLine("Test stopped at iteration {0}", i);
+                        return;
+                    }
+
+                    t = TestQueryPermutations("TestLogger:ForwardQueryPermutations:"+i+":"+j,
+                             4096,
+                             QualityOfService.RecyclableEvents,
+                             EventSource.ENABLE_ALL_MASK,
+                             i,
+                             j,
+                             true,
+                             100);
+
+                    if (t.TotalMilliseconds > 1000) {
+
+                        Console.WriteLine("Test stopped at iteration {0}", i);
+                        return;
+                    }
+                }
+            }
+        }
+
+        //
+        //  Source query routines
+        //
+
+        void TestSourceQuery()
+        {
+            Controller hostController = Controller.GetLocalController();
+
+            if (hostController == null) {
+                return;
+            }
+
+            QueryBuffer entryBuffer = new QueryBuffer(256);
+
+            if (entryBuffer == null) {
+                return;
+            }
+
+            int currentSize = 100;
+            UIntPtr [] sourceArray = new UIntPtr[currentSize];
+
+            if (sourceArray != null) {
+
+                int sourceCount = hostController.QuerySourcesList(sourceArray, currentSize);
+
+                if (sourceCount > currentSize) {
+
+                    sourceCount = currentSize;
+                }
+
+                for (int i = 0; i < sourceCount; i++) {
+                    UIntPtr sourceHandle = sourceArray[i];
+                    UIntPtr storageHandle = 0;
+                    UIntPtr eventType = 0;
+                    UInt16 count = 0;
+                    string bufferName = "";
+
+                    if (hostController.GetSourceInformation(sourceHandle, ref storageHandle, ref eventType, ref count, ref bufferName)) {
+
+                        Console.WriteLine("Source Handle={0}, Storage={1}, type={2}, name={3}, count={4}",
+                            sourceHandle, storageHandle, eventType, count, bufferName);
+
+                        int index = 0;
+
+                        if (storageHandle == 0) {
+
+                            EventDescriptor descriptor = new EventDescriptor(hostController, eventType);
+
+                            if ((descriptor != null) && descriptor.Initialize()) {
+                                for (;;) {
+
+                                    if (!hostController.QueryActiveEntry(sourceHandle, index++, ref entryBuffer)) {
+                                        break;
+                                    }
+                                }
+
+
+                            }
+                        }
+
+                    }
+                }
+            }
+        }
+
+        void TestEnums()
+        {
+
+            EvTest2 log2 = EvTest2.Create("AutoEnumTest2",
+                                          4096,
+                                          QualityOfService.RecyclableEvents,
+                                          EventSource.ENABLE_ALL_MASK | EventSource.CAPTURE_DEBUG_PRINT);
+
+            if (log2 == null) {
+
+                Console.WriteLine("Failure to create test");
+                return ;
+            }
+
+            log2.SaveEvent(2, EvTest2.MyEnum.Val1);
+            log2.SaveEvent(8, EvTest2.MyEnum.Val2);
+
+            log2.SaveEventFlags(4, 1, EvTest2.MyFlagsEnum.Flag0001);
+            log2.SaveEventFlags(5, 2, EvTest2.MyFlagsEnum.Flag0008);
+            log2.SaveEventFlags(6, 3, EvTest2.MyFlagsEnum.FlagdifferentSize);
+
+            log2.SaveEventCombination(256, 22, EvTest2.MyEnum.Val1, EvTest2.MyFlagsEnum.Flag0001);
+
+
+        }
+
+        [TestMethod]
+        public void TestAll()
+        {
+
+            // Legacy mechanisms
+
+            TestEnums();
+
+            TestMonitoring();
+            TestTracing();
+
+//            DiagnosisService.TestKernelStorage();
+
+            // Recyclable events (ring buffers)
+
+            TestRecNoStack4();
+            TestRecNoStack64();
+            TestRecNoStack1M();
+            TestRecNoStack10M();
+
+            // Recyclable events (ring buffers) + stacks
+
+            TestRecStack4();
+            TestRecStack64();
+            TestRecStack1M();
+            TestRecStack10M();
+
+            // Permanent events (drop new events at OOM)
+
+            TestPermNoStack4();
+            TestPermNoStack64();
+            TestPermNoStack1M();
+            TestPermNoStack10M();
+
+            // Permanent events (drop new events at OOM) + stacks
+
+            TestPermStack4();
+            TestPermStack64();
+            TestPermStack1M();
+            TestPermStack10M();
+
+            // Overhead for test condition and functio call in tracing
+
+            TestRecDisabled();
+
+//            ExhaustiveQueryTest();
+        }
+    }
+}
+

@@ -1,0 +1,77 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple ping-pong second child process
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.PingPong.Contracts;
+using System;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class CLink
+    {
+        public static int Main(string[]! args)
+        {
+            if (args.Length != 2) {
+                Console.WriteLine("CLink  : Missing identifier arg.");
+                return 1;
+            }
+            string id = args[1];
+
+            Endpoint * in ExHeap ein = Process.GetStartupEndpoint(0);
+            PongContract.Exp cin = ein as PongContract.Exp;
+            if (cin == null) {
+                delete ein;
+                Console.WriteLine("CLink{0,2}: Missing incoming PongContract endpoint.", id);
+                return 2;
+            }
+            Endpoint * in ExHeap eout = Process.GetStartupEndpoint(1);
+            PongContract.Imp cout = eout as PongContract.Imp;
+            if (cout == null) {
+                delete eout;
+                delete cin;
+                Console.WriteLine("CLink{0,2}: Missing outgoing PongContract endpoint.", id);
+                return 3;
+            }
+
+            Console.WriteLine("CLink{0,2}: Waiting for child ready...", id);
+            cout.RecvPongReady();
+
+            Console.WriteLine("CLink{0,2}: Ready...", id);
+            cin.SendPongReady();
+
+            try {
+                while (true) {
+                    switch receive {
+                        case cin.Ping(int data):
+                            Console.WriteLine("CLink{0,2}: Ping({1}) to Ping...", id, data);
+                            cout.SendPing(data + 10);
+                            cout.RecvPong(out data);
+                            Console.WriteLine("CLink{0,2}: Pong({1}) to Pong...", id, data);
+                            cin.SendPong(data + 100);
+                            break;
+
+                        case cin.ChannelClosed():
+                            return 0;
+                    }
+                }
+            }
+            finally {
+                delete cin;
+                delete cout;
+            }
+            Console.WriteLine("CLink{0:d2}: Exiting.", id);
+            return 3;
+        }
+    }
+}

@@ -1,0 +1,13 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Contracts\ServiceManager.Contracts\ServiceControlContracts.sg
+//
+//  Note:   SMS-clients contract
+//
+using Microsoft.Singsharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;

@@ -1,0 +1,55 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+namespace Iso9660
+{
+    //
+    //This is a contract between a filesystem service (such as FatService or Iso9660Service)
+    //and a worker process that actually implements the filesystem (such as FatFs or Iso9660Fs).
+    //
+    public contract FileSystemControlContract
+    {
+        state Start : one {
+            Success! -> Ready;
+        }
+        out message Success();
+        
+        state Ready : one {
+            MountVolume? -> Mounting;
+            Stop? -> Stopped;
+        }
+        in message MountVolume(char[]! in ExHeap device, char[]! in ExHeap mountPoint);
+        
+        state Mounting : one {
+            AckMountVolume! -> Running; 
+            NakMountVolume! -> Ready;
+        }
+        out message AckMountVolume();
+        out message NakMountVolume();
+        
+        state Running : one {
+            DismountVolume? -> Dismounting;
+        }
+        in message DismountVolume(bool force);
+        
+        state Dismounting : one {
+            AckDismountVolume! -> Ready;
+            CannotDismount! -> Running;
+        }
+        out message AckDismountVolume();
+        out message CannotDismount();
+        
+        in message Stop();
+        
+        state Stopped : one {
+        }
+    }
+}
+ 

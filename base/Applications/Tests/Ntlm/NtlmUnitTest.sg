@@ -1,0 +1,765 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+//		This app is a unit test for the NTLM authentication library.  It can
+//		be run in two modes: local, and remote.
+//
+//		In local mode, the program runs through a hard-coded list of known
+//		NTLM inputs (password and challenge) and outputs (NT and LM response).
+//		It uses the known inputs and computes the outputs, then compares the
+//		known (desired) outputs and compares them with the actual, computed
+//		outputs.  If a difference is detected, then the NTLM implementation
+//		is broken.
+//
+//		In remote mode, this program uses TCP/IP to communicate with a Windows 
+//		machine, which must be running the NtlmWinHost program.  (NtlmWinHost
+//		lives in Singularity/Windows/UnitTests.)  NtlmWinHost listens for TCP/IP
+//		connections from NtlmUnitTest, receives NTLM Negotiate requests, and
+//		performs an NTLM exchange.  The user must specify a valid account name
+//		and password.  "Valid" means that the account name and password are
+//		known to (or resolvable by) the Windows host machine.  Typically, this
+//		is a test account created on the Windows machine, NOT your Corpnet
+//		domain credentials!
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Runtime.InteropServices;
+using System.Collections;
+using System.Diagnostics;
+using System.Net.IP;
+using System.Net;
+using System.Text;
+using System.Net.Sockets;
+
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Security;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using System.Security.Protocols.Ntlm;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+[ConsoleCategory(HelpMessage="Runs offline BVT for NTLM authentication library", DefaultAction=true)]
+internal class DefaultCommand
+{
+    [InputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+    [OutputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;	
+	
+    reflective internal DefaultCommand();
+    
+    static void WriteLine(string! line)
+    {
+		DebugStub.WriteLine(line);
+		Console.WriteLine(line);
+    }
+    
+    static void WriteLine(string! format, params object[]! list)
+    {
+		WriteLine(String.Format(format, list));
+    }
+
+    internal int AppMain()
+    {      
+		Console.WriteLine("Checking known responses:");
+		
+		int failureCount = 0;
+		
+		foreach (NtlmKnownResponse known in KnownResponses)
+		{
+			string! line = String.Format("password:  {0,-20}  challenge: {1}  LM response: {2}  NT response: {3}",
+				"'" + known.Password + "'",
+				known.Challenge,
+				known.LmResponse,
+				known.NtResponse);
+			WriteLine(line);
+				
+			byte[]! known_challenge = Util.HexStringToByteArray(known.Challenge);
+			byte[]! known_lm_response = Util.HexStringToByteArray(known.LmResponse);
+			byte[]! known_nt_response = Util.HexStringToByteArray(known.NtResponse);
+			
+			byte[]! computed_lm_response = NtlmSupplicant.ComputeLmResponse(known_challenge, known.Password);
+			byte[]! computed_nt_response = NtlmSupplicant.ComputeNtResponse(known_challenge, known.Password);
+			
+			if (Util.CompareArraySpans(known_lm_response, computed_lm_response) != 0) {
+				WriteLine("    FAILURE: Computed LM response differs: " + Util.ByteArrayToString(computed_lm_response));
+				failureCount++;
+			}
+			
+			if (Util.CompareArraySpans(known_nt_response, computed_nt_response) != 0) {
+				WriteLine("    FAILURE: Computed NT response differs: " + Util.ByteArrayToString(computed_lm_response));
+				failureCount++;
+			}
+		}
+		
+		if (failureCount == 0) {
+			WriteLine("All computed responses match known good values.  Test passes.");
+			return 0;
+		}
+		else {
+			WriteLine("Failures: " + failureCount);
+			return -1;
+		}
+	}
+	
+	static NtlmKnownResponse[] KnownResponses = {
+		// These were generated using the @gen command, below.
+new NtlmKnownResponse("2c87546b170c54bf", "Z_bE`", "16b291e268a4e19a23b36eeeb685c02260391bc2827fc05d", "43f56c81a2805383a7622fe0c170ad659b04f25dbeedd6a6"),
+new NtlmKnownResponse("8fd1f7048f3dee73", "Z_bE`", "c2d6e331411a109341a9ba76d10506d03b262fcf3f473e9d", "cbc03bbe559766a6807db7b9d60c68d26a795c5a20a2a016"),
+new NtlmKnownResponse("22abc82a344df2de", "Z_bE`", "931fa8a43c90dc2797f0335b8882c4f5593444cf3dc1b643", "652e822eaa467371770180fdc771d1dddff1cd902f144c74"),
+new NtlmKnownResponse("c3a7fe9867b8c99e", "Z_bE`", "daa43f8730d593d7a4f6cfe542fb2e28102fa87b84365267", "0f8a1c55eda6cb21908be3d165011616a141e0d36af3e9d4"),
+new NtlmKnownResponse("1b08c97f49cb7c01", "ra%Z)ZE&},t", "142b2855d2786061ab295d14e39f871473d949df16536005", "0cfc316813c5423f927fe9892ccaaa451068224648afcbeb"),
+new NtlmKnownResponse("ed3c7bdf9575a770", "ra%Z)ZE&},t", "c1f1055ae66caf6eecc70b191b006536ed7e1337abafe85f", "d2149ecb23779f255774559bc6b09a40da0b67f764a7fc61"),
+new NtlmKnownResponse("0dbc57d708580cb0", "ra%Z)ZE&},t", "ba09f4b51d59efba03e931788c5914dc06fc578b9e85d090", "812298742928dcd6711b4c932108897528e45dbca9463a40"),
+new NtlmKnownResponse("89dfd5090d601936", "ra%Z)ZE&},t", "ce82f6b3341f1cdd425bdf44953bf83452fd0efa25360264", "e99a1428fd64d46cb9e771bba3aaf315f5fb8c8780cd37a6"),
+new NtlmKnownResponse("4f9c3bc7b0ba63d4", "$gdqN", "4b21b010c976506aecd6da792faa4e6efd7083e5b953de5f", "bbec0eb714b01e4146dcc538215d2ebe011d0f209b2da2d3"),
+new NtlmKnownResponse("7928722e5955a64b", "$gdqN", "01e1b5ef4bfcf849521454e5b5d2942b181951c33efe3473", "2f763a9ee207803bad0011081a3d25332b044822b2cf00a1"),
+new NtlmKnownResponse("dec3fb19f56af673", "$gdqN", "ff555fc0302beb74f637ccbe6e17e8ce65a3861552512d6c", "c369bf569205073d7aecdb02df6cf3977e9dda975f5bbce0"),
+new NtlmKnownResponse("f48d2345b489b2eb", "$gdqN", "40a4e20fa00d72a301f856a658ef0ff642b2d89a633567ef", "f9c74c29211779384b699da935e5570bdb4ae6d4457767df"),
+new NtlmKnownResponse("b565ac97df07c48f", "THdY7]>;", "41fa9c2d34c75683135620def7a5e3c3aeb7320d21bd6148", "ebe810de662ab1a09d5b25f4f671ec1be89710b874c3185f"),
+new NtlmKnownResponse("df2dffc0c489e4a6", "THdY7]>;", "8a1e615c5b0d0a1de96094b5fa165c7461aa496f0cc25267", "00620bb34513503d449999a55e587b84ce87fd9a7b972549"),
+new NtlmKnownResponse("c8d323961e1fef75", "THdY7]>;", "6a99cd29b2bfdbf78d594aafca00a612408de2fd0de1065c", "c8b651d08eb804c63ebd18d26f5b70522b6a0f38936771ee"),
+new NtlmKnownResponse("869bcae8ebaf9d1a", "THdY7]>;", "5efdb0fcac134c8a7db9a5716c923d6414439975052947ab", "259fee21ae873b1b5316a8bac744ebc361a9b08e20287d5e"),
+new NtlmKnownResponse("d55cb32bcd058815", "k7!;p'QCb", "151a0d8ee9d3c57f4e150caf18f0b9fcfff69d67e5ea5cf8", "d09d2158bf15e85bde1cc2972bb3439cdff15cab1c460d5c"),
+new NtlmKnownResponse("d36d84bb2d967536", "k7!;p'QCb", "96d5a808abdfe8cc19c9e8623af7f11208d176d5190c0fa9", "5f541049ac3a839126da2321d0109d301e3a4513fdb98689"),
+new NtlmKnownResponse("10433cdba4308fe4", "k7!;p'QCb", "d6b4d9da498c332f3be34e4ad3d6559ad606c4d39573258f", "1d2020a20240db913bf8d7722ca208eb08c11dcbd1e1158e"),
+new NtlmKnownResponse("17f649df5cecbe9d", "k7!;p'QCb", "b25e6ab956567240b86916024c7d5b7a047ef706f1549245", "e2ca8cd6f3d54aabc961552da96b9c575fb60de8a72ccde7"),
+new NtlmKnownResponse("cec55fd6db3096ed", "F;VgA", "b18e9cc93374068a20957c5c8b72be0fd8fa5a0f1c16caf2", "9e12c04257e01bd265bd587967ce27b77e7ac6426b0be1f0"),
+new NtlmKnownResponse("9fa98f13cad14983", "F;VgA", "a5578f61bdfc14b353754c81cff647364605146c9756d3ea", "64e796cbceb4fc5514370b4aa7b40cfc8c9ffb63acb78cca"),
+new NtlmKnownResponse("11a5cdce13d6bba8", "F;VgA", "fd7bc9bcf082d0afdd7894fe530bf59e2911a2297095f7e3", "49f4ed6fe661adaab06b235bb119da63e9f0d2c15d4e0703"),
+new NtlmKnownResponse("b8e6aee684c54ce2", "F;VgA", "f5234fdcdf683d4a11b0379a36dec631566b7a0ec22dec60", "dffd5accafddebcb55dffd0662a57eef238aadea67ef96c8"),
+new NtlmKnownResponse("4e2956a0504822ed", "bKKMk?B", "451ada0c60f1e1b397463a1784349ad93b46071e6d38acce", "7519f4aac3c0ad7bf26d9a482712efddceeb2fec4ac3d049"),
+new NtlmKnownResponse("54b356a4c5f447f7", "bKKMk?B", "cabbf9c6952bf1fad2b6347c371613cd0be114a6d8677f1c", "606b433725d633065d1cb883cef1f88c3e95af1a75bd5b28"),
+new NtlmKnownResponse("0ab71df482af69da", "bKKMk?B", "913b755617905bd71d0fa0db6e6ed6c77bc601cb4ac420b1", "488537a0be68c967ba7641c84675789253f3fec251f09b78"),
+new NtlmKnownResponse("5dac9f155cd20743", "bKKMk?B", "68a4c94dab62058e1eb00f473a379130ae9339dcc9cd3a1e", "90e0baad7052eb4a4e8be6afed9a0e3fb38ea2d6c366c546"),
+new NtlmKnownResponse("70c4c091d16ea71c", "HOvO)@", "0756c8011d61e60e483ada98e28668833e60e0f530acc1dd", "5f95ae24a78bad77dda82ae72e25d09feb8a958f3941de0f"),
+new NtlmKnownResponse("7f6d7d6cc5b060db", "HOvO)@", "2402df78a95018e8db8fc9dae83acb8a7add3846aec0cd32", "e021108fe5b8cc86d1244b2f5dc8a98b4a7bd82a1c11f0a8"),
+new NtlmKnownResponse("9ec07c43a3a80c91", "HOvO)@", "993145b5aa6197cbc03b0652d41b43b4f03f2a446cb846a5", "5690852bdf3e17719632dcaee3002b408e531232061e8681"),
+new NtlmKnownResponse("82ab135456745d77", "HOvO)@", "a3c8bd4330a288d41e4da989145855192fde833ce7e1fea4", "a7d72d0c0c604a0062fcd646bd1fd47cedb9bfa0e6c95ffb"),
+	
+	};
+}
+
+[ConsoleCategory(Action="gen", HelpMessage="Generates a bunch of random hashes and passwords, and computes and displays the NT and LM responses.")]
+internal class GenerateCommand
+{
+    [InputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+    [OutputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;	
+	
+	[LongParameter("count", Mandatory=false, Default=8, HelpMessage="The number of hashes to generate.")]
+	public long IterationCount;
+	
+    reflective internal GenerateCommand();
+
+    internal int AppMain()
+    {
+		StringBuilder buf = new StringBuilder();
+		Random rand = new Random();
+		
+		Console.WriteLine("NtlmKnownResponse[] KnownResponses = {");
+		
+		for (int i = 0; i < this.IterationCount; i++)
+		{
+			buf.Length = 0;
+			
+			int pwlength = 4 + rand.Next(8);
+			for (int j = 0; j < pwlength; j++) {
+				char c = (char)(rand.Next(32, 126));
+				if (c == '\\' || c == '"')
+					c = '?';
+				buf.Append(c);
+			}
+			
+			string! password = buf.ToString();
+			
+			// Use the same password with 4 different challenges.
+			
+			for (int j = 0; j < 4; j++) {
+				byte[]! challenge = new byte[8];
+				rand.NextBytes(challenge);
+			
+				byte[]! lm_response = NtlmSupplicant.ComputeLmResponse(challenge, password);
+				byte[]! nt_response = NtlmSupplicant.ComputeNtResponse(challenge, password);
+				
+				string! line = String.Format("new NtlmKnownResponse(\"{0}\", \"{1}\", \"{2}\", \"{3}\"),",
+					Util.ByteArrayToString(challenge),
+					EscapeString(password),
+					Util.ByteArrayToString(lm_response),
+					Util.ByteArrayToString(nt_response));
+					
+				Console.WriteLine(line);
+				DebugStub.WriteLine(line);
+			}
+		}
+		Console.WriteLine("};");
+
+        return 0;
+	}
+	
+	static string! EscapeString(string! str)
+	{
+		return str.Replace(@"\", @"\\");
+	}
+}
+
+
+
+struct NtlmKnownResponse
+{
+	public NtlmKnownResponse(string! challenge, string! password, string! lm_response, string! nt_response)
+	{
+		this.Challenge = challenge;
+		this.Password = password;
+		this.NtResponse = nt_response;
+		this.LmResponse = lm_response;
+	}
+	
+	public string! Challenge;
+	public string! Password;
+	public string! NtResponse;
+	public string! LmResponse;
+}
+
+
+
+class Util
+{
+	public static byte[]! HexStringToByteArray(string! str)
+	{
+		if ((str.Length % 2) != 0)
+			throw new Exception("Input string cannot be odd in length.");
+
+		byte[]! result = new byte[str.Length / 2];
+		for (int i = 0; i < result.Length; i++)
+		{
+			byte high = CharToHex(str[i * 2]);
+			byte low = CharToHex(str[i * 2 + 1]);
+			result[i] = (byte)((high << 4) | low);
+		}
+
+		return result;
+	}
+
+    static byte CharToHex(char c)
+    {
+        if (c >= '0' && c <= '9')
+            return (byte)(c - '0');
+        if (c >= 'a' && c <= 'f')
+            return (byte)(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F')
+            return (byte)(c - 'A' + 10);
+        throw new ArgumentException("Invalid hex char");
+    }
+
+	public static string! ByteArrayToString(byte[]! buffer)
+	{
+		return ByteArrayToString(buffer, 0, buffer.Length);
+	}
+	
+	const string HexDigits = "0123456789abcdef";
+	
+    public static string! ByteArrayToString(byte[]! buffer, int index, int length)
+    {
+        StringBuilder sb = new StringBuilder(length * 2);
+        for (int i = 0; i < length; i++) {
+            byte b = buffer[index + i];
+            sb.Append(HexDigits[b >> 4]);
+            sb.Append(HexDigits[b & 0xf]);
+        }
+        return sb.ToString();
+    }
+
+	public static void ShowException(Exception! chain)
+	{
+		Exception current = chain;
+		while (current != null)
+		{
+			Console.WriteLine("{0}: {1}", current.GetType().FullName, current.Message);
+			current = current.InnerException;
+		}
+	}
+
+	public static int CompareArraySpans(byte[]! array1, byte[]! array2)
+	{
+		return CompareArraySpans(array1, 0, array2, 0, array1.Length);
+	}
+
+	public static int CompareArraySpans(byte[]! array1, int offset1, byte[]! array2, int offset2, int length)
+	{
+		for (int i = 0; i < length; i++)
+		{
+			byte element1 = array1[offset1 + i];
+			byte element2 = array2[offset2 + i];
+			if (element1 < element2)
+				return -1;
+			if (element1 > element2)
+				return 1;
+		}
+
+		return 0;
+	}
+
+}
+
+[ConsoleCategory(Action="remote", HelpMessage="Attempts to connect to a remote Windows host (running NtlmTestServer.exe) and authenticates using NTLM.")]
+internal class RemoteAuthTestCommand
+{
+	reflective internal RemoteAuthTestCommand();
+	
+    [InputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+    [OutputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;	
+	
+	[StringParameter("server", Mandatory=true, HelpMessage="The remote server name or IP address.")]
+	public string ServerName;
+	
+	[StringParameter("user", Mandatory=true, HelpMessage="The [domain\\]username to use.")]
+	public string UserName;
+	
+	[StringParameter("password", Mandatory=true, HelpMessage="The password to use.", Default="Z@n%zilNaga")]
+	public string Password;
+	
+	[LongParameter("count", Mandatory=false, Default=1, HelpMessage="The number of iterations to perform.")]
+	public long IterationCount;
+	
+	[StringParameter("hostdomain", Mandatory=false, Default="WORKGROUP", HelpMessage="Specifies the domain name of the client computer.  Default is WORKGROUP.")]
+	public string ClientMachineDomainName;
+	
+	[StringParameter("workstation", Mandatory=false, Default="SINGULARITY", HelpMessage="Specifies the name of the local client machine.  Default is SINGULARITY.")]	
+	public string Workstation;
+
+	internal int AppMain()
+	{
+		// Split the username into domain\username, if the user has specified domain name.
+		string! username = (!)this.UserName;
+		string! domain;
+		int index = username.IndexOf('\\');
+		if (index != -1) {
+			domain = username.Substring(0, index);
+			username = username.Substring(index + 1);
+		}
+		else {
+			domain = ".";
+		}
+		
+		string! password = (!)this.Password;
+		
+		// First, connect to BVT test server.
+		// The sole purpose of the server is to test NTLMSSP messages.
+		
+		
+		try {
+			// Bartok is failing on Dns.GetLocalHostAddresses
+			//
+			//IPHostEntry! he = (!)Dns.GetHostByName(this.ServerName);
+			//IPAddress[]! addresses = (!)he.AddressList;
+			//
+			IPv4 addr = IPv4.Parse(this.ServerName);
+			IPAddress[]! addresses = { new IPAddress(addr) };
+			
+			if (addresses.Length == 0) {
+				Console.WriteLine("Resolution failed; no address.");
+				return -1;
+			}
+			
+			using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+			{
+				// -XXX- Work around a bug in NetStack regarding quick reuse of TCP tuples
+				Random rand = new Random();
+				IPEndPoint local = new IPEndPoint(IPAddress.Any, 1000 + rand.Next(1000));
+				socket.Bind(local);
+				
+				bool connected = false;
+				
+				foreach (IPAddress address_null in addresses)
+				{
+					IPAddress! address = (!)address_null;
+					Console.WriteLine("Connecting: " + address.ToString());
+					IPEndPoint ep = new IPEndPoint(address, NtlmUnitTestProtocol.TcpPort);
+					
+					try {
+						socket.Connect(ep);
+						Console.WriteLine("Connected.");
+						connected = true;
+					}
+					catch (Exception ex) {
+						Console.WriteLine("Connection failed.");
+						Util.ShowException(ex);
+						connected = false;
+					}
+					
+					if (connected)
+						break;
+				}
+				
+				if (!connected) {
+					Console.WriteLine("Failed to connect to server.");
+					return -1;
+				}
+				
+				
+				for (int iteration = 0; iteration < IterationCount; iteration++) {
+					if (IterationCount > 1)
+						Console.WriteLine("[Iteration {0}/{1}]", iteration, IterationCount.ToString());
+					
+					try {
+					
+						Console.WriteLine("    Sending NEGOTIATE");
+						
+						byte[]! negotiate = NtlmSupplicant.GetNegotiate(
+							NtlmNegotiateFlags.None,
+							(!)this.ClientMachineDomainName,
+							(!)this.Workstation);
+							
+						NtlmUnitTestProtocol.SendMessage(socket, TestMessageType.Negotiate, negotiate);
+						
+						Console.WriteLine("    Waiting for CHALLENGE");
+						
+						byte[]! challenge = NtlmUnitTestProtocol.ReceiveExpectedMessage(socket, TestMessageType.Challenge);
+
+						byte[]! response = NtlmSupplicant.GetResponse(
+							challenge,
+							domain,
+							username,
+							this.Workstation,
+							password);						
+						
+						Console.WriteLine("    Sending RESPONSE");
+						
+						NtlmUnitTestProtocol.SendMessage(socket, TestMessageType.Response, response);
+						
+						Console.WriteLine("    Waiting RESULT");
+						
+						byte[]! resultBuffer = NtlmUnitTestProtocol.ReceiveExpectedMessage(socket, TestMessageType.Result);
+						
+						Console.WriteLine("    Received RESULT:");
+						ref ResultMessage result = ref resultBuffer[0];
+						string! resulttext = Encoding.Unicode.GetString(resultBuffer, sizeof(ResultMessage), resultBuffer.Length - sizeof(ResultMessage));
+						
+						if (result.Succeeded != 0) {
+							Console.WriteLine("       Succeeded = TRUE");
+						}
+						else {
+							Console.WriteLine("       Succeeded = FALSE");
+						}						
+						Console.WriteLine("       Message: " + resulttext);
+						
+					}
+					catch (Exception ex) {
+						Console.WriteLine("Exception occurred during test.");
+						Util.ShowException(ex);
+					}
+				}
+				
+			}
+			
+			return 0;
+		}
+		catch (Exception ex) {
+			Console.WriteLine("Exception occurred during test.");
+			Util.ShowException(ex);
+			return -1;
+		}
+		
+		
+	}
+}
+
+[ConsoleCategory(Action="remote-cm", HelpMessage="Attempts to connect to a remote Windows host (running NtlmTestServer.exe) and authenticates using NTLM via the Credentials Manager service.")]
+internal class RemoteAuthTestCredMgrCommand
+{
+	reflective internal RemoteAuthTestCredMgrCommand();
+	
+    [InputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+    [OutputEndpoint("data")]
+    public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;	
+	
+	[StringParameter("server", Mandatory=false, HelpMessage="The remote server name or IP address.")]
+	public string ServerName;
+	
+	[StringParameter("credentials", Mandatory=true, HelpMessage="The credentials to use, such as [domain\\]user.")]
+	public string CredentialsName;
+	
+	[StringParameter("tag", Mandatory=false, HelpMessage="The credentials tag, if necessary.")]
+	public string CredentialsTag;
+	
+	[LongParameter("count", Mandatory=false, Default=1, HelpMessage="The number of iterations to perform.")]
+	public long IterationCount;
+
+	internal int AppMain()
+	{
+		// First, connect to BVT test server.
+		// The sole purpose of the server is to test NTLMSSP messages.
+		
+	    string! credentialsName = (!)this.CredentialsName;
+	    string! credentialsTag = this.CredentialsTag != null ? this.CredentialsTag : "";
+	    
+		try {
+			// Bartok is failing on Dns.GetLocalHostAddresses
+			//
+			//IPHostEntry! he = (!)Dns.GetHostByName(this.ServerName);
+			//IPAddress[]! addresses = (!)he.AddressList;
+			//
+			IPv4 addr = IPv4.Parse(this.ServerName);
+			IPAddress[]! addresses = { new IPAddress(addr) };
+			
+			if (addresses.Length == 0) {
+				Console.WriteLine("Resolution failed; no address.");
+				return -1;
+			}
+			
+			using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+			{
+				// -XXX- Work around a bug in NetStack regarding quick reuse of TCP tuples
+				Random rand = new Random();
+				IPEndPoint local = new IPEndPoint(IPAddress.Any, 1000 + rand.Next(1000));
+				socket.Bind(local);
+				
+				bool connected = false;
+				
+				foreach (IPAddress address_null in addresses)
+				{
+					IPAddress! address = (!)address_null;
+					Console.WriteLine("Connecting: " + address.ToString());
+					IPEndPoint ep = new IPEndPoint(address, NtlmUnitTestProtocol.TcpPort);
+					
+					try {
+						socket.Connect(ep);
+						Console.WriteLine("Connected.");
+						connected = true;
+					}
+					catch (Exception ex) {
+						Console.WriteLine("Connection failed.");
+						Util.ShowException(ex);
+						connected = false;
+					}
+					
+					if (connected)
+						break;
+				}
+				
+				if (!connected) {
+					Console.WriteLine("Failed to connect to server.");
+					return -1;
+				}
+				
+				
+				for (int iteration = 0; iteration < IterationCount; iteration++) {
+					if (IterationCount > 1)
+						Console.WriteLine("[Iteration {0}/{1}]", iteration, IterationCount.ToString());
+					
+					try {
+					
+					    Console.WriteLine("Acquiring security context");
+					    GssSupplicantContract.Imp! supplicant;
+					    GssSupplicantContract.Exp! supplicant_exp;
+					    GssSupplicantContract.NewChannel(out supplicant, out supplicant_exp);
+					    
+					    CredentialsManager.CreateSupplicant(
+					        AuthenticationProtocolNames.Ntlm,
+					        credentialsName,
+					        credentialsTag,
+					        supplicant_exp);
+                        try {
+                        
+                        Console.WriteLine("    Getting NEGOTIATE from security context");
+                        byte[]! negotiate;
+                        switch receive {
+                            case supplicant.FirstToken(token):
+                                // Console.WriteLine("    Received first token from security context");
+                                negotiate = Bitter.ToByteArray(token);
+                                delete token;
+                                break;
+                                
+                            case supplicant.NeedFirstToken():
+                                throw new Exception("Received unexpected token from security context (NeedFirstToken)");
+                        }
+                        
+						Console.WriteLine("    Sending NEGOTIATE");
+						
+						NtlmUnitTestProtocol.SendMessage(socket, TestMessageType.Negotiate, negotiate);
+						
+						Console.WriteLine("    Waiting for CHALLENGE");
+						
+						byte[]! challenge = NtlmUnitTestProtocol.ReceiveExpectedMessage(socket, TestMessageType.Challenge);
+
+                        Console.WriteLine("    Sending challenge to security context");
+                        supplicant.SendAcceptToken(Bitter.FromByteArray(challenge));
+                        
+                        Console.WriteLine("    Waiting for response from security context");
+                        
+                        byte[]! response;
+                        switch receive {
+                            case supplicant.CompleteWithToken(token):
+                                // Console.WriteLine("    Received token from security context, and authentication is complete");
+                                response = Bitter.ToByteArray(token);
+                                delete token;
+                                break;
+                                
+                            case supplicant.Complete():
+                                throw new Exception("Security context returned unexpected message (Complete)");
+                                
+                            case supplicant.ContinueNeeded(token):
+                                delete token;
+                                throw new Exception("Security context returned unexpected message(ContinueNeeded)");
+                                
+                            case supplicant.AuthenticationFailed(error):
+                                throw new Exception("Security context returned unexpected message (AuthenticationFailed): " + CredentialsManager.GssErrorCodeToString(error));
+                        }
+                        
+						Console.WriteLine("    Sending RESPONSE");
+						
+						NtlmUnitTestProtocol.SendMessage(socket, TestMessageType.Response, response);
+						
+						Console.WriteLine("    Waiting RESULT");
+						
+						byte[]! resultBuffer = NtlmUnitTestProtocol.ReceiveExpectedMessage(socket, TestMessageType.Result);
+						
+						Console.WriteLine("    Received RESULT:");
+						ref ResultMessage result = ref resultBuffer[0];
+						string! resulttext = Encoding.Unicode.GetString(resultBuffer, sizeof(ResultMessage), resultBuffer.Length - sizeof(ResultMessage));
+						
+						if (result.Succeeded != 0) {
+							Console.WriteLine("       Succeeded = TRUE");
+						}
+						else {
+							Console.WriteLine("       Succeeded = FALSE");
+						}						
+						Console.WriteLine("       Message: " + resulttext);
+						
+						}
+						finally {
+						    delete supplicant;
+						}
+						
+					}
+					catch (Exception ex) {
+						Console.WriteLine("Exception occurred during test.");
+						Util.ShowException(ex);
+					}
+				}
+				
+			}
+			
+			return 0;
+		}
+		catch (Exception ex) {
+			Console.WriteLine("Exception occurred during test.");
+			Util.ShowException(ex);
+			return -1;
+		}
+		
+		
+	}
+}
+
+class NtlmUnitTestProtocol
+{
+	public const int TcpPort = 720;
+	
+	public static void SendMessage(Socket! socket, TestMessageType type, byte[]! payload)
+	{
+		byte[]! headerBuffer = new byte[sizeof(TestMessageHeader)];
+		ref TestMessageHeader header = ref headerBuffer[0];
+		header.TotalLength = (uint)(sizeof(TestMessageHeader) + payload.Length);
+		header.MessageType = (uint)type;
+		
+		socket.Send(headerBuffer);
+		
+		socket.Send(payload);
+	}
+	
+	public static byte[]! ReceiveExpectedMessage(Socket! socket, TestMessageType type)
+	{
+		TestMessageType actualType;
+		byte[]! msg = ReceiveMessage(socket, out actualType);
+		if (actualType != type) {
+			Console.WriteLine("Received message, but its type is not the expected type!");
+			Console.WriteLine("Received type {0}, wanted type {1}", actualType, type);
+			throw new Exception("Invalid message received.");
+		}
+		return msg;
+	}
+	
+	public static byte[]! ReceiveMessage(Socket! socket, out TestMessageType type)
+	{
+		byte[]! headerBuffer = new byte[sizeof(TestMessageHeader)];
+		
+		int length = socket.Receive(headerBuffer, sizeof(TestMessageHeader), SocketFlags.None);
+		if (length == 0) {
+			throw new Exception("Server has closed socket.");
+		}
+		
+		if (length < sizeof(TestMessageHeader)) {
+			throw new Exception("Received short data from server.");
+		}
+		ref TestMessageHeader header = ref headerBuffer[0];
+		
+		if (header.TotalLength < sizeof(TestMessageHeader)) {
+			throw new Exception("Received invalid header from server (length is too short)");
+		}
+		
+		if (header.TotalLength > 0x10000) {
+			throw new Exception("Received excessively large message from server.");
+		}
+		
+		int bodyLength = (int)(header.TotalLength - sizeof(TestMessageHeader));
+		byte[]! body = new byte[bodyLength];
+		
+		length = socket.Receive(body, bodyLength, SocketFlags.None);
+		if (length == 0)
+			throw new Exception("Server has closed socket.");
+		
+		if (length < bodyLength)
+			throw new Exception("Received short data (payload) from server.");
+		
+		type = (TestMessageType)header.MessageType;
+		return body;
+	}
+}
+
+enum TestMessageType
+{
+	Negotiate = 1,
+	Challenge = 2,
+	Response = 3,
+	Result = 4,	
+}
+
+[StructLayout(LayoutKind.Sequential)]
+pointerfree struct ResultMessage
+{
+	public int Succeeded;
+	// unicode string of error follows, no nul terminator
+}
+
+[StructLayout(LayoutKind.Sequential)]
+pointerfree struct TestMessageHeader
+{
+	public uint TotalLength;
+	public uint MessageType;
+}
+

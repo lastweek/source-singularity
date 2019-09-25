@@ -1,0 +1,1004 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   SMTP Server.
+//
+//#define SMTPAGENT_VERBOSE
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+
+using System;
+using System.IO;
+using System.Collections;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading;
+using System.Diagnostics;
+
+using Microsoft.Singularity.Email.Contracts;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Email_NoNet
+{
+    [ConsoleCategory(HelpMessage="SMTP Mail Transfer Agent", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringParameter("cnts", Mandatory=false, Default="/init/contents.txt",
+                         HelpMessage="Contents of emails to be sent.")]
+        internal string emailCorpus;
+
+        [StringParameter("stl", Mandatory=false, Default="/init/stl.txt",
+                          HelpMessage="file containing starting loc in corpus for each conn")]
+        internal string startPositionsFile;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter("mailstore service", Mandatory=false, Default="/service/mailstore",
+                         HelpMessage="Location of mail store service.")]
+        internal string mailstorePath;
+
+        [LongParameter("nts", Mandatory=false, Default= 1,
+                          HelpMessage="Number of emails to send.")]
+        internal long numToSend;
+
+        [LongParameter("nc", Mandatory=false, Default=1,
+                       HelpMessage="Number of concurrent connections.")]
+        internal long numConn;
+
+        [StringParameter("server", Mandatory=false, Default="0.0.0.0",
+                         HelpMessage="Service IP Address to give to clients.")]
+        internal string server;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SmtpServer.AppMain(this);
+        }
+    }
+
+
+    public class Buffer
+    {
+        private byte[] data;
+        private int size;
+
+        public static Buffer Allocate(int bytes)
+        {
+            Buffer buffer = new Buffer(bytes);
+            return buffer;
+        }
+
+        private Buffer(int bytes)
+        {
+            this.data = new byte[bytes];
+            this.size = 0;
+        }
+
+        public byte[] Data
+        {
+            get { return data; }
+        }
+
+        public int Size
+        {
+            get { return size; }
+        }
+
+        public int Prepare(int bytes)
+        {
+            if (size + bytes > data.Length) {
+                byte[] dst = new byte[data.Length * 2];
+                Array.Copy(data, dst, size);
+                data = dst;
+            }
+            return size;
+        }
+
+        public void Save(int bytes)
+        {
+            if (size + bytes + 2 <= data.Length) {
+                size += bytes;
+                data[size++] = (byte)'\r';
+                data[size++] = (byte)'\n';
+            }
+            else {
+                throw new Exception("Overflow");
+            }
+        }
+
+        public void Release()
+        {
+            data = null;
+            size = 0;
+        }
+    }
+
+
+
+    public class EmailClientError : ApplicationException {}
+
+    //Baically, instantiating this class
+    //goes through the state machine with the server
+    public class EmailClient
+    {
+        [Conditional("SMTPAGENT_VERBOSE")]
+        public static void DebugWriteLine(string format)
+        {
+            DebugStub.WriteLine(format);
+        }
+
+        [Conditional("SMTPAGENT_VERBOSE")]
+        public static void DebugWriteLine(string format, __arglist)
+        {
+            DebugStub.WriteLine(format, new ArgIterator(__arglist));
+        }
+
+        private static void DumpEmail(string[] email)
+        {
+            DebugStub.WriteLine("Dumping email...\n");
+            foreach(string line in email) {
+                DebugStub.WriteLine("{0}", __arglist(line));
+            }
+        }
+
+        //client side state machine
+        private enum ReceivedState {
+            RECEIVED_NONE =  0,
+            RECEIVED_220  =  1,
+            RECEIVED_250  =  2,
+            RECEIVED_354  =  3,
+        }
+
+        private enum SentState {
+            SENT_NONE     =  0,
+            SENT_EHLO     =  1,
+            SENT_NOOP     =  2,
+            SENT_MAIL     =  3,
+            BEGAN_RCPT    =  4,
+            FINISHED_RCPT =  5,
+            BEGAN_DATA    =  6,
+            FINISHED_DATA =  7,
+        };
+
+
+        private string[][] corpus;
+        private int nxtEmail;
+        private string[] emailContents;
+        private int dataIndex;
+        private ReceivedState rcvState;
+        private SentState sentState;
+        private int rcptIndex;
+        private string[] rcpts;
+
+        private static string GetCommand(String line)
+        {
+            int len = line.Length;
+            int i;
+            for (i = 0; i < len && line[i] >= '0' && line[i] <= '9'; i++);
+
+            return line.Substring(0, i);
+        }
+
+        [NotDelayed]
+        public EmailClient(String[][] corpus, int startIndex)
+        {
+
+            this.corpus = corpus;
+            this.nxtEmail = startIndex;
+            DebugStub.WriteLine("Email client starting up startindex {0}\n", __arglist(startIndex));
+            DebugStub.WriteLine("corpus length is {0}\n", __arglist(corpus.Length));
+
+            rcvState = ReceivedState.RECEIVED_NONE;
+            sentState = SentState.SENT_NONE;
+
+            emailContents = corpus[nxtEmail];
+            nxtEmail++;
+            if (nxtEmail == corpus.Length) {
+                nxtEmail = 0;
+            }
+        }
+
+        //Command from SMTP server to client
+        //Advances state machine
+        public void SendLine(string line)
+        {
+            DebugWriteLine("EmailClient.SendLine received {0}\n", __arglist(line));
+            String command = GetCommand(line);
+
+            switch(command) {
+                case "220":
+                    if (rcvState == ReceivedState.RECEIVED_NONE) {
+                        DebugWriteLine("EmailClient received 220 in correct state\n");
+                        rcvState = ReceivedState.RECEIVED_220;
+                        return;
+                    }
+                    DebugStub.WriteLine("EmailClient recieved 220 while in state {0}\n",
+                                        __arglist(rcvState));
+                    DebugStub.Break();
+                    throw new EmailClientError();
+                    break;
+                case "250":
+                    DebugWriteLine("EmailClient received 250\n");
+                    rcvState = ReceivedState.RECEIVED_250;
+                    break;
+                case "354":
+                    DebugWriteLine("EmailClient received 354\n");
+                    rcvState = ReceivedState.RECEIVED_354;
+                    break;
+                case "501":
+                    DebugWriteLine("Uhoh! received 501\n");
+                    DebugStub.Break();
+                    break;
+                default:
+                    DebugStub.WriteLine("Got unexpected command {0}\n", __arglist(command));
+                    DebugStub.Break();
+                    break;
+            }
+        }
+
+        //Get line from client to server
+        public string GetLine()
+        {
+            switch(sentState) {
+                case SentState.SENT_NONE:
+                    DebugWriteLine("EmailClient GetLine while in state SENT_NONE\n");
+                    string result = "EHLO Nobody\r\n";
+                    sentState = SentState.SENT_EHLO;
+                    rcvState = 0;
+                    return result;
+                    break;
+
+                case SentState.SENT_EHLO:
+                    if (rcvState != ReceivedState.RECEIVED_250) {
+                        break;
+                    }
+                    DebugWriteLine("GetLine while in state SENT_EHLO...sending MAIL\n");
+
+                    sentState = SentState.SENT_MAIL;
+                    rcvState = 0;
+                    rcptIndex = 0;
+                    string from = FindFrom(emailContents).ToLower();
+                    return "MAIL FROM: <" + from + ">\r\n";
+                    break;
+
+                case SentState.SENT_MAIL:
+                    DebugWriteLine("GetLine while in state SENT_MAIL...sending RCPT\n");
+                    if (rcvState != ReceivedState.RECEIVED_250) {
+                        break;
+                    }
+                    string to = FindTo("To: ", emailContents);
+                    string cc = FindTo("Cc: ", emailContents);
+                    string bcc = FindTo("Bcc: ", emailContents);
+                    if (to == null) {
+                        to = cc;
+                        cc = null;
+                    }
+                    if (to == null) {
+                        to = bcc;
+                        bcc = null;
+                    }
+
+                    if (cc != null) {
+                        to = to + "," + cc;
+                    }
+                    if (bcc != null) {
+                        to = to + "," + bcc;
+                    }
+
+
+                    if (to == null || to.Length == 0) {
+                        //Sometimes the "to" is blank with no cc or bcc because of
+                        //an interoffice dl?
+                        to = "mail_forward@enron.com";
+#if false
+                        DebugStub.WriteLine(":: Couldn't find receipients.");
+                        DumpEmail(emailContents);
+                        DebugStub.Break();
+                        throw new EmailClientError();
+#endif
+                    }
+
+                    rcpts = to.Split(new Char[]{','});
+                    for (int i = 0; i < rcpts.Length; i++) {
+                        rcpts[i] = rcpts[i].Trim().ToLower();
+                        if (rcpts[i].Length == 0) {
+                            rcpts[i] = null;
+                        }
+                    }
+
+                    for (int i = 0; i < rcpts.Length; i++) {
+                        for (int j = i + 1; j < rcpts.Length; j++) {
+                            if (rcpts[i] == rcpts[j]) {
+                                rcpts[j] = null;
+                            }
+                        }
+                    }
+                    rcvState = 0;
+
+                    string rcpt = "RCPT TO: <" + rcpts[rcptIndex] + ">\r\n";
+                    rcptIndex++;
+                    if (rcptIndex == rcpts.Length) {
+                        sentState = SentState.FINISHED_RCPT;
+                    }
+                    else {
+                        sentState = SentState.BEGAN_RCPT;
+                    }
+                    return rcpt;
+                    break;
+
+                case SentState.BEGAN_RCPT:
+                    DebugWriteLine("GetLine while in state BEGAN_RCPT...sending RCPT\n");
+                    if (rcvState != ReceivedState.RECEIVED_250) {
+                        break;
+                    }
+                    rcpt = "RCPT TO: <" + rcpts[rcptIndex] + ">\r\n";
+                    rcptIndex++;
+                    rcvState = 0;
+                    if (rcptIndex == rcpts.Length) {
+                        sentState = SentState.FINISHED_RCPT;
+                    }
+                    else {
+                        sentState = SentState.BEGAN_RCPT;
+                    }
+                    return rcpt;
+                    break;
+
+                case SentState.FINISHED_RCPT:
+                    DebugWriteLine("GetLine while in state FINISHED_RCPT...sending DATA\n");
+                    if (rcvState != ReceivedState.RECEIVED_250) {
+                        break;
+                    }
+                    string dataCommand = "DATA \r\n";
+                    dataIndex = 0;
+                    rcvState = 0;
+                    sentState = SentState.BEGAN_DATA;
+                    return dataCommand;
+                    break;
+
+                case SentState.BEGAN_DATA:
+                    DebugWriteLine("GetLine while in state BEGAN_DATA...sending DATA\n");
+                    if (rcvState != ReceivedState.RECEIVED_354) {
+                        break;
+                    }
+                    string data;
+                    if (dataIndex == emailContents.Length) {
+                        DebugWriteLine("Completed reading email...sending .\n");
+                        data = ".";
+                        sentState = SentState.SENT_EHLO;
+                        rcvState = 0;
+
+                        emailContents = corpus[nxtEmail];
+                        if(emailContents == null) {
+                            DebugStub.WriteLine("null email! nxtEmail {0}\n", __arglist(nxtEmail));
+                            DebugStub.Break();
+                        }
+                        nxtEmail++;
+                        if (nxtEmail == corpus.Length) {
+                            nxtEmail = 0;
+                        }
+
+                    }
+                    else {
+                        data = emailContents[dataIndex];
+                        if ((data.Length == 1) && data[0] == '.') {
+                            //prepend another . to avoid false positives that this is the last line
+                            data = "." + data;
+                        }
+                        dataIndex++;
+                        //DebugWriteLine("Got {0}\n", __arglist(data));
+                    }
+                    return data;
+                    break;
+                default:
+                    DebugStub.WriteLine("In unexpected state {0}\n", __arglist(sentState));
+                    DebugStub.Break();
+                    break;
+            }
+            DebugStub.WriteLine("EmailClient GetLine in state {0} never got 250\n", __arglist(sentState));
+            DumpEmail(emailContents);
+            throw new EmailClientError();
+        }
+
+
+        public static String FindFrom(String[] lines)
+        {
+            foreach (string line in lines) {
+                if (line.Length == 0) {
+                    return null; // Header ended.
+                }
+                if (line.StartsWith("From: ")) {
+                    return line.Substring(6);
+                }
+            }
+            return null;
+        }
+
+        public static string FindTo(String prefix, String[] lines)
+        {
+            for (int i = 0; i < lines.Length; i++) {
+                if (lines[i].Length == 0) {
+                    return null; // Header ended.
+                }
+                if (lines[i].StartsWith(prefix)) {
+                    string to = lines[i++].Substring(prefix.Length);
+                    while (lines[i].Length > 0 && (lines[i][0] == ' ' || lines[i][0] == '\t')) {
+                        to = to + lines[i++];
+                    }
+                    return to;
+                }
+            }
+            return null;
+        }
+    }
+
+    public class ServerSession
+    {
+        private static int idCount = 0;
+        private int id;
+        private string command;
+        private string server;
+        private EmailClient emailClient;
+        private long emailLimit;
+
+        [Conditional("SMTPAGENT_VERBOSE")]
+        public static void DebugWriteLine(string format)
+        {
+            DebugStub.WriteLine(format);
+        }
+
+        [Conditional("SMTPAGENT_VERBOSE")]
+        public static void DebugWriteLine(string format, __arglist)
+        {
+            DebugStub.WriteLine(format, new ArgIterator(__arglist));
+        }
+
+        public ServerSession(string[][] corpus, long limit, int startIndex)
+        {
+            this.emailClient = new EmailClient(corpus, startIndex);
+            this.id = idCount++;
+            this.server = "0.0.0.0";
+            this.emailLimit = limit;
+        }
+
+        public string GetCommand(String line)
+        {
+            int i = line.IndexOf(' ');
+            if (i < 0) {
+                command = line;
+                return null;
+            }
+            command = line.Substring(0, i).ToUpper();
+            return command;
+        }
+
+        private enum CurrentState {
+            HAD_NONE = 0,
+            HAD_HELO = 1,
+            HAD_MAIL = 2,
+            HAD_RCPT = 3,
+        };
+
+        public void Loop()
+        {
+            String client;
+            String line;
+            CurrentState cstate = CurrentState.HAD_NONE;
+            String from = null;
+            String to = null;
+
+            //Open a new connection to the mailstore for each smtp connection.
+            //Each client connection stays allive until all emails are sent.
+
+            DirectoryServiceContract.Imp! dsImp =  SmtpServer.dsEp.Acquire();
+
+            MailStoreContract.Imp! msImp;
+            MailStoreContract.Exp! msExp;
+            MailStoreContract.NewChannel(out msImp, out msExp);
+
+            ErrorCode errorCode;
+            if (!SdsUtils.Bind(SmtpServer.mailstorePath, dsImp, msExp, out errorCode)) {
+                DebugWriteLine("Failed to bind to mail store...error {0}\n",
+                                    __arglist(SdsUtils.ErrorCodeToString(errorCode)));
+                Console.WriteLine("Failed to bind to mail store...error {0}\n",
+                                  SdsUtils.ErrorCodeToString(errorCode));
+
+                DebugStub.Break();
+                SmtpServer.dsEp.Release(dsImp);
+                delete msImp;
+                return;
+            }
+            SmtpServer.dsEp.Release(dsImp);
+
+            msImp.RecvMailStoreReady();
+
+            emailClient.SendLine("220 " + server + " Singularity Simple SMTP Service Ready");
+
+            long numReceived = 0;
+            bool abort = false;
+            DateTime beginEpoch = DateTime.Now;
+            DateTime endEpoch;
+
+            while (!abort) {
+                line = emailClient.GetLine();
+                if (line == null) {
+                    break;
+                }
+
+                GetCommand(line);
+
+                switch (command) {
+                    case "EHLO":
+                        client = line.Split(new Char[] {' '})[1];
+                        Console.WriteLine(":{0}: EHLO {1}", id, client);
+
+                        emailClient.SendLine("250-" + server + " greets " + client);
+                        emailClient.SendLine("250-8BITMIME");
+                        emailClient.SendLine("250 HELP");
+                        from = null;
+                        to = null;
+                        cstate = CurrentState.HAD_HELO;
+                        DebugWriteLine("SMTPServer: Got EHLO\n");
+                        break;
+
+                    case "HELO":
+                        client = line.Split(new Char[] {' '})[1];
+                        Console.WriteLine(":{0}: HELO {1}", id, client);
+                        emailClient.SendLine("250 " + server + " greets " + client);
+                        from = null;
+                        to = null;
+                        cstate = CurrentState.HAD_HELO;
+                        DebugWriteLine("SMTPServer: Got HELO\n");
+                        break;
+
+                    case "MAIL":
+                        if (cstate != CurrentState.HAD_HELO) {
+                            goto default;
+                        }
+
+                        if (line.StartsWith("MAIL FROM:")) {
+                            int pos = line.IndexOf("<") + 1;
+                            int beg = line.LastIndexOf(':');
+                            if (beg < pos) {
+                                beg = pos;
+                            }
+                            int end = line.IndexOf('>');
+                            from = line.Substring(beg, end - beg).ToLower();
+                            emailClient.SendLine("250 OK");
+                            cstate = CurrentState.HAD_MAIL;
+                            DebugWriteLine("SMTPServer: Got MAIL from: {0}\n", __arglist(from));
+                        }
+                        else {
+                            emailClient.SendLine("501 Syntax error in parameters");
+                        }
+                        break;
+
+                    case "RCPT":
+                        if (cstate != CurrentState.HAD_MAIL && cstate != CurrentState.HAD_RCPT) {
+                            goto default;
+                        }
+                        DebugWriteLine("Got RCPT\n");
+                        if (line.StartsWith("RCPT TO:")) {
+                            int pos = line.IndexOf("<") + 1;
+                            int beg = line.LastIndexOf(':');
+                            if (beg < pos) {
+                                beg = pos;
+                            }
+                            int end = line.IndexOf('>');
+                            string address = line.Substring(beg, end - beg).ToLower();
+
+                            if (SmtpServer.addresses.ContainsKey(address)) {
+                                emailClient.SendLine("250 OK");
+                                if (to != null) {
+                                    to = to + ";" + address;
+                                }
+                                else {
+                                    to = address;
+                                }
+                                cstate = CurrentState.HAD_RCPT;
+                            }
+                            else {
+                                emailClient.SendLine("250 Accepting for forwarding.");
+                                cstate = CurrentState.HAD_RCPT;
+                                if (to != null) {
+                                    to = to + ";" + "mail_forward@enron.com";
+                                }
+                                else {
+                                    to = "mail_forward@enron.com";
+                                }
+                            }
+                            DebugWriteLine("Got address to: {0}\n", __arglist(to));
+                        }
+                        else {
+                            emailClient.SendLine("501 Syntax error in parameters");
+                        }
+                        break;
+
+                    case "DATA":
+                        if (cstate != CurrentState.HAD_RCPT) {
+                            goto default;
+                        }
+                        DebugWriteLine("Got DATA\n");
+                        emailClient.SendLine("354 Start mail input; end with <CRLF>.<CRLF>");
+
+                        Buffer buffer = Buffer.Allocate(65536);
+                        bool good = false;
+
+                        for (;;) {
+                            int off = buffer.Prepare(1024);
+                            string buffLine = emailClient.GetLine();
+                            int len = buffLine.Length;
+                            Encoding.ASCII.GetBytes(buffLine, 0, len, buffer.Data, off);
+
+                            if (len < 0) {
+                                break;
+                            }
+
+                            if (len == 1 && buffer.Data[off] == '.') {
+                                DebugWriteLine("Got final . char\n");
+                                good = true;
+                                break;
+                            }
+                            else {
+                                DebugWriteLine("S: {0}",
+                                                    __arglist(Encoding.ASCII.GetString(buffer.Data, off, len)));
+                                buffer.Save(len);
+                            }
+                        }
+
+                        if (good) {
+                            bool succeeded = false;
+                            char[] in ExHeap! addresses = Bitter.FromString(to);
+                            byte[] in ExHeap! data
+                                = Bitter.FromByteArray(buffer.Data, 0, buffer.Size);
+
+                            //                            Console.WriteLine("SmtpAgaint: Email from {0} to {1}", from, to);
+                            msImp.SendSaveMessage(addresses, data);
+                            switch receive
+                            {
+                                case msImp.SaveAck():
+                                    succeeded = true;
+                                    break;
+
+                                case msImp.SaveNak(error):
+                                    Console.WriteLine("SmtpAgent: Server dropped email, "+
+                                                      "error={0}", error);
+                                    break;
+
+                                case msImp.ChannelClosed():
+                                    break;
+                            }
+                            if (succeeded) {
+                                numReceived++;
+                                if ((numReceived % 100) == 0) {
+                                    Console.Write(".");
+                                }
+                                emailClient.SendLine("250 OK");
+                            }
+                            else {
+                                emailClient.SendLine("554 Transaction failed");
+                            }
+                        }
+                        else {
+                            emailClient.SendLine("554 Transaction failed");
+                            //                            Dump();
+                            throw new Exception("554 Transaction failed");
+                        }
+
+                        buffer.Release();
+                        cstate = CurrentState.HAD_HELO;
+                        from = null;
+                        to = null;
+                        if (numReceived == emailLimit) {
+                            abort = true;
+                        }
+
+                        break;
+
+                    case "NOOP":
+                        emailClient.SendLine("250 OK");
+                        break;
+
+                    case "HELP":
+                        emailClient.SendLine("250 OK");
+                        break;
+
+                    case "RSET":
+                        emailClient.SendLine("250 OK");
+                        from = null;
+                        to = null;
+                        cstate = CurrentState.HAD_HELO;
+                        break;
+
+                    case "QUIT":
+                        emailClient.SendLine("221 " + server + " Service closing transmission channel");
+                        abort = true;
+                        break;
+
+                    default:
+                        emailClient.SendLine("503 Unrecognized command [" + command + "]");
+                        abort = true;
+                        break;
+                }
+            }
+            endEpoch = DateTime.Now;
+            Console.WriteLine(":{0}: Session closed", id);
+            TimeSpan delta = endEpoch - beginEpoch;
+            if (delta.TotalSeconds > 0) {
+                Console.WriteLine(
+                    "\nDuration(s:ms) {0:f2} emails {1} rate() {2:e3} eps",
+                    delta.TotalSeconds,
+                    emailLimit,
+                    emailLimit/ delta.TotalSeconds
+                    );
+            }
+            if (delta.TotalMilliseconds == 0) {
+                Console.WriteLine("Too fast!  < 1 milliseconds to run\n");
+            }
+            else {
+                Console.WriteLine("Duration ms {0:f2} rate {1:f2} epms {2:e3} eps\n",
+                                  delta.TotalMilliseconds,
+                                  (float) ((float)emailLimit / delta.TotalMilliseconds),
+                                  emailLimit / (delta.TotalMilliseconds / 1000)
+                    );
+            }
+            delete msImp;
+        }
+    }
+
+    public class SmtpServer
+    {
+        public static String[][] corpus;
+        public static int numCorpusEmails = 12754;
+        public static int[]  startPos;
+        public const int _port = 25;
+        public static bool verbose;
+
+        public static TRef<DirectoryServiceContract.Imp:Ready> dsEp;
+
+        public static SortedList addresses;
+        public static string mailstorePath;
+
+        [Conditional("SMTPAGENT_VERBOSE")]
+        public static void DebugWriteLine(string format)
+        {
+            DebugStub.WriteLine(format);
+        }
+
+        [Conditional("SMTPAGENT_VERBOSE")]
+        public static void DebugWriteLine(string format, __arglist)
+        {
+            DebugStub.WriteLine(format, new ArgIterator(__arglist));
+        }
+
+
+        //replicating c# Array.Resize that does not appear to be available
+        //in singularity.
+        private static void Resize(ref string[] oldString, int newSize)
+        {
+            if(newSize < 0) {
+                DebugStub.WriteLine("Resize size < 0!!\n");
+                DebugStub.Break();
+                throw new EmailClientError();
+            }
+
+            string[] newString = new string[newSize];
+            int length;
+            if (oldString.Length < newSize) {
+                length = oldString.Length;
+            }
+            else {
+                length = newSize;
+            }
+
+            for(int i = 0; i < length; i++) {
+                newString[i] = oldString[i];
+            }
+
+            oldString = newString;
+        }
+
+        public static  void GenerateCorpus(string path, long numberEmails)
+        {
+            DebugWriteLine("Reading test corpus at path {0}\n", __arglist(path));
+            FileStream fsInput = new FileStream(path, FileMode.Open, FileAccess.Read);
+            StreamReader reader = new StreamReader(fsInput);
+
+            corpus = new string[numCorpusEmails][];
+
+            int arrSize;
+            int numLines;
+            string line;
+            string[] emailContents;
+            //XXX currently we hard code the size of the corpus into the app
+            //we do this because we have generated a list of random
+            //starting positions for each connection that is built against
+            //the corpus...
+            for(int i = 0; i < numCorpusEmails; i++) {
+                arrSize = 1024;
+                emailContents = new string[arrSize];
+                numLines = 0;
+                while((line = reader.ReadLine()) != null) {
+                    if (line.Equals("DEADBEEFDEADBEEFDEADBEEF")) {
+                        break;
+                    }
+                    if (numLines == arrSize) {
+                        arrSize = arrSize * 2;
+                        Resize(ref emailContents, arrSize);
+                    }
+                    emailContents[numLines] = line;
+                    numLines++;
+                }
+                if(line == null) {
+                    DebugStub.WriteLine("line null!\n");
+                    if (numLines == 0 || numLines == 1) {
+                        DebugStub.WriteLine("numlines {0}\n", __arglist(numLines));
+                        DebugStub.Break();
+                    }
+                }
+                Resize(ref emailContents, numLines);
+                corpus[i] = emailContents;
+#if false
+                DebugStub.WriteLine("Parsed email {0} contents:\n", __arglist(i));
+                foreach (string newline in emailContents) {
+                    DebugStub.WriteLine("line {0}\n", __arglist(newline));
+                }
+#endif
+            }
+            reader.Close();
+            DebugStub.WriteLine("Generate corpus complete\n");
+        }
+
+        private static int StringToInt(string line)
+        {
+            int result = 0;
+            for (int i = 0; i < line.Length && line[i] >= '0' && line[i] <= '9'; i++) {
+                result = result * 10 + (line[i] - '0');
+            }
+
+            return result;
+        }
+
+
+        public static void GenerateStartPositions(string path, long numConn)
+        {
+           DebugWriteLine("Reading test corpus at path {0}\n", __arglist(path));
+           startPos = new int[100];
+
+           FileStream fsInput = new FileStream(path, FileMode.Open, FileAccess.Read);
+           StreamReader reader = new StreamReader(fsInput);
+
+           int cnt = 0;
+           string line;
+           while((line = reader.ReadLine()) != null) {
+               startPos[cnt] = StringToInt(line);
+               if (startPos[cnt] < 0) {
+                   DebugStub.Break();
+               }
+               cnt++;
+           }
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            string server = config.server;
+            if (server[0] >= '0' && server[0] <= '9') {
+                server = "[" + server + "]";
+            }
+            if (config.numConn < 1 || config.numConn > 100) {
+                Console.WriteLine("numConn must be between [1...100]\n");
+                return -1;
+            }
+
+            // Connect to the MailStore.
+            Console.WriteLine("SmtpAgent: Connecting to MailStore.");
+            DirectoryServiceContract.Imp! dsImp = config.nsRef.Acquire();
+            dsImp.RecvSuccess();
+
+            MailStoreContract.Imp! msImp;
+            MailStoreContract.Exp! msExp;
+            MailStoreContract.NewChannel(out msImp, out msExp);
+
+            mailstorePath = config.mailstorePath;
+
+            ErrorCode error;
+            if (!SdsUtils.Bind(config.mailstorePath, dsImp, msExp, out error)) {
+                DebugStub.WriteLine("Failed to bind to mail store...error {0}\n",
+                                    __arglist(SdsUtils.ErrorCodeToString(error)));
+                Console.WriteLine("Failed to bind to mail store...error {0}\n",
+                                  SdsUtils.ErrorCodeToString(error));
+
+                delete dsImp;
+                delete msImp;
+                return -1;
+            }
+
+            msImp.RecvMailStoreReady();
+
+            // Retrieve vaild address list.
+            char[] in ExHeap! buffer;
+            msImp.SendGetAddressList();
+            msImp.RecvGetAck(out buffer);
+            addresses = ReadUniqueList(Bitter.ToString(buffer));
+            delete buffer;
+
+            delete msImp;
+            // Save the endpoint.
+            dsEp = new TRef<DirectoryServiceContract.Imp:Ready>(dsImp);
+
+            GenerateCorpus(config.emailCorpus, config.numToSend);
+            GenerateStartPositions(config.startPositionsFile, config.numConn);
+            Console.WriteLine("SmtpAgent: Spawning {0} threads sending {1} emails per connection",
+                              config.numConn, config.numToSend);
+
+            Thread[] workers = new Thread[config.numConn];
+            ServerSession[] conns = new ServerSession[config.numConn];
+
+            for(int i = 0; i < config.numConn; i++) {
+                conns[i] = new ServerSession(corpus, config.numToSend, startPos[i]);
+                workers[i] = new Thread(conns[i].Loop);
+                workers[i].Start();
+            }
+
+            for(int i = 0; i < config.numConn; i++) {
+                workers[i].Join();
+            }
+
+            // Close the Store engine.
+            dsImp = dsEp.Acquire();
+            if (dsImp != null) {
+                delete dsImp;
+            }
+
+            return 0;
+        }
+
+        public static string PopNextAddress(ref string content)
+        {
+            if (content.Length == 0) {
+                return null;
+            }
+
+            int i = content.IndexOf(';');
+            string ret = (i > 0) ? content.Substring(0, i) : content;
+            content = (i > 0) ? content.Substring(i + 1) : "";
+            return ret;
+        }
+
+        public static SortedList ReadUniqueList(string content)
+        {
+            SortedList list = new SortedList();
+            string address;
+
+            while ((address = PopNextAddress(ref content)) != null) {
+                if (!list.ContainsKey(address)) {
+                    list.Add(address, address);
+                }
+            }
+            return list;
+        }
+    }
+}
+
+

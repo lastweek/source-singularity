@@ -1,0 +1,49 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Contracts\Io.Contracts\Io.Contracts.App.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Io.Contracts</AssemblyName>
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <GenerateContractMap>true</GenerateContractMap>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="ConsoleDeviceContract.sg" />
+    <Compile Include="DeviceContract.sg" />
+    <Compile Include="DiskContract.sg" />
+    <Compile Include="KeyboardDeviceContract.sg" />
+    <Compile Include="PnpContract.sg" />
+    <Compile Include="SoundDeviceContract.sg" />
+    <Compile Include="UnicodePipeContract.sg" />
+    <Compile Include="VideoDeviceContract.sg" />
+    <Compile Include="VolumeManagerContract.sg" />
+    <Compile Include="IoTestContract.sg" />
+    <Compile Include="ChannelDeliveryContract.sg" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Singularity.V1\Singularity.V1.App.csproj"/>
+    <ProjectReference Include="..\Directory.Contracts\Directory.Contracts.csproj" />
+    <DependentProject Include="$(AppRuntimeSrcDir)\Microsoft.SingSharp.Runtime.App.csproj" />
+  
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>
+

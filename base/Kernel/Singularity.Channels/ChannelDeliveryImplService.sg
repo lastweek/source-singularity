@@ -1,0 +1,113 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ChannelDeliveryImplService.sg
+//  Note:   Channel Delivery Implementation Service
+//
+
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Drivers;
+using System;
+
+namespace Microsoft.Singularity.Channels
+{
+    public class ChannelDeliveryImplService
+    {
+        private void Run()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(ChannelDeliveryContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the Channel Delivery Impl Service.\n");
+                        if (rejectedEP != null) {
+                            delete rejectedEP;
+                        }
+                        delete nsExp;
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<ChannelDeliveryContract.Exp:ReadyState> epSet = new ESet<ChannelDeliveryContract.Exp:ReadyState>();
+
+            while (true) {
+                switch receive {
+
+                    //  Requests for new connections
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people to give us ChannelDeliveryContract.Exp instances
+                            ChannelDeliveryContract.Exp newDiagEp = newEp as ChannelDeliveryContract.Exp;
+
+                            if (newDiagEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newDiagEp.SendReady();
+                                epSet.Add(newDiagEp);
+                            }
+                        }
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        {
+                            // Just toss the closed channel
+                            delete ep;
+                        }
+                        break;
+
+                    case epSet.Empty() && nsExp.ChannelClosed():
+                        {
+                            delete nsExp;
+                            epSet.Dispose();
+                            return;
+                        }
+                        break;
+                }
+            }
+        }
+
+        public static void Initialize()
+        {
+            ChannelDeliveryImplService service = new ChannelDeliveryImplService();
+            Thread thread = Thread.CreateThread(null, new ThreadStart(service.Run));
+
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+    }
+}

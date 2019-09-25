@@ -1,0 +1,33 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Directory.Utils</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="SdsUtils.sg" />
+    <Compile Include="DirAclCoreSupport.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="..\SpecSharp.Contracts\Kernel.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+
+  <Target Name="Build">
+    <Error Text="Directory.Utils.csproj is now obsolete.  See change @5346."/>
+  </Target>
+</Project>

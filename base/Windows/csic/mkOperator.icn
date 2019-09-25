@@ -1,0 +1,55 @@
+# note this does not handle the case where there is a "gap" in tokens.
+# E.g., if "x" and "xxx" are legal, but "xx" is not, then the resulting
+# code will not handle "xx" correctly.
+# (Doesn't happen in C#.)
+
+procedure main()
+	local s, T, t, V, k, v, i
+
+	V := table()
+	T := table()
+	while s := read() do {
+		s ? {
+			k := tab(upto(' \t'))
+			tab(many(' \t'))
+			v := tab(0)
+		}
+		t := T
+		every i := !k do {
+			/t[i] := table();
+			t := t[i];
+		}
+		V[t] := v;
+	}
+	arms(T, V, "", "\t\t")
+end
+
+procedure arms(T, V, s, indent)
+	local i
+
+	every i := key(T) do {
+		write(indent, "case ", image(cset(i)), ":");
+		switch(T[i], V, s || i, indent || "\t")
+	}
+end
+
+procedure switch(T, V, s, indent)
+	if *T > 0 then {
+		write(indent, "if (!nextchar()) {")
+		dflt(T, V, s, indent || "\t")
+		write(indent, "}")
+		write(indent, "switch (ce.Current) {")
+		arms(T, V, s, indent)
+		write(indent, "default:")
+		dflt(T, V, s, indent || "\t")
+		write(indent, "}")
+	} else {
+		write(indent, "nextchar();")
+		dflt(T, V, s, indent)
+	}
+end
+
+procedure dflt(T, V, s, indent)
+	\V[T] | runerr(500)
+	write(indent, "return ret(InputElementTag.", V[T], ", ", image(s), ");")
+end

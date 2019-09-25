@@ -1,0 +1,54 @@
+//------------------------------------------------------------------------------
+//   Copyright (c) Microsoft Corporation. All Rights Reserved.
+//------------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.WebServer
+{
+    using System;
+    using System.Collections;
+    using System.Text;
+
+    internal sealed class ByteParser
+    {
+        private byte[] bytes;
+        private int pos;
+
+        public ByteParser(byte[]! bytes)
+        {
+            this.bytes = bytes;
+            this.pos = 0;
+        }
+
+        public int CurrentOffset
+        {
+            get { 
+                return pos; 
+            }
+        }
+
+        public ByteString ReadLine()
+        {
+            ByteString line = null;
+
+            for (int i = pos; i < bytes.Length; i++) {
+                if (bytes[i] == (byte)'\n') {
+                    int len = i-pos;
+                    if (len > 0 && bytes[i - 1] == (byte)'\r') {
+                        len--;
+                    }
+
+                    line = new ByteString(bytes, pos, len);
+                    pos = i+1;
+                    return line;
+                }
+            }
+
+            if (pos < bytes.Length) {
+                line = new ByteString(bytes, pos, bytes.Length-pos);
+            }
+
+            pos = bytes.Length;
+            return line;
+        }
+    }
+}

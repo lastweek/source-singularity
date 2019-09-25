@@ -1,0 +1,1896 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   S3Trio64.sg
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Configuration.Assemblies;
+using System.Runtime.InteropServices;
+using System.Runtime.Remoting;
+using System.Text;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+using Microsoft.Singularity.Drivers;
+[assembly: Transform(typeof(DriverResourceTransform))]
+
+namespace Microsoft.Singularity.Drivers.S3Trio64
+{
+    // create the resource object for CTR to fill in
+    [DriverCategory]
+    [Signature("pci/ven_5333&dev_8811&cc_0300")]
+    internal class S3TrioResources : DriverCategoryDeclaration
+    {
+        [IoMemoryRange(0, Default = 0xf8000000, Length = 0x400000)]
+        internal readonly IoMemoryRange frameBuffer;
+
+        [IoFixedMemoryRange(Base = 0xb8000, Length = 0x8000, Shared = true)]
+        internal readonly IoMemoryRange textBuffer;
+
+        [IoFixedMemoryRange(Base = 0xa0000, Length = 0x8000, Shared = true)]
+        internal readonly IoMemoryRange fontBuffer;
+
+        [IoFixedPortRange(Base = 0x03c0, Length = 0x20, Shared = true)]
+        internal readonly IoPortRange dev;
+
+        [IoFixedPortRange(Base = 0x4ae8, Length = 0x02)]
+        internal readonly IoPortRange adv;
+
+        [IoFixedPortRange(Base = 0x9ae8, Length = 0x02)]
+        internal readonly IoPortRange gps;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(VideoDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> video;
+
+        [ServiceEndpoint(typeof(ConsoleDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> console;
+
+        internal int DriverMain(string instance) {
+            return S3Control.DriverMain(this);
+        }
+    }
+
+    public class S3Control
+    {
+        private static S3Device device;
+
+        internal static int DriverMain(S3TrioResources! resources)
+        {
+            ExtensionContract.Exp! ec = resources.ec.Acquire();
+            ServiceProviderContract.Exp! ve = resources.video.Acquire();
+            ServiceProviderContract.Exp! te = resources.console.Acquire();
+
+            // Create the device
+            device = new S3Device(resources);
+            device.Initialize();
+
+            // Signal I/O system that we are initialized.
+            ec.SendSuccess();
+
+            // create a set of all client endpoints connected to the video
+            // interface.
+            ESet<VideoDeviceContract.Exp:Ready> vs
+                = new ESet<VideoDeviceContract.Exp:Ready>();
+            // create a set of all client endpoints connected to the text
+            // interface.
+            ESet<ConsoleDeviceContract.Exp:Ready> ts
+                = new ESet<ConsoleDeviceContract.Exp:Ready>();
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        ///////////////////////////////////// I/O System Messages.
+                        case ec.Shutdown():
+                            ec.SendAckShutdown();
+                            run = false;
+                            break;
+
+                            /////////////////////////////// Service Provider Messages.
+                        case ve.Connect(candidate):
+                            VideoDeviceContract.Exp newClient
+                                = candidate as VideoDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                vs.Add(newClient);
+                                ve.SendAckConnect();
+                            }
+                            else {
+                                ve.SendNackConnect(candidate);
+                            }
+                            break;
+
+                        case te.Connect(candidate):
+                            ConsoleDeviceContract.Exp newClient
+                                = candidate as ConsoleDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                ts.Add(newClient);
+                                te.SendAckConnect();
+                            }
+                            else {
+                                te.SendNackConnect(candidate);
+                            }
+                            break;
+
+                            ////////////////////////////////// Video Service Messages.
+                        case ep.Plot(x, y, color32) in vs:
+                            device.Plot(x, y, new RGB(color32));
+                            ep.SendAckPlot();
+                            vs.Add(ep);
+                            break;
+
+                        case ep.Fill(x1, y1, x2, y2, color32) in vs:
+                            device.Fill(x1, y1, x2, y2, new RGB(color32));
+                            ep.SendAckFill();
+                            vs.Add(ep);
+                            break;
+
+                        case ep.BitBltBmp(x, y, buffer) in vs:
+                            device.BitBltBmp(x, y, (!)buffer);
+                            ep.SendAckBitBltBmp(buffer);
+                            vs.Add(ep);
+                            break;
+
+                        case ep.BitBltPng(x, y, buffer) in vs:
+                            device.BitBltPng(x, y, (!)buffer);
+                            ep.SendAckBitBltPng(buffer);
+                            vs.Add(ep);
+                            break;
+
+                        case ep.Scroll(x1, y1, x2, y2, dy) in vs:
+                            device.Scroll(x1, y1, x2, y2, dy);
+                            ep.SendAckScroll();
+                            vs.Add(ep);
+                            break;
+
+                        case ep.ChannelClosed() in vs:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+
+                            //////////////////////////////// Console Service Messages.
+                        case ep.Clear() in ts:
+                            device.Window.Clear();
+                            ep.SendAckClear();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.ClearCursorToEndOfLine() in ts:
+                            device.Window.ClearCursorToEndOfLine();
+                            ep.SendAckClearCursorToEndOfLine();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.Write(buffer, offset, count) in ts:
+                            if (offset + count <= buffer.Length) {
+                                device.Window.Write(buffer, offset, count);
+                                ep.SendAckWrite(buffer);
+                            }
+                            else {
+                                ep.SendNakWrite(buffer);
+                            }
+                            ts.Add(ep);
+                            break;
+
+                        case ep.PutChar(c) in ts:
+                            device.Window.PutChar(c);
+                            ep.SendAckPutChar();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.PutCharAt(c, column, row) in ts:
+                            if (device.Window.PutCharAt(c, column, row)) {
+                                ep.SendAckPutCharAt();
+                            }
+                            else {
+                                ep.SendInvalidPosition();
+                            }
+                            ts.Add(ep);
+                            break;
+
+                        case ep.GetDisplayDimensions() in ts:
+                            ep.SendDisplayDimensions(device.Window.TextColumns,
+                                                     device.Window.TextRows);
+                            ts.Add(ep);
+                            break;
+
+                        case ep.GetCursorPosition() in ts:
+                            ep.SendCursorPosition(device.Window.TextColumn,
+                                                  device.Window.TextRow);
+                            ts.Add(ep);
+                            break;
+
+                        case ep.SetCursorPosition(int column, int row) in ts:
+                            if (device.Window.SetTextCursor(column, row)) {
+                                ep.SendAckSetCursorPosition();
+                            }
+                            else {
+                                ep.SendInvalidPosition();
+                            }
+                            ts.Add(ep);
+                            break;
+
+                        case ep.SetCursorSize(cursorSize) in ts:
+                            ep.SendNotSupported();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.CursorFlash() in ts:
+                            device.Window.CursorFlash();
+                            ep.SendAckCursorFlash();
+                            ts.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.CursorHide() in ts:
+                            device.Window.CursorHide();
+                            ep.SendAckCursorHide();
+                            ts.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.CursorShow() in ts:
+                            device.Window.CursorShow();
+                            ep.SendAckCursorShow();
+                            ts.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.ChannelClosed() in ts:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+
+                        case unsatisfiable:
+                            Tracing.Log(Tracing.Debug, "Unsatisfiable.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                Tracing.Log(Tracing.Debug, "S3Trio64 finished message pump.");
+            }
+
+            // Close the device
+            device.Finalize();
+
+            Tracing.Log(Tracing.Audit, "Shutdown");
+            delete ec;
+            delete te;
+            delete ve;
+            vs.Dispose();
+            ts.Dispose();
+
+            return 0;
+        }
+    }
+
+    internal delegate void InitMode(S3Device! self);
+
+    internal class S3_VIDEO_MODE
+    {
+        public readonly int BytesPerPixel;
+        public readonly int ScreenWidth;
+        public readonly int ScreenStride;
+        public readonly int ScreenHeight;
+        public readonly int ScreenFrequency;
+        public readonly int Clock;
+        public readonly InitMode Init;
+
+        public S3_VIDEO_MODE(int BPP,int SW,int SH, int SF, int Clk, InitMode I)
+        {
+            BytesPerPixel = BPP;
+            ScreenStride = SW * BPP;
+            ScreenWidth = SW;
+            ScreenHeight = SH;
+            ScreenFrequency = SF;
+            Clock = Clk;
+            Init = I;
+        }
+    }
+
+    public class S3Device
+    {
+        public const ushort ATC_ADDR_REG    = 0x00; // 0x03C0
+        public const ushort ATC_DATA_REG    = 0x01; // 0x03C1
+        public const ushort MISC_OUT_REG    = 0x02; // 0x03C2
+        public const ushort MISC_OUTR_REG   = 0x0C; // 0x03CC
+        public const ushort SEQ_ADDR_REG    = 0x04; // 0x03C4
+        public const ushort SEQ_DATA_REG    = 0x05; // 0x03C5
+        public const ushort DAC_MASK_REG    = 0x06; // 0x03C6
+        public const ushort GRAPH_ADDR_REG  = 0x0E; // 0x03CE
+        public const ushort GRAPH_DATA_REG  = 0x0F; // 0x03CF
+        public const ushort CRT_ADDR_REG    = 0x14; // 0x03D4
+        public const ushort CRT_DATA_REG    = 0x15; // 0x03D5
+        public const ushort SYS_CTRL_REG    = 0x1A; // 0x03DA
+        public const ushort ADV_CTRL_REG    = 0x4AE8;
+        public const ushort GP_STAT_REG     = 0x9AE8;
+
+        private SvgaWindow console;
+        private bool Ready;
+        private S3_VIDEO_MODE ActiveMode;
+        private int AdapterMemorySize;
+        private IoPort! CrtAddrPort;
+        private IoPort! CrtDataPort;
+        private IoPort! GpStatPort;
+        private IoPort! SysCtrlPort;
+        private IoPort! DacMaskPort;
+        private IoPort! SeqAddrPort;
+        private IoPort! SeqDataPort;
+        private IoPort! MiscOutPort;
+        private IoPort! MiscOutRPort;
+        private IoPort! AtcAddrPort;
+        private IoPort! AtcDataPort;
+        private IoPort! AdvCtrlPort;
+        private IoPort! GraphAddrPort;
+        private IoPort! GraphDataPort;
+
+        static S3_VIDEO_MODE[]! Modes = new S3_VIDEO_MODE[3] {
+            new S3_VIDEO_MODE(2,1024,768,60,0xd, new InitMode(set_1024x60Hz_16bpp)),
+            new S3_VIDEO_MODE(2,800,600,60,0xd, new InitMode(set_800x60Hz_16bpp)),
+            new S3_VIDEO_MODE(2,640,400,60,0, new InitMode(set_640x60Hz_16bpp)),
+        };
+
+        private ushort[]! lineBuffer;
+
+        private IoMemory! screenBuffer;   // Screen buffer within PCI-mapped memory.
+        private IoMemory! textBuffer;     // VGA limited text buffer.
+        private IoMemory! fontBuffer;     // VGA limited font buffer.
+
+        internal S3Device(S3TrioResources! res)
+        {
+            // Allow access to first 2MB for device's memory.
+            screenBuffer = (!)res.frameBuffer.MemoryAtOffset(0, 0x400000, Access.ReadWrite);
+            textBuffer = (!)res.textBuffer.MemoryAtOffset(0, 0x8000, true, true);
+            fontBuffer = (!)res.fontBuffer.MemoryAtOffset(0, 0x8000, true, true);
+
+#if DONT
+            DebugStub.WriteLine("S3Trio64 linear buffer at {0:x}",
+                                __arglist((uint)screenBuffer.PhysicalAddress.Value));
+#endif
+
+            AtcAddrPort = (!)res.dev.PortAtOffset(ATC_ADDR_REG, 2, Access.Write);
+            AtcDataPort = (!)res.dev.PortAtOffset(ATC_DATA_REG, 2, Access.ReadWrite);
+            GraphAddrPort = (!)res.dev.PortAtOffset(GRAPH_ADDR_REG, 2, Access.Write);
+            GraphDataPort = (!)res.dev.PortAtOffset(GRAPH_DATA_REG, 2, Access.ReadWrite);
+            CrtAddrPort = (!)res.dev.PortAtOffset(CRT_ADDR_REG, 2, Access.Write);
+            CrtDataPort = (!)res.dev.PortAtOffset(CRT_DATA_REG, 2, Access.ReadWrite);
+            SysCtrlPort = (!)res.dev.PortAtOffset(SYS_CTRL_REG, 2, Access.Read);
+            DacMaskPort = (!)res.dev.PortAtOffset(DAC_MASK_REG, 2, Access.ReadWrite);
+            SeqAddrPort = (!)res.dev.PortAtOffset(SEQ_ADDR_REG, 2, Access.Write);
+            SeqDataPort = (!)res.dev.PortAtOffset(SEQ_DATA_REG, 2, Access.ReadWrite);
+            MiscOutPort = (!)res.dev.PortAtOffset(MISC_OUT_REG, 2, Access.Write);
+            MiscOutRPort = (!)res.dev.PortAtOffset(MISC_OUTR_REG, 2, Access.ReadWrite);
+
+            AdvCtrlPort = (!)res.adv.PortAtOffset(0, 2, Access.ReadWrite);
+            GpStatPort  = (!)res.gps.PortAtOffset(0, 2, Access.Read);
+
+            lineBuffer = new ushort [2048];
+
+            base();
+
+            Ready = true;
+        }
+
+#if DONT_DUMP
+        private static void Dump(IoMemory buffer, int beg, int end)
+        {
+            for (int i = beg; i < end; i += 0x08) {
+                DebugStub.Write("  {0,4:x}: ", __arglist(i));
+                for (int j = i; j < i + 0x08 && j < end; j++) {
+                    byte v = buffer.Read8(j);
+
+                    DebugStub.Write("{0,2:x2} ", __arglist(v));
+                }
+                DebugStub.WriteLine();
+            }
+        }
+
+        private static void DumpRegs(IoPort addr, IoPort data, byte beg, byte end)
+        {
+            for (byte i = beg; i < end; i += 0x10) {
+                DebugStub.Print("  {0}:{1,2:x2} = ", __arglist(addr, i));
+                for (byte j = i; j < i + 0x10 && j < end; j++) {
+                    addr.Write8(j);
+                    byte v = data.Read8();
+
+                    DebugStub.Print("{0,2:x2} ", __arglist(v));
+                }
+                DebugStub.Print("\n");
+            }
+        }
+
+        private static void DumpAtc(IoPort reset,
+                                    IoPort addr, IoPort data,
+                                    byte beg, byte end)
+        {
+            for (byte i = beg; i < end; i += 0x10) {
+                DebugStub.Print("  {0}:{1,2:x2} = ", __arglist(addr, i));
+                for (byte j = i; j < i + 0x10 && j < end; j++) {
+                    reset.Read8();
+                    addr.Write8(j);
+                    byte v = data.Read8();
+
+                    DebugStub.Print("{0,2:x2} ", __arglist(v));
+                }
+                DebugStub.Print("\n");
+            }
+        }
+
+        private void Dump()
+        {
+            DumpRegs(SeqAddrPort, SeqDataPort, 0x00, 0x05);
+            DumpRegs(GraphAddrPort, GraphDataPort, 0x00, 0x09);
+            DumpRegs(CrtAddrPort, CrtDataPort, 0x00, 0x68);
+            DumpAtc(SysCtrlPort, AtcAddrPort, AtcDataPort, 0x00, 0x15);
+            DebugStub.Print("  {0}:{1,2:x2} = {2,2:x2}\n",
+                            __arglist(MiscOutRPort, 0x00, MiscOutRPort.Read8()));
+        }
+#endif
+
+        public void Initialize()
+        {
+#if DONT
+            DebugStub.Print("Initializing S3 Display\n");
+#endif
+
+            ActiveMode = (!)Modes[0];
+
+            S3FindAdapter();
+            S3Initialize();
+
+            Fill(0, 0, ActiveMode.ScreenWidth - 1, ActiveMode.ScreenHeight - 1, RGB.Black);
+
+            console = new SvgaWindow(this, 12, 12,
+                                     ActiveMode.ScreenWidth-13, ActiveMode.ScreenHeight-13);
+
+            console.Write("Singularity S3Trio64 Driver\n");
+            console.Write("");
+            console.Write("");
+            console.Write("");
+        }
+
+        public SvgaWindow! Window
+        {
+            get { return console; }
+        }
+
+        public void Finalize()
+        {
+            Ready = false;
+
+            VgaTextMode();
+
+            textBuffer.Write16(0, 0x1f20, 50 * 80);
+        }
+
+        //      public static VIDEO_ACCESS_RANGE []S3AccessRanges = new  VIDEO_ACCESS_RANGE[]
+        //      {
+        //      {0x000003C0, 0x00000000, 0x00000010, 1, 1, 1, 0}, // 2 Various VGA regs
+        //      {0x000003D4, 0x00000000, 0x00000008, 1, 1, 1, 0}, // 3 System Control Registers
+        //      {0x000042E8, 0x00000000, 0x00000002, 1, 1, 0, 0}, // 4 SubSys-Stat/Cntl
+        //      {0x00004AE8, 0x00000000, 0x00000002, 1, 1, 0, 0}, // 5 AdvFunc-Cntl
+        //      {0x000082E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 6 Cur-Y
+        //      {0x000086E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 7 Cur-X
+        //      {0x00008AE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 8 DestY-AxStp
+        //      {0x00008EE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 9 DestX-SiaStp
+        //      {0x000092E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 10 Err-Term
+        //      {0x000096E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 11 Maj-Axis-Pcnt(Rec-Width)
+        //      {0x00009AE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 12 Gp-Stat/Cmd
+        //      {0x00009EE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 13 Short-Stroke
+        //      {0x0000A2E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 14 Bkgd-Color
+        //      {0x0000A6E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 15 Frgd-Color
+        //      {0x0000AAE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 16 Wrt_Mask
+        //      {0x0000AEE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 17 Rd-Mask
+        //      {0x0000B6E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 18 Bkgd-Mix
+        //      {0x0000BAE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 19 Frgd-Mix
+        //      {0x0000BEE8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 20 Mulitfucn_Cntl
+        //      {0x0000E2E8, 0x00000000, 0x00000004, 1, 1, 0, 0}, // 21 Pix-Trans
+//
+        //      //
+        //      // All S3 boards decode more ports than are documented.  If we
+        //      // don't reserve these extra ports, the PCI arbitrator may grant
+        //      // one to a PCI device, and thus clobber the S3.
+        //      //
+        //      // The aliased ports seem to be any ports where bit 15 is set;
+        //      // for these, the state of bit 14 is effectively ignored.
+        //      //
+//
+        //      {0x0000C2E8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 22 Alt Cur-Y
+        //      {0x0000C6E8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 23 Alt Cur-X
+        //      {0x0000CAE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 24 Alt DestY-AxStp
+        //      {0x0000CEE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 25 Alt DestX-SiaStp
+        //      {0x0000D2E8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 26 Alt Err-Term
+        //      {0x0000D6E8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 27 Alt Maj-Axis-Pcnt(Rec-Width)
+        //      {0x0000DAE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 28 Alt Gp-Stat/Cmd
+        //      {0x0000DEE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 29 Alt Short-Stroke
+        //      {0x0000E6E8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 30 Alt Frgd-Color
+        //      {0x0000EAE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 31 Alt Wrt_Mask
+        //      {0x0000EEE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 32 Alt Rd-Mask
+        //      {0x0000F6E8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 33 Alt Bkgd-Mix
+        //      {0x0000FAE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 34 Alt Frgd-Mix
+        //      {0x0000FEE8, 0x00000000, 0x00000004, 1, 1, 0, 1}, // 35 Alt Mulitfucn_Cntl
+        //      };
+
+        //////////////////////////////////////////////////////////////////////////////
+        // 864 IoMemory Timing Table(s)
+        ////////////////////////////////////////////////////////////////////////////
+
+        //
+        //  M parameter values, used in Set864MemoryTiming()
+        //
+        //  access to this table is controlled by constants in Set864MemoryTiming()
+        //  if you change the table make sure you change the constants
+        //
+
+        public static byte[] MParameterTable = new byte[]
+        {
+            //  8 bit color   16 bit color
+            //  60Hz  72Hz    60Hz  72Hz
+
+            0xd8, 0xa8,   0x58, 0x38,   //  640 x 480, 1 Mb frame buffer
+            0x78, 0x58,   0x20, 0x08,   //  800 x 600, 1 Mb frame buffer
+            0x38, 0x28,   0x00, 0x00,   // 1024 x 768, 1 Mb frame buffer
+
+            0xf8, 0xf8,   0xf8, 0xe0,   //  640 x 480, 2 Mb or greater frame buffer
+            0xf8, 0xf8,   0xa8, 0x68,   //  800 x 600, 2 Mb or greater frame buffer
+            0xd8, 0xa0,   0x40, 0x20    // 1024 x 768, 2 Mb or greater frame buffer
+        };
+
+
+        public void S3FindAdapter()
+        {
+#if DONT
+            DebugStub.Print("S3FindAdapter\n");
+#endif
+            // Unlocked the extended registers.
+            CrtAddrPort.Write16(0x4838);
+            CrtAddrPort.Write16(0xA039);
+
+            //
+            // Get the size of the video memory.
+            //
+            CrtAddrPort.Write8(0x36);
+            AdapterMemorySize = (8 - ((CrtDataPort.Read8() >> 5) & 0x7)) * 0x80000;
+        } // end S3FindAdapter()
+
+        private void VideoPortStallExecution(int delay)
+        {
+            // dummy definition
+        }
+
+        private void WaitForGpuIdle()
+        {
+            //verifying that bit 9 of 9AE8H is 0
+            while ((GpStatPort.Read16() & 0x0200) != 0) {
+
+            }
+        }
+
+        private void S3Initialize()
+        {
+            byte bt;
+
+#if DONT
+            DebugStub.Print("S3Initialize\n");
+#endif
+            // Turn off the screen at the DAC.
+            DacMaskPort.Write8(0x00);
+
+            SeqAddrPort.Write16(0x0100);   // Async Reset
+
+#if DONT
+            DebugStub.Print("S3Initialize 001\n");
+#endif
+            Wait_VSync();
+            //
+            // Wait for vertical sync to make sure that bit 3 of SR1
+            // is not changed to a different value during an active video
+            // period as suggested by S3 errata sheet.
+            //
+
+            IndxOut(SeqAddrPort, new byte[] { 0x03,0x01,0x0F,0x00,0x0e } );
+
+#if DONT
+            DebugStub.Print("S3Initialize 002\n");
+#endif
+            // program graphics controller registers
+            IndxOut(GraphAddrPort, new byte[] { 0x00,0x00,0x00,0x00,0x00,0x00,0x05,0x0f,0xff});
+
+            CrtAddrPort.Write16(0x4838);   // Unlock the S3 specific regs
+            CrtAddrPort.Write16(0xA039);   // Unlock the more S3 specific regs
+            CrtAddrPort.Write16(0x0140);   // Do this before SETCRTC because CRTC streams have to write to 0x4ae8
+            // Enable 8514/a reg access
+
+#if DONT
+            DebugStub.Print("S3Initialize 003\n");
+#endif
+            AdvCtrlPort.Write16(0x0001);
+
+            CrtAddrPort.Write16(0x4838);   // Unlock the S3 specific regs
+            CrtAddrPort.Write16(0xa039);   // Unlock the more S3 specific regs
+
+            CrtAddrPort.Write16(0x0011);   // Unprotect CRTC regs
+
+            ActiveMode.Init(this);
+
+            // Program the CRTC regs
+#if DONT
+            DebugStub.Print("S3Initialize  6\n");
+#endif
+            CrtAddrPort.Write16(0x0042);    // make sure that CR42 is 0 before it
+            // is enabled as a clock select source
+
+            CrtAddrPort.Write16(0x8d31);    // memory configuration reg
+            CrtAddrPort.Write16(0x2033);    // backward compatibility 2 reg
+
+            CrtAddrPort.Write8(0x43);       // extended mode reg
+            bt=CrtDataPort.Read8();         //reset every bit other than 4th bit
+            bt &= 0x10;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write8(0x51);       // extended system control reg 2
+            // use MASKOUT operation to prevent
+            // wiping out the extension bits of
+#if DONT
+            DebugStub.Print("S3Initialize  7\n");
+#endif
+            bt=CrtDataPort.Read8();         // CR13 (logical line width) in 16
+            bt &= 0x30;                     // bit per pixel color mode
+            CrtDataPort.Write8(bt);
+
+#if DONT
+            DebugStub.Print("S3Initialize  7.1\n");
+#endif
+            CrtAddrPort.Write16(0x0025);    // general output port
+
+            //
+            // Set the address for the frame buffer window and set the window
+            // size.
+            //
+
+#if DONT
+            DebugStub.Print("S3Trio64 linear buffer at {0:x}\n",
+                            __arglist((uint)screenBuffer.PhysicalAddress.Value));
+#endif
+
+            CrtAddrPort.Write8(0x59);
+            CrtDataPort.Write8((byte)(screenBuffer.PhysicalAddress.Value >> 24));
+
+            CrtAddrPort.Write8(0x5A);
+            CrtDataPort.Write8((byte)(screenBuffer.PhysicalAddress.Value >> 16));
+
+#if DONT
+            DebugStub.Print("S3Initialize  7.2\n");
+#endif
+
+            // Enable Linear Addressing, and select 4MB window.
+            CrtAddrPort.Write8(0x58);
+            bt=CrtDataPort.Read8();
+            bt &= 0xEC;
+            bt |= 0x13;
+            CrtDataPort.Write8(bt);
+
+#if DONT
+            DebugStub.Print("S3Initialize  7.4\n");
+#endif
+
+
+#if DONT
+            DebugStub.Print("S3Initialize 00\n");
+#endif
+            SysCtrlPort.Read8();        // Prepare to program the ATC
+            if (ActiveMode.ScreenWidth == 640) {
+                AtcOut(AtcAddrPort, new byte[] { 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                                                 0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+                                                 0x41,0x00,0x0f,0x00,0x00 } );
+            }
+            else {
+                AtcOut(AtcAddrPort, new byte[] { 0x00,0x01,0x02,0x03,0x04,0x05,0x14,0x07,
+                                                 0x38,0x39,0x3a,0x3b,0x3c,0x3d,0x3e,0x3f,
+                                                 0x01,0x00,0x0f,0x00,0x00 } );
+            }
+
+#if DONT
+            DebugStub.Print("S3Initialize  8\n");
+#endif
+
+            Wait_VSync();
+            //
+            // Wait for vertical sync to make sure that the display
+            // is not reactivated in the middle of a line/frame as suggested
+            // by the S3 errata sheet; not doing this causes the screen to
+            // flash momentarily.
+            //
+
+            SysCtrlPort.Read8();        // Set ATC FF to index
+            AtcAddrPort.Write8(0x20);          // Enable the palette
+
+            CrtAddrPort.Write8(0x45);         // Turn off H/W Graphics Cursor
+            bt=CrtDataPort.Read8();
+            bt &= 0xfe;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write16(0xff0e);      // Set the graphic cursor foreground color
+            CrtAddrPort.Write16(0x000f);      // Set the graphic cursor background color
+
+            CrtAddrPort.Write8(0x3a);         // Set the Misc 1 reg
+            bt=CrtDataPort.Read8();
+            bt &= 0x62;
+            bt |= 0x15;
+            CrtDataPort.Write8(bt);
+#if DONT
+            DebugStub.Print("S3Initialize  9\n");
+#endif
+
+            CrtAddrPort.Write8(0x31);         // Disable 2K X 1K X 4 plane
+            bt=CrtDataPort.Read8();
+            bt &= 0xe4;
+            bt |= 0x08;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write8(0x32);          // Disable multiple pages
+            bt=CrtDataPort.Read8();
+            bt &= 0xbf;
+            CrtDataPort.Write8(bt);
+
+            MiscOutPort.Write8(0xef);         // Set Misc out reg for external clock
+
+            //Set_Oem_Clock();    // starts : Set the clock
+            int ul;
+
+            ul = ActiveMode.Clock;
+            CrtAddrPort.Write8(0x42);
+            CrtDataPort.Write8((byte) ul);
+            //Set_Oem_Clock();    // ends : Set the clock
+
+            VideoPortStallExecution(0x400);     // Wait for the clock to settle down
+            // S3 product alert Synchronization &
+            // Clock Skew.
+#if DONT
+            DebugStub.Print("S3Initialize  10\n");
+#endif
+            Wait_VSync();
+
+            Wait_VSync();
+#if DONT
+            DebugStub.Print("S3Initialize  11\n");
+#endif
+            SeqAddrPort.Write8(0x01);
+            bt = SeqDataPort.Read8();
+            bt &= 0xdf;
+            SeqDataPort.Write8(bt);
+
+            VideoPortStallExecution(0x400);     // Wait for about 1 millisecond
+            // for the monitor to settle down
+
+            // Turn on the screen at the DAC.
+            DacMaskPort.Write8(0xFF);
+
+            CrtAddrPort.Write16(0x0038);   // Lock S3 specific regs
+            CrtAddrPort.Write16(0x0039);   // Lock more S3 specific regs
+
+            // EOD
+#if DONT
+            DebugStub.Print("S3Initialize  12\n");
+#endif
+            Set864MemoryTiming();
+#if DONT
+            DebugStub.Print("S3Initialize  13\n");
+#endif
+
+            //////////////////////////////////////////////////////////////////
+            // Unlock the S3 registers,  we need to unlock the registers a second
+            // time since the interpreter has them locked when it returns to us.
+            //
+            CrtAddrPort.Write16(0x4838);
+            CrtAddrPort.Write16(0xA039);
+
+            //////////////////////////////////////////////////////////////////
+            // Warm up the hardware for the new mode, and work around any
+            // BIOS bugs.
+            //
+            //
+            // Make sure 16-bit memory reads/writes are enabled.
+            //
+            CrtAddrPort.Write8(0x31);
+            bt = CrtDataPort.Read8();
+            bt |= 0x04;
+            CrtDataPort.Write8(bt);
+#if DONT
+            DebugStub.Print("S3Initialize  16\n");
+#endif
+
+            //
+            // Set the colours for the built-in S3 pointer.
+            //
+            CrtAddrPort.Write16(0xff0e);
+            CrtAddrPort.Write16(0x000f);
+
+            CrtAddrPort.Write8(0x45);
+            CrtDataPort.Read8();
+
+            CrtAddrPort.Write8(0x4A);
+            CrtDataPort.Write8(0xFF);
+            CrtDataPort.Write8(0xFF);
+            CrtDataPort.Write8(0xFF);
+            CrtDataPort.Write8(0xFF);
+
+            CrtAddrPort.Write8(0x45);
+            CrtDataPort.Read8();
+
+            CrtAddrPort.Write8(0x4B);
+            CrtDataPort.Write8(0x00);
+            CrtDataPort.Write8(0x00);
+            CrtDataPort.Write8(0x00);
+            CrtDataPort.Write8(0x00);
+#if DONT
+            DebugStub.Print("S3Initialize  17\n");
+#endif
+
+            //
+            // Some BIOSes don't disable linear addressing by default, so
+            // make sure we do it here.
+            //
+            WaitForGpuIdle();
+
+            //
+            // Enable the Graphics engine.
+            //
+            CrtAddrPort.Write8(0x40);
+            bt = CrtDataPort.Read8();
+            bt |= 0x01;
+            CrtDataPort.Write8(bt);
+        } // end S3Initialize()
+
+        static public void set_640x60Hz_16bpp(S3Device! self)
+        {
+            self.set_640x60Hz_16bpp();
+        }
+
+        private void IndxOut(IoPort! port, byte beg, byte[]! values)
+        {
+            for (ushort i = 0; i < values.Length; i++) {
+                port.Write16((ushort)(beg + i + ((ushort)values[i] << 8)));
+            }
+        }
+
+        private void IndxOut(IoPort! port, byte[]! values)
+        {
+            IndxOut(port, 0, values);
+        }
+
+        private void AtcOut(IoPort! port, byte[]! values)
+        {
+            for (byte i = 0; i < values.Length; i++) {
+                port.Write8(i);
+                port.Write8(values[i]);
+            }
+        }
+
+        //
+        // VGA indexed register indexes.
+        //
+        private const byte GRAPH_SET_REG        = 0;
+        private const byte GRAPH_ENABLE_REG     = 1;
+        private const byte GRAPH_COMPARE_REG    = 2;
+        private const byte GRAPH_OPERATION_REG  = 3;
+        private const byte GRAPH_READSEL_REG    = 4;
+        private const byte GRAPH_MODE_REG       = 5;
+        private const byte GRAPH_MISC_REG       = 6;
+        private const byte GRAPH_DONTCARE_REG   = 7;
+        private const byte GRAPH_BITMASK_REG    = 8;
+
+        //
+        private void VgaTextMode()
+        {
+            WaitForGpuIdle();
+
+            // Turn off the screen at the DAC.
+            DacMaskPort.Write8(0x00);
+
+            // SetHWMode: S3 VGA
+
+            CrtAddrPort.Write16(0x4838);            // Unlock the S3 regs
+            CrtAddrPort.Write16(0xa539);            // Unlock the SC regs
+
+            CrtAddrPort.Write8(0x40);               // Enable the S3 graphics engine
+            byte bt = CrtDataPort.Read8();
+            bt &= 0xfe;
+            bt |= 0x01;
+            CrtDataPort.Write8(bt);
+
+            AdvCtrlPort.Write16(0x0000);            // reset to normal VGA operation
+
+            CrtAddrPort.Write8(0x40);               // Disable the S3 graphics engine
+            bt = CrtDataPort.Read8();
+            bt &= 0xfe;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write8(0x31);               // Memory Control
+            bt=CrtDataPort.Read8();
+            bt &= 0x75;
+            bt |= 0x85;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write8(0x32);               // Backward Compat 1
+            bt=CrtDataPort.Read8();
+            bt &= 0x40;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write16(0x0033);            // Backward Compat 2
+            CrtAddrPort.Write16(0x0034);            // Backward Compat 3
+            CrtAddrPort.Write16(0x0035);            // CRTC Lock
+
+            CrtAddrPort.Write8(0x3a);               // S3 Misc 1
+            bt=CrtDataPort.Read8();
+            bt &= 0x88;
+            bt |= 0x05;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write16(0x5a3b);            // Data Transfer Exec Pos
+            CrtAddrPort.Write16(0x103c);            // Interlace Retrace start
+            CrtAddrPort.Write16(0x0043);            // Extended Mode
+            CrtAddrPort.Write16(0x0045);            // HW graphics Cursor Mode
+            CrtAddrPort.Write16(0x0046);            // HW graphics Cursor Orig x
+            CrtAddrPort.Write16(0xff47);            // HW graphics Cursor Orig x
+            CrtAddrPort.Write16(0xfc48);            // HW graphics Cursor Orig y
+            CrtAddrPort.Write16(0xff49);            // HW graphics Cursor Orig y
+            CrtAddrPort.Write16(0xff4a);            // HW graphics Cursor Orig y
+            CrtAddrPort.Write16(0xff4b);            // HW graphics Cursor Orig y
+            CrtAddrPort.Write16(0xff4c);            // HW graphics Cursor Orig y
+            CrtAddrPort.Write16(0xff4d);            // HW graphics Cursor Orig y
+            CrtAddrPort.Write16(0xff4e);            // Dsp Start x pixel pos
+            CrtAddrPort.Write16(0xdf4d);            // Dsp Start y pixel pos
+
+            CrtAddrPort.Write8(0x42);               // MODE-CNTL
+            bt=CrtDataPort.Read8();
+            bt &= 0xdf;
+            CrtDataPort.Write8(bt);
+
+            // Disable linear addressing.
+            CrtAddrPort.Write8(0x58);
+            bt = CrtDataPort.Read8();
+            bt &= 0xEC;
+            CrtDataPort.Write8(bt);
+
+            // start sync reset program up sequencer
+            IndxOut(SeqAddrPort, new byte[] { 0x01,0x00,0x03,0x00,0x03 } );
+
+            MiscOutPort.Write8(0x67);
+            GraphAddrPort.Write16(0x0e06);
+
+            //  EndSyncResetCmd
+            SeqAddrPort.Write16(0x0300);
+
+            // Unlock the CTC registers.
+            CrtAddrPort.Write16(0x0E11);
+
+            // Unlocked the extended registers.
+            CrtAddrPort.Write16(0x4838);
+            CrtAddrPort.Write16(0xA039);
+
+            // program crtc registers
+            IndxOut(CrtAddrPort, new byte[] { 0x5F,0x4f,0x50,0x82,0x55,0x81,0xbf,0x1f,
+                                              0x00,0x47,0x06,0x07,0x00,0x00,0x01,0x40,
+                                              0x9c,0x0e,0x8f,0x28,0x1f,0x96,0xb9,0xa3,
+                                              0xFF } );
+            IndxOut(CrtAddrPort, 0x30, new byte[] {0xe1,0x85,0x00,0x00,
+                                                   0x00,0x00,0x02,0x00,
+                                                   0x48,0xa0,0x05,0x5a,
+                                                   0x10 } );
+            IndxOut(CrtAddrPort, 0x40, new byte[] {0x08,0x00,0x08,0x00 } );
+            CrtAddrPort.Write16(0xff4d);
+            IndxOut(CrtAddrPort, 0x50, new byte[] {0x00,0x00,0x00,0x00,
+                                                   0x38,0x00,0x00,0x00,
+                                                   0xc0,0xf8,0x00,0x00,
+                                                   0x80,0x00,0x00,0x00,
+                                                   0x07,0x00,0xa1,0x00,
+                                                   0x00,0x00,0x00,0x00, } );
+
+
+            // prepare atc for writing
+            SysCtrlPort.Read8();
+            AtcOut(AtcAddrPort, new byte[] { 0x00,0x01,0x02,0x03,0x04,0x05,0x14,0x07,
+                                             0x38,0x39,0x3a,0x3b,0x3c,0x3d,0x3e,0x3f,
+                                             0x04,0x00,0x0F,0x08,0x00 } );
+
+            // program graphics controller registers
+            IndxOut(GraphAddrPort, new byte[] { 0x00,0x00,0x00,0x00,0x00,0x10,0x0e,0x00,0xff});
+
+
+            // Reload the font.
+            LoadFont(Fonts.Font8);
+
+            // Turn on the screen at the DAC.
+            DacMaskPort.Write8(0xFF);
+
+            // Lock the CTC registers.
+            CrtAddrPort.Write16(0x8E11);
+
+            // prepare atc for writing
+            SysCtrlPort.Read8();
+            AtcAddrPort.Write8(0x20);
+        }
+
+        private void LoadFont(byte[]! font)
+        {
+            // Enable A000 Data
+            SeqAddrPort.Write16(0x0100);
+            GraphAddrPort.Write16(0x0204); // Read Map = plane 2
+            GraphAddrPort.Write16(0x0005); // Graphics Mode = read mode 0, write mode 0
+            GraphAddrPort.Write16(0x0406); // A0000 for 64K, not odd/even,
+            SeqAddrPort.Write16(0x0402); // Map Mask = write to plane 2 only
+            SeqAddrPort.Write16(0x0404); // Memory Mode = not odd/even, not full memory
+            SeqAddrPort.Write16(0x0300);  // end sync reset
+
+            int height = font.Length / 256;
+
+            for (int i = 0; i < 256; i++) {
+                for (int j = 0; j < height; j++) {
+                    fontBuffer.Write8(32 * i + j, font[height * i + j]);
+                }
+            }
+
+            // Disable A000 Color
+            SeqAddrPort.Write16(0x0100);
+            GraphAddrPort.Write16(0x0004);
+            GraphAddrPort.Write16(0x1005);
+            GraphAddrPort.Write16(0x0E06);
+            SeqAddrPort.Write16(0x0302);
+            SeqAddrPort.Write16(0x0204);
+            SeqAddrPort.Write16(0x0300);  // end sync reset
+        }
+
+        public void set_640x60Hz_16bpp()
+        {
+            CrtAddrPort.Write16(0xbe3b);   // Data Xfer Execution Position reg
+            CrtAddrPort.Write16(0x1034);   // S3R4 - Backwards Compatibility 3
+
+            IndxOut(CrtAddrPort, new byte[] {
+                0xc3,0x9f,0xa0,0x04,0xa8,0x80,0x0b,0x3e,
+                0x00,0x40,0x00,0x00,0x00,0x00,0x00,0x00,
+                0xea,0x0c,0xdf,0x00,0x60,0xe7,0x04,0xab,
+                0xff } );
+
+            CrtAddrPort.Write8(0x51);  // overflow bits for CR13
+            byte bt=CrtDataPort.Read8();//setting 4th bit , resetting 5,6 & 7 th bit
+            bt &= 0x0f;                     // bit 5,4 = 01
+            bt |= 0x10;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write16(0x005d);
+            CrtAddrPort.Write16(0x005e);
+            CrtAddrPort.Write16(0x1050);   // 16 bit pixel length
+            CrtAddrPort.Write16(0x5067);   // mode 10: 16 bit color, 1 VCLK/pixel
+            CrtAddrPort.Write16(0x026d);   // recover pixel on right hand edge in 16 bpp mode
+        }
+
+        static public void set_800x60Hz_16bpp(S3Device! self)
+        {
+            self.set_800x60Hz_16bpp();
+        }
+
+        public void set_800x60Hz_16bpp()
+        {
+            CrtAddrPort.Write16(0xfe3b);   // Data Xfer Execution Position reg
+            CrtAddrPort.Write16(0x1034);   // S3R4 - Backwards Compatibility 3
+
+            IndxOut(CrtAddrPort, new byte[] {
+                0x03,0xc7,0xc8,0x84,0xd4,0x14,0x74,0xf0,
+                0x00,0x60,0x00,0x00,0x00,0x00,0x00,0x00,
+                0x58,0x0c,0x57,0xc8,0x00,0x57,0x73,0xe3,
+                0xff } );
+
+            CrtAddrPort.Write8(0x51);  // overflow bits for CR13
+            byte bt=CrtDataPort.Read8(); //  resetting 4,5,6 & 7 th bit
+            bt &= 0x0f;                         // bit 5,4 = 00
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write16(0x015d);
+            CrtAddrPort.Write16(0x005e);
+            CrtAddrPort.Write16(0x9050);   // 16 bit pixel length
+            CrtAddrPort.Write16(0x5067);   // mode 10: 16 bit color, 1 VCLK/pixel
+            CrtAddrPort.Write16(0x026d);   // recover pixel on right hand edge in 16 bpp mode
+        }
+
+        static public void set_1024x60Hz_16bpp(S3Device! self)
+        {
+            self.set_1024x60Hz_16bpp();
+        }
+
+        public void set_1024x60Hz_16bpp()
+        {
+            CrtAddrPort.Write16(0x0034);   // S3R4 - Backwards Compatibility 3
+
+            IndxOut(CrtAddrPort, new byte[] {
+                0x4b,0xff,0x00,0x8c,0x08,0x8a,0x25,0xf5,
+                0x00,0x60,0x00,0x00,0x00,0x00,0x00,0x00,
+                0x02,0x0f,0xff,0x00,0x60,0xff,0x21,0xeb,
+                0xff } );
+
+            CrtAddrPort.Write8(0x51);  // overflow bits for CR13
+            byte bt=CrtDataPort.Read8();//setting 4th bit , resetting 5,6 & 7 th bit
+            bt &= 0x0f;                     // bit 5,4 = 01
+            bt |= 0x10;
+            CrtDataPort.Write8(bt);
+
+            CrtAddrPort.Write16(0x355d);
+            CrtAddrPort.Write16(0x005e);
+            CrtAddrPort.Write16(0x1050);   // 16 bit pixel length
+            CrtAddrPort.Write16(0x5067);   // mode 10: 16 bit color, 1 VCLK/pixel
+            CrtAddrPort.Write16(0x026d);   // recover pixel on right hand edge in 16 bpp mode
+        }
+
+        // Wait for the vertical blanking interval on the chip.
+        public void Wait_VSync()
+        {
+            byte bt;
+
+            // It's possible that this routine will get called
+            // when the 911 is in a zombie state, meaning there is no
+            // vertical sync being generated.  This is why we have some long
+            // time out loops here.
+
+            // First wait for getting into vertical blanking.
+
+            for (int i = 0; i < 0x100000; i++) {
+                if ((SysCtrlPort.Read8() & 0x08) != 0) {
+                    break;
+                }
+            }
+
+            //
+            // We are either in a vertical blanking interval or we have timed out.
+            // Wait for the Vertical display interval.
+            // This is done to make sure we exit this routine at the beginning
+            // of a vertical blanking interval, and not in the middle or near
+            // the end of one.
+            //
+            for (int i = 0; i < 0x100000; i++) {
+                if ((SysCtrlPort.Read8() & 0x08) == 0) {
+                    break;
+                }
+            }
+
+            //
+            // Now wait to get into the vertical blank interval again.
+            //
+            for (int i = 0; i < 0x100000; i++) {
+                if ((SysCtrlPort.Read8() & 0x08) != 0) {
+                    break;
+                }
+            }
+        }
+
+        public bool Set864MemoryTiming()
+            //++
+            //Routine Description:
+            //Sets L, M and N timing parameters, also sets and enables the
+            //Start Display FIFO register
+            //Arguments:
+            //None
+            //Return Value:
+            //TRUE if success, FALSE if failure
+            //--
+        {
+
+            int  MIndex, ScreenWidth, failure = 0;
+            ushort data16;
+            byte  data8;
+
+            //
+            // unlock registers
+            //
+            CrtAddrPort.Write16(0x4838);
+            CrtAddrPort.Write16(0xA039);
+
+            //
+            // make sure this is an 864
+            //
+            CrtAddrPort.Write8(0x30);
+            data8 = CrtDataPort.Read8();
+            if ((data8 & 0xf0) != 0xc0)
+                failure = 1;
+
+            //
+            // make sure there is an entry in the M parameter table for this mode
+            //
+            MIndex = (AdapterMemorySize < 0x200000) ? 0 : 12;
+
+            switch (ActiveMode.ScreenWidth) {
+                case 640:
+                    MIndex += 0;
+                    break;
+
+                case 800:
+                    MIndex += 4;
+                    break;
+
+                case 1024:
+                    MIndex += 8;
+                    break;
+
+                default:
+                    failure = 1;
+                    break;
+            }
+
+            switch (ActiveMode.BytesPerPixel) {
+                case 1:
+                    MIndex += 0;
+                    break;
+
+                case 2:
+                    MIndex += 2;
+                    break;
+
+                default:
+                    failure = 1;
+                    break;
+            }
+
+            switch (ActiveMode.ScreenFrequency) {
+                case 60:
+                    MIndex += 0;
+                    break;
+
+                case 72:
+                    MIndex += 1;
+                    break;
+
+                default:
+                    failure = 1;
+                    break;
+            }
+
+            if (failure != 0) {
+                return false;
+            }
+
+            //
+            // set and enable L parameter, 1 Mb frame buffer configurations are
+            // restricted to a 32 bit data path and therefore make twice as many
+            // transfers
+            //
+            ScreenWidth = ActiveMode.ScreenWidth;
+
+            if (AdapterMemorySize < 0x200000)
+                data16 = (ushort) ((ScreenWidth * ActiveMode.BytesPerPixel) / 4);
+            else
+                data16 = (ushort) ((ScreenWidth * ActiveMode.BytesPerPixel) / 8);
+
+            CrtAddrPort.Write8(0x62);
+            CrtDataPort.Write8((byte) (data16 & 0xff));
+            data16 = (ushort)((data16 >> 8) & 0x07);
+
+            CrtAddrPort.Write8(0x61);
+            CrtDataPort.Write8((byte) ((data16 & 0x07) | 0x80));
+
+            //
+            // set Start Display FIFO register
+            //
+            CrtAddrPort.Write8(0x5d);
+            data8 = CrtDataPort.Read8();
+            data16 =(ushort) (data8 & 0x01);
+            data16 <<= 8;
+
+            CrtAddrPort.Write8(0x00);
+            data8 = CrtDataPort.Read8();
+            data16 |= data8;
+            data16 -= 5;        // typical CR3B is CR0 - 5 (with extension bits)
+
+            CrtAddrPort.Write8(0x3b);
+            CrtDataPort.Write8((byte) (data16 & 0xff));
+
+            CrtAddrPort.Write8(0x5d);
+            data8 = CrtDataPort.Read8();
+            data8 &= 0xbf;
+            data8 = (byte)(data8 | (byte) ((data16 & 0x100) >> 2));
+            CrtDataPort.Write8(data8);
+
+            //
+            // enable Start Display FIFO register
+            //
+            CrtAddrPort.Write8(0x34);
+            data8 = CrtDataPort.Read8();
+            data8 |= 0x10;
+            CrtDataPort.Write8(data8);
+
+            //
+            // set M parameter
+            //
+            CrtAddrPort.Write8(0x54);
+            CrtDataPort.Write8((byte) MParameterTable[MIndex]);
+
+            //
+            // set N parameter
+            //
+            CrtAddrPort.Write8(0x60);
+            CrtDataPort.Write8((byte) 0xff);
+
+            return true;
+        }
+
+        public void Plot(int x, int y, RGB color)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            int offset = y * ActiveMode.ScreenStride + x * ActiveMode.BytesPerPixel;
+
+            // The read triggers the latch register.
+            screenBuffer.Write16(offset, (ushort)color);
+
+        }
+
+        public void Fill(int x1, int y1, int x2, int y2, RGB color)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            if (x1 < 0 || x1 >= ActiveMode.ScreenWidth ||
+                x2 < 0 || x2 >= ActiveMode.ScreenWidth ||
+                y1 < 0 || y1 >= ActiveMode.ScreenHeight ||
+                y2 < 0 || y2 >= ActiveMode.ScreenHeight)
+            {
+
+                throw new OverflowException("Draw bounds invalid.");
+            }
+
+            ushort clr = (ushort)color;
+            int pDst = y1 * ActiveMode.ScreenStride + x1 * ActiveMode.BytesPerPixel;
+            for (int y = y1; y <= y2; y++) {
+                screenBuffer.Write16(pDst, clr, x2 - x1 + 1);
+                pDst += ActiveMode.ScreenStride;
+            }
+        }
+
+        public void BitBltChr(int x, int y, int width, int height,
+                              byte[]! buffer, int offset, int ScanWidth,
+                              RGB color, RGB background)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            ushort clr = (ushort)color;
+            ushort bkg = (ushort)background;
+
+            int pSrc = offset;
+            int pDst = (y + height - 1) * ActiveMode.ScreenStride + x * ActiveMode.BytesPerPixel;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    byte b = buffer[pSrcTemp++];
+
+                    lineBuffer[i++] = ((b & 0x80) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x40) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x20) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x10) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x08) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x04) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x02) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x01) != 0) ? clr : bkg;
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ActiveMode.ScreenStride;
+            }
+        }
+        private void BitBlt24(int x, int y, int width, int height,
+                              byte[]! in ExHeap buffer, int offset, int ScanWidth)
+
+        {
+            int pDst = (y + height - 1) * ActiveMode.ScreenStride + x * ActiveMode.BytesPerPixel;
+            int pSrc = offset;
+            byte[] raw = new byte[ScanWidth];
+
+            for (int j = 0; j < height; j++) {
+                int pRaw = 0;
+
+                // Decompress first
+                while (pRaw < ScanWidth) {
+                    ushort len = (ushort)(buffer[pSrc] + ((ushort)buffer[pSrc+1] << 8));
+                    pSrc += 2;
+
+                    short val = unchecked((short)len);
+                    if (val < 0) {
+                        for (int i = 0; i > val; i--) {
+                            raw[pRaw++] = buffer[pSrc+0];
+                            raw[pRaw++] = buffer[pSrc+1];
+                            raw[pRaw++] = buffer[pSrc+2];
+                        }
+                        pSrc += 3;
+                    }
+                    else {
+                        for (int i = 0; i < val; i++) {
+                            raw[pRaw++] = buffer[pSrc++];
+                        }
+                    }
+                }
+
+                // Now draw the decompressed bits.
+                pRaw = 0;
+                for (int i = 0; i < width;) {
+                    lineBuffer[i++] = RGB.Compute16(raw[pRaw+2],
+                                                    raw[pRaw+1],
+                                                    raw[pRaw+0]);
+                    pRaw += 3;
+                }
+
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pDst -= ActiveMode.ScreenStride;
+            }
+        }
+
+        private void BitBlt8(int x, int y, int width, int height,
+                             byte[]! in ExHeap buffer, int offset, int ScanWidth,
+                             ushort[]! palette)
+        {
+            int pDst = (y + height - 1) * ActiveMode.ScreenStride + x * ActiveMode.BytesPerPixel;
+            int pSrc = offset;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    lineBuffer[i++] = palette[buffer[pSrcTemp++]];
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ActiveMode.ScreenStride;
+            }
+        }
+
+        private void BitBlt4(int x, int y, int width, int height,
+                             byte[]! in ExHeap buffer, int offset, int ScanWidth,
+                             ushort[]! palette)
+        {
+            int pDst = (y + height - 1) * ActiveMode.ScreenStride + x * ActiveMode.BytesPerPixel;
+            int pSrc = offset;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    byte b = buffer[pSrcTemp++];
+
+                    lineBuffer[i++] = palette[b >> 4];
+                    lineBuffer[i++] = palette[b & 0xf];
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ActiveMode.ScreenStride;
+            }
+        }
+
+        public void BitBlt1(int x, int y, int width, int height,
+                            byte[]! in ExHeap buffer, int offset, int ScanWidth,
+                            RGB color, RGB background)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            ushort clr = (ushort)color;
+            ushort bkg = (ushort)background;
+
+            int pSrc = offset;
+            int pDst = (y + height - 1) * ActiveMode.ScreenStride + x * ActiveMode.BytesPerPixel;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    byte b = buffer[pSrcTemp++];
+
+                    lineBuffer[i++] = ((b & 0x80) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x40) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x20) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x10) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x08) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x04) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x02) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x01) != 0) ? clr : bkg;
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ActiveMode.ScreenStride;
+            }
+        }
+
+        public void BitBltBmp(int x, int y, byte[]! in ExHeap buffer)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            try {
+                BITMAPFILEHEADER bfh;
+                BITMAPINFOHEADER bih;
+                int lDelta;
+                int cbScanLine;
+                int used;
+                int offset = 0;
+
+                bfh = BITMAPFILEHEADER.Read(buffer, offset, out used);
+                bih = BITMAPINFOHEADER.Read(buffer, used, out used);
+                RGB[] Palette = bih.ReadPalette(buffer, used, out used);
+
+                if (bih.biWidth == 0 || bih.biHeight == 0) {
+                    return;
+                }
+
+                if (x < 0) {
+                    x = ActiveMode.ScreenWidth + x - bih.biWidth;
+                }
+                if (y < 0) {
+                    y = ActiveMode.ScreenHeight + y - bih.biHeight;
+                }
+
+                if (x < 0 || x + bih.biWidth > ActiveMode.ScreenWidth ||
+                    y < 0 || y + bih.biHeight > ActiveMode.ScreenHeight)
+                {
+
+                    throw new OverflowException("Draw bounds invalid.");
+                }
+
+                offset = offset + bfh.bfOffBits;
+                used = offset;
+
+                ushort[] palette = null;
+
+                if (Palette != null) {
+                    palette = new ushort [Palette.Length];
+                    for (int i = 0; i < Palette.Length; i++) {
+                        palette[i] = (ushort)Palette[i];
+                    }
+                }
+
+                //
+                // Make sure this is a 1bpp, 4bpp, or 8bpp bitmap.
+                //
+
+                if (bih.biPlanes != 1) {
+                    DebugStub.Print("biPlanes != 1");
+                    return;
+                }
+
+                cbScanLine = (((bih.biWidth * bih.biBitCount) + 31) & ~31) / 8;
+
+                if (bih.biHeight < 0) {
+                    DebugStub.Print("bih.biHeight = {0} < 0\n",
+                                    __arglist(bih.biHeight));
+                    return;
+                }
+
+#if DONT
+                if (used + cbScanLine * bih.biHeight > buffer.Length) {
+                    DebugStub.Print("{0} + {1} * {2} = {3} > {4}\n",
+                                    __arglist(used,
+                                              cbScanLine,
+                                              bih.biHeight,
+                                              used + cbScanLine * bih.biHeight,
+                                              buffer.Length));
+
+                    throw new OverflowException("Bitmap invalid.");
+                }
+#endif
+
+                if (bih.biBitCount == 1) {
+                    BitBlt1(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine,
+                            RGB.White, RGB.Black);
+                }
+                else if (bih.biBitCount == 4) {
+                    assert palette != null;
+                    BitBlt4(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine,
+                            palette);
+                }
+                else if (bih.biBitCount == 8) {
+                    assert palette != null;
+                    BitBlt8(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine,
+                            palette);
+                }
+                else if (bih.biBitCount == 24) {
+                    BitBlt24(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine);
+                }
+                else {
+                    //
+                    // We don't support this type of bitmap.
+                    //
+                    DebugStub.Print("((bih.biBitCount * bih.biPlanes) <= 4");
+                }
+            }
+            catch (Exception e) {
+                DebugStub.WriteLine("Exception in BitBltBmp: {0}", __arglist(e.ToString()));
+            }
+        }
+
+        public void BitBltPng(int x, int y, byte[]! in ExHeap buffer)
+        {
+            DebugStub.Print("BitBltPng not supported currently.\n");
+        }
+
+        public void Scroll(int x1, int y1, int x2, int y2, int CharHeight)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            if (x1 < 0 || x1 >= ActiveMode.ScreenWidth ||
+                x2 < 0 || x2 >= ActiveMode.ScreenWidth ||
+                y1 < 0 || y1 >= ActiveMode.ScreenHeight ||
+                y2 < 0 || y2 >= ActiveMode.ScreenHeight ||
+                y2 - y1 < CharHeight)
+            {
+
+                throw new OverflowException("Draw bounds invalid.");
+            }
+
+            int width = x2 - x1 + 1;
+            int pDst = y1 * ActiveMode.ScreenStride + x1 * ActiveMode.BytesPerPixel;
+            int pSrc = pDst + ActiveMode.ScreenStride * CharHeight;
+
+            for (int i = y1; i <= y2 - CharHeight; i++) {
+                screenBuffer.Copy16(pSrc, pDst, width);
+
+                pDst += ActiveMode.ScreenStride;
+                pSrc += ActiveMode.ScreenStride;
+            }
+        }
+    }
+
+    public class SvgaWindow
+    {
+        private readonly S3Device screen;
+        private readonly int regionLeft;
+        private readonly int regionTop;
+        private readonly int regionRight;
+        private readonly int regionBottom;
+
+        private int cursorX = 0;
+        private int cursorY = 0;
+        private bool cursorVisible = true;
+        private bool cursorView = true;
+        private RGB foreColor = RGB.White;
+        private RGB backColor = RGB.Black;
+
+        public const int FONT_HEIGHT = 12;
+        public const int FONT_WIDTH = 8;
+
+        [NotDelayed]
+        public SvgaWindow(S3Device! screen, int x1, int y1, int x2, int y2)
+            requires x1 < x2 && y1 < y2;
+        {
+            this.screen = screen;
+
+            regionLeft = x1;
+            regionTop = y1;
+            regionRight = x2;
+            regionBottom = y2;
+
+            cursorX = regionLeft;
+            cursorY = regionTop;
+
+            screen.Fill(regionLeft, regionTop, regionRight, regionBottom, backColor);
+        }
+
+        public void Initialize()
+        {
+        }
+
+        public void Finalize()
+        {
+        }
+
+        public void SetTextColor(RGB color, RGB background)
+        {
+            foreColor = color;
+            backColor = background;
+        }
+
+        public int TextColumn
+        {
+            get { return (cursorX - regionLeft) / FONT_WIDTH; }
+        }
+
+        public int TextRow
+        {
+            get { return (cursorY - regionTop) / FONT_HEIGHT; }
+        }
+
+        public bool SetTextCursor(int column, int row)
+        {
+            if (column >= 0 && column < TextColumns &&
+                row >= 0 && row < TextRows) {
+                bool wasVisible = cursorVisible;
+                CursorHide();
+                cursorX = regionLeft + column * FONT_WIDTH;
+                cursorY = regionTop + row * FONT_HEIGHT;
+                if (wasVisible) {
+                    CursorShow();
+                }
+                return true;
+            }
+            return false;
+        }
+
+        public int TextColumns
+        {
+            get { return (regionRight - regionLeft) / FONT_WIDTH; }
+        }
+
+        public int TextRows
+        {
+            get { return (regionBottom - regionTop) / FONT_HEIGHT; }
+        }
+
+        private void DrawCursor()
+        {
+            cursorView = true;
+            CursorFlash();
+        }
+
+        public void CursorHide()
+        {
+            cursorView = false;
+            CursorFlash();
+            cursorVisible = false;
+        }
+
+        public void CursorShow()
+        {
+            cursorVisible = true;
+            DrawCursor();
+        }
+
+        public void CursorFlash()
+        {
+            if (cursorVisible) {
+                int x = cursorX;
+                int y = cursorY;
+
+                if (x + FONT_WIDTH > regionRight) {
+                    x -= FONT_WIDTH;
+                }
+
+                if (cursorView) {
+                    screen.BitBltChr(x, y, FONT_WIDTH, FONT_HEIGHT,
+                                     Fonts.FontData, 256 * FONT_HEIGHT, 1, foreColor, backColor);
+                }
+                else {
+                    screen.BitBltChr(x, y, FONT_WIDTH, FONT_HEIGHT,
+                                     Fonts.FontData, 32 * FONT_HEIGHT, 1, foreColor, backColor);
+                }
+                cursorView = !cursorView;
+            }
+        }
+
+        public void Clear()
+        {
+            screen.Fill(regionLeft, regionTop, regionRight, regionBottom, backColor);
+            cursorX = regionLeft;
+            cursorY = regionTop;
+            DrawCursor();
+        }
+
+        public void ClearCursorToEndOfLine()
+        {
+            screen.Fill(cursorX, cursorY,
+                        regionRight, cursorY + FONT_HEIGHT,
+                        backColor);
+        }
+
+        public void Write(String! s)
+        {
+            for (int i = 0; i < s.Length; i++) {
+                Write((byte)s[i]);
+            }
+            DrawCursor();
+        }
+
+        public void Write(char[]! in ExHeap buffer, int offset, int count)
+        {
+            while (count-- > 0) {
+                Write((byte)buffer[offset++]);
+            }
+            DrawCursor();
+        }
+
+        public void PutChar(char c)
+        {
+            Write((byte)c);
+            DrawCursor();
+        }
+
+        public bool PutCharAt(char c, int column, int row)
+        {
+            if (column >= 0 && column < TextColumns &&
+                row >= 0 && row < TextRows) {
+                screen.BitBltChr(regionLeft + column * FONT_WIDTH,
+                                 regionTop  + row * FONT_HEIGHT,
+                                 FONT_WIDTH, FONT_HEIGHT,
+                                 Fonts.FontData, c * FONT_HEIGHT, 1,
+                                 foreColor, backColor);
+                return true;
+            }
+            return false;
+        }
+
+        private void Write(byte c)
+        {
+            switch (c) {
+
+                case (byte)'\n':
+                    cursorY += FONT_HEIGHT;
+                    cursorX = regionLeft;
+                    break;
+
+                case (byte)'\r':
+                    screen.Fill(cursorX, cursorY, regionRight,
+                                cursorY + FONT_HEIGHT,
+                                backColor);
+                    cursorX = regionLeft;
+                    break;
+
+                case (byte)'\b':
+                    CursorHide();
+                    cursorX = cursorX - FONT_WIDTH;
+                    CursorShow();
+                    break;
+
+                default:
+                    screen.BitBltChr(cursorX, cursorY, FONT_WIDTH, FONT_HEIGHT,
+                                     Fonts.FontData, c * FONT_HEIGHT, 1, foreColor, backColor);
+
+                    cursorX += FONT_WIDTH;
+                    break;
+            }
+
+            if (cursorX + FONT_WIDTH > regionRight) {
+                cursorY += FONT_HEIGHT;
+                cursorX = regionLeft;
+            }
+
+            if (cursorY + FONT_HEIGHT > regionBottom) {
+                screen.Scroll(regionLeft, regionTop, regionRight, regionBottom,
+                              FONT_HEIGHT);
+                cursorY = cursorY - FONT_HEIGHT;
+                screen.Fill(regionLeft, cursorY, regionRight, regionBottom, backColor);
+            }
+        }
+
+    }
+}

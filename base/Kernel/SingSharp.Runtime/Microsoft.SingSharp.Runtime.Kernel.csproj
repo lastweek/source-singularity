@@ -1,0 +1,64 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+This assembly is the Sing# Runtime.
+It is referenced by SGC and by Bartok.
+It is never referenced by CSC.
+
+However, it is important to note that the SGC compiler will implicitly
+reference this library, when /platform:cli,$(DIR) is set.  Therefore,
+you don't want to pass /r:Microsoft.SingSharp.Runtime.dll to SGC when
+compiling other projects.  This is why the ExcludeFromILReferences
+property is set to true; this prevents projects that refer to this 
+project from adding a /r: reference to this library.
+
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Microsoft.SingSharp.Runtime</AssemblyName>
+    <DefineConstants>NOOWNERSHIPCHECK</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <NoStdLib>true</NoStdLib>
+    <ExcludeFromILReferences>true</ExcludeFromILReferences>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Attributes.cs" />
+    <Compile Include="Bitter.sg" />
+    <Compile Include="Classes.ssc" />
+    <Compile Include="CustomAllocator.sg" />
+    <Compile Include="ESet.sg" />
+    <Compile Include="Endpoint.sg" />
+    <Compile Include="EMap.sg" />
+    <Compile Include="ExHeap.sg" />
+    <Compile Include="ExRef.sg" />
+    <Compile Include="StateStack.sg" />
+    <Compile Include="TContainer.sg" />
+    <Compile Include="TQueue.sg" />
+    <Compile Include="TRef.sg" />
+    <Compile Include="VectorQueue.sg" />
+    <Compile Include="AssemblyInfo.cs" />
+    <Compile Include="$(SingSharpSrcDir)\Reflection\Attributes.cs" />
+    <Compile Include="$(SingSharpSrcDir)\Reflection\Classes.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\System.Compiler.Runtime\System.Compiler.Runtime.Kernel.csproj" />
+    <ProjectReference Include="..\Kernel.Corlib.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+
+</Project>

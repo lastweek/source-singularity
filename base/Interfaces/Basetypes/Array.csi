@@ -1,0 +1,141 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Collections;
+
+namespace System
+{
+    public abstract class Array : ICloneable, ICollection, IEnumerable, IList
+    {
+        // IEnumerable
+        public virtual IEnumerator GetEnumerator();
+
+        // ICollection (from IList)
+        public int Count { get; }
+
+        // IList
+        public Object this[int index] {
+            get;
+            set;
+        }
+        public int Add(Object value);
+        public bool Contains(Object value);
+        public void Clear();
+        public int IndexOf(Object value);
+        public void Insert(int index, Object value);
+        public void Remove(Object value);
+        public void RemoveAt(int index);
+
+        // Array
+        public static Array CreateInstance(Type elementType, int length);
+        public static Array CreateInstance(Type elementType, int length1, int length2);
+        public static Array CreateInstance(Type elementType,
+                                           int length1, int length2, int length3);
+
+        public static Array CreateInstance(Type elementType, params int[] lengths);
+        public static Array CreateInstance(Type elementType, params long[] lengths);
+
+        public static void Copy(bool[] srcArray, int srcOffset,
+                                bool[] dstArray, int dstOffset, int length);
+        public static void Copy(char[] srcArray, int srcOffset,
+                                char[] dstArray, int dstOffset, int length);
+        public static void Copy(sbyte[] srcArray, int srcOffset,
+                                sbyte[] dstArray, int dstOffset, int length);
+        public static void Copy(short[] srcArray, int srcOffset,
+                                short[] dstArray, int dstOffset, int length);
+        public static void Copy(int[] srcArray, int srcOffset,
+                                int[] dstArray, int dstOffset, int length);
+        public static void Copy(long[] srcArray, int srcOffset,
+                                long[] dstArray, int dstOffset, int length);
+        public static void Copy(byte[] srcArray, int srcOffset,
+                                byte[] dstArray, int dstOffset, int length);
+        public static void Copy(ushort[] srcArray, int srcOffset,
+                                ushort[] dstArray, int dstOffset, int length);
+        public static void Copy(uint[] srcArray, int srcOffset,
+                                uint[] dstArray, int dstOffset, int length);
+        public static void Copy(ulong[] srcArray, int srcOffset,
+                                ulong[] dstArray, int dstOffset, int length);
+        public static void Copy(float[] srcArray, int srcOffset,
+                                float[] dstArray, int dstOffset, int length);
+        public static void Copy(double[] srcArray, int srcOffset,
+                                double[] dstArray, int dstOffset, int length);
+        public static void Copy(Object[] srcArray, int srcOffset,
+                                Object[] dstArray, int dstOffset, int length);
+        public static void Copy(Array sourceArray, Array destinationArray, int length);
+        public static void Copy(Array sourceArray, Array destinationArray, long length);
+        public static void Copy(Array sourceArray, int sourceIndex,
+                                Array destinationArray, int destinationIndex, int length);
+
+        public static void Clear(Array array, int index, int length);
+
+        public Object GetValue(params int[] indices);
+        public Object GetValue(int index);
+        public Object GetValue(int index1, int index2);
+        public Object GetValue(int index1, int index2, int index3);
+
+        public Object GetValue(long index);
+        public Object GetValue(long index1, long index2);
+        public Object GetValue(long index1, long index2, long index3);
+        public Object GetValue(params long[] indices);
+
+        public void SetValue(Object value,int index);
+        public void SetValue(Object value,int index1, int index2);
+        public void SetValue(Object value,int index1, int index2, int index3);
+        public void SetValue(Object value,params int[] indices);
+
+        public void SetValue(Object value, long index);
+        public void SetValue(Object value, long index1, long index2);
+        public void SetValue(Object value, long index1, long index2, long index3);
+        public void SetValue(Object value, params long[] indices);
+
+        public int GetLength(int dimension);
+        public long GetLongLength(int dimension);
+
+        public int Length { get; }
+        public long LongLength { get; }
+
+        public int Rank { get; }
+
+        public int GetUpperBound(int dimension);
+        public int GetLowerBound(int dimension);
+
+        public virtual Object SyncRoot { get; }
+        public virtual bool IsReadOnly { get; }
+        public virtual bool IsFixedSize { get; }
+        public virtual bool IsSynchronized { get; }
+
+        public virtual Object Clone();
+
+        public static int BinarySearch(Array array, Object value);
+        public static int BinarySearch(Array array, int index, int length, Object value);
+        public static int BinarySearch(Array array, Object value, IComparer comparer);
+        public static int BinarySearch(Array array, int index, int length, Object value, IComparer comparer);
+
+        public virtual void CopyTo(Array array, int index);
+        public virtual void CopyTo(Array array, long index);
+
+        public static int IndexOf(Array array, Object value);
+        public static int IndexOf(Array array, Object value, int startIndex);
+        public static int IndexOf(Array array, Object value, int startIndex, int count);
+
+        public static int LastIndexOf(Array array, Object value);
+        public static int LastIndexOf(Array array, Object value, int startIndex);
+        public static int LastIndexOf(Array array, Object value, int startIndex, int count);
+
+        public static void Reverse(Array array);
+        public static void Reverse(Array array, int index, int length);
+
+        public static void Sort(Array array);
+        public static void Sort(Array keys, Array items);
+        public static void Sort(Array array, int index, int length);
+        public static void Sort(Array keys, Array items, int index, int length);
+        public static void Sort(Array array, IComparer comparer);
+        public static void Sort(Array keys, Array items, IComparer comparer);
+        public static void Sort(Array array, int index, int length, IComparer comparer);
+        public static void Sort(Array keys, Array items, int index, int length, IComparer comparer);
+        public void Initialize();
+    }
+}

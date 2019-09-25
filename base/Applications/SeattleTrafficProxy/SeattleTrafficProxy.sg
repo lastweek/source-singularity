@@ -1,0 +1,246 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   A simple proxy module for the Seattle Traffic web service
+//
+
+using System;
+using System.Diagnostics;
+using System.Text;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.SeattleTrafficProxy.Contracts;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.Security;
+using System;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+// the two lines below give this module permission
+// to register endpoints on the local machine. 
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Mappoint proxy service", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SeattleTrafficProxy.AppMain(this);
+        }
+    }
+
+    public class SeattleTrafficProxy
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire(); 
+            if (ds == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+            ds.RecvSuccess();
+            
+            
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            try {
+                ds.SendRegister(Bitter.FromString2(SeattleTrafficProxyContract.ModuleName), nsImp);
+
+                switch receive {
+                    case ds.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case ds.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        Console.WriteLine("Failed to register the SeattleTraffic proxy module as " +
+                                        SeattleTrafficProxyContract.ModuleName + " error:"  + SdsUtils.ErrorCodeToString(error));
+                        delete nsExp;
+                        delete rejectedEP;
+                        return -1;
+
+                    case ds.ChannelClosed():
+                        Console.WriteLine("ds channel closed");
+                        delete nsExp;
+                        return -1;
+                }
+            }
+            finally {
+                delete ds;
+            }
+
+            // Here is the set of client channels we service
+            ESet<SeattleTrafficProxyContract.Exp:ReadyState> epSet = new ESet<SeattleTrafficProxyContract.Exp:ReadyState>();
+
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people top give us SeattleTrafficProxyContract.Exp instances
+                            SeattleTrafficProxyContract.Exp newClient = newEp as SeattleTrafficProxyContract.Exp;
+
+                            if (newClient == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newClient.SendReady();
+                                epSet.Add(newClient);
+                            }
+                        }
+                        break;
+
+                        // ------------------------------- Requests on existing connections
+                        //
+                        // Don't forget that we're selecting endpoints
+                        // from the epSet endpoint-set. In each case that we
+                        // receive a message from one of those endpoints, we
+                        // need to remember to put the endpoint back into epSet
+                        // if we want to keep listening to it.
+                        //
+                    case ep.GetTraffic() in epSet:
+                        {
+                            Console.WriteLine("SeattleTrafficProxy - received a GetTraffic request");
+                            TrafficInfo[]! in ExHeap trafficInfo = LookupTraffic();
+                            ep.SendTraffic(trafficInfo);
+                            epSet.Add(ep);
+                        }
+                        break;
+                        
+                    case nsExp.ChannelClosed() && epSet.Empty() :
+                        // The namespace channel is closed and we have no more client
+                        // channels, so pack up and go home.
+                        delete nsExp;
+                        epSet.Dispose();
+                        return -1;
+
+                    case ep.ChannelClosed() in epSet :
+                        // Dispose of channels when our clients close them
+                        delete ep;
+                        break;
+                }
+            }
+            return 0;
+        }
+        
+        //
+        // HACK: LookupTraffic - This should leverage the Bayesian prediction work
+        // to retrieve traffic bottleneck times.
+        //
+        private static TrafficInfo[]! in ExHeap LookupTraffic()
+        {
+		    // HACK: Disable until ready.
+		    // 
+		    //try
+		    //{
+			   //using (WebClient webclient = new WebClient())
+			   //{
+				  //// Download traffic data
+				  //// TODO: Only download every five minutes.
+				  //webclient.DownloadFile(@"http://www.adapt.msresearch.us/smartphlow/Desktop/tip02.dat", "tip02.dat");
+			   //}
+			   //// Parse data
+			   //byte [] rawTraffic = ParseTipFile("tip02.dat");
+    		//
+			   //// Generate the results for the client.
+			   //// TODO: Add more value to the traffic response.
+			   //TrafficInfo[]! in ExHeap trafficInfo = BuildTrafficInfo(rawTraffic);
+			   //return trafficInfo;
+		    //}
+		    //catch (Exception ex) {
+		    //}
+		    //
+    		
+            TrafficInfo[]! in ExHeap trafficInfo = new[ExHeap] TrafficInfo[12];
+            
+            // West side
+            
+            // 520 WB at Montlake
+            trafficInfo[0].minUntilFree = 6;
+            trafficInfo[0].latitude = 47.64574f;
+            trafficInfo[0].longitude = -122.30687f;
+            // 520 EB at Montlake
+            trafficInfo[1].minUntilFree = 30;
+            trafficInfo[1].latitude = 47.64314f;
+            trafficInfo[1].longitude = -122.30634f;
+            // 5 SB at Lake Union
+            trafficInfo[2].minUntilFree = 12;
+            trafficInfo[2].latitude = 47.63600f;
+            trafficInfo[2].longitude = -122.32949f;
+            // 5 NB at Lake Union
+            trafficInfo[3].minUntilFree = 27;
+            trafficInfo[3].latitude = 47.63519f;
+            trafficInfo[3].longitude = -122.32143f;
+
+            // East side
+            
+            // 520 WB at bridge
+            trafficInfo[4].minUntilFree = 51;
+            trafficInfo[4].latitude = 47.64571f;
+            trafficInfo[4].longitude = -122.21226f;
+            // 520 EB at bridge
+            trafficInfo[5].minUntilFree = 0;
+            trafficInfo[5].latitude = 47.63983f;
+            trafficInfo[5].longitude = -122.20965f;
+            // 520 EB at Redmond
+            trafficInfo[6].minUntilFree = 22;
+            trafficInfo[6].latitude = 47.66538f;
+            trafficInfo[6].longitude = -122.11552f;
+            // 520 WB at Redmond
+            trafficInfo[7].minUntilFree = 0;
+            trafficInfo[7].latitude = 47.66986f;
+            trafficInfo[7].longitude = -122.13050f;
+            
+            // 405 N in Bellevue
+            trafficInfo[8].minUntilFree = 39;
+            trafficInfo[8].latitude = 47.60998f;
+            trafficInfo[8].longitude = -122.18467f;
+            // 405 S in Bellevue
+            trafficInfo[9].minUntilFree = 16;
+            trafficInfo[9].latitude = 47.61012f;
+            trafficInfo[9].longitude = -122.19992f;
+            // 405 N in Kirkland
+            trafficInfo[10].minUntilFree = 14;
+            trafficInfo[10].latitude = 47.66809f;
+            trafficInfo[10].longitude = -122.18236f;
+            // 405 S in Kirkland
+            trafficInfo[11].minUntilFree = 9;
+            trafficInfo[11].latitude = 47.66761f;
+            trafficInfo[11].longitude = -122.19861f;
+            
+            return trafficInfo;
+        }
+    }
+}

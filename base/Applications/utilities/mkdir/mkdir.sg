@@ -1,0 +1,72 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using FileSystem.Utils;
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Create a Directory", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "DirName", Mandatory=true, Position=0, HelpMessage="Name of directory.")]
+        internal string dirName;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return FsMakeDirectory.AppMain(this);
+        }
+    }
+
+    public class FsMakeDirectory
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire(); 
+            if (ds == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+            
+            ds.RecvSuccess();
+    
+            ErrorCode errorOut; 
+            bool ok = SdsUtils.CreateDirectory((!)config.dirName, ds, out errorOut); 
+            if (ok) Console.WriteLine(config.dirName+" was created."); 
+            else Console.WriteLine("create failed. reason({0})",SdsUtils.ErrorCodeToString(errorOut));
+            
+            delete ds; 
+            return ok ? 0 : 1; 
+        }
+
+    } // class Test 
+}

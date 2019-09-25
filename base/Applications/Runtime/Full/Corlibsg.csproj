@@ -1,0 +1,38 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>Corlibsg</AssemblyName>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Singularity\CorlibSgAssemblyInfo.sg"/>
+    <Compile Include="Singularity\Io\PipeLookAhead.sg"/>
+    <Compile Include="Singularity\Io\PipeMultiplexer.sg"/>
+    <Compile Include="Singularity\Directory\NameService.sg"/>
+    <Compile Include="System\Process.sg"/>
+    <Compile Include="System\Principal.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Singularity.V1\Singularity.V1.App.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\AppRuntime.targets"/>
+
+</Project>

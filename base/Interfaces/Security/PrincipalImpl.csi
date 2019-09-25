@@ -1,0 +1,36 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity.Loader;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.Io;
+
+// This is a kernel-only interface
+
+namespace Microsoft.Singularity.Security
+{
+    public struct PrincipalImpl
+    {
+        public static Principal Self();
+        public static Principal MakePrincipal(ulong id);
+           // this is a kernel-only constructor for the type Principal
+
+        public static void      Initialize(XmlNode config);
+        public static Principal NewInvocation(Principal parent, Manifest manifest,
+                                              string role, IoMemory rawImage);
+        // in the following, delegate may not already be a delegate
+        public static Principal NewDelegation(Principal delegator, Principal target);
+        public static void      Dispose(Principal pr);
+
+        public static string    ExpandAclIndirection(string name);
+
+        public static void      RegisterAclCore(Object core);
+           // "core" is really an AclCore object
+        public static void      Export();
+    }
+}
+

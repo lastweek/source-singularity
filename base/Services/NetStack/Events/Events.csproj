@@ -1,0 +1,28 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>NetStackEvents</AssemblyName>
+    <Language>C#</Language>
+    <Runtime>Full</Runtime>
+    <ProjectGuid>{d7d931ce-04a4-45c1-84ea-2bcfe078ab1c}</ProjectGuid>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="TcpSessionEvents.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Eventing\Eventing.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\EventLibrary.targets" />
+</Project>

@@ -1,0 +1,17 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+using System;
+
+namespace System.Diagnostics
+{
+    //| <include file='doc\ConditionalAttribute.uex' path='docs/doc[@for="ConditionalAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple=true)]
+    public sealed class ConditionalAttribute : Attribute
+    {
+    //| <include file='doc\ConditionalAttribute.uex' path='docs/doc[@for="ConditionalAttribute.ConditionalAttribute"]/*' />
+        public ConditionalAttribute(String conditionString);
+    }
+}

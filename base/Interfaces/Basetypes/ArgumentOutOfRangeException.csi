@@ -1,0 +1,27 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+
+    // The ArgumentOutOfRangeException is thrown when an argument
+    // is outside the legal range for that argument.  This may often be caused
+    // by
+    //
+    //| <include file='doc\ArgumentOutOfRangeException.uex' path='docs/doc[@for="ArgumentOutOfRangeException"]/*' />
+    [RequiredByBartok]
+    public class ArgumentOutOfRangeException : ArgumentException {
+
+        public ArgumentOutOfRangeException();
+        public ArgumentOutOfRangeException(String paramName);
+        public ArgumentOutOfRangeException(String paramName, String message);
+        public ArgumentOutOfRangeException(String paramName,
+                                           Object actualValue, String message);
+    }
+}

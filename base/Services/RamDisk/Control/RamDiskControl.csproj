@@ -1,0 +1,33 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>RamDiskControl</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="DefaultCommand.sg" />
+    <Compile Include="CreateCommand.sg" />
+    <Compile Include="DestroyCommand.sg" />
+    <Compile Include="Utilities.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Contracts\RamDiskContracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

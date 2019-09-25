@@ -1,0 +1,26 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>diskrwnull</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="diskrw.sg" />
+    <Compile Include="srandom.sg" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />    
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

@@ -1,0 +1,32 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\Collections\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="..\Collections\ArrayList.csi" />
+    <Compile Include="..\Collections\BitArray.csi" />
+    <Compile Include="..\Collections\CaseInsensitiveComparer.csi" />
+    <Compile Include="..\Collections\CaseInsensitiveHashCodeProvider.csi" />
+    <Compile Include="..\Collections\Comparer.csi" />
+    <Compile Include="..\Collections\DictionaryEntry.csi" />
+    <Compile Include="..\Collections\Hashtable.csi" />
+    <Compile Include="..\Collections\IDictionary.csi" />
+    <Compile Include="..\Collections\IDictionaryEnumerator.csi" />
+    <Compile Include="..\Collections\IHashCodeProvider.csi" />
+    <Compile Include="..\Collections\Queue.csi" />
+    <Compile Include="..\Collections\SortedList.csi" />
+    <Compile Include="..\Collections\Stack.csi" />
+    <Compile Include="..\Collections\Collections.csi" />
+  </ItemGroup>
+</Project>

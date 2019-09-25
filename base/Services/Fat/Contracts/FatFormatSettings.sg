@@ -1,0 +1,58 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatMountSettings.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Contracts
+{
+    public enum FatFormatType {
+        Automatic = 0,
+        Fat12     = 12,
+        Fat16     = 16,
+        Fat32     = 32
+    }
+
+    public rep struct FatFormatSettings : ITracked
+    {
+        public const ulong NoMaxSectors = 0;
+
+        private FatFormatType type;
+        private ulong         maxSectors;
+        private ushort        bytesPerSector;
+
+        public FatFormatSettings(FatFormatType type,
+                                 ulong         maxSectors,
+                                 ushort        bytesPerSector)
+        {
+            this.type           = type;
+            this.maxSectors     = maxSectors;
+            this.bytesPerSector = bytesPerSector;
+        }
+
+        public FatFormatType FatFormatType
+        {
+            get { expose(this) { return this.type; } }
+        }
+
+        public ulong MaxSectors
+        {
+            get { expose(this) { return this.maxSectors; } }
+        }
+
+        public ushort BytesPerSector
+        {
+            get { expose(this) { return this.bytesPerSector; } }
+        }
+    }
+}

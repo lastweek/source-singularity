@@ -1,0 +1,1112 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   The SPECWeb99 web app
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Text;
+using System.Web;
+using FileSystem.Utils;
+using System.Net.IP;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Contracts;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.WebApps
+{
+    [Category("WebApp")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<WebAppContract.Exp:Start> webAppRef;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        reflective private Parameters();
+    }
+
+    public class SPECWeb99WebAppIn : IWebApp
+    {
+        private const string ContentDir       = "/fs";
+        private const string PostLogFile      = ContentDir + "/postlog";
+        private const string CustomAdsFile    = ContentDir + "/Custom.Ads";
+        private const string UserPersonalityFile = ContentDir + "/User.Personality";
+
+        private const string CookieHeaderName     = "Cookie";
+        private const string CookiePushHeaderName = "Set-Cookie";
+
+        private const uint GENDER_MASK    = 0x30000000;
+        private const uint AGE_GROUP_MASK = 0x0f000000;
+        private const uint REGION_MASK    = 0x00f00000;
+        private const uint INTEREST1_MASK = 0x000ffc00;
+        private const uint INTEREST2_MASK = 0x000003ff;
+
+        private const int CustomAdsLines            = 360;
+        private const int CustomAdsLineLength       = 39; // Including \n
+        private const int CustomAdsFileBytes        = CustomAdsLines * CustomAdsLineLength;
+        private const int UserPersonalityLines      = 360;
+        private const int UserPersonalityLineLength = 15; // Including \n
+        private const int UserPersonalityFileBytes  = UserPersonalityLines * UserPersonalityLineLength;
+
+        private const long PostLogHeaderSize = 11; // Including \n
+        private const long PostLogRecordSize = 139; // Including \n
+
+        private const int SubstitutionPatternLength = 48; // <!WEB99CAD><IMG SRC="/file_set/dirNNNNN/classX_Y
+        private const int SubstituteNum1Pos = 34;         // 0123456789012345678901234567890123^          ^ ^
+        private const int SubstituteNum2Pos = 45;         // 012345678901234567890123456789012345678901234| |
+        private const int SubstituteNum3Pos = 47;         // 01234567890123456789012345678901234567890123456|
+
+        private byte[] HtmlPreamble1, HtmlPreamble2, HtmlPreamble3, HtmlPostamble;
+        private byte[] PostLogInitData;
+        private byte[] MatchPattern;
+
+        private struct CustomAdsRecord
+        { public uint demographics, weightings, minmatch, expiry; }
+
+        private CachedFile! userPersonalityFile;
+        private CachedFile! customAdsFile;
+        [NotDelayed]
+        public SPECWeb99WebAppIn()
+        {
+            HtmlPreamble1 = Encoding.ASCII.GetBytes("<html>\n<head><title>SPECweb99 Dynamic GET & POST Test</title></head>\n<body>\n<p>SERVER_SOFTWARE = Singularity Cassini web server\n<p>REMOTE_ADDR = ");
+            HtmlPreamble2 = Encoding.ASCII.GetBytes("\n<p>SCRIPT_NAME = SPECWeb99WebApp\n<p>QUERY_STRING = ");
+            HtmlPreamble3 = Encoding.ASCII.GetBytes("\n<pre>\n");
+            HtmlPostamble = Encoding.ASCII.GetBytes("\n</pre>\n</body></html>\n");
+
+            PostLogInitData = Encoding.ASCII.GetBytes("         0\n");
+
+            MatchPattern = Encoding.ASCII.GetBytes("<!WEB99CAD><IMG SRC=\"/file_set/dir");
+
+            customAdsFile = new CachedFile(CustomAdsFile, CustomAdsFileBytes);
+            userPersonalityFile  = new CachedFile(UserPersonalityFile, UserPersonalityFileBytes);
+#if DOES_NOT_WORK_WITH_CASSINI_INPROC
+            this.config = config;
+            DirectoryServiceContract.Imp dsImp = config.nsRef.Acquire();
+            dsImp.RecvSuccess();
+            dsRef = new TRef<DirectoryServiceContract.Imp:Ready>(dsImp);
+#endif
+            base();
+            assert PostLogInitData.Length == (int)PostLogHeaderSize;
+            start = DateTime.Now;
+        }
+
+        DateTime start;
+        bool isRecording = false;
+        bool isDone = false;
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            //
+            //TimeSpan beenRunning = DateTime.Now-start;
+            //if (beenRunning.TotalSeconds > 300 && !isRecording && !isDone) {
+            //  Console.WriteLine("\n\n\nRECORDING\n\n\n");
+            //  isRecording = true;
+            //  WebAppFSUtils.recording = true;
+            //  FileUtils.recording = true;
+            //}
+            //else if (beenRunning.TotalSeconds > 330 && isRecording && !isDone) {
+            //  Console.WriteLine("\n\n\nSTOP RECORDING\n\n\n");
+            //  isDone = true;
+            //  WebAppFSUtils.recording = false;
+            //  FileUtils.recording = false;
+            //  float bindTime = (float) FileUtils.bindTime.Ticks / TimeSpan.TicksPerSecond;
+            //  float readTime = (float) WebAppFSUtils.readTime.Ticks / TimeSpan.TicksPerSecond;
+            //  Console.WriteLine("Bind: count: "+FileUtils.bindCount+", time: "+bindTime+"\n"+
+            //      "Read: count: "+WebAppFSUtils.readCount+", time: "+readTime);
+            //}
+            //
+
+
+            string uri = request.GetUriPath();
+
+            if ((uri == null) || (uri.Length == 0)) {
+                uri = "/";
+            }
+
+            if (uri == "/dynamic-content") {
+                HandleDynamicRequest(request);
+            }
+            else {
+                // Treat as a request for a static file
+                WebAppFSUtils.ServeFSPath(uri, request);
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Helper code
+        //
+
+        private void WriteResponseHtmlPreamble(IHttpRequest! request)
+        {
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-type", "text/html");
+
+            request.SendBodyData(HtmlPreamble1);
+            request.SendBodyData(Encoding.ASCII.GetBytes(request.GetRemoteAddress()));
+            request.SendBodyData(HtmlPreamble2);
+
+            string queryString = request.GetQueryString();
+
+            if (queryString != null) {
+                request.SendBodyData(Encoding.ASCII.GetBytes(queryString));
+            }
+            else {
+                request.SendBodyData(Encoding.ASCII.GetBytes("<no query string supplied>"));
+            }
+
+            request.SendBodyData(HtmlPreamble3);
+        }
+
+        private void WriteResponseHtmlPostamble(IHttpRequest! request)
+        {
+            request.SendBodyData(HtmlPostamble);
+        }
+
+        private void WriteMessageResponse(IHttpRequest! request, string! message)
+        {
+            WriteResponseHtmlPreamble(request);
+
+            if ((message != null) && (message.Length > 0)) {
+                request.SendBodyData(Encoding.ASCII.GetBytes(message));
+            }
+
+            WriteResponseHtmlPostamble(request);
+        }
+
+        private void WriteFileResponse(IHttpRequest! request, string! filePath)
+        {
+            FileContract.Imp fileImp = FileUtils.OpenFile(filePath);
+
+            if (fileImp != null) {
+                WriteFileResponse(request, fileImp);
+                delete fileImp;
+            }
+            else {
+                WriteMessageResponse(request, "Couldn't open file: " + filePath);
+            }
+        }
+
+        private void WriteFileResponse(IHttpRequest! request, FileContract.Imp! fileImp)
+        {
+            WriteResponseHtmlPreamble(request);
+            WebAppFSUtils.TransmitFileContents(fileImp, request);
+            WriteResponseHtmlPostamble(request);
+        }
+
+        private void HandleDynamicRequest(IHttpRequest! request)
+        {
+            string verb = request.GetVerb();
+
+            if (verb == "GET") {
+                HandleGET(request);
+            }
+            else if (verb == "POST") {
+                HandlePOST(request);
+            }
+            else {
+                WriteMessageResponse(request, "Unknown HTTP verb: " + verb);
+            }
+
+            request.Done();
+        }
+
+        private bool ParseCookie(string! cookie, out uint myUser, out uint lastAd,
+                                 out string rejectString)
+        {
+            const string cookiePreamble = "my_cookie=user_id=";
+            const string lastAdPreamble = "last_ad=";
+
+            rejectString = null;
+            myUser = 0;
+            lastAd = 0;
+
+            if (!cookie.StartsWith(cookiePreamble)) {
+                rejectString = "Invalid cookie format (bad preamble): \"" + cookie + "\"";
+                return false;
+            }
+
+            int nextAmp = cookie.IndexOf('&', cookiePreamble.Length);
+
+            if (nextAmp == -1) {
+                rejectString = "Invalid cookie format (no ampersand): \"" + cookie + "\"";
+                return false;
+            }
+
+            string myUserStr = cookie.Substring(cookiePreamble.Length, nextAmp - cookiePreamble.Length);
+
+            try {
+                myUser = UInt32.Parse(myUserStr);
+            }
+            catch (Exception) {
+                rejectString = "Invalid cookie format (bad user_id value): \"" + cookie + "\"";
+                return false;
+            }
+
+            string remainderStr = cookie.Substring(nextAmp + 1);
+
+            if (!remainderStr.StartsWith(lastAdPreamble)) {
+                rejectString = "Invalid cookie format (no last_ad field): \"" + cookie + "\"";
+                return false;
+            }
+
+            try {
+                lastAd = UInt32.Parse(remainderStr.Substring(lastAdPreamble.Length));
+            }
+            catch (Exception) {
+                rejectString = "Invalid cookie format (bad last_ad value): \"" + cookie + "\"";
+                return false;
+            }
+
+            return true;
+        }
+
+        private uint Get1970Time()
+        {
+            TimeSpan delta1970 = DateTime.Now - new DateTime(1970, 1, 1);
+            return (uint)delta1970.TotalSeconds;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Dynamic GET
+        //
+
+        private void HandleGET(IHttpRequest! request)
+        {
+            const string commandPrefix = "command/";
+            string queryString = request.GetQueryString();
+
+            if ((queryString != null) && (queryString.Length > 0)) {
+                if (queryString.StartsWith(commandPrefix)) {
+                    HandleCommand(request, queryString.Substring(commandPrefix.Length));
+                }
+                else {
+                    // We must serve the file corresponding to
+                    // the queryString. We may or may not have to
+                    // perform substitution, depending on whether
+                    // a cookie is provided.
+                    string filePath = String.Format("{0}{1}", ContentDir, queryString);
+                    string cookie = request.GetHeader(CookieHeaderName);
+
+                    if ((cookie == null) || (cookie.Length == 0)) {
+                        // Just serve the file normally
+                        WriteFileResponse(request, filePath);
+                    }
+                    else {
+                        HandleSubstitution(request, filePath, cookie);
+                    }
+                }
+            }
+            else {
+                WriteMessageResponse(request, "A query string is required with a GET operation");
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Housekeeping commands
+        //
+
+        // Validate string only contains integers
+        private static string CheckDigits(string s)
+        {
+            if (s == null) return null;
+            for (int i = 0; i < s.Length; i++) {
+                if (s[i] < '0' || s[i] > '9') {
+                    return null;
+                }
+            }
+            return s;
+        }
+
+        private static bool RunCommand(string[]! commandLine)
+        {
+            try {
+                Process! process = new Process(commandLine);
+                process.Start();
+                process.Join();
+                // XXX could check exit status, but process will print
+                // error to stdout.
+                process.Dispose(true);
+                return true;
+            }
+            catch (ProcessCreateException) {
+                return false;
+            }
+        }
+
+        private void HandleReset(IHttpRequest! request, string[]! arguments)
+        {
+            string maxLoad    = null;
+            string pointTime  = null;
+            string maxThreads = null;
+            string expired1   = null;
+            string expired2   = null;
+            string urlRoot    = null;
+
+            for (int i = 0; i < arguments.Length; i++) {
+                int remain =  arguments.Length - i - 1;
+
+                // All values are key-value, except expiry list which
+                // has two values.  If there's not at least one argument
+                // it's a bogus request.
+                if (remain == 0)
+                    break;
+
+                if (arguments[i] == "maxload") {
+                    maxLoad = CheckDigits(arguments[++i]);
+                    if (maxLoad == null) {
+                        WriteMessageResponse(request, "Bad 'maxload' element in GET request");
+                        return;
+                    }
+                }
+                else if (arguments[i] == "pttime") {
+                    pointTime = CheckDigits(arguments[++i]);
+                    if (pointTime == null) {
+                        WriteMessageResponse(request, "Bad 'pttime' in element GET request");
+                        return;
+                    }
+                }
+                else if (arguments[i] == "maxthread") {
+                    maxThreads = CheckDigits(arguments[++i]);
+                    if (maxThreads == null) {
+                        WriteMessageResponse(request, "Bad 'maxthread' in element GET request");
+                        return;
+                    }
+                }
+                else if (arguments[i] == "exp") {
+                    if (remain < 2) {
+                        WriteMessageResponse(request, "Bad 'expired_list' element in GET request");
+                        return;
+                    }
+                    expired1 = CheckDigits(arguments[++i]);
+                    if (expired1 == null) {
+                        WriteMessageResponse(request, "Bad 'expired_list[0]' element in GET request");
+                        return;
+                    }
+                    expired2 = CheckDigits(arguments[++i]);
+                    if (expired2 == null) {
+                        WriteMessageResponse(request, "Bad 'expired_list[1]' element in GET request");
+                        return;
+                    }
+                }
+                else if (arguments[i] == "urlroot") {
+                    urlRoot = arguments[++i];
+                }
+            }
+
+            if (maxLoad == null) {
+                WriteMessageResponse(request, "Missing 'maxload' element in GET request.");
+                return;
+            }
+            else if (pointTime == null) {
+                WriteMessageResponse(request, "Missing 'pttime' element in GET  request.");
+                return;
+            }
+            else if (maxThreads == null) {
+                WriteMessageResponse(request, "Missing 'maxthreads' element in GET request.");
+                return;
+            }
+            else if ((expired1 == null) || (expired2 == null)) {
+                WriteMessageResponse(request, "Missing 'expired_list' element in GET request.");
+                return;
+            }
+            else if (urlRoot == null) {
+                WriteMessageResponse(request, "Missing 'url_root' element in GET request.");
+                return;
+            }
+
+            // This might fail if the file didn't already exist
+            FileUtils.DeleteFile(CustomAdsFile);
+
+            string []! cadgen = new string[] { "/init/cadgen99",
+                                               "-C", ContentDir,
+                                               "-e", pointTime,
+                                               "-t", maxThreads,
+                                               expired1, expired2};
+            if (RunCommand(cadgen) == false) {
+                WriteMessageResponse(request, "Failed to run cadgen.");
+                return;
+            }
+
+            if (!customAdsFile.Refresh()) {
+                WriteMessageResponse(request, "Failed to load ads file");
+                return;
+            }
+
+            if (((!)customAdsFile.FileData).Length < CustomAdsFileBytes) {
+                WriteMessageResponse(request, "Custom ads file was too small after generation");
+                return;
+            }
+
+            // This might fail if the file didn't already exist
+            FileUtils.DeleteFile(UserPersonalityFile);
+
+            string []! upfgen = new string[] {"/init/upfgen99",
+                                              "-C", ContentDir,
+                                              "-n", maxLoad,
+                                              "-t", maxThreads};
+            if (RunCommand(upfgen) == false) {
+                WriteMessageResponse(request, "Failed to run upfgen.");
+                return;
+            }
+
+            if (!userPersonalityFile.Refresh()) {
+                WriteMessageResponse(request, "Failed to load user personality file");
+                return;
+            }
+
+            if (!ResetPostLog()) {
+                WriteMessageResponse(request, "Failed to reset the PostLog file");
+                return;
+            }
+
+            // Signal success with a blank message page
+            WriteMessageResponse(request, "");
+        }
+
+        private void HandleCommand(IHttpRequest! request, string! command)
+        {
+            if (command == "Fetch") {
+                // Lock on this to protect the PostLog
+                lock (this) {
+                    FileContract.Imp fileImp = FileUtils.OpenFile(PostLogFile);
+
+                    if (fileImp != null) {
+                        WriteFileResponse(request, fileImp);
+                        delete fileImp;
+                    }
+                    else {
+                        WriteMessageResponse(request, "Error opening PostLog file");
+                    }
+                }
+            }
+            else if (command.StartsWith("Reset&")) {
+                HandleReset(request,
+                            command.Split(new char [] { '&', '=', ',' }));
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Dynamic POST support
+        //
+
+        private void HandlePOST(IHttpRequest! request)
+        {
+            string cookie = request.GetHeader(CookieHeaderName);
+
+            if ((cookie == null) || (cookie.Length == 0)) {
+                WriteMessageResponse(request, "POST requires a 'Cookie' header");
+                return;
+            }
+
+            byte[] bodyData = request.GetBodyData();
+
+            if ((bodyData == null) || (bodyData.Length == 0)) {
+                WriteMessageResponse(request, "POST requires body data");
+                return;
+            }
+
+            //
+            // Parse the POST data
+            //
+            string urlRoot = null;
+            int dirNum = -1, classNum = -1, fileNum = -1, clientNum = -1;
+            string body = Encoding.ASCII.GetString(bodyData);
+            string[] fragments = body.Split(new char[] { '=', '&' } );
+
+            for (int i = 0; i < fragments.Length; i += 2) {
+                if (fragments[i] == "urlroot") {
+                    urlRoot = fragments[i + 1];
+                }
+                else if (fragments[i] == "dir") {
+                    try {
+                        dirNum = Int32.Parse(fragments[i + 1]);
+                    }
+                    catch (Exception) {
+                        WriteMessageResponse(request, "Bad 'dir' element in POST data");
+                        return;
+                    }
+                }
+                else if (fragments[i] == "class") {
+                    try {
+                        classNum = Int32.Parse(fragments[i + 1]);
+                    }
+                    catch (Exception) {
+                        WriteMessageResponse(request, "Bad 'class' element in POST data");
+                        return;
+                    }
+                }
+                else if (fragments[i] == "num") {
+                    try {
+                        fileNum = Int32.Parse(fragments[i + 1]);
+                    }
+                    catch (Exception) {
+                        WriteMessageResponse(request, "Bad 'num' element in POST data");
+                        return;
+                    }
+
+                }
+                else if (fragments[i] == "client") {
+                    try {
+                        clientNum = Int32.Parse(fragments[i + 1]);
+                    }
+                    catch (Exception) {
+                        WriteMessageResponse(request, "Bad 'client' element in POST data");
+                        return;
+                    }
+                }
+                else {
+                    WriteMessageResponse(request, "Invalid POST data item \"" + fragments[i] + "\"");
+                    return;
+                }
+            }
+
+            if (urlRoot == null) {
+                WriteMessageResponse(request, "Missing 'urlroot' item in POST data");
+                return;
+            }
+            else if (dirNum == -1) {
+                WriteMessageResponse(request, "Missing 'dir' item in POST data");
+                return;
+            }
+            else if (classNum == -1) {
+                WriteMessageResponse(request, "Missing 'class' item in POST data");
+                return;
+            }
+            else if (fileNum == -1) {
+                WriteMessageResponse(request, "Missing 'num' item in POST data");
+                return;
+            }
+            else if (clientNum == -1) {
+                WriteMessageResponse(request, "Missing 'client' item in POST data");
+                return;
+            }
+
+            //
+            // Parse the cookie data
+            //
+            string cookieReject;
+            uint myCookie, lastAd;
+
+            if (!ParseCookie(cookie, out myCookie, out lastAd, out cookieReject)) {
+                WriteMessageResponse(request, (!)cookieReject);
+                return;
+            }
+
+            string filePath = String.Format("{0}{1}dir{2}/class{3}_{4}", ContentDir, urlRoot,
+                                            dirNum.ToString("d05"), classNum, fileNum);
+
+            // Write out all the parsed data
+            if (!AppendToPostLog((uint)dirNum, (uint)classNum, (uint)fileNum,
+                                 (uint)clientNum, filePath, (uint)myCookie)) {
+                WriteMessageResponse(request, "Error writing to PostLog file");
+                return;
+            }
+
+            FileContract.Imp fileImp = FileUtils.OpenFile(filePath);
+
+            if (fileImp != null) {
+                request.SendHeader(CookiePushHeaderName, "my_cookie=" + myCookie.ToString());
+                WriteFileResponse(request, fileImp);
+                delete fileImp;
+            }
+            else {
+                WriteMessageResponse(request, "Couldn't open file: \"" + filePath + "\"");
+                return;
+            }
+        }
+
+        private bool ResetPostLog()
+        {
+            lock (this) {
+                // OK to ignore the result of this; the file
+                // may not exist.
+                FileUtils.DeleteFile(PostLogFile);
+
+                if (FileUtils.CreateFile(PostLogFile) != 0) {
+                    return false;
+                }
+
+                FileContract.Imp fileImp = FileUtils.OpenFile(PostLogFile);
+
+                if (fileImp == null) {
+                    return false;
+                }
+
+                try {
+                    long written = FileUtils.Write(fileImp, 0, PostLogInitData);
+
+                    if (written < PostLogInitData.Length) {
+                        return false;
+                    }
+                }
+                finally {
+                    delete fileImp;
+                }
+            }
+
+            return true;
+        }
+
+        private bool AppendToPostLog(uint dirNum, uint classNum, uint fileNum,
+                                     uint clientNum, string fileName, uint cookieNum)
+        {
+            lock (this) {
+                FileContract.Imp fileImp = FileUtils.OpenFile(PostLogFile);
+
+                if (fileImp == null) {
+                    return false;
+                }
+
+                try {
+                    // First, read in the header so we can increment the record count
+                    byte[] header = new byte[PostLogHeaderSize];
+                    if (FileUtils.Read(fileImp, 0,PostLogHeaderSize , 0, header) != PostLogHeaderSize) {
+                        return false;
+                    }
+
+                    int numExistingRecords;
+
+                    try {
+                        numExistingRecords = Int32.Parse(
+                            Encoding.ASCII.GetString(header, 0, PostLogHeaderSize - 1));
+                    }
+                    catch (Exception) {
+                        return false;
+                    }
+
+                    // Increment the record count and rewrite the header
+                    string newHeaderStr = String.Format("{0,10}\n", numExistingRecords + 1);
+                    byte[] newHeader = Encoding.ASCII.GetBytes(newHeaderStr);
+                    assert newHeader.Length == (int)PostLogHeaderSize;
+
+                    if (FileUtils.Write(fileImp, 0, newHeader) != PostLogHeaderSize) {
+                        return false;
+                    }
+
+                    // Write a new record to the appropriate offset in the file
+                    long newRecordOffset = (numExistingRecords * PostLogRecordSize) + PostLogHeaderSize;
+                    string newEntryStr = String.Format(
+                        "{0,10} {1,10} {2,10} {3,5} {4,2} {5,2} {6,10} {7,-60} {8,10} {9,10}\n",
+                        numExistingRecords + 1, Get1970Time(), ProcessService.GetCurrentProcessId(),
+                        dirNum, classNum, fileNum, clientNum, fileName, ProcessService.GetCurrentProcessId(),
+                        cookieNum);
+
+                    byte[] newEntry = Encoding.ASCII.GetBytes(newEntryStr);
+                    assert newEntry.Length == (int)PostLogRecordSize;
+
+                    if (FileUtils.Write(fileImp, newRecordOffset, newEntry) != PostLogRecordSize) {
+                        return false;
+                    }
+                }
+                finally {
+                    delete fileImp;
+                }
+            }
+
+            return true;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // Substitution / ad-rotation support
+        //
+
+        private void SubstituteAt(byte[]! in ExHeap buffer, int offset, uint adId)
+        {
+            assert offset + SubstitutionPatternLength <= buffer.Length;
+            string! num1 = (!)(adId / 36).ToString("d05");
+            string! num2 = (!)((adId % 36) / 9).ToString();
+            string! num3 = (!)(adId % 9).ToString();
+
+            for (int i = 0; i < 5; i++) {
+                buffer[offset + SubstituteNum1Pos + i] = (byte)num1[i];
+            }
+
+            buffer[offset + SubstituteNum2Pos] = (byte)num2[0]; // should be a single char
+            buffer[offset + SubstituteNum3Pos] = (byte)num3[0]; // ditto
+        }
+
+        private int SubstituteInBlock(byte[]! in ExHeap buffer, uint maxBytes, uint adId)
+        {
+            // NOTE: the idea here is to find the randomly placed
+            // markers in the file block and doctor them. The only
+            // difficulty arises if there is a match of the prefix
+            // of our search pattern at the end of a block (that is,
+            // the pattern to match straddles a block boundary).
+            // As a naive solution to this, if we detect such a case, we
+            // return an amount to step back in the file so the next block
+            // will contain the entire match-pattern. If we were smarter
+            // we could keep state between invocations, instead.
+            int startMatch = 0;
+            int matchDepth = 0;
+            int matchPatternLength = MatchPattern.Length;
+
+            // Make this unsafe to skip the insane overhead of non-hoisted
+            // ExHeap vector accesses
+            unsafe {
+                byte *pSrc = &buffer[0];
+                fixed (byte *pMatch = &MatchPattern[0]) {
+                    while (startMatch < maxBytes) {
+                        if (pSrc[startMatch] == pMatch[0]) {
+                            do {
+                                ++matchDepth;
+
+                                if (matchDepth == matchPatternLength) {
+                                    // Found a match!
+                                    SubstituteAt(buffer, startMatch, adId);
+                                }
+
+                                if (startMatch + matchDepth >= maxBytes) {
+                                    // We were in the middle of a match
+                                    // but hit the end of the buffer.
+                                    // Step back by one disk sector
+                                    return 512;
+                                }
+                            } while (pSrc[startMatch + matchDepth] == pMatch[matchDepth]);
+
+                            startMatch += matchDepth;
+                            matchDepth = 0;
+                        }
+                        else {
+                            startMatch++;
+                        }
+                    }
+                }
+            }
+
+            return 0;
+        }
+
+        private void WriteSubstitutedFile(IHttpRequest! request,
+                                          string! filePath, uint adId)
+        {
+            FileContract.Imp fileImp = FileUtils.OpenFile(filePath);
+
+            if (fileImp == null) {
+                WriteMessageResponse(request, "Couldn't open file " + filePath);
+                return;
+            }
+
+            WriteResponseHtmlPreamble(request);
+
+            try {
+                long readSize = 1024 * 16; // 16KB
+                long readOffset = 0;
+                bool keepReading = true;
+
+                do {
+                    byte[] in ExHeap buf = new[ExHeap] byte[readSize];
+                    fileImp.SendRead(buf, 0, readOffset, readSize);
+
+                    switch receive {
+                        case fileImp.AckRead( _buf, long bytesRead, int error) :
+                            if ((error != 0) || (_buf == null)) {
+                                if (_buf != null) {
+                                    delete _buf;
+                                }
+
+                                keepReading = false;
+                            }
+                            else {
+                                byte[]! in ExHeap original = _buf;
+                                bool atEnd = (bytesRead < readSize);
+
+                                if (bytesRead > 0) {
+                                    int stepBack = SubstituteInBlock(original, (uint)bytesRead, adId);
+
+                                    // Ignore any partial matches that occur at the very
+                                    // end of the file
+                                    if (atEnd) {
+                                        stepBack = 0;
+                                    }
+
+                                    if ((stepBack > 0) || (bytesRead < readSize)) {
+                                        // Discard the excess portion of the block
+                                        delete Bitter.SplitOff(ref original,
+                                                                                      (int)(bytesRead - stepBack));
+                                    }
+
+                                    request.SendBodyData(original);
+                                    readOffset += (bytesRead - stepBack);
+                                }
+                                else {
+                                    // By coincidence, our previous read took us to
+                                    // exactly the end of the file. We should
+                                    // optimize this away somehow
+                                    delete original;
+                                }
+
+                                keepReading = !atEnd;
+                            }
+                            break;
+
+                        case fileImp.ChannelClosed() :
+                            keepReading = false;
+                            break;
+                    }
+                } while (keepReading);
+            }
+            finally {
+                delete fileImp;
+            }
+
+            WriteResponseHtmlPostamble(request);
+        }
+
+
+        private bool RetrieveAdData(uint adIndex, out uint demographics,
+                                    out uint weightings, out uint minMatch,
+                                    out uint expiry)
+        {
+            demographics = weightings = minMatch = expiry = 0;
+
+            byte[] fileData = customAdsFile.FileData;
+
+            if (fileData == null) {
+                return false;
+            }
+
+            if (fileData.Length < CustomAdsFileBytes) {
+                return false;
+            }
+
+            try {
+                int startLine = (int)adIndex * (int)CustomAdsLineLength;
+
+                // debug!
+                string wholeLine = Encoding.ASCII.GetString(fileData, startLine, CustomAdsLineLength);
+
+                if (wholeLine == null) {
+                    DebugStub.Break();
+                }
+
+                string demoStr = Encoding.ASCII.GetString(fileData, startLine + 6, 8);
+                string weightStr = Encoding.ASCII.GetString(fileData, startLine + 15, 8);
+                string minMatchStr = Encoding.ASCII.GetString(fileData, startLine + 24, 3);
+                string expiryStr = Encoding.ASCII.GetString(fileData, startLine + 28, 10);
+
+                demographics = UInt32.Parse(demoStr,
+                                            System.Globalization.NumberStyles.AllowHexSpecifier |
+                                            System.Globalization.NumberStyles.AllowLeadingWhite);
+
+                weightings = UInt32.Parse(weightStr,
+                                          System.Globalization.NumberStyles.AllowHexSpecifier |
+                                          System.Globalization.NumberStyles.AllowLeadingWhite);
+
+                minMatch = UInt32.Parse(minMatchStr, System.Globalization.NumberStyles.AllowLeadingWhite);
+                expiry = UInt32.Parse(expiryStr, System.Globalization.NumberStyles.AllowLeadingWhite);
+            }
+            catch (Exception) {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool RetrieveUserPersonality(uint userIndex, out uint demographics)
+        {
+            demographics = 0;
+            byte[] fileData = userPersonalityFile.FileData;
+
+            if (fileData == null) {
+                return false;
+            }
+
+            if (fileData.Length < UserPersonalityFileBytes) {
+                return false;
+            }
+
+            try {
+                int startLine = (int)userIndex * (int)UserPersonalityLineLength;
+
+                // debug!
+                string wholeLine = Encoding.ASCII.GetString(fileData, startLine,
+                                                            UserPersonalityLineLength);
+
+                if (wholeLine == null) {
+                    DebugStub.Break();
+                }
+
+                string demoStr = Encoding.ASCII.GetString(fileData, startLine + 6, 8);
+
+                demographics = UInt32.Parse(demoStr,
+                                            System.Globalization.NumberStyles.AllowHexSpecifier |
+                                            System.Globalization.NumberStyles.AllowLeadingWhite);
+            }
+            catch (Exception) {
+                return false;
+            }
+
+            return true;
+        }
+
+        private uint GenderWt(uint demVal)
+        { return (demVal & 0x000f0000) >> 16; }
+
+        private uint AgeGroupWt(uint demVal)
+        { return (demVal & 0x0000f000) >> 12; }
+
+        private uint RegionWt(uint demVal)
+        { return (demVal & 0x00000f00) >> 8; }
+
+        private uint InterestWt(uint demVal)
+        { return (demVal & 0x000000f0) >> 4; }
+
+        private uint Interest2Wt(uint demVal)
+        { return (demVal & 0x0000000f); }
+
+        private void HandleSubstitution(IHttpRequest! request,
+                                        string! filePath, string! cookie)
+        {
+            bool isSmallFile =
+                (filePath.IndexOf("class1") != -1) ||
+                (filePath.IndexOf("class2") != -1);
+
+            string cookieReject;
+            uint userId, lastAd;
+
+            if (!ParseCookie(cookie, out userId, out lastAd, out cookieReject)) {
+                WriteMessageResponse(request, (!)cookieReject);
+                return;
+            }
+
+            if (userId < 10000) {
+                WriteMessageResponse(request, "UserID was less than 10,000");
+                return;
+            }
+
+            uint userIndex = userId - 10000;
+            uint userPersonality;
+            uint adIndex = lastAd + 1;
+
+            if (adIndex >= CustomAdsLines) {
+                adIndex = 0;
+            }
+
+            if (!RetrieveUserPersonality(userIndex, out userPersonality)) {
+                // BUGBUG: the spec is unclear here; there is no adId to use.
+                request.SendHeader(CookiePushHeaderName,
+                                   "found_cookie=Ad_Id=-1&Ad_weight=00&Expired=1");
+                WriteFileResponse(request, filePath);
+            }
+
+            uint adWeight = 0;
+            bool expired = false;
+
+            while (adIndex != lastAd) {
+                adWeight = 0;
+                expired = false;
+                uint adDemographics, weightings, minMatch, expiry;
+
+                bool gotAd = RetrieveAdData(adIndex, out adDemographics,
+                                            out weightings, out minMatch, out expiry);
+                assert gotAd; // we checked the cached adfile above
+
+                uint combinedDemographics = userPersonality & adDemographics;
+
+                if ((combinedDemographics & GENDER_MASK) != 0) {
+                    adWeight = adWeight + GenderWt(adDemographics);
+                }
+
+                if ((combinedDemographics & AGE_GROUP_MASK) != 0) {
+                    adWeight = adWeight + AgeGroupWt(adDemographics);
+                }
+
+                if ((combinedDemographics & REGION_MASK) != 0) {
+                    adWeight = adWeight + RegionWt(adDemographics);
+                }
+
+                if ((combinedDemographics & INTEREST1_MASK) != 0) {
+                    adWeight = adWeight + InterestWt(adDemographics);
+                }
+
+                if ((combinedDemographics & INTEREST2_MASK) != 0) {
+                    adWeight = adWeight + Interest2Wt(adDemographics);
+                }
+
+                if (adWeight >= minMatch) {
+                    // Found an acceptable match
+                    uint now1970Delta = Get1970Time();
+
+                    if (now1970Delta > expiry) {
+                        expired = true;
+                    }
+
+                    request.SendHeader(CookiePushHeaderName,
+                                       "found_cookie=Ad_id=" + adIndex +
+                                       "&Ad_weight=" + adWeight +
+                                       "&Expired=" + (expired ? "1" : "0"));
+
+                    if (isSmallFile) {
+                        WriteSubstitutedFile(request, filePath, adIndex);
+                        return;
+                    }
+                    else {
+                        WriteFileResponse(request, filePath);
+                        return;
+                    }
+                }
+
+                adIndex++;
+                if (adIndex >= CustomAdsLines) {
+                    adIndex = 0; // wrap around
+                }
+            }
+
+            request.SendHeader(CookiePushHeaderName,
+                               "found_cookie=Ad_id=" + adIndex +
+                               "&Ad_weight=" + adWeight +
+                               "&Expired=" + (expired ? "1" : "0"));
+
+            if (isSmallFile) {
+                WriteSubstitutedFile(request, filePath, adIndex);
+            }
+            else {
+                WriteFileResponse(request, filePath);
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        //
+
+        internal static int AppMain(Parameters! config)
+        {
+            //Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            WebAppContract.Exp conn = config.webAppRef.Acquire();
+            if (conn == null) {
+                // Wrong contract type!
+                return -1;
+            }
+
+            conn.SendWebAppReady();
+            SPECWeb99WebAppIn webApp = new SPECWeb99WebAppIn();
+            Driver.ServiceChannel(webApp, conn);
+            delete conn;
+            return 0;
+        }
+    }
+}

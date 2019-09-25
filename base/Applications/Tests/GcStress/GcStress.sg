@@ -1,0 +1,165 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+using System;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Stress.Contracts;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [BoolParameter( "kernel", Default=false, HelpMessage="Run kernel test.")]
+        internal bool doKernelTest;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return GcStress.AppMain(this);
+        }
+    }
+    
+    public class GcStress : Microsoft.Singularity.Stress.GcStress
+    {
+        override protected void Print(string! s)
+        {
+            Console.Write(s);
+        }
+
+        //[ShellCommand("gcstress", "Stress garbage collector")]
+        internal static int AppMain(Parameters! config)
+        {
+            const int ARGS_START = 1;
+
+            if (!config.doKernelTest) {
+                new GcStress().Run();
+            }
+            else {
+                DirectoryServiceContract.Imp! epNS = DirectoryService.NewClientEndpoint();
+
+                try {
+                    StressContract.Imp! imp;
+                    StressContract.Exp! exp;
+                    StressContract.NewChannel(out imp, out exp);
+                    
+                    ErrorCode errorOut; 
+                    bool ok = SdsUtils.Bind(StressContract.ModuleName, epNS, exp, out errorOut);
+                    if (!ok) {
+                        Console.Write("failure on lookup of name " + StressContract.ModuleName
+                                      + "reason: " + SdsUtils.ErrorCodeToString(errorOut));
+                    delete imp;
+                    if (errorOut == ErrorCode.ChannelClosed) {
+                        throw new Exception("Encountered a ChannelClosed");
+                    }
+                    return 1;
+                   } 
+                   else {
+                        switch receive {
+                            case imp.Ready() :
+                                break;
+                            case imp.ContractNotSupported() :
+                                Console.Write("failure: contract not supported");
+                                delete imp;
+                                return 1;
+                            case imp.ChannelClosed() :
+                                Console.Write("failure: channel closed prematurely");
+                                delete imp;
+                                return 1;
+                        }
+                        imp.SendGcStress();
+                        while (true) {
+                            switch receive {
+                                case imp.Print(char[] in ExHeap s) :
+                                    Console.Write(Bitter.ToString(s));
+                                    imp.SendAckPrint();
+                                    delete s;
+                                    break;
+
+                                case imp.GcStressDone() :
+                                    delete imp;
+                                    return 0;
+
+                                case imp.ChannelClosed() :
+                                    delete imp;
+                                    return 0;
+                            }
+                        }
+                    }
+// 
+////                    epNS.SendBind(Bitter.FromString2(StressContract.ModuleName), exp);
+//
+//                  switch receive {
+//                      case epNS.NakBind(rejected, error) :
+//                          // failure
+//                          Console.Write("failure on lookup of name " + StressContract.ModuleName);
+//                          delete imp;
+//                          delete rejected;
+//                          return 1;
+//
+//                      case epNS.AckBind() :
+//                          // success
+//                          switch receive {
+//                              case imp.Ready() :
+//                                  break;
+//                              case imp.ContractNotSupported() :
+//                                  Console.Write("failure: contract not supported");
+//                                  delete imp;
+//                                  return 1;
+//                              case imp.ChannelClosed() :
+//                                  Console.Write("failure: channel closed prematurely");
+//                                  delete imp;
+//                                  return 1;
+//                          }
+//                          imp.SendGcStress();
+//                          while (true) {
+//                              switch receive {
+//                                  case imp.Print(char[] in ExHeap s) :
+//                                      Console.Write(Bitter.ToString(s));
+//                                      imp.SendAckPrint();
+//                                      delete s;
+//                                      break;
+//
+//                                  case imp.GcStressDone() :
+//                                      delete imp;
+//                                      return 0;
+//
+//                                  case imp.ChannelClosed() :
+//                                      delete imp;
+//                                      return 0;
+//                              }
+//                          }
+//                      case epNS.ChannelClosed() :
+//                          throw new Exception("epNS channel closed");
+//                  }
+//                    
+                }
+                finally {
+                    delete epNS;
+                }
+            }
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,205 @@
+//------------------------------------------------------------------------------
+//   Copyright (c) Microsoft Corporation. All Rights Reserved.
+//------------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.WebServer
+{
+    using System;
+    using System.Collections;
+    using System.Globalization;
+    using System.IO;
+    using System.Net;
+    using System.Net.Sockets;
+    using System.Threading;
+    using System.Runtime.InteropServices;
+    using System.Web;
+
+    internal sealed class Listener
+    {
+        // New-Connection to GC Ratio (Default).
+        // BUGBUG: When 992 and 1024 fixed, set to UInt64.Max or remove.
+        private const ulong DefaultConnectionToGCRatio = 256;
+        
+        // =======================
+        // The original version of Cassini uses the .NET thread pool to run
+        // certain methods. There is currently no thread pool available on Singularity,
+        // so I adapted Cassini to spin up threads on demand instead. These helper
+        // objects assist with this; we could go back and remove them when
+        // thread pools become available, if we wanted.
+        // =======================   
+
+        internal abstract class ThreadObject
+        {
+            protected abstract void Run();
+
+            public void Start()
+            {
+                ThreadStart threadStart = new ThreadStart(Run);
+                Thread selfThread = new Thread(threadStart);
+                selfThread.Start();
+            }
+        }
+
+        internal class AcceptThread : ThreadObject
+        {
+            private Listener! listener;
+            private Socket! socket;
+
+            public AcceptThread(Listener! listener, Socket! socket)
+            {
+                this.listener = listener;
+                this.socket = socket;
+                base();
+            }
+
+            protected override void Run()
+            {
+                listener.OnSocketAccept(socket);
+            }
+        }
+
+        internal class StartThread : ThreadObject
+        {
+            private Listener! listener;
+
+            public StartThread(Listener! listener)
+            {
+                this.listener = listener;
+                base();
+            }
+
+            protected override void Run()
+            {
+                listener.OnStart();
+            }
+        }
+
+        // =======================
+        // end helper objects
+        // =======================   
+
+
+        private int port;
+        private string! clientIP;
+        private ulong connectionCount;
+        private ulong connectionToGCRatio;
+
+        private bool shutdownInProgress;
+
+        private Socket socket;
+
+        private bool silentMode, debugMode;
+
+        public Listener(int port, string! clientIP, bool doSilent, bool doDebug)
+        {
+            this.port = port;
+            this.clientIP = clientIP;
+            this.connectionCount = 0;
+            this.connectionToGCRatio = Listener.DefaultConnectionToGCRatio;
+            this.silentMode = doSilent;
+            this.debugMode = doDebug;
+            
+            base();
+        }
+
+        public int Port
+        {
+            get {
+                return port;
+            }
+        }
+
+        public string! ClientIP
+        {
+            get {
+                return clientIP;
+            }
+        }
+
+        public string! RootUrl
+        {
+            get {
+                if (port != 80) {
+                    return "http://localhost:" + port;
+                }
+                else {
+                    return "http://localhost";
+                }
+            }
+        }
+
+        //
+        // Socket listening
+        //
+
+        public void Start()
+        {
+            socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            socket.Bind(new IPEndPoint(IPAddress.Any, port));
+            socket.Listen((int)SocketOptionName.MaxConnections);
+
+            //ThreadPool.QueueUserWorkItem(_onStart);
+            (new StartThread(this)).Start();
+        }
+
+        public void Stop()
+        {
+            shutdownInProgress = true;
+
+            try {
+                if (socket != null) {
+                    socket.Shutdown(SocketShutdown.Both);
+                    socket.Close();
+                }
+            }
+            catch {
+            }
+            finally {
+                socket = null;
+            }
+        }
+
+        protected void OnSocketAccept(Socket! acceptedSocket)
+        {
+            if (!shutdownInProgress) {
+                Connection conn =  new Connection(this, acceptedSocket);
+
+                // wait for at least some input
+                if (conn.WaitForRequestBytes() == 0) {
+                    conn.WriteErrorAndClose(400);   // Bad Request
+                    return;
+                }
+
+                // Retrieve the request from the connection and process it.
+                Request request = new Request(conn, silentMode, debugMode);
+                request.Process();
+                
+                // Run the CG every 'N' connections to avoid Bugs 992 and 1024.
+                // Can be done at every connection if searching for memory leaks
+                connectionCount++;
+                if ((connectionCount % connectionToGCRatio) == 0ul) {
+                    GC.Collect();           // Free memory and fill finalizer Q.
+                    GC.WaitForPendingFinalizers();  // Dispose non-managed stuff
+                    GC.Collect();           // Free memory release by finalizing
+                }
+            }
+        }
+
+        protected void OnStart()
+        {
+            while (!shutdownInProgress) {
+                try {
+                    if (socket != null) // ROTORTODO
+                    {
+                        Socket requestingSocket = socket.Accept();
+                    //  ThreadPool.QueueUserWorkItem(_onSocketAccept, socket);
+                        (new AcceptThread(this, requestingSocket)).Start();
+                    }
+                }
+                catch {
+                    Thread.Sleep(100);
+                }
+            }
+        }
+    }
+}

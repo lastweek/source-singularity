@@ -1,0 +1,102 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace Smb.Protocol
+{
+    public enum SmbCommand
+    {
+        CreateDirectory = 0,
+        DeleteDirectory = 1,
+        OpenFile = 2,
+        CreateFile = 3,
+        CloseFile = 4,
+        FlushFile = 5,
+        DeleteFile = 6,
+        RenameFile = 7,
+        GetFileAttributes = 8,
+        SetFileAttributes = 9,
+        Read = 0xa,
+        Write = 0xb,
+        LockByteRange = 0xc,
+        UnlockByteRange = 0xd,
+        CreateTempFile = 0xe,
+        MakeNewFile = 0xf,
+        CheckDirectory = 0x10,
+        ProcessExit = 0x11,
+        Seek = 0x12,
+
+        LockAndRead = 0x13,
+        WriteAndUnlock = 0x14,
+        ReadRaw = 0x1A,
+        ReadMpx = 0x1B,
+        ReadMpxSecondary = 0x1C,// server to redir only
+        WriteRaw = 0x1D,
+        WriteMpx = 0x1E,
+        WriteMpxSecondary = 0x1F,
+        WriteComplete = 0x20,// server to redir only
+        QueryInformationSrv = 0x21,
+        SetInformation2 = 0x22,
+        QueryInformation2 = 0x23,
+        LockingAndx = 0x24,
+        Transaction = 0x25,
+        TransactionSecondary = 0x26,
+        Ioctl = 0x27,
+        IoctlSecondary = 0x28,
+        Copy = 0x29,
+        Move = 0x2A,
+        Echo = 0x2B,
+        WriteAndClose = 0x2C,
+        OpenAndx = 0x2D,
+        ReadAndX = 0x2E,
+        WriteAndX = 0x2F,
+
+        CloseAndTreeDisc = 0x31,
+        Transaction2 = 0x32,
+        Transaction2_SECONDARY = 0x33,
+        FindClose2 = 0x34,
+        FindNotifyClose = 0x35,
+
+
+        TreeConnect = 0x70,
+        TreeDisconnect = 0x71,
+        Negotiate = 0x72,
+        SessionSetupAndX = 0x73,
+        LogoffAndX = 0x74,
+        TreeConnectAndX = 0x75,
+
+
+        GetDiskAttributes = 0x80,
+        SearchDirectory = 0x81,
+        Find = 0x82,
+        FindUnique = 0x83,
+        FindClose = 0x84,
+
+        NtTransact = 0xa0,
+        NtTransactSecondary = 0xa1,
+        NtCreateAndX = 0xa2,
+        NtCancel = 0xa4,
+        NtRename = 0xa5,
+
+
+        OpenPrintSpoolFile = 0xc0,
+        WriteToPrintSpoolFile = 0xc1,
+        ClosePrintSpoolFile = 0xc2,
+        ReturnPrintQueue = 0xc3,
+        SendSingleBlockMessage = 0xd0,
+        SendBroadcastMessage = 0xd1,
+        ForwardUserName = 0xd2,
+        CancelForward = 0xd3,
+        GetMachineName = 0xd4,
+        SendStartMultiBlock = 0xd5,
+        SendEndMultiBlock = 0xd6,
+        SendTextMultiBlock = 0xd7,
+    }
+
+}

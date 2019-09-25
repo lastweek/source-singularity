@@ -1,0 +1,1517 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SdsUtils.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Collections;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Directory
+{
+    public class SdsUtils
+    {
+        public static string! NodeTypeToString(NodeType n)
+        {
+            string s;
+            switch (n) {
+                case NodeType.Directory :
+                    s = "Directory";
+                    break;
+                case NodeType.File :
+                    s = "File";
+                    break;
+                case NodeType.IoMemory :
+                    s = "IoMemory";
+                    break;
+                case NodeType.ServiceProvider :
+                    s = "ServiceProvider";
+                    break;
+                case NodeType.SymLink :
+                    s = "SymLink";
+                    break;
+                case NodeType.BadNode :
+                    s = "BadNode";
+                    break;
+                default:
+                    s = "Impossible!";
+                    break;
+            }
+            return s;
+        }
+
+        public static string! ErrorCodeToString(ErrorCode code)
+        {
+            string s;
+            switch (code) {
+                case ErrorCode.NoError :
+                    s = "NoError";
+                    break;
+                case ErrorCode.AccessDenied :
+                    s = "AccessDenied";
+                    break;
+                case ErrorCode.AlreadyExists :
+                    s = "AlreadyExists";
+                    break;
+                case ErrorCode.BadArguments:
+                    s = "BadArguments";
+                    break;
+                case ErrorCode.ContractNotSupported :
+                    s = "ContractNotSupported";
+                    break;
+                case ErrorCode.DirectoryNotEmpty :
+                    s = "DirectoryNotEmpty";
+                    break;
+                case ErrorCode.NotFound :
+                    s = "NotFound";
+                    break;
+                case ErrorCode.ChannelClosed :
+                    s = "ChannelClosed";
+                    break;
+                case ErrorCode.Unsatisfiable :
+                    s = "Unsatisfiable";
+                    break;
+                case ErrorCode.NotImplemented :
+                    s = "NotImplemented";
+                    break;
+                case ErrorCode.NotSupported :
+                    s = "NotSupported";
+                    break;
+                case ErrorCode.CapacityReached :
+                    s = "CapacityReached";
+                    break;
+                case ErrorCode.InsufficientResources :
+                    s = "InsufficientResources";
+                    break;
+                case ErrorCode.DirectoryFull :
+                    s = "DirectoryFull";
+                    break;
+                case ErrorCode.NotDirectory :
+                    s = "NotDirectory";
+                    break;
+                case ErrorCode.NotLink :
+                    s = "NotLink";
+                    break;
+                case ErrorCode.NotProvider :
+                    s = "NotProvider";
+                    break;
+                case ErrorCode.NotFile :
+                    s = "NotFile";
+                    break;
+                case ErrorCode.IsOpen:
+                    s = "IsOpen";
+                    break;
+                case ErrorCode.Unknown :
+                    s = "Unknown";
+                    break;
+                default:
+                    s = "Impossible!";
+                    break;
+            }
+            return s;
+        }
+
+//------------------------------------------------------------------------------
+// DSP cache
+//------------------------------------------------------------------------------
+
+static SortedList!  dspCache            = new SortedList();
+static int          cacheUsers          = 0;  // serves as counting semaphore
+static bool         cacheShutdown       = false;
+static readonly Mutex! cacheEmpty       = new Mutex();
+static bool         flushCacheWaiting   = false;
+
+//
+// Atomically:
+//   - Checks the cache for the specified DSP, and returns it if present.
+//   - If not present, binds a new channel to the DSP and puts a TRef
+//     for it in the cache, but .Acquires() the contents and returns them.
+//
+// Regardless, call ReleaseCachedDSP() to return the channel to the cache
+// when done!
+//
+// The "ds" argument provides a DirectoryServiceContract through which to
+// bind to the requested service, if a cached channel is not available.
+//
+// Returns null if anything goes wrong, in which case errorOut is set
+//
+// This is public so that sdsutilsacl.sg can use it
+public static DirectoryServiceContract.Imp GetDSPChannel(DirectoryServiceContract.Imp:Ready! ds,
+                                                          string! prefix, out ErrorCode errorOut)
+{
+    errorOut = ErrorCode.NoError;
+    TRef<DirectoryServiceContract.Imp:Ready>  wrapper;
+
+    lock (dspCache) {
+        if (!cacheShutdown) {
+            object  o = dspCache[prefix];
+
+            if (o != null) {
+                //DebugStub.WriteLine("dspCache: {0} found in cache", __arglist (prefix));
+                wrapper = (TRef<DirectoryServiceContract.Imp:Ready>)o;
+            }
+            else {
+                // No cached channel found; create and bind one
+                //DebugStub.WriteLine("dspCache: {0} not found in cache; creating", __arglist(prefix));
+                DirectoryServiceContract.Imp! dsImp;
+                DirectoryServiceContract.Exp! dsExp;
+                DirectoryServiceContract.NewChannel(out dsImp, out dsExp);
+                bool bound =  BindDSP(prefix, ds, dsExp, out errorOut);
+
+                if (!bound) {
+                    delete dsImp;
+                    return null; // failure path;
+                }
+                else {
+                    dsImp.RecvSuccess();
+                }
+// This is internal so that sdsutilsacl.sg can use it
+
+                // Put a placeholder TRef into the cache to signal to other threads
+                // that this channel exists
+                wrapper = new TRef<DirectoryServiceContract.Imp:Ready>(dsImp);
+                dspCache.Add(prefix, wrapper);
+            }
+            cacheUsers++;
+        }
+        else {
+            wrapper = null;
+        }
+
+    } //lock
+
+    // Must Acquire() outside the lock{} construct lest we deadlock!
+    if (!cacheShutdown) {
+        assume(wrapper != null);
+        return wrapper.Acquire();
+    }
+    else return null;
+}
+
+// This is public so that sdsutilsacl.sg can use it
+public static void ReleaseDSPChannel(string! prefix, [Claims] DirectoryServiceContract.Imp:Ready! dsp)
+{
+    lock (dspCache) {
+        object  o = dspCache[prefix];
+
+        if (o == null) {
+            // Shouldn't happen; the caller is trying to release a channel back into the
+            // cache that was not acquired via GetDSPChannel.
+            assert false;
+        }
+        else {
+            ((TRef<DirectoryServiceContract.Imp:Ready>)o).Release(dsp);
+        }
+        if  (--cacheUsers == 0) {
+            // the cache is empty is there anyone we need to inform?
+            if (flushCacheWaiting) {
+                cacheEmpty.ReleaseMutex();
+            }
+        }
+    }
+}
+
+public static void FlushCache()
+{
+    lock (dspCache) {
+        cacheShutdown  = true;
+        if (cacheUsers == 0) {
+        }
+        else {
+            flushCacheWaiting = true;
+        }
+    }
+    if (flushCacheWaiting) {
+        cacheEmpty.WaitOne();
+    }
+
+    foreach (TRef<DirectoryServiceContract.Imp:Ready>! wrapper in dspCache) {
+        DirectoryServiceContract.Imp x =  wrapper.Acquire();
+        delete x;
+    }
+    dspCache.Clear();
+}
+
+// find the longest matching path prefix in the dspCache
+// if one is found start return the endpoint, prefix and remaining path
+// The function is linear.  Perf will not be a problem as there will be
+// few entries (< 10) =
+
+// TODO: should have wrapper to all the functions below that call
+// that call this function 1st like Bind/BindEx does
+
+public  static DirectoryServiceContract.Imp:Ready FindMaximalPreBoundDsp(
+                   string! path,
+                   DirectoryServiceContract.Imp:Ready! ds,
+                   out string! prefix,
+                   out string! remainder)
+{
+    string pre = "";
+    int longestLength = 0;
+    bool matchFound = false;
+
+    lock (dspCache) {
+        // look for the  longest match in the cache
+        for (int i = 0; i < dspCache.Count; i++) {
+            string s = (string) dspCache.GetKey(i);
+            if (s != null && s.Length > longestLength) {
+                string foo = path.Substring(0,Math.Min(path.Length, s.Length));
+                if (s == foo) {
+                    pre = s;
+                    remainder = path.Substring(Math.Min(path.Length, s.Length));
+                    longestLength = s.Length;
+                    matchFound = true;
+                }
+            }
+        }
+    } //lock
+
+    if (matchFound) {
+        ErrorCode errorOut;
+        prefix = pre;
+        remainder = path.Substring(pre.Length);
+        DirectoryServiceContract.Imp dsp = GetDSPChannel(ds, pre, out errorOut);
+        assert (dsp != null);
+        return dsp;
+    }
+    else {
+        prefix = "";
+        remainder = path;
+        return null;
+    }
+}
+
+//------------------------------------------------------------------------------
+// BindDSP
+//------------------------------------------------------------------------------
+
+        public static bool BindDSP(string! path, DirectoryServiceContract.Imp:Start! ds, [Claims] ServiceContract.Exp! exp, out ErrorCode errorOut)
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+
+            ds.SendBind(exPath,exp);
+            switch receive {
+                case ds.NakBind(rejected, error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    delete rejected;
+                    return false;
+
+                case ds.AckBind():
+                    // Success
+                    errorOut = ErrorCode.NoError;
+                    return true;
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    return false;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    //DebugStub.Break();
+                    errorOut = ErrorCode.Unsatisfiable;
+                    return false;
+                    break;
+
+                case ds.NakBindReparse(i_prefix,i_suffix,linkFound, rejected):
+                    DebugStub.Break();
+                    delete i_prefix;
+                    delete i_suffix;
+                    delete rejected;
+                    errorOut = ErrorCode.Unknown;
+                    return false;
+                    break;
+            }
+        }
+//------------------------------------------------------------------------------
+// Bind:  checks for a prefix match before calling the regular bind
+//------------------------------------------------------------------------------
+#if DOES_NOT_WORK
+        public static bool Bind(string! path, DirectoryServiceContract.Imp:Ready! ds,
+                                [Claims] ServiceContract.Exp! exp, out ErrorCode errorOut)
+        {
+            string! remainder;
+            string! prefix;
+
+            // see if we can short-circuit a whole bunch of work
+            DirectoryServiceContract.Imp:Ready cachedDsp =
+                FindMaximalPreBoundDsp(path, ds, out  prefix, out  remainder);
+            if (cachedDsp == null) {
+                return BindEx(path,ds,exp, out errorOut);
+            }
+            else {
+                bool ok = BindEx(remainder,cachedDsp,exp, out errorOut);
+                ReleaseDSPChannel(prefix, cachedDsp);
+                return ok;
+            }
+        }
+//------------------------------------------------------------------------------
+// BindEx
+//------------------------------------------------------------------------------
+
+        public static bool BindEx(string! path, DirectoryServiceContract.Imp:Ready! ds,
+                                [Claims] ServiceContract.Exp! exp, out ErrorCode errorOut)
+#else
+        public static bool Bind(string! path, DirectoryServiceContract.Imp:Ready! ds,
+                                [Claims] ServiceContract.Exp! exp, out ErrorCode errorOut)
+#endif
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+
+            ds.SendBind(exPath,exp);
+            switch receive {
+                case ds.NakBind(rejected, error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    delete rejected;
+                    return false;
+
+                case ds.AckBind():
+                    // Success
+                    errorOut = ErrorCode.NoError;
+                    return true;
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    return false;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    //DebugStub.Break();
+                    errorOut = ErrorCode.Unsatisfiable;
+                    return false;
+                    break;
+
+                case ds.NakBindReparse(i_prefix, i_suffix, linkFound, rejected):
+                    // traversed either a mount point or a link
+                    string pre = Bitter.ToString2(i_prefix);
+                    string suf = Bitter.ToString(i_suffix);
+                    delete i_prefix;
+                    delete i_suffix;
+
+#if DEBUG_X
+                    DebugStub.WriteLine("bind reparse: pre={0}, suf={1}, linkfound ={2}",
+                                       __arglist(pre,suf, linkFound? "true": "false"));
+#endif
+
+                    // Either a SymLink or a non-leaf provider node has been encountered.
+                    if (linkFound) {
+                        //reissue search
+                        // DebugStub.WriteLine("link: issuing rebind to '{0}'",__arglist(pre));
+                        return Bind(pre, ds, rejected, out errorOut);;
+                    }
+                    else {
+                        // Bind to the prefix ServiceProvider and continue search
+                        DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                        if (dsImp == null) {
+                            delete rejected;
+                            return false; // failure; code already in errorOut
+                        }
+
+                        try {
+                            if (null == suf) {
+                                // Strange to get a NakBindReparse with no suffix
+                                delete rejected;
+                                errorOut = ErrorCode.NotFound;
+                                return false;
+                            }
+                            else {
+                                // There is a trailing part still to bind
+                                return Bind(suf, dsImp, rejected, out errorOut);
+                            }
+                        }
+                        finally {
+                            ReleaseDSPChannel(pre, dsImp);
+                        }
+                    } //!linkFound
+                    break;
+            } //switch
+        } //Bind
+
+//------------------------------------------------------------------------------
+// CreateFile
+//------------------------------------------------------------------------------
+        public static  bool CreateFile (string! path,
+                                        DirectoryServiceContract.Imp:Start! ds,
+                                        out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+
+            ds.SendCreateFile(exPath);
+            switch receive {
+                case ds.NakCreateFile(error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    return false;
+
+                case ds.AckCreateFile():
+                    // Success
+                    errorOut = ErrorCode.NoError;
+                    return true;
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    return false;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    errorOut = ErrorCode.Unsatisfiable;
+                    return false;
+                    break;
+
+                case ds.NakCreateFileReparse(i_prefix,
+                                             i_suffix,
+                                             linkFound) :
+                    // traversed either a mount point or a link
+                    string pre= Bitter.ToString2(i_prefix);
+                    string suf= Bitter.ToString(i_suffix);
+                    delete i_prefix;
+                    delete i_suffix;
+
+                    DebugStub.WriteLine("CreateFile.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                        __arglist(pre,suf, linkFound? "true": "false"));
+
+                    // Either a SymLink or a non-leaf provider node has been encountered.
+                    if (linkFound) {
+                        //reissue search
+                        DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                        return CreateFile(pre, ds, out errorOut);
+                    }
+                    else {
+                        // Bind to the ServiceProvider and continue search
+                        DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+                        //DebugStub.WriteLine("sds create suf={0}", __arglist(suf));
+                        if (dsImp == null) {
+                            return false; // failure; code already in errorOut
+                        }
+
+                        try {
+                            if (null == suf) {
+                                // Strange to get a NakCreateFileReparse here
+                                errorOut = ErrorCode.Unknown;
+                                return false;
+                            }
+                            else {
+                                return CreateFile(suf, dsImp, out errorOut);
+                            }
+                        }
+                        finally {
+                            ReleaseDSPChannel(pre, dsImp);
+                        }
+                        break;
+                    } //!linkFound
+                    break;
+            } //switch
+        } //CreateFile
+
+//------------------------------------------------------------------------------
+// CreateDirectory
+//------------------------------------------------------------------------------
+        public static  bool CreateDirectory (string! path,
+                                      DirectoryServiceContract.Imp:Ready! ds,
+                                      out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendCreateDirectory(exPath);
+            try {
+                switch receive {
+                    case ds.NakCreateDirectory(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckCreateDirectory():
+                        // Success
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakCreateDirectoryReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("CreateDirectory.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            return CreateDirectory(pre, ds, out errorOut);
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakCreateDirectoryReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return CreateDirectory(suf, dsImp, out errorOut);
+                                }
+                            }
+                            finally {
+                                ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //CreateDirectory
+
+//------------------------------------------------------------------------------
+// CreateLink
+//------------------------------------------------------------------------------
+        public static  bool CreateLink (string! path,
+                                        string! value,
+                                        DirectoryServiceContract.Imp:Ready! ds,
+                                        out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            char[]! in ExHeap exValue;
+            exPath = Bitter.FromString2(path);
+            exValue = Bitter.FromString2(value);
+            bool results;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendCreateLink(exPath,exValue);
+            try {
+                switch receive {
+                    case ds.NakCreateLink(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckCreateLink():
+                        // Success
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakCreateLinkReparse(i_prefix,
+                                                 i_suffix,
+                                                 linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("CreateLink.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            results  = CreateLink(pre, value, ds, out errorOut);
+                            return results;
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakCreateLinkReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return CreateLink(suf,value, dsImp, out errorOut);
+                                }
+                            }
+                            finally {
+                                ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //CreateLink
+
+//------------------------------------------------------------------------------
+// DeleteFile
+//------------------------------------------------------------------------------
+        public static  bool DeleteFile(string! path,
+                                        DirectoryServiceContract.Imp:Ready! ds,
+                                        out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+            DebugStub.WriteLine("sds deletefile path={0}", __arglist(path));
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendDeleteFile(exPath);
+            try {
+                switch receive {
+                    case ds.NakDeleteFile(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                       DebugStub.WriteLine("sds delete file fails {0}", __arglist(error));
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckDeleteFile():
+                        // Success
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakDeleteFileReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("DeleteFile.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            results  = DeleteFile(pre, ds, out errorOut);
+                            return results;
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+                            DebugStub.WriteLine("sds deletefile: got dsp @ {0}. continuing", __arglist(pre));
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakDeleteFileReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    DebugStub.WriteLine("sds deletefile:  continuing with {0}", __arglist(suf));
+                                    return DeleteFile(suf, dsImp, out errorOut);
+                                }
+                            }
+                            finally {
+                                ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //DeleteFile
+
+//------------------------------------------------------------------------------
+// DeleteLink
+//------------------------------------------------------------------------------
+        public static  bool DeleteLink (string! path,
+                                        DirectoryServiceContract.Imp:Ready! ds,
+                                        out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendDeleteLink(exPath);
+            try {
+                switch receive {
+                    case ds.NakDeleteLink(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckDeleteLink():
+                        // Success
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakDeleteLinkReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("DeleteLink.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            results  = DeleteLink(pre, ds, out errorOut);
+                            return results;
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakDeleteLinkReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return DeleteLink(suf, dsImp, out errorOut);
+                                }
+                            }
+                            finally {
+                                ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //DeleteLink
+
+//------------------------------------------------------------------------------
+// GetLinkValue
+//------------------------------------------------------------------------------
+        public static  bool GetLinkValue (string! path,
+                                        DirectoryServiceContract.Imp:Ready! ds,
+                                        out string linkValue,
+                                        out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+            linkValue = null;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendGetLinkValue(exPath);
+            try {
+                switch receive {
+                    case ds.NakGetLinkValue(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckGetLinkValue(i_value):
+                        // Success
+                        linkValue = Bitter.ToString2(i_value);
+                        delete i_value;
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakGetLinkValueReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("GetLinkValue.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            results  = GetLinkValue(pre, ds, out linkValue, out errorOut);
+                            return results;
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakGetLinkValueReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return GetLinkValue(suf, dsImp, out linkValue, out errorOut);
+                                }
+                            }
+                            finally {
+                                ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //GetLinkValue
+
+//------------------------------------------------------------------------------
+// DeleteDirectory
+//------------------------------------------------------------------------------
+        public static  bool DeleteDirectory (string! path,
+                                        DirectoryServiceContract.Imp:Ready! ds,
+                                        out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendDeleteDirectory(exPath);
+            try {
+                switch receive {
+                    case ds.NakDeleteDirectory(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckDeleteDirectory():
+                        // Success
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakDeleteDirectoryReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("DeleteDirectory.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        //DebugStub.Break();
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            results  = DeleteDirectory(pre, ds, out errorOut);
+                            return results;
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                //DebugStub.Break();
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakDeleteDirectoryReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return DeleteDirectory(suf, dsImp, out errorOut);
+                                }
+                            }
+                            finally {
+                                ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //DeleteDirectory
+
+        public static bool IsMatch(string! name, string! pattern)
+        {
+            bool match = false;
+            bool continueMatch = true;
+            string prefix = null;
+            string postfix = null;
+
+            int starPos = pattern.IndexOf("*");
+
+            if (starPos != -1) {
+                if (starPos == 0) {
+                    prefix = null;
+                    postfix = pattern.Substring(1);
+                }
+                else if (starPos == pattern.Length - 1) {
+                    prefix = pattern.Substring(0, pattern.Length-1);
+                    postfix = null;
+                }
+                else {
+                    prefix = pattern.Substring(0, starPos);
+                    postfix = pattern.Substring(starPos+1);
+                }
+
+                if (prefix != null) {
+                    if (!name.StartsWith(prefix))
+                        continueMatch = false;
+                }
+                if (continueMatch && postfix != null) {
+                    if (!name.EndsWith(postfix)) {
+                        continueMatch = false;
+                    }
+                }
+                match = continueMatch;
+            }
+            else if (pattern == name) {
+                match = true;
+            }
+
+            //DebugStub.Print("name={0} pre={1} post={2} match={3}\n",
+            //                __arglist(name, prefix, postfix, match));
+            return match;
+        }
+
+//------------------------------------------------------------------------------
+//  Concatenate 2 sets of ExHeap EnumerationRecords
+//------------------------------------------------------------------------------
+        private static EnumerationRecords[]! in ExHeap Concat(
+            [Claims] EnumerationRecords[]! in ExHeap rec1,
+            [Claims] EnumerationRecords[]! in ExHeap rec2
+            )
+        {
+            int size =  rec1.Length + rec2.Length;
+            EnumerationRecords [] in ExHeap records =
+                        new [ExHeap] EnumerationRecords[size];
+
+            // copy both rec1 and rec2 into records
+
+            for (int i = 0; i < rec1.Length; i++) {
+                expose (records[i]) {
+                    expose (rec1[i]) {
+                        delete records[i].Path;
+                        records[i].Path = (!)rec1[i].Path;
+                        //allocate a byte to satisfy checker
+                        rec1[i].Path = new [ExHeap] char [1];
+                        records[i].Type = rec1[i].Type;
+                    }
+                }
+            }
+
+            for (int i = 0, j = rec1.Length; i < rec2.Length; i++, j++) {
+                expose (records[j]) {
+                    expose (rec2[i]) {
+                        delete records[j].Path;
+                        records[j].Path = (!)rec2[i].Path;
+                        //allocate a byte to satisfy checker
+                        rec2[i].Path = new [ExHeap] char [1];
+                        records[j].Type = rec2[i].Type;
+                    }
+                }
+            }
+
+            delete rec1;
+            delete rec2;
+
+            return records;
+        }
+//------------------------------------------------------------------------------
+// Find
+//------------------------------------------------------------------------------
+        public static  EnumerationRecords[] in ExHeap EnumerateDirectory(
+                                                     DirectoryServiceContract.Imp:Start! ds,
+                                                     out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            EnumerationRecords[] in ExHeap results;
+
+            ds.SendBeginEnumeration();
+            switch receive {
+                case ds.EnumerationTerminated(error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    return null;
+
+                case ds.EnumerationEntries(i_results, isMore):
+                    // Success
+                    EnumerationRecords[] in ExHeap temp;
+                    int size = i_results.Length;
+                    errorOut = ErrorCode.NoError;
+                    bool doAgain = isMore;
+                    if (doAgain) {
+                        while (doAgain) {
+                            DebugStub.WriteLine(" recvd [{0}], requesting additional enumeration",
+                                __arglist(size));
+                            ds.SendReadEnumeration();
+                            switch receive {
+                                case ds.EnumerationTerminated(error):
+                                    errorOut = error;
+                                    return i_results;
+                                case ds.EnumerationEntries(i_more_results, isMore2):
+                                    doAgain = isMore2;
+                                    size = i_more_results.Length;
+                                    if (!doAgain) {
+                                        i_results = Concat(i_results,i_more_results);
+                                        ds.SendEndEnumeration();
+                                        return i_results;
+                                        break;
+                                    }
+                                    else {
+                                        i_results = Concat(i_results,i_more_results);
+                                        break;
+                                    }
+                                    break;
+                                case ds.ChannelClosed():
+                                    // Directory channel closed unexpectedly
+                                    errorOut = ErrorCode.ChannelClosed;
+                                    delete i_results;
+                                    return null;
+                                    break;
+
+                                case unsatisfiable :
+                                    // should never happen.
+                                    delete i_results;
+                                    errorOut = ErrorCode.Unsatisfiable;
+                                    return null;
+                                    break;
+                            }
+                        }
+                        delete i_results;
+                        return null;
+                    }
+                    else {
+                        // DebugStub.WriteLine(" About to send END enumerate");
+                        ds.SendEndEnumeration();
+                        if (ds.InState(DirectoryServiceContract.EnumerateAck.Value)) DebugStub.Break();
+                        if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+                        return i_results;
+                    }
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    return null;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    errorOut = ErrorCode.Unsatisfiable;
+                    return null;
+                    break;
+
+            } //switch
+        } //Find
+
+//------------------------------------------------------------------------------
+// GetAttributes
+//------------------------------------------------------------------------------
+        public static  bool GetAttributes (string! path,
+                                           DirectoryServiceContract.Imp:Start! ds,
+                                           out FileAttributesRecord fileAttributes,
+                                           out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+            fileAttributes = new FileAttributesRecord();
+            ds.SendGetAttributes(exPath);
+            switch receive {
+                case ds.NakGetAttributes(error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    fileAttributes.FileSize = -1;
+                    fileAttributes.Type = NodeType.BadNode;
+                    return false;
+
+                case ds.AckGetAttributes(i_fileAttributes):
+                    // Success
+                    errorOut = ErrorCode.NoError;
+                    fileAttributes = i_fileAttributes;
+                    return true;
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    fileAttributes.FileSize = -1;
+                    fileAttributes.Type = NodeType.BadNode;
+                    return false;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    errorOut = ErrorCode.Unsatisfiable;
+                    fileAttributes.FileSize = -1;
+                    fileAttributes.Type = NodeType.BadNode;
+                    return false;
+                    break;
+
+                case ds.NakGetAttributesReparse(i_prefix, i_suffix, linkFound) :
+                    // traversed either a mount point or a link
+                    string! pre= Bitter.ToString2(i_prefix);
+                    string suf= Bitter.ToString(i_suffix);
+                    delete i_prefix;
+                    delete i_suffix;
+
+                    //DebugStub.WriteLine("GetAttributes.reparse: pre={0}, suf={1}, linkfound ={2}",
+                    //                    __arglist(pre,suf, linkFound? "true": "false"));
+
+                    // Either a SymLink or a non-leaf provider node has been encountered.
+                    if (linkFound) {
+                        //reissue search
+                        DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                        results = GetAttributes(pre, ds, out fileAttributes, out errorOut);
+                        return results;
+                    }
+                    else {
+                        // Bind to the ServiceProvider and continue search
+                        DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                        if (dsImp == null) {
+                            fileAttributes.FileSize = -1;
+                            fileAttributes.Type = NodeType.BadNode;
+                            return false; // failure; code already in errorOut
+                        }
+
+                        try {
+                            if (null == suf) {
+                                // Strange to get a NakGetAttributesReparse here!
+                                fileAttributes.FileSize = -1;
+                                fileAttributes.Type = NodeType.BadNode;
+                                errorOut = ErrorCode.Unknown;
+                                return false;
+                            }
+                            else {
+                                return GetAttributes(suf, dsImp, out fileAttributes,  out errorOut);
+                            }
+                        }
+                        finally {
+                            ReleaseDSPChannel(pre, dsImp);
+                        }
+                    } //!linkFound
+                    break;
+            } //switch
+        } //Find
+
+//------------------------------------------------------------------------------
+// Deregister
+//------------------------------------------------------------------------------
+        public static  bool Deregister (string! path,
+                                      DirectoryServiceContract.Imp:Start! ds,
+                                      out ServiceProviderContract.Imp:Start  service,
+                                      out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+            service = null;
+
+            ds.SendDeregister(exPath);
+            switch receive {
+                case ds.NakDeregister( error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    return false;
+
+                case ds.AckDeregister(ServiceProviderContract.Imp:Start ! i_service):
+                    // Success
+                    errorOut = ErrorCode.NoError;
+                    service = i_service;
+                    return true;
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    return false;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    errorOut = ErrorCode.Unsatisfiable;
+                    return false;
+                    break;
+
+                case ds.NakDeregisterReparse(i_prefix,
+                                           i_suffix,
+                                           linkFound) :
+
+                    // traversed either a mount point or a link
+                    string pre= Bitter.ToString2(i_prefix);
+                    string suf= Bitter.ToString(i_suffix);
+                    delete i_prefix;
+                    delete i_suffix;
+
+                    DebugStub.WriteLine("Deregister.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                        __arglist(pre,suf, linkFound? "true": "false"));
+
+                    // Either a SymLink or a non-leaf provider node has been encountered.
+                    if (linkFound) {
+                        //reissue search
+                        DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                        results  = Deregister(pre, ds, out service, out errorOut);
+                        return results;
+                    }
+                    else {
+                        // Bind to the ServiceProvider and continue search
+                        DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                        if (dsImp == null) {
+                            return false; // failure; code already in errorOut
+                        }
+
+                        try {
+                            if (null == suf) {
+                                // Strange to get a NakDeregisterReparse here!
+                                errorOut = ErrorCode.Unknown;
+                                return false;
+                            }
+                            else {
+                                return Deregister(suf, dsImp, out service,  out errorOut);
+                            }
+                        }
+                        finally {
+                            ReleaseDSPChannel(pre, dsImp);
+                        }
+                    } //!linkFound
+                    break;
+            } //switch
+        } //Deregister
+
+//------------------------------------------------------------------------------
+// Register
+//------------------------------------------------------------------------------
+        public static  bool Register (string! path,
+                                      DirectoryServiceContract.Imp:Start! ds,
+                                      [Claims] ServiceProviderContract.Imp! imp,
+                                      out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+            ds.SendRegister(exPath,imp);
+            switch receive {
+                case ds.NakRegister(ServiceProviderContract.Imp:Start rejected, error):
+                    // Failed: no such leaf node, or leaf node is not a file
+                    errorOut = error;
+                    delete rejected;
+                    return false;
+
+                case ds.AckRegister():
+                    // Success
+                    errorOut = ErrorCode.NoError;
+                    return true;
+                    break;
+
+                case ds.ChannelClosed():
+                    // Directory channel closed unexpectedly
+                    errorOut = ErrorCode.ChannelClosed;
+                    return false;
+                    break;
+
+                case unsatisfiable :
+                    // should never happen.
+                    errorOut = ErrorCode.Unsatisfiable;
+                    return false;
+                    break;
+
+                case ds.NakRegisterReparse(i_prefix,
+                                           i_suffix,
+                                           linkFound,
+                                           ServiceProviderContract.Imp:Start! rejected) :
+                    // traversed either a mount point or a link
+                    string pre= Bitter.ToString2(i_prefix);
+                    string suf= Bitter.ToString(i_suffix);
+                    delete i_prefix;
+                    delete i_suffix;
+
+                    DebugStub.WriteLine("Register.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                        __arglist(pre,suf, linkFound? "true": "false"));
+
+                    // Either a SymLink or a non-leaf provider node has been encountered.
+                    if (linkFound) {
+                        //reissue search
+                        DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                        results  = Register(pre, ds, rejected, out errorOut);
+                        return results;
+                    }
+                    else {
+                        // Bind to the ServiceProvider and continue search
+                        DirectoryServiceContract.Imp dsImp = GetDSPChannel(ds, pre, out errorOut);
+
+                        if (dsImp == null) {
+                            delete rejected;
+                            return false; // failure; code already in errorOut
+                        }
+
+                        try {
+                            if (null == suf) {
+                                // Strange to get a NakRegisterReparse here!
+                                delete rejected;
+                                errorOut = ErrorCode.Unknown;
+                                return false;
+                            }
+                            else {
+                                return Register(suf, dsImp, rejected,  out errorOut);
+                            }
+                        }
+                        finally {
+                            ReleaseDSPChannel(pre, dsImp);
+                        }
+                    } //!linkFound
+                    break;
+            } //switch
+        } //Register
+    } // class
+}

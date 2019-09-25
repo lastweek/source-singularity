@@ -1,0 +1,134 @@
+{
+open Lexing;;
+open Parse;;
+open Parse_util;;
+open Microsoft.FSharp.Compatibility.OCaml.Big_int;;
+}
+
+rule comment = parse
+| "*/" { () }
+| "*)" { () }
+| "/*" { comment lexbuf ; comment lexbuf }
+| "(*" { comment lexbuf ; comment lexbuf }
+| "\n\r" { incr line; comment lexbuf }
+| "\r\n" { incr line; comment lexbuf }
+| ['\n''\r'] { incr line; comment lexbuf }
+| _ { comment lexbuf }
+and token = parse
+| "\n\r" { incr line; token lexbuf }
+| "\r\n" { incr line; token lexbuf }
+| ['\n''\r'] { incr line; token lexbuf }
+| [' ''\t'] { token lexbuf }
+| "//"[^'\n''\r']* { token lexbuf }
+| "/*" { comment lexbuf ; token lexbuf }
+| "(*" { comment lexbuf ; token lexbuf }
+| ":" { COLON !line }
+| ";" { SEMI !line }
+| "(" { LPAREN }
+| ")" { RPAREN }
+| "[" { LBRACKET }
+| "]" { RBRACKET }
+| "{" { LBRACE !line }
+| "}" { RBRACE !line }
+| "<" { LT }
+| ">" { GT }
+| "|" { BAR }
+| "=" { EQ }
+| "+" { PLUS }
+| "-" { MINUS }
+| "*" { STAR }
+| "!" { BANG }
+| "#" { HASH }
+| "^" { CARET }
+| "?" { QUESTION }
+| "," { COMMA }
+| "." { DOT }
+| "_" { UNDERSCORE }
+| "'" { SQUOTE }
+| "`" { BQUOTE }
+| "@" { AT }
+| "$" { DOLLAR }
+| "%" { PERCENT }
+| "/" { SLASH }
+| "&" { AMP }
+| "\\" { BACKSLASH }
+| "++" { PLUSPLUS }
+| "->" { RARROW }
+| "<-" { LARROW }
+| "-o" { RLOL }
+| "=>" { REQARROW }
+| ":=" { COLONEQ !line }
+| "<=" { LE }
+| ">=" { GE }
+| "==" { EQEQ }
+| "!=" { NE }
+| "&&" { AMPAMP !line }
+| "||" { BARBAR }
+| "::" { COLONCOLON }
+| "==>" { EQEQGT }
+| "<==>" { LTEQEQGT }
+| "const" { CONST !line }
+| "function" { FUNCTION !line }
+| "returns" { RETURNS !line }
+| "type" { TYPE !line }
+| "axiom" { AXIOM !line }
+| "procedure" { PROCEDURE !line }
+| "implementation" { IMPLEMENTATION !line }
+| "requires" { REQUIRES !line }
+| "ensures" { ENSURES !line }
+| "modifies" { MODIFIES !line }
+| "invariant" { INVARIANT !line }
+| "assume" { ASSUME !line }
+| "assert" { ASSERT !line }
+| "goto" { GOTO !line }
+| "call" { CALL !line }
+| "forall" { FORALL }
+| "exists" { EXISTS }
+| "old" { OLD }
+| "fun" { FUN }
+| "int" { INT }
+| "bool" { BOOL }
+| "null" { NULL }
+| "true" { LITBOOL true }
+| "false" { LITBOOL false }
+| "var" { VAR !line }
+| "if" { IF !line }
+| "else" { ELSE !line }
+| "while" { WHILE !line }
+| "return" { RETURN !line }
+(*
+| "eax" { EAX }
+| "ebx" { EBX }
+| "ecx" { ECX }
+| "edx" { EDX }
+| "esi" { ESI }
+| "edi" { EDI }
+| "ebp" { EBP }
+| "esp" { ESP }
+*)
+| "0x"['0'-'9''a'-'f''A'-'F']+ {
+    let s = lexeme lexbuf in
+    let s = String.sub s 2 (String.length s - 2) in
+    let s = String.uncapitalize s in
+    let rec explode (n:int) s = if n = String.length s then [] else (String.get s n)::(explode (n+1) s) in
+    let digits = List.map (Char.code) (explode 0 s) in
+    let rec hex digits n =
+      match digits with
+      | [] -> n
+      | h::t ->
+          let d = if h >= (Char.code 'a') then h - (Char.code 'a') + 10 else h - (Char.code '0') in
+          hex t (add_int_big_int d (mult_int_big_int 16 n)) in
+    LITINT (hex digits zero_big_int)
+  }
+| ['0'-'9']+ { LITINT (big_int_of_string(lexeme lexbuf)) }
+| ['_']*['A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* { UID ((lexeme lexbuf)) }
+| ['_']*['a'-'z']['_''a'-'z''A'-'Z''0'-'9']* { LID ((lexeme lexbuf)) }
+| '?'['_']*['A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* { QUID ((lexeme lexbuf)) }
+| '?'['_']*['a'-'z']['_''a'-'z''A'-'Z''0'-'9']* { QLID ((lexeme lexbuf)) }
+| '$'['_']*['A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* { DUID ((lexeme lexbuf)) }
+| '$'['_']*['a'-'z']['_''a'-'z''A'-'Z''0'-'9']* { DLID ((lexeme lexbuf)) }
+| ['_']+['_''0'-'9']* { LID ((lexeme lexbuf)) }
+| eof { EOF }
+| '\000' { EOF }
+| _ { parse_err ("cannot parse character: \"" ^ (lexeme lexbuf) ^ "\"" ^ "\n(ascii code " ^ (string_of_int (Char.code (String.get (lexeme lexbuf) 0))) ^ ")") }
+

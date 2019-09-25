@@ -1,0 +1,92 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Directory;
+    using Microsoft.Singularity.Security;
+
+    /// <summary>
+    /// This is a client-library proxy to the security service.
+    /// </summary>
+
+    public class SecurityDiagnostics
+    {
+        private ChannelPool! pool;
+
+        public SecurityDiagnostics()
+        {
+            pool = new ChannelPool();
+        }
+
+        public string! GetStatistics()
+        {
+            string result = String.Empty;
+            SecurityDiagnosticsContract.Imp! imp = pool.Acquire();
+            try {
+                imp.SendGetStatistics();
+                switch receive {
+                case imp.GetStatisticsAck(stats):
+                    result = Bitter.ToString2(stats);
+                    delete stats;
+                    break;
+                }
+            }
+            finally {
+                pool.Release(imp);
+            }
+            return result;
+        }
+
+        public void ClearStatistics()
+        {
+            SecurityDiagnosticsContract.Imp! imp = pool.Acquire();
+            try {
+                imp.SendClearStatistics();
+                switch receive {
+                case imp.Ack():
+                    break;
+                }
+            }
+            finally {
+                pool.Release(imp);
+            }
+        }
+
+        public void Disable(bool yes)
+        {
+            SecurityDiagnosticsContract.Imp! imp = pool.Acquire();
+            try {
+                imp.SendDisable(yes);
+                switch receive {
+                case imp.Ack():
+                    break;
+                }
+            }
+            finally {
+                pool.Release(imp);
+            }
+        }
+
+        public void FlushCaches()
+        {
+            SecurityDiagnosticsContract.Imp! imp = pool.Acquire();
+            try {
+                imp.SendFlushCaches();
+                switch receive {
+                case imp.Ack():
+                    break;
+                }
+            }
+            finally {
+                pool.Release(imp);
+            }
+        }
+    }
+}

@@ -1,0 +1,1114 @@
+What we have
+============
+
+A basic framework for representing build Verbs and BuildObjects and
+the dependency relationships among them.
+
+The basic framework tracks abstract representation, the dependencies among
+files by name, regardless of which version of the files.
+
+The Scheduler tracks concrete representation, the hashes of trees of verbs
+and the source files they ultimately depend on.
+These concrete hashes are presently used for partial compilation.
+They will eventually be used to reuse results across different builds,
+eg via a shared build cache.
+
+
+Next steps
+============
+
+Caching errors: When should be be able to "soft recover" from an error,
+and how?
+- If the error is a Failed flag -- maybe an executable was missing on the
+running system? Maybe those shouldn't get cached? On the other hand, if
+we're SHAing executables, they can't be.
+- If the error is a Fresh, with a VerificationResult containing only timeouts,
+should be be able to just try again on a faster/different computer? If we
+have to change the seed, then we have to check that out, and everyone else
+has to see the change. (Rebuilding should be cheap -- unless they're on a
+bus.) In any case, it's ugly.
+
+Say that the cache can only "upgrade" from timeout to success, to handle
+this particular case. We could furthermore add a flag that says "discard
+results in caches and nuobj/ that contain soft errors verification (timeouts)".
+If that retry succeeds, then the cache gets populated with a permanent
+successful result.
+
+This isn't how we want to deal with nondeterministic, flaky files (seeds are
+the workaround there), but for nondeterministic failures (slow build machines;
+build machine fell asleep or got busy during a build), it might be a
+helpful feature.
+
+Priority:
+Jon:
+2. Build up to replace ironmake
+	- (in progress) incorporating exceptional rules -- put them into source file header comments?
+	- invocation language
+3. (in progress) Build out to replace build.ps1
+Brian:
+1. Azure plumbing
+2. Build out some dafnycc verbs/plug in nmake deps?
+
+DONE Rename Dafny -> DafnyFileVerifyVerb
+DONE Rename DafnyVerify -> DafnyProgramVerifyVerb
+
+The only verbs right now are the Dafny.exe invoker, and DafnyVerify, which
+gathers up the results of a batch of Dafny verifications. We also want:
+- Beat
+- DafnyCC
+- Boogie
+- Symdiff.
+- VerveVerify to collect boogie & symdiff results
+- asm/link/iso steps
+
+The verbs will need to be parameterized at some point to capture building
+different apps. Or maybe that goes in the input file? Wouldn't quite work
+with .bpls emitted by DafnyCC.
+
+We'll probably want a parameter for VerveVerify that disables boogie,
+and a parameter to disable symdiff.
+
+We'll want some sort of one-off configuration file mechanism to tweak the
+parameters verbs use.
+
+The only invocation mechanism right now is ProcessInvoke, for local
+execution. This mechanism should be generalized to invoke a remote build.
+Perhaps, instead, the Scheduler should move from the present imperative
+straw-man to a loop that expresses the current run queue for remote,
+parallel execution, and reevaluates that queue as results arrive to
+release new work.
+
+DONE The scheduler should toposort parallel work so that local builds spend
+DONE scarce resources on the "first" file in the dependency tree first
+DONE (like the python ironmake does).
+DONE 
+DONE Parallel scheduler:
+DONE 	Put all targets in potentialTargets.
+DONE 	while (true)
+DONE 		while (potentialTargets!=empty)
+DONE 			Foreach target in potentialTargets
+DONE 				if target has upstream failures
+DONE 					resolve target as failed, discard
+DONE 				else if target requires dependencies
+DONE 					insert all dependencies into potentialTargets
+DONE 					place target on waitingTargets, indexed by all inputs
+DONE 				else if target is ready to execute
+DONE 					place target in runQueue
+DONE 		if (scheduler idle (runQueue==empty and no work running)
+DONE 			break
+DONE 		block on event from asynchronous scheduler
+DONE 
+DONE 	Asynchronously:
+DONE 		sort runQueue by toposort policy
+DONE 		service items from front of runQueue, at available parallelism.
+DONE 		when item completes servicing, look up waitingTargets,
+DONE 			and promote them to potentialTargets.
+DONE 
+DONE 	Broken stuff:
+DONE 	- launching some things twice -- not accounting for their already
+DONE 	being outstanding.
+DONE 	- compute depth, toposort
+
+The system doesn't yet track the versions of the build tools; it should.
+
+We should arrange the Environment to ensure that tools/Dafny path (and
+other such paths) appear first in PATH, so that when Dafny calls out to
+Boogie calls out to Z3, the right binaries are running.
+
+We'll eventually want to build the tools (dafny,
+boogieasm, beat, dafnycc, dafnyspec), too. It would be good if it wasn't
+a great burden to translate the existing nmake files into NuBuild verbs,
+perhaps via some json-y configuration language?
+
+DONE Pretty summary outputs.
+DONE Display progress bar / incremental summaries?
+
+------------------------------------------------------------------------------
+howell brainstorm ramblings
+
+source src/libraries/math/mul.i.dfy
+	-> hash of contents of mul.i.dfy
+
+deps src/libraries/math/mul.i.dfy
+
+dfy-includes
+	input dfysource
+	output list of sources
+
+transitive
+	input verb, source
+	output list of sources
+
+dafny H[mul]
+	input transitive(dfy-includes, mul), dafny.exe
+	output (result:bool,time,messages)
+
+datatype verify-result(result:bool,time,messages)
+
+dafny-verify trinc
+	input map(dafny.output, deps(trinc))
+	output verify-result
+
+dafny-verify set_src:set<src>
+	input map(dafny.output, union(map(deps,src_set)))
+
+dafny-cc trinc
+	input includes(trinc)
+	output set(bpl)
+
+boogie-verify(bpl)
+	input bpl
+	output verify-result
+
+dafny-cc-verify(trinc)
+	input dafny-cc.output(trinc)
+	output map(boogie-verify, inputs)
+
+assemble trinc
+	input dafny-cc.output(trinc), dafny-cc-verify(trinc)
+	output obj/trinc/trinc.asm
+
+exe trinc
+	input assemble(trinc)
+	output obj/trinc/trinc.exe
+
+iso trinc
+	input exe(trinc), exe(apploader)
+	output obj/trinc/trinc.iso
+
+Each verb names inputs (perhaps as applications of other verbs)
+and a number of outputs (that downstream verbs may name).
+One can resolve a verb request to a set of source files, detecting changes.
+One can resolve a verb request to a hash of input hashes, detecting
+cached results.
+- Parameterization?
+- Per-file verb modification flag configuration
+
+------------------------------------------------------------------------------
+
+
+C:\Users\howell\verve2\iron\bin_tools/beat/beat.exe -in C:\Users\howell\verve2\iron\src\Checked\Nucleus\Base\Util.beat
+
+
+Command line: C:\Users\howell\verve2\iron\bin_tools/beat/beat.exe -in C:\Users\howell\verve2\iron\src\Checked\Nucleus\Base\Util.beatmod -i C:\Users\howell\verve2\iron\src\Trusted\Spec\BaseSpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Trusted\Spec\MemorySpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Trusted\Spec\IoTypesSpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Trusted\Spec\MachineStateSpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Trusted\Spec\AssemblySpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Trusted\Spec\InterruptsSpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Trusted\Spec\IoSpec.bx86ifc -i C:\Users\howell\verve2\iron\src\Checked\Nucleus\Base\IntLemmasBase.beatifc -i C:\Users\howell\verve2\iron\src\Checked\Nucleus\Base\Partition.beatifc -i C:\Users\howell\verve2\iron\src\Checked\Nucleus\Base\Core.beatifc -i C:\Users\howell\verve2\iron\src\Checked\Nucleus\Base\LogicalAddressing.beatifc
+
+Chris:
+
+Was adding 'import Separation' to Util.beat okay? It propagated the .bpl
+output; will that create sadness later in the build process?
+
+can beat ifc files "import" other ifc files, or does that lead to
+sadness when the module re-imports them?
+
+What about the non-module-shaped (axiom) things in the spec directory? Can
+we use an "import" statement there, or should I do some sleazy out-of-band
+thing?
+
+------------------------------------------------------------------------------
+
+So even if we do shallow input identification, we still have a problem
+with the relationship between BoogieLinkVerb(Entry) and DafnyCCVerb():
+Until DafnyCCVerb runs, we don't know its set of outputs, which should be
+dependencies of BoogieLinkVerb(Entry). Is it okay to not even know BLV(E)'s
+inputs until DCCV is computed/fetched? I guess so.
+
+So BLV(E) says "I depend on some inputs I can compute, plus all the outputs
+of DCCV -- which it can compute before executing, as well." Note we're not
+trying to chase down to the SourcePaths, just getting the correct list
+of output->input deps. That means the wiring in the scheduler, which does
+triggering through BuildObjects, still should work just fine.
+
+------------------------------------------------------------------------------
+
+The current strategy for passing an IIncludePathContext among the beat files
+is going to result in too much of verve being re-built across applications.
+Is it actually important that the abstract or concrete identifiers include
+the path context?
+- if the include path context causes us to find a different BuildObject
+input, that file's contents become part of the concrete id anyway, so
+no need for context to appear there explicitly.
+- the abstract identifier will need to distinguish among which apps we're
+building so we can store the output in different places. For that, we really
+do want to tell whether we're building a common component or a component
+with a dependency on dafny inputs. This has nothing to do with encoding
+the context, but still has to be handled. I guess we can ask whether any
+of our inputs ended up coming from one of the variable locations, and if
+not, not encode the context name in our output path name... ?
+
+"Missing files: dafny_relational.basm.ifc,dafny_relational.basm.imp,dafny_power2.basm.ifc,dafny_power2.basm.imp,dafny_mul.basm.ifc,dafny_mul.basm.imp,dafny_assembly.basm.ifc,dafny_assembly.basm.imp,dafny_bit_vector_lemmas.basm.ifc,dafny_bit_vector_lemmas.basm.imp\n
+Extra files: dafny_assembly_i.basm.ifc,dafny_assembly_i.basm.imp,dafny_base_s.basm.ifc,dafny_base_s.basm.imp,dafny_bit_vector_lemmas_i.basm.ifc,dafny_bit_vector_lemmas_i.basm.imp,dafny_mul_i.basm.ifc,dafny_mul_i.basm.imp,dafny_power2_s.basm.ifc,dafny_power2_s.basm.imp,dafny_relational_s.basm.ifc,dafny_relational_s.basm.imp"
+
+Okay, so now we're trying to store a Failed result, but we can't because
+we don't have the inputs. But we should, if we tried to execute it. ?
+Unless one of the children failed. Ah hah. Maybe we don't need to store
+those downstream failure results, since they're easy to reproduce, and
+we don't have a way to represent them?
+
+So that was clever, except now we can't learn that the upstream verb failed,
+because we don't load it out of the cache. Alternatives:
+- record the failure at a null-hash sentinel. (What happens if we ever
+accidentally record a success there?)
+- define som other hash over the available inputs. (This seems unprincipled
+and fraught with latent danger.)
+- Keep an in-process table to record the downstream failures, indexed by
+abstract identifier (which is stable over a given run). I guess this
+last thing is as well-founded as anything, even if it seems like undesirable
+extra mechanism.
+
+Wait, what's the mechanism by which we completely repopulate nuobj/ from the
+cache, and why isn't it working for the failure case? Oh, it doesn't work
+for Failed because we can learn definitively that the upstream verb
+failed, just based on its shallow dependencies.
+
+------------------------------------------------------------------------------
+
+Huh. BoogieAsmLinkVerb cannot know its verbs until it can evaluate what
+Entry depends on, which requires running DafnyCC. Gaaah.
+
+BoogieAsmLinkVerb(Entry)
+	depends on the output of Beat(Entry.beat.imp)
+		which depends on Entry.basm.ifc which comes from a weird source
+	uses the verbs that generate those dependencies
+
+getVerbs() may be partial. It's a cache-filling hint that lets us build
+the deps we know about. Once we've filled one such verb --
+Beat(Entry.beat.imp) may cause, via dynamically-matched imports against
+DafnyCC output, other files to appear in its partial getDependencies() list.
+
+Beat(Entry) knows, eventually, which modules it requires.
+That list of ifcs can be re-*includeCache*d into imps, which may come from
+different places (DafnyCC).
+
+Why does BoogieAsmLinkVerb need all those .basm.imps to be beat-ed?
+Because it needs to pass a long list of ifc/imp pairs.
+Not all pairs come from beat (aaaah).
+
+So Beat(Entry) eventually generates the list of modules.
+Once it does, BoogieAsmLinkVerb can use a Beat context to look up
+all the basms it needs. If it finds beats, it creates more upstream verbs.
+If it finds basms, that's fine.
+
+Once it has collected all of them, it has a complete dependencies list.
+
+
+DONE (a) why isn't Entry triggering HorribleEntryStitcherVerb?
+DONE (b) why is Entry completing? suggests Entry.imp isn't dependent on Entry.ifc.
+
+TODO have Chris allow 'import' in beat, boogie ifc files.
+
+LEFT OFF why didn't Main.beat.ifc recompile when we touched
+what should have been a dependency, SimpleCommon.beat.ifc?
+-- confirmed, it did recompile. So it's a semantic bug in the imports,
+not a bug in dependency change detection.
+
+meh Could focus test case on BeatVerb src/Checked/Nucleus/Main/Main.beat.ifc
+
+Next problem: Entry.basm.ifc, horribly stitched, doesn't carry any import
+information; it should.
+
+A bunch of stuff is missing from Entry's deps. dafny_* in particular;
+let's clear that up. yeah, some refs to Stacks in there, but they're in
+the .imp files. How is DafnyCC deciding on those?
+
+LEFT OFF: have Entry import dafnyccverb.getRootBasmIfc(). How to tell it so?
+Naming convention is probably the right ultimate thing to do.
+Emit a stub file? Fix everything?
+
+------------------------------------------------------------------------------
+TODO
+Here's an interesting bug. If DafnyCC emits a nonsense file into nuobj,
+we can get stuck. Normally, we'd inspect BeatVerb(Main)'s deps
+and realize they're stale (incomplete), and hence continue on to generate
+fresh DafnyCC outputs. But if the existing files are broken, BeatVerb
+reads them, gets confused, and explodes.
+
+One crappy solution: rm -rf nuobj.
+One slightly-better solution: just have NuBuild do the same, or logically
+so by deleting any input files not known to be fresh. (Can we even do
+that?)
+I'm not sure deleting nuobj before every build is such a bad idea. To read
+a file out of nuobj/ without validating its freshness (eg in the course
+of determining the downstream verb's freshness) is just inherently fraught
+with sadness.
+
+The "principled" alternative would be to require the includes/imports
+exploration to gather all of its file handles via an interface to a cache
+manager that knows whether each file is fresh or not. That's the principled
+way to 'effectively delete' only the files we're touching, while leaving
+everything else lying around.
+------------------------------------------------------------------------------
+At least one thing wrong with SimpleCollector: per verve/iron/build.log
+it should depend on LogicalAddressing somehow.
+But inserting it isn't enough to cure SimpleCollector's error on line 934.
+Oh, yes it is.
+
+A small mystery that I should be able to ignore:
+At boogieasm time, BitVectorLemmasBase needs defn of $asm in IntSpec,
+but weirdly, I don't see evidence it's getting IntSpec in the
+verve/iron/build.log. So I have a fix, but I'm concerned about the
+unreliability of my extraction of deps from build.log burning me.
+Yeah, so here's another one: it wants Stacks, too. But no evidence of
+that in the boogie call in build.log. Erk.
+
+TODO add debug data to ResultSummaryRecords,
+such as the verb it was computed for, and perhaps the list of input files
+and their hashes, to make debugging nucache/Results records possible.
+
+LEFT OFF: it sure seemed like things were assembling a second ago,
+but now LogicalAddressing and everything else is failing in BoogieAsmVerify
+for "included module IoTypesSpec must be imported". Yaaagh.
+Did we lose sortiness? I don't understand how we ever *used to* pass that
+test. Perhaps by some miracle it only failed on ifc files, and we only
+needed to BoogieAsm the imp files? I donno.
+Seriously! How the heck did I get an .asm out!?? This thing isn't even close!
+How did I change the rules?
+
+...oh, I only had to parse Entry, and nothing else? Test that hypothesis.
+Yup, that must have been it. How many bpls did I make? Exactly zero. I haven't
+ever run BoogieAsmVerb yet! The good news is that it ran some of the time! :v)
+
+TODO perf fell off a cliff. Profile and cache what can be.
+
+LEFT OFF: will need to do "symdiff deduction" per def.ps1.
+Maybe do it externally and apply flags to the files?
+
+TODO the stale nuobj/ files problem is burning me. I need to solve it.
+
+So what happened?
+	BeatVerb(Entry.beat.imp) depends on import(Entry,ifc), which is
+		unavailable. So we return
+		knownDeps={src/.../Entry.beat.imp,nuobj/.../Entry.basm.ifc}.
+		We know the latter because it's an expected output from
+		HorribleEntryStitcherVerb.
+	So we check on the objectDisposition() of each of those two things,
+	to see if we should be starting an upstream verb and BOOM! WHAT'S THAT?
+	Looks like we know enough now to pull the results of
+	HorribleEntryStitcherVerb out of the cache! Well hey, that's as good
+	as having built something; looks like BeatVerb is actually ready to run
+	now! Woo!
+
+------------------------------------------------------------------------------
+
+Okay, so Jeremy proposed a refactoring that will eliminate a bunch of the
+ambiguity -- and also collapse a bunch of the caching code away, reusing
+the general verb caching mechanism more cleanly. Let me work it out here.
+
+Verbs 
+
+add an isSynchronous() flag to IVerb so we don't bother switching threads
+to execute TransitiveDepsVerb (and probably HorribleEntryStitcher).
+
+I think we may need the idea of a context being "ready". The DafnyCC
+context isn't ready until its outputs are complete, so anyone who needs
+to evaluate that context may not do so until the context is ready.
+That sort of suggests that the context itself is a BuildObject,
+an output of the DafnyCC verb.
+So now we have two kinda-skanky BuildObjects that don't really belong
+passing through the filesystem: the TransitiveDeps output lists, and
+the VerbOutputContext.
+
+So I'm thinking that anyone who takes an IIncludePathContext as a ctor
+argument (
+BeatVerb,
+BoogieAsmBaseVerb,
+BoogieVerb? no, he passes it through;
+HorribleEntryStitcherVerb -- he keeps it for his abstractIdentifier;
+	not clear that makes sense. If BoogieVerb is able to tell what his
+	inputs are abstractly because we insert it in the obj filename,
+	and concretely because hash, then that should work for everybody.
+	TODO remove contexts from abstractIdentifiers ... except the Beat
+	that pulls the first dafnyCC in and sets up the renaming. Hmm;
+	maybe having them in abstractIds is a good idea after all.
+)
+should have the context itself as a dep, and (eg) DafnyCC as the
+upstream verb (except that gets plumbed through by some caller, so
+it may be okay not to report it, since DafnyCC is sort of a
+forward-driven dependency).
+Then, during getDependencies() evaluation, we don't actually even try
+to do any of the include resolution until that dep is resolved; until
+then, we're just really incomplete.
+Oh, and of course it's the TDep that demands the context be complete,
+not the real verb hosting the context.
+
+
+TODO we are waaaay too enthusiastic about rererescheduling verbs. Need a
+way to ignore them while they're out for execution, until they get
+taskCompletion()ed.
+
+Okay, even after HorribleEntryStitcherVerb has failed, we're eager
+to recompute it. We need to begin each consideration with the question:
+- is it already submitted for execution?
+Yeah, that will solve both repeated evaluation and repeated recording;
+once submitted, we should never consider a verb again.
+
+Left off: BoogieAsmBaseVerb has a bunch of jiggery-pokery about figuring
+out what's upstream. Most of it is nonsense, dominated by the beat
+flavored deps stuff that just finds the right verbs once we can name
+the thing. I think. So I think it's safe to just strip all the weird
+switch statement crap out of the constructor.
+BeatIncludes.getIncludes needs to be modified to have the imp point at
+the ifc.
+
+Seem to have lost transfer of imports from beat to basm.
+
+DONE performance:
+- don't reevaluate getDependencies() once it has been seen to be complete.
+- if a verb is in the index, don't consider it again. (I think that's actually
+done already).
+
+
+------------------------------------------------------------------------------
+single-threaded shepherding perf
+
+Indeed, most of the time is in disposeCurrent,
+in getDependencies (45 = 35+8+2%)
+and blessGeneral (32.5%)::hashFilesystemPath -- are we re-hashing stuff
+we know the hash for? We should count those.
+
+With a dependency cache for Complete/Failed results in the scheduler,
+we're down to 15s; that was about 15-25% savings.
+Wait, what? Why didn't that save any stale deps evaluations? Oh, it did;
+we're still counting them, even though we made fewer lookups.
+Yup: DependencyCache queries 2397 misses 796
+
+17% of time in File.Exists, probably coming from
+SourcePathIncludeContext. I bet many of those failures are cacheable;
+better yet, maybe we should fetch a directory at a time?
+
+Okay, there's definitely a lot of duplication:
+SourcePathIncludeContext makes 44170 queries to File.Exists,
+only 830 are unique.
+AND IT'S ONLY LOOKING IN FIVE DIRECTORIES. Duh.
+Okay, so we prefetch those with five-ish system calls, and nary call
+File.Exists again. Time now (on battery): 16.1 14.8 17.1s.
+Wow, that's a disappointingly meager <15% savings.
+
+Well, hashFilesystemPath is now the heavy hitter (75%).
+That's a bummer -- very little duplication there; 393 calls
+for 317 unique paths.
+It's a smidgen surprising that hashing that many bytes would take so much
+time. Too many syscalls?
+Those 393 files (including duplication) tar to 166M, and sha256 in 1.2s.
+With duplicates removed, it's 163M, sha256 in 1.2s (high variance).
+
+In any case, it's a far cry from .75*15 = 11.25s.
+Also, profiling shows the CPU mostly idle. What am I waiting for?
+Maybe hashing those files separately is a good deal slower.
+Nope, xargs|sha256 can do it in ~1.3s -- about the same time.
+Something else is slow. Why would C# be slow at opening/closing all those files?
+
+well, it takes C# Util.hashFilesystemPath 2.6s to hash the list of 393.
+
+Whoah, instrumentation-based profiling produced a wildly different result.
+Instead of 75% hash, I see 71% fetchOutputObjects -- and 50% CPU, which is
+probably right for my 2-core box. Which one is lies, and why? Is most of
+the time going into waiting on syscalls for hashing?
+
+Wait. Crap. We're hashing things after we've FETCHED THEM from the store,
+where we know the hashes. We should be able to eliminate all of the hashing
+time in the fetch-only case.
+Reusing fetched hashes reduced the number of hashes taken 
+and the time is now 13s, cutting a couple seconds off, which is near the
+2.6s we spenthashing the whole list.
+We're still hashing twice as much stuff (152) as there are unique things
+(76), so that's a small waste. Easy to fix, but probably only worth 200ms.
+
+High rate of exceptions being thrown. Interesting. Maybe ContainsKey would
+be better? KeyNotFound in DependencyCache; ObjNotReadyException (less frequent)
+Not statistically significant, but gutting all the KeyNotFoundExceptions
+seems to have shaved off about a second.
+Worked on eliminating ObjNotReadyException, but it got ugly and tedious fast.
+
+fetchObject called 241 times. Were there really that many object to fetch?
+It's a relief that there were indeed that many objects.
+All the time went into Dispose() -- that sounds expensive! Oh, we had two
+streams open to do the copy. Let's see.
+
+Did a test (DbgFileCopySpeedTest) with File.Copy on nucache, 746 files.
+With File.Copy, it's 800-1200ms.
+With code that mimics the structure of the current cache (stream.copyTo),
+it's 16s.  Yikes! That explains where it's all going. Something steamy stinky
+there. Need to change the ItemCache interface, at least for the common case
+of small files.
+
+Ho-ley-crud. That did the trick; my test case is now down to 1.5s! BOOM!
+Thanks, instrumentation-based profiler!
+
+DONE \n after import ==> \r\n (WriteLine)
+DONE count how often verbs get reevaluated.
+DONE general performance
+DONE re-enable Boogie. Parse VerificationResults.
+DONE restore AsyncRunner parallelism
+DONE invoke parallelism. Test with fake boogie verb that just sleeps?
+DONE synchronous execution of fast verbs.
+
+Don't feel like rebooting to install iconv.
+$ python -c 'import sys; x = sys.stdin.read(); sys.stdout.write(x.decode("utf16").encode("utf8"))' < build.log  > build.ascii.log
+
+******************************************************************************
+Important next steps:
+
+Performance
+
+TODO set verb to trigger only on "last" stale dependency?
+	("last" is a little silly in a parallel world, but not a bad heuristic)
+TODO (Jer) There's a similar experiment to be done with the Stream
+	ReadToEnd() in fetchResult().
+TODO (Jer) And of course we should update the storeObject interface, too.
+TODO boogieasm emits #line directives that encode the full filesystem
+	path of the input file. This will cause different users to emit
+	different outputs, breaking cache convergence. Fix: run boogieasm
+	in ironRoot and provide relative paths on the command line.
+	Grep 'C:\Users' in nuobj to see if we cleaned these all out.
+
+Usability
+
+TODO turn SourceConfigurationErrors into Failure results.
+
+Missing functionality.
+
+TODO skip spec files in verification.
+	DafnyCC should tell us which files are trusted.
+TODO (Jer) Package up nmake-able upstream dependencies: DafnyCC, DafnySpec, Beat, BoogieAsm.
+TODO take NuBuild.exe as a dependency.
+TODO make toposorter work for boogie verifications?
+
+Flag day stuff
+
+TODO Use DafnySpec in correct location!
+TODO downstream .exe/pxe/win.exe steps
+TODO Try building PassHash.
+TODO generalize to build multiple apps, eg AppLoader.
+TODO Bind a real app to AppLoader
+TODO complete a verification run (even Cube).
+TODO complete a verification run for a real app.
+TODO verify that DafnyVerifyOneVerb still works.
+
+SHORT LIST:
+DONE broke Dafny build; VerbToposorter really slow.
+TODO intermittent assert failure in scheduler
+TODO Dafny build, first target runs alone
+TODO broken CPU accounting; see email from Reuben
+TODO why is boogie never ending? Maybe Separation takes special args?
+
+******************************************************************************
+
+Race: might it have been a sourcepath ... seems unlikely.
+staleDeps().Count==0
+ddisp==Incomplete
+re-executing getDependencies leads to complete.
+Yet apparently the nuObjContents cache didn't change. What did?
+It's a DafnyTransitiveDepsVerb that's behaving strangely.
+
+Ooooh -- Execute activity is probably priming some sort of cache.
+That's infuriating. Well, TransitiveDepsVerb is definitely poking
+stuff into the cache, so maybe we're reevaluating a verb that
+just finished evaluating.
+
+"Boogie program verifier version 2.2.30705.1126, Copyright (c) 2003-2014, Microsoft.\n*** Error: 'C:\\Users\\howell\\verve2\\iron\\nuobj\\Checked\\Nucleus\\Base\\BitVectorLemmasBase.bpl.ifc': Filename extension '.ifc' is not supported. Input files must be BoogiePL programs (.bpl).\n\n\n"
+
+"Boogie program verifier version 2.2.30705.1126, Copyright (c) 2003-2014, Microsoft.\nC:\\Users\\howell\\verve2\\iron\\src\\Trusted\\Spec\\BaseSpec.imp.basm(20,0): Error: Output variable i must be available at a return\n1 type checking errors detected in C:\\Users\\howell\\verve2\\iron\\nuobj\\Checked\\Nucleus\\Base\\BitVectorLemmasBase.ifc.bpl\n\n\n"
+
+Master test:
+IroncladApp src/Dafny/Apps/DafnyCCTest/Main.dfy
+Unit test:
+Boogie src/Checked/Nucleus/Base/IntLemmasBase.imp.beat
+Dafny test:
+DafnyVerifyTree src/Dafny/Apps/PassHash/StateMachine.i.dfy
+
+Why does LogicalAddressing.imp.bpl melt?
+Removing IntSpec, IntSpec_axioms, and BitVectorLemmasBase cures it.
+Who, LogicalAddressing doesn't import anything! How's it getting all the
+badness?
+
+"C:\Users\howell\verve2\iron\tools\Dafny\Boogie.exe" /noinfer /typeEncoding:m /z3opt:ARITH_RANDOM_SEED=1 C:\Users\howell\verve2\iron\nuobj\Checked\Nucleus\Base\LogicalAddressing.imp.bpl
+
+I see two things in the diffs:
+- enablePaging is present in my bpl, not in Chris', and I don't see #ifs
+that could explain it.
+- I have a bunch of axioms and functions about bit vectors,
+	like $add(x:bv32,y:bv32); these don't appear in Chris'.
+So perhaps IntLemmasBase shouldn't import BitVectorLemmasBase. But then...
+which files need it? Garr. Or is it bad to declare them if we're not
+using them? Maaaaybe.
+
+tr ' ' '\n' < nuobj/failures/BoogieAsmVerify-17-src-Checked-Nucleus-Base-LogicalAddressing-imp-beat-.bat > foo.basm.flat
+grep -v '^#' < foo.basm.flat | tr '\n' ' ' > foo.basm.bat
+./foo.basm.bat
+
+sed 's/#line.*//' < ../../verve/iron/obj/Checked/Nucleus/Base/LogicalAddressing.v.bpl > a.bpl
+sed 's/#line.*//' < nuobj/Checked/Nucleus/Base/LogicalAddressing.imp.bpl > b.bpl
+windiff a.bpl b.bpl&
+tools/Dafny/Boogie.exe /trace /noinfer /typeEncoding:m /z3opt:ARITH_RANDOM_SEED=1 b.bpl /timeLimit:3
+
+Conclusion: I need to evict IntSpec, IntSpec_axioms, and BitVectorLemmas.
+I think the former is the culprit, but the latter two must then go due to
+definitions disappearing.
+
+I need a general strategy. I think I'll print a grid showing what's being
+included by build.ps1, and what my "conservative" include tree has
+generated.
+
+Okay, I have a nice grid. I was dinking aronud trying to automate the process
+of diffing the new grid with the old, but it looks like the new app is
+building something else; it seems to have PCI and Io things that the old
+one doesn't. I think I should do more manual exploration using the big grid.
+
+So in the old build, IntLemmasBase imported BitVectorLemmasBase. But that's
+not going to be healthy when importing at the ifc level.
+Interesting: note that the word axioms are rarely imported by ifcs until
+somewhere around SimpleGcMemory.ifc!
+
+LEFT OFF: We should stop barking up the tidy-imports tree (imports tidy tree?).
+It's infuriating, and the matrix shows it doesn't follow the simple rules I'd
+hoped. Let's leave that for another day. In the meantime, moduleGrid
+now emits a series of translations of the 'private' imports used in verve
+classic. I should write those into the beat/basm files as //private-import,
+ignore the //import directives, and then work out any missing imports
+by hand.
+
+LEFT OFF:
+HorribleEntryStitcherVerb failed, and left a failed Entry.asm.basm.
+BoogieAsmVerifyVerb, in BasmModuleAccumulator, is returning failure,
+without returning any (Failed) dependencies in its deps list. So the
+scheduler is having a cow. Moo.
+
+I'm going to fix this by fixing the scheduler, because it's not reasonable
+that every verb should have a way to pass a failure on the dep side to
+a failure on the output side. In this case, we could probably cast the
+inability to read Entry.imp.basm into a direct failure on the output,
+but it's via the context mechanism. Uck.
+
+Huh. Before we get there, a from-cache problem. relational_s is resolved,
+yet its output still looks stale.
+I marked it resolved before I got the result back from ... yeah, that's
+fine. Oh ... but then it never triggered us to wake up the downstream
+verb and fail it?
+
+TODO chris: if the build system doesn't enforce that boogieasm'ing X.imp
+without mentioning X.ifc is bad, will that result in an unsoundness,
+since the requires/ensures are missing,
+or merely a syntax error since the interfaces are missing?
+
+IoMain: beat step for PCI is wrong; missing defines from SimpleCollector.
+
+Main.imp.beat doesn't verify -- but it's also not supposed to exist.
+build.ps1 doesn't build it, and BoogieAsmLink doesn't read it! So why is
+it being created as an obligation? Oh, it's dafny_Main.
+
+Okay, we're down to BoogieAsmLink being broken. It looks like a bunch of
+dependencies are missing. How are they computed? Seems like
+
+- BitVectorLemmasGc is missing; why isn't it in the transitive closure?
+Are we missing the fixpoint?
+IntLemmasGc calls it; did it verify? We certainly mentioned it in our
+link step. Yep, it boogied. So why ... isn't it in the dep list,
+if it's in the boogie list? Stale cache tdeps, I bet.
+Nope, that weren't it.
+
+Almost done with cube.
+TODO something got slow, time to profile the fast case again.
+
+It would be worthwhile to have a git branch rolled back to the divergence
+point between nubuild-violence and master, and run build.ps1 on it. Right
+now, there are a bunch of distracting changes like mul-nonlinear and
+64-bit defines. This might be helpful for AppPasshash, too.
+
+LEFT OFF: dafny_Main was missing Instructions (which should have been
+annotation-propagated) and {mul,div}_nonlinear. The latter seems to
+stem from the particular snapshot of master we took; I suspect I want
+to merge master to get synced. But that makes me a little nervous;
+discuss it with Bryan before proceeding to make such a mess.
+
+In the meantime, why are we re-linking each time through?
+Hash first time A78C..., second time A78C... why is it stale?
+...oh, we're refusing to record it because it now emits a VirtualBuildObject.
+Sigh. I guess we should make that a real build object.
+
+
+(1) mystery: Dafnyspec reads Checked/Libraries/DafnyCC/Seq.s.dfy
+and DafnyPrelude.dfy! That's broken; those are spec files.
+Fixed.
+
+DONE absolute paths in #lines/.bats
+
+TODO SourceConfigurationErrors should explain which file the lookup
+  was on behalf of. They're really cryptic!
+
+We boogied Trusted.imp.basm; does that make sense?
+DafnyPrelude; dafny_relational_s; ... lots of _s's.
+
+TODO forge ahead to PassHash!
+
+Things still failing:
+BoogieVerb(12, nuobj\DafnySpecVerb\Main.i\dafny_DafnyPrelude.ifc.basm) Fail   0.3s
+BoogieVerb(12, nuobj\DafnySpecVerb\Main.i\dafny_power2_s.ifc.basm) Fail   0.3s
+
+
+DONE the DCC uniquifier is the filename, not the directory it belongs to.
+
+DONE can remove sequential bottleneck on BoogieAsmLinkVerb by
+separating out the verb that computes its obligation list.  We don't need
+to wait for the link to complete to learn the boogie dependencies.
+
+Why does deleting a single file 
+./nuobj/DafnyCCVerb/BenchmarkApp/dafny_Bitwise_i.imp.basm
+cause DafnyCC to need to run again? Aren't its inputs the same?
+
+TODO DafnyCC emits #LINEs with absolute paths in them. Drat.
+TODO try Jeremy's DafnyCC-building verb, fix broken stuff.
+TODO fix Entry.
+	EntryStitched.ifc.basm is failing because it's missing 
+		stack_size__DafnyCC__Proc_insecure__get__random
+	which comes from
+		dafny_insecure_prng_i
+	which dafny_Main_i.ifc.basm actually imports. So Horrible must be broken.
+	Yeah, it's propagating imports from Main.ifc.beat, but Main.ifc.beat
+	is generic; it can't really know the app-specific includes from dafny_Main.
+	So if we had Horrible grab the imports from dafny_Main_i.ifc.basm, we'd be
+	better off, except (a) we'd be missing axioms (declared in Main.ifc.beat
+	-- because it's an imp) -- oh, those don't matter; this in an ifc; and
+	(b) we'd be missing dafny_Main_i. Uh, yeah, we'd better squirt that in,
+	too.
+TODO push on PassHash.
+
+There are at least two horrible things I've done.
+The less horrible thing is that some things are getting imported twice,
+since I'm not filtering imports out in Horrible.horrible.
+The more horrible thing is that the imports from a checked file are being
+slurped into the trusted spec stitched file. I think we're probably
+going to have to live with that ... unless ... no. This is bad. yeah, pretty
+bad. I'm pulling in a bunch of dafny_i's into the spec. No good at all.
+How/why did this work before?
+
+DONE left off testing sentinel part of stitcher.
+DONE put appLabel into Horrible's abstractId
+DONE Move horrible files to paths that reflect appLabel.
+	- which is really all we need for the app-specific stuff.
+
+TODO Check if Entry.ifc is trusted.
+TODO save a small bucket of exceptions by not normalizing virtual paths!
+TODO delete getOutputs() before executing verb to avoid falling for old stuff.
+
+TODO see BenchmarkApp Entry imp pass Boogie/everything green.
+
+TODO AppLoader: Move Verve files to paths that reflect appLabel.
+	- do we need to move all of them, or just those with #define AppLoader?
+	The present #defines, AppLoader and x64, affect fairly low in the
+	stack, and affect ifc files: Separation.ifc. Thus there's not much
+	benefit in trying to coalesce at the abstract level.
+	So I propose that Beat and BoogieAsm use makeLabeledOutputObject
+	to ensure that all the beat and boogie files end up in the special
+	directory. (makeLabeledOutputObject should be modified to tolerate
+	a null label, when nothing is defined; it should also be careful to
+	take fooapp/x/y.beat to fooapp/x/y.basm, not fooapp/fooapp/x/y.basm.)
+	This also entails a Context: we should wrap Verve with a context
+	that looks in the app-specific verve directory. DafnyCC files will
+	come from the DafnyCC/App directory -- or should we turn that around?
+	Yes, yes we should.
+	The appLabel for AppLoader should be:
+		AppLoader#AppLoader
+	and for x64 BenchmarkApp:
+		BenchmarkApp#x64
+	and for x64 AppLoader:
+		AppLoader#AppLoader,x64
+	Wait, we don't actually need a new context; we just need
+	BoogieAsmVerifyVerb to place its outputs in the right place.
+	And Beat. Then they tell each other where to look for the downstream stuff.
+
+	BeatExtensions.makeOutputObject is relevant. It should subsume
+	a similar call in BeatVerb.
+
+	How do we get DafnyCC to use an appLabel, Entry should use an appLabel,
+	but the rest of Verve, which is only included by DafnyCC's output,
+	uses no appLabel but does show its #defines?
+		- these all get driven by an obligationList from BoogieAsmLink.
+		- it uses a context to pluck out the dafnycc and verve components.
+			but the context is to find the ultimate sources, not the
+			basm intermediates.
+
+TODO get BenchmarkService to compile -- with AppLoader, real hardware.
+	(test of shared state, too.)
+
+
+Looks like we're missing:
+nuobj/DafnyCCVerb/BenchmarkApp/dafny_tpm_device_s.ifc.basm:readonly var $ghost_TPM:TPM_struct;
+
+Cool: even with the fairly-pervasive stack change, we only had to Boogie
+166/286 files.
+
+TODO cross-app sharing: fancy up the notion of abstract ID to make
+concrete ID not depend on inputs that are already captured as dependencies.
+TODO Context identifiers are using Main.i.dfy, which is silly.
+Should be appLabel.
+
+An unhandled exception of type 'NuBuild.SourceConfigurationError' occurred in NuBuild.exe
+
+Additional information: Cannot find module dafny_assembly_s.ifc.basm in search path
+Context(
+	VerbOutputs(HorribleEntryStitcherVerb(10, AppLoader, src\Trusted\Spec\Entry.ifc.basm.stitch)),
+	Context(
+	  {Trusted\Spec,Checked/Nucleus/Base,Checked/Nucleus/GC,Checked/Nucleus/Devices,Checked/Nucleus/Main}; {.ifc.beat,.imp.beat,.ifc.basm,.imp.basm},
+	  VerbOutputs(DafnySpecVerb(#28,Main.i)),
+	  VerbOutputs(DafnyCCVerb(#30,Main.i,NoUseFramePointer))))
+
+Status:
+$ bin_tools/NuBuild/NuBuild.exe BatchApps src/Dafny/Apps/apps.dfy.batch -j 2 | tee nubuild.log
+fails because it never gets the necessary upstream verbs. Does doing just one
+(IroncladAppVerb) succeed? If so, why does it get primed satisfactorily?
+What variant can we establish that ensures the getVerbs always get primed
+appropriately?
+No, it doesn't work, but it fails for some different reason. :v( Okay, dumb
+bug; now fixed.
+
+Okay, so merely passing the IroncladAppVerb producer's getVerbs() through
+is insufficient. Where are all the necessary vol verbs coming from?
+
+Okay, so here's the problem.
+In the simple, working case, we have:
+ICAV->VRSV->BAVOLV
+
+ICAV's deps include the vol from VRSV, which drives BAVOLV to run and create
+it.
+
+In the batchy, broken case, we have:
+VRSV->BVV->ICAV->VRSV->BAVOLV
+
+Now the inner VRSV needs BAVOLV to run before it can ask for its
+verbs, but that dep doesn't get propagated out to the outer VRSV, who
+thinks he knows everything he needs. That's weird, since if the inner
+one doesn't know its deps, how can the outer one?
+Somehow BVV has managed to produce its VOL already. How?
+BVV depends on VOLs, and unions the VOLs. Fine.
+So why can't it know the verbs, too? Because the BAVOLV hasn't run yet.
+Huh? If we know the vols, we should know the verbs that make them.
+Indeed, the inner VRSV has returned complete (right?), yet its
+verification_results are null. Huh?
+So the inner VRSV has been able to tell us its obligation list (so we could
+union it in BVV), but noone has actually cared to run it yet... because
+we depended only on the upstream vol, not on the .v this generates.
+
+DONE it sure looks like BoogieVerb Notary dafny_seqs.* is redoing a bunch
+of work done for DiffPriv. Bummer.
+It's the farging #line directives. That's grevious. Oh, and they have
+very different Seq* and other autogenerated files. Hrmm. Maybe it won't
+be easy to reuse Boogies across apps. Maybe that's okay for now.
+
+DONE on desktop, cloud build a big thing.
+DONE for Jay, BootableApp, --no-verify
+
+TODO would like to make StandAloneSupport.sln a dependency. Nontrivial;
+vcxproj not yet parseable by VSSolutionVerb. Punted work item to Jer's inbox.
+-j 2 VSSolution tools/standalone/StandAloneSupport.sln
+
+# pushing on getting a windows app working:
+-j 2 --no-verify --useframepointer --windows IroncladApp src/Dafny/Apps/BenchmarkApp/Main.i.dfy
+TODO writing winapp.uexe to cloud (or, for that matter, local cache)
+is a dog because it's got 165MB of zeros. It compresses, though.
+
+TODO ItemCacheCloud() crashes on initialization if I'm disconnected
+(here I am on route 542). It probably fails pretty badly if it's
+disconnected while running, too.
+DONE fix bug in BenchmarkApp.
+
+DONE build a windows instance of BenchmarkApp
+DONE laptop: gather reliable data for FatNatAdd. Vs. polar.
+	- opt add  10k iters c-c is 1.1m cycles/iter.
+	- slow add 10k iters c-c is 6.9m cycles/iter.
+tools/scripts/app-stats.py `ls -1 -d Experiments/{slow,opt}*  | sed 's/^/--dir /'`
+
+tools/scripts/app-stats.py `ls -1 -d Experiments/{slow,opt}* Experiments/AddPerf* | sed 's/^/--dir /'`
+
+
+Early results for the no-allocation experiments:
+Adding 32 limbs from two arrays, results into a third, without carry propagation: 20ns.
+Adding 32 limbs, 8 at a time with _unrolled_: 105ns.
+	(That’s a bummer! Are we getting seriously burned on the function call?)
+Adding 32 limbs, unrolled, allocating the output array each time: 720ns!
+
+All of these tests behave nice and proportionally (2 samples, 100k and 200k), presumably because they don’t have any opportunity to grow the limb count when I’m not paying attention.
+
+Conclusion: we’re getting ultra-screwed (nearly an order of magnitude) by allocation. We need Add, at least, to be allocation-free.
+[Bogus conclusion -- canceled by corrected microbenchmark data.]
+
+So, current state of affairs on perf:
+- best prior AB work is opt-a-b, which scores 1.20us vs fleetcopy's 0.056.
+- best prior CC work is slow-c-c, which scores 344++nonlinear.
+
+Next step: write a generalized FleetNatAdd that
+(a) handles different-sized inputs,
+(b) copies dst if needed (mimic polar),
+(c) grows the output if needed.
+...then test in in AB and CC configurations.
+
+
+NOREPRO desktop: open handle conflict -- not reproing now that I'm logging. Hah. Logging to an in-memory data structure.
+WAITING desktop: apply bzill's JobObjects code to collect legit numbers.
+	TODO invalidate VerificationResultSummaryVerb and re-run to see what
+	the inputs were -- easy to identify symdiffs?
+
+TODO measure and improve RSA performance.
+TODO plan A from thinking out loud: measure a simple no-alloc array add
+TODO plan B from thinking out loud: implement a no-alloc nat datatype with Add
+TODO measure times accurately, break out by nonrelational/symdiff. Create
+  last columns of data for figure 1. Need to examine 
+
+TODO DafnyCC emits some diagnostics accidentially via exception, which
+PowerShell can extract, but NuBuild can't. Capture the exception in DafnyCC
+and report it to stderr.
+
+overall status:
+TODO time counts for SymDiff.
+	-- waiting on a complete set of build data
+
+TODO RSA perf -- Bryan found add test cases with big asymptotic problems.
+I've got good microbenchmarks, and I'm sprinting to replace Add. No data
+structure changes needed; may need some tweaks to mul to exploit improvements.
+	-- the CC test really involves growing the ints; it's a bunch of
+	doublings! Need to be sure polar is really ending up with lots of
+	limbs.
+	What's polar's cost for 200k cc's?
+
+nubuild status:
+TODO BatchDafny fails; not enough getVerbs.
+DONE file lock problem
+looking forward to parallel build.
+
+------------------------------------------------------------------------------
+I have rejiggered how one specifies how thoroughly to verify the program.
+
+--no-verify does no verification; it only emits the binary.
+--verify-select dafny_FatNatAdd_i verifies only the specified module.
+  The module is specified as a BoogieAsm module, with no relative path
+  information; so "src/Dafny/Libraries/Math/mul.i.dfy" becomes "dafny_mul_i".
+  Because there is no path information, if the target is a batch that
+  includes multiple modules with the same name (eg Main.i from three apps),
+  all with matching names will be verified.
+  There is no check that you have specified a module that exists.
+  You may specify multiple modules, and all will be verified.
+--no-symdiff performs functional verification on everything.
+--verify (default) verifies and symdiffs everything. This is the only mode
+  that will "bless" the binary with a .exe extension, and then only
+  if the verification is successful.
+
+When targeting a specific module for boogieish verification, one would
+generally want to combine
+	--verify-select dafny_Foo_i
+with
+	--reject-cached-failures
+.
+
+------------------------------------------------------------------------------
+verifying FleetNat:
+time bin_tools/NuBuild/NuBuild.exe --reject-cached-failures --verify-select dafny_FleetNatAdd_i --no-cloudcache -j 2 --useframepointer --windows IroncladApp src/Dafny/Apps/AddPerf/Main.i.dfy
+
+time bin_tools/NuBuild/NuBuild.exe --reject-cached-failures --verify-select dafny_FleetNatCommon_i --verify-select dafny_FleetNatAdd_i --verify-select dafny_FleetNatSub_i --verify-select dafny_FleetNatMul_i --no-cloudcache -j 2 --useframepointer --windows IroncladApp src/Dafny/Apps/AddPerf/Main.i.dfy
+
+
+------------------------------------------------------------------------------
+perf-testing FleetNat:
+
+// Dafny check
+time bin_tools/NuBuild/NuBuild.exe -j 2 DafnyVerifyTree src/Dafny/Libraries/FatNat/FatNatDiv.i.dfy
+
+// Unverified build
+time bin_tools/NuBuild/NuBuild.exe --no-cloudcache -j 2 --no-verify --useframepointer --windows IroncladApp src/Dafny/Apps/AddPerf/Main.i.dfy
+time bin_tools/NuBuild/NuBuild.exe -j 2 --useframepointer --windows IroncladApp src/Dafny/Apps/AddPerf/Main.i.dfy
+cp nuobj/AddPerf/Checked/Nucleus/Main/EntryStitched.winapp.uexe nuobj/AddPerf/Checked/Nucleus/Main/EntryStitched.exe
+
+tools/scripts/micro-one.sh DivPerf fleetmodexp-C 20x
+tools/scripts/app-stats.py `ls -1 -d Experiments/DivPerf* | sed 's/^/--dir /'`
+
+
+==============================================================================
+How bad is our DafnyCC compiler?
+How close to polar can we get with C# and CLR?
+Test is: mul(0x22*32,0x77*32)
+Ironclad FatNatMul:   219   us
+Ironclad FleetNatMul:  12   us
+C# FleetNatMul:        15   us
+C# BigIntegers, x86:    6   us
+C# BigIntegers, x64:    4.2 us
+Polar bignum:           1.9 us
+==============================================================================
+
+Next questions in perf:
+- current profile-measured hotspots
+	76% FleetNatMul
+		51% FleetNatMul_one which calls:
+		22% FleetNatMulMathOpt
+	 7% ICantBelieveItsNotFatNatSub
+	 6% FNDivision_Estimate_Q_div32
+	 4% ICantBelieveItsNotFatNatAdd
+	 3% FatNatCompare
+  ... so yeah, if we made a 200x improvement in FleetNatMul_one, it would
+  make the overall benchmark about 4x faster.
+
+- are our multiplies too slow? Compare to a 32-limb polar mul benchmark
+Well, the table I emailed on 9/12 answers this question:
+	Ironclad FatNatMul:   219   us
+	Ironclad FleetNatMul:  12   us
+	C# FleetNatMul:        15   us
+	C# BigIntegers, x86:    6   us
+	C# BigIntegers, x64:    4.2 us
+	Polar bignum:           1.9 us
+Polar mul is about 6.3 X faster than FleetNatMul.
+
+- are we doing too many of them? Count vs. Polar modexp
+	By setting a breakpoint with a high hit count on _?Proc_FleetNatMul proc,
+	I found we're calling it X times in 2 iters.
+
+	Yeah, this seems pretty broken. It accounts for far MORE than a 200x
+	slowdown. -- until we account for the calls to montmul, after which
+	it's merely 49X, which would be nice to claim.
+
+	polar: 75 calls to mul in 1 iter
+	fleet: 105313 calls to mul in 1 iter
+	(both call div once, I guess.)
+	polar makes 75 calls to mpi_mul_mpi and 2060 to mpi_montmul.
+
+	fleet makes 608 calls to _step_add and 416 calls to _step_noadd,
+	which accounts for the 1024 bits in e.
+	- what's going on with polar's R^2modN precomputation? It's
+		(1<<(2*|N|_bits))%N. Probably something Montgomeresque?
+
+	- Okay, so we need 1024 muls for R^2s.
+	- and then 608 more muls for the R2modN*B calls in _step_add
+	- which predicts 1632 calls, not 105313. Check those call sites
+	against prediction.
+		- first prediction (1024) validated.
+		- second prediction (608) validated.
+	- huh. That leaves 103681 calls to mul unaccounted for.
+		- and 103672 of them come from FatNatDiv/FatNatDivUsingReciprocal/FNDivision_step
+	- wait, polar makes exactly one call to mpi_mod_mpi and mpi_div_mpi.
+	  We make 1633 calls through FatNatDivUsingReciprocal, doing about 64
+	  muls per call.
+
+	So the next question is: why is FatNatDivUsingReciprocal costing 64 muls?
+	The answer: because we weren't ever actually calling the estimator(!).
+
+	So now, we do 5 modexps. They take 900,000us, versus polar's 10,000us
+	(90x slower). That's weird.
+	Yet we're only doing 8161 mods (1632 per modexp),
+	and 3364 muls per divide (just about two per mod). Why so slow!?
+	Well, I guess 90X is quite a lot better than 213X; maybe worth measuring?
+
+	ModExpPerf-fleetmodexp-A-1x
+	ModExpPerf-fleetmodexp-B-5x	... are versions using the reciprocal estimator. -- but with *Fat*NatMul.
+	ModExpPerf-fleetmodexp-estt32-5x	has reciprocal estimator disabled.
+		it scores 1.17s.
+	ModExpPerf-recipfleet-5x ... has the reciprocal estimator and FleetNatMul.
+		Bang! 114ms! Only 10x slower!
+
+	FatNatAdd is now a tall pole (54%) -- from PNAddWrapper. Is there
+	a Fleet version that would help?
+	WTF we're still calling FatNatMul from Estimate_Q_Reciprocal. We
+	should be using FleetNatMul!
+
+	FleetNatMul is now 89% of the time, which is all spent in FleetNatMul_one
+	and FleetNatMulMathOpt. So the loop-in-asm perf optimization is pretty
+	clearly the next step.
+	After that, montgomery math and CRT.
+
+Commit:
+

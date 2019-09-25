@@ -1,0 +1,57 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract for a ChildMapPointProxy process
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+
+namespace Microsoft.Singularity.MapPointProxy.Contracts
+{
+    public contract MapPointProxyContract : ExtensionContract
+    {
+        public rep struct PushPin : ITracked
+        {
+            // Everything as character vectors; the coordinates
+            // are floating-point
+            public char[] in ExHeap latitude;
+            public char[] in ExHeap longitude;
+            public char[] in ExHeap icon;
+            public char[] in ExHeap label;
+        }
+
+        public const string ModuleName = "/service/mappoint";
+
+        in message GetMap(char[]! in ExHeap centerLat, char[]! in ExHeap centerLong,
+                          int zoom, PushPin[] in ExHeap pushPins);
+        in message Ack();
+
+        out message MapPointReady();
+        out message MapDataBegin();
+        out message MapDataChunk(byte[]! in ExHeap chunkData);
+        out message Done();
+        out message Failed();
+
+        override state Start : MapPointReady! -> ReadyState;
+
+        state ReadyState : GetMap? -> MapResult;
+
+        state MapResult : one
+        {
+            MapDataBegin! -> SendingState;
+            Failed! -> ReadyState;
+        }
+
+        state SendingState : one
+        {
+            MapDataChunk! -> Ack? -> SendingState;
+            Done! -> ReadyState;
+        }
+    }
+}

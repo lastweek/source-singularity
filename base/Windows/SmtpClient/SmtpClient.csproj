@@ -1,0 +1,36 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Windows\SmtpClient\SmtpClient.csproj
+
+Note:   Test client for SMTP server
+
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>SmtpClient</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="SmtpClient.cs"/>
+    <Compile Include="Session.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System"/>
+    <Reference Include="System.Net"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+
+</Project>

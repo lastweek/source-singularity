@@ -1,0 +1,354 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications.Benchmarks.DiskRW
+{
+    [ConsoleCategory(HelpMessage="Disk r/w performance test", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringParameter( "device", Mandatory=true, Position=0 , HelpMessage="Device to read/write")]
+        internal string deviceName;
+
+        [LongParameter( "b", Default=0, Mandatory=true, HelpMessage="Set block size to <n> bytes.")]
+        internal long blockBytes;
+
+        [LongParameter( "g", Default=1, HelpMessage="Repeat test n times.")]
+        internal long repeatCount;
+
+        [LongParameter( "l", Default=0, HelpMessage="Fix disk size limit at <n> megabytes.")]
+        internal long diskLimitMB;
+
+        [LongParameter( "m", Default=0, HelpMessage="Perform test with <n> megabytes of data.")]
+        internal long dataMB;
+
+        [LongParameter( "n", Default=0, HelpMessage="Perform test with <n> blocks of data.")]
+        internal long blockCount;
+
+        [LongParameter( "p", Default=0, HelpMessage="Pause <n> seconds between iterations")]
+        internal long pauseSecs;
+
+        [BoolParameter( "r", Default=false, HelpMessage="Perform disk read test.")]
+        internal bool doRead ;
+
+        [BoolParameter( "w", Default=false, HelpMessage="Perform disk write test.")]
+        internal bool doWrite;
+
+        [BoolParameter( "x", Default=false, HelpMessage="Perform test with random I/O offsets.")]
+        internal bool randomIO;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return DiskBenchmark.AppMain(this);
+        }
+    }
+
+    public class DiskBenchmark
+    {
+        internal const uint BytesPerSector = 512;
+        internal const uint SectorsPerMB = 1024 * 1024 / BytesPerSector;
+
+        public static DiskDeviceContract.Imp:Ready OpenDevice(String! devname)
+        {
+            DiskDeviceContract.Exp! exp;
+            DiskDeviceContract.Imp! imp;
+            DiskDeviceContract.NewChannel(out imp, out exp);
+            DirectoryServiceContract.Imp ns;
+
+            ErrorCode errorOut;
+            // get NS endpoint
+            ns = DirectoryService.NewClientEndpoint();
+            bool success;
+            success  = SdsUtils.Bind(devname,ns, exp, out errorOut);
+            if (!success) {
+                Console.WriteLine("Bind of {0} failed. Reason:{1}\n",
+                                  devname, SdsUtils.ErrorCodeToString(errorOut));
+                delete imp;
+                delete ns;
+                return null;
+            }
+            switch receive {
+                    case imp.Success():
+                        break;
+                    case imp.ContractNotSupported():
+                        Console.WriteLine("{0} does not support DiskDevice", devname);
+                        delete imp;
+                        delete ns;
+                        return null;
+                    case imp.ChannelClosed():
+                        Console.WriteLine("DiskDevice channel to {0} closed unexpectedly", devname);
+                        delete imp;
+                        delete ns;
+                        return null;
+                }
+
+            delete ns;
+            return imp;
+        }
+
+        internal static ulong GetRandomOffset(SRandom! rng,
+                                             ulong    diskSectorCount,
+                                             ulong    blockBytes)
+        {
+            ulong maxBlock = diskSectorCount * 512 / blockBytes;
+            ulong offset = 0;
+            for (int i = 0; i < 64; i += 30) {
+                offset ^= (ulong)(rng.Next() << i);
+            }
+            offset &= 0x7fffffffffffffff;
+            offset %= maxBlock;
+            return offset * blockBytes;
+        }
+
+        internal static void DisplayPerf(bool     didRead,
+                                        bool     didRandom,
+                                        TimeSpan elapsed,
+                                        ulong    blockCount,
+                                        ulong    blockBytes,
+                                        ulong    nextOffset)
+        {
+            double delta = (double)elapsed.Ticks / TimeSpan.TicksPerSecond;
+            double ops   = (double)blockCount / delta;
+
+            string output = String.Format(
+                "{0}{1} {2} {3} Ops/s: {4:f2}  MB/s: {5:f2}  Elapsed: {6:f2}  Check: {7:x}",
+                didRandom ? "R" : "S",
+                didRead ? "R" : "W",
+                blockBytes,
+                blockCount,
+                ops,
+                ops * blockBytes / (1024.0 * 1024.0),
+                delta,
+                nextOffset);
+
+            Console.WriteLine(output);
+            DebugStub.WriteLine(output);
+        }
+
+        public static int DoDevice(string! deviceName,
+                                   int     runNumber,
+                                   ulong   blockCount,
+                                   ulong   blockBytes,
+                                   ulong   diskLimitMB,
+                                   bool    doRandom,
+                                   bool    doRead)
+        {
+            //
+            // Open device
+            //
+            DiskDeviceContract.Imp imp = OpenDevice(deviceName);
+            if (null == imp) {
+                Console.WriteLine("Could not open {0}", deviceName);
+                return 1;
+            }
+
+            //
+            // Get disk size
+            //
+            ulong diskSectorCount;
+
+            imp.SendGetSectorCount();
+            switch receive {
+                    case imp.AckGetSectorCount(sectorCount):
+                        diskSectorCount = sectorCount;
+                        break;
+                    case imp.ChannelClosed():
+                        Console.WriteLine("Channel closed unexpectedly");
+                        throw new Exception("Unexpected channel close");
+                }
+
+            // Constrain disk size if user requested
+            if (diskLimitMB != 0 &&
+                diskSectorCount > diskLimitMB * SectorsPerMB)
+            {
+                diskSectorCount = diskLimitMB * SectorsPerMB;
+            }
+            diskLimitMB = diskSectorCount / SectorsPerMB;
+
+            // Constrain block count if it overflows available blocks
+            if (blockCount * blockBytes > diskSectorCount * BytesPerSector) {
+                blockCount = diskSectorCount * BytesPerSector / blockBytes;
+            }
+
+            if (runNumber == 0) {
+                Console.WriteLine("# Type:  {0} {1}",
+                                  doRandom ? "Random" : "Sequential",
+                                  doRead ? "Read" : "Write");
+                Console.WriteLine("# Disk:  {0} MB",
+                                  diskSectorCount / SectorsPerMB);
+                Console.WriteLine("# Limit: {0} MB", diskLimitMB);
+                Console.WriteLine("# Work:  {0:f2} MB",
+                                  blockCount * blockBytes / (1024.0 * 1024.0));
+                Console.WriteLine("# Ops:   {0}", blockCount);
+            }
+
+            byte[] in ExHeap buffer = new [ExHeap] byte [blockBytes];
+
+            SRandom rng = new SRandom();
+
+            ulong diskPos = 0;
+            if (doRandom) {
+                diskPos = GetRandomOffset(rng, diskSectorCount, blockBytes);
+            }
+
+            long startIrqCount = ProcessService.GetKernelInterruptCount();
+            long startSwitchCount = ProcessService.GetContextSwitchCount();
+            long startKernelGcCount = ProcessService.GetKernelGcCount();
+            int  startGcCount;
+            long startGcMillis;
+            long startGcBytes;
+            GC.PerformanceCounters(out startGcCount,
+                                   out startGcMillis,
+                                   out startGcBytes);
+
+            TimeSpan startTime = ProcessService.GetUpTime();
+
+            for (ulong i = 0; i < blockCount; i++) {
+                ulong sector = diskPos / BytesPerSector;
+
+                byte[]! in ExHeap outBuffer;
+                if (doRead) {
+                    imp.SendRead(buffer, 0, blockBytes, sector);
+                    imp.RecvAckRead(out outBuffer);
+                }
+                else {
+                    imp.SendWrite(buffer, 0, blockBytes, sector);
+                    imp.RecvAckWrite(out outBuffer);
+                }
+                buffer = outBuffer;
+
+                if (doRandom) {
+                    diskPos =
+                        GetRandomOffset(rng, diskSectorCount, blockBytes);
+                }
+                else {
+                    diskPos += blockBytes;
+                }
+            }
+            TimeSpan endTime = ProcessService.GetUpTime();
+
+            delete buffer;
+            delete imp;
+
+            DisplayPerf(doRead, doRandom, endTime - startTime,
+                        blockCount, blockBytes, diskPos);
+
+            int  endGcCount;
+            long endGcMillis;
+            long endGcBytes;
+            GC.PerformanceCounters(out endGcCount,
+                                   out endGcMillis,
+                                   out endGcBytes);
+
+            Console.WriteLine("[AppGC :- cnt {0} bytes {1} Kern: ints {2} swi {3} gcs {4}]",
+                              endGcCount - startGcCount,
+                              endGcBytes - startGcBytes,
+                              ProcessService.GetKernelInterruptCount() - startIrqCount,
+                              ProcessService.GetContextSwitchCount() - startSwitchCount,
+                              ProcessService.GetKernelGcCount() - startKernelGcCount);
+
+            return 0;
+        }
+
+        public static bool ParseNumber(string! arg,
+                                       string! name,
+                                       out ulong value)
+        {
+            // arg should look like "[-/][A-z]:[0-9]"
+            if (arg.Length >= 4) {
+                try {
+                    value = UInt64.Parse(arg.Substring(3));
+                    return true;
+                }
+                catch (FormatException) {
+                }
+                catch (OverflowException) {
+                }
+            }
+            Console.WriteLine("Could not parse {0}", name);
+            value = 0;
+            return false;
+        }
+
+        internal static void Usage()
+        {
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            string deviceName   = config.deviceName;
+            ulong  blockBytes   = (ulong) config.blockBytes;
+            ulong  blockCount   = (ulong) config.blockCount;
+            ulong  diskLimitMB  = (ulong) config.diskLimitMB;
+            ulong  repeatCount  = (ulong) config.repeatCount;
+            ulong  pauseSecs    = (ulong) config.pauseSecs;
+            bool   randomIO     = config.randomIO;
+            bool   diskReadTest = false;
+            bool  doWrite       = config.doWrite;
+            bool  doRead        = config.doRead;
+            ulong dataMB        = (ulong) config.dataMB;
+
+            if (blockBytes < 512 || (blockBytes & (blockBytes - 1)) != 0) {
+                Console.WriteLine("Block size must be a power of two greater than or equal to 512.");
+                Usage();
+                return -1;
+            }
+
+            if (doRead == doWrite) {
+                Console.WriteLine("Need to specify either read or write test.");
+                Usage();
+                return -1;
+            }
+            else if (doRead) {
+                diskReadTest = true;
+            }
+
+            if (dataMB != 0) {
+                blockCount = dataMB * 1024 * 1024 / blockBytes;
+            }
+
+            for (int run = 0; run < (int)repeatCount; run++) {
+                if (run != 0) {
+                    System.Threading.Thread.Sleep(1000 * (int)pauseSecs);
+                }
+
+                Tracing.Log(Tracing.Debug, "Starting diskrw run {0}",
+                            (UIntPtr) run);
+                if (DoDevice((!)deviceName, run, blockCount, blockBytes,
+                             diskLimitMB, randomIO, diskReadTest) != 0) {
+                    return -1;
+                }
+                Tracing.Log(Tracing.Debug, "Ending diskrw run {0}",
+                            (UIntPtr) run);
+            }
+            return 0;
+        }
+    }
+}

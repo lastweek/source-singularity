@@ -1,0 +1,4 @@
+
+ramdiskcontrol '@create' '-s=50M'
+fatcontrol '@format' '/dev/ramdisk0'
+fatcontrol '@mount' '/dev/ramdisk0' '/fs'

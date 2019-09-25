@@ -1,0 +1,44 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\BaseAttrs\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets" />
+
+  <ItemGroup>
+    <!-- The following interfaces are exported by kernel.exe and imported by kernel assemblies. -->
+    <ProjectReference Include="Corlib\Corlib.csproj" />
+    <ProjectReference Include="Singularity.V1\Singularity.V1.App.csproj" />
+    <ProjectReference Include="Console\Console.App.csproj" />
+
+    <ProjectReference Include="Console\Console.Kernel.csproj" />
+
+    <!-- The following interfaces are imported by kernel.exe and exported by kernel assemblies. -->
+    <ProjectReference Include="Diagnostics\Diagnostics.csproj" />
+    <ProjectReference Include="Channels\Channels.csproj" />
+    <ProjectReference Include="Directory\Directory.csproj" />
+    <ProjectReference Include="Drivers\Drivers.csproj" />
+    <ProjectReference Include="Hal\Hal.csproj" />
+    <ProjectReference Include="IoSystem\IoSystem.csproj" />
+    <ProjectReference Include="Kernel\Kernel.csproj" />
+    <ProjectReference Include="Loader\Loader.csproj" />
+    <!-- <ProjectReference Include="Scheduling\Scheduling.csproj"/> -->
+    <ProjectReference Include="Security\Security.csproj" />
+    <ProjectReference Include="Shell\Shell.csproj" />
+    <ProjectReference Include="Stress\Stress.csproj" />
+
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets" />
+
+</Project>

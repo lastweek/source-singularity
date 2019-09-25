@@ -1,0 +1,39 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IoIrq.csi
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+namespace Microsoft.Singularity.Io
+{
+    public sealed class IoIrq
+    {
+        [NoHeapAllocation]
+        public static void SignalInterrupt(byte irq);
+
+        public IoIrq(byte irq);
+
+        public byte Irq
+        {
+            [NoHeapAllocation]
+            get;
+        }
+
+        public bool RegisterInterrupt();
+        public bool ReleaseInterrupt();
+
+        public bool WaitForInterrupt();
+        public bool WaitForInterrupt(TimeSpan timeout);
+        public void Pulse();
+        public bool AckInterrupt();
+
+        public override string ToString();
+    }
+}

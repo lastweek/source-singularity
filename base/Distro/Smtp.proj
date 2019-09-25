@@ -1,0 +1,48 @@
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+
+  <PropertyGroup>
+    <DistroName Condition="'$(DistroName)'==''">Smtp</DistroName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Apps -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tty\tty.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Shell\Shell.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Login\Login.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Tasklist\Tasklist.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Sleep\Sleep.csproj"/>
+
+    <!-- SMTP Serve -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\EmailServer\SmtpAgent\SmtpAgent.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\EmailServer\MailStore\MailStore.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\EmailServer\AntiVirus\AntiVirus.csproj"/>
+
+    <!-- Network -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\IPConfig\IPConfig.csproj"/>
+
+    <!-- Drivers -->
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Disk\Disk.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Network\Tulip\Tulip.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\VolumeManager\VolumeManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\LegacyKeyboard\LegacyKeyboard.csproj"/>
+
+    <!-- Services -->
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\Control\FatControl.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\ClientManager\FatClientManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\Fs\FatFs.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\NetStack\NetStackService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\ServiceManager\ServiceManager.csproj"/>
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.BVT.proj"/>
+  <ItemGroup Condition="!Exists('$(SINGULARITY_ROOT)\internal')">
+      <Application Include="$(SINGULARITY_ROOT)\precompiled\Drivers\Network\nForce4\nForce4.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

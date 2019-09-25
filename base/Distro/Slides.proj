@@ -1,0 +1,37 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+
+  <PropertyGroup>
+    <SYSDATA_NAME>$(SINGULARITY_ROOT)\Distro\SlideDistro.xml</SYSDATA_NAME>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Shell\Shell.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tty\tty.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\VolumeManager\VolumeManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\LegacyKeyboard\LegacyKeyboard.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\ServiceManager\ServiceManager.csproj"/>
+
+    <!-- Drivers -->
+    <!-- <Application Include="$(SINGULARITY_ROOT)\Drivers\S3Trio64\S3Trio64.csproj" /> -->
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Vesa\Vesa.csproj" />
+
+    <!-- End User Applications -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Slides\Slides.csproj" />
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.BVT.proj"/>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

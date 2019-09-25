@@ -1,0 +1,53 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Binder.csi
+//
+//  Note:   Interface definition for the Binder classs
+//
+//////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Collections;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.V1.Types;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Loader
+{
+    public class Binder
+    {
+        public static IoMemory GetSystemManifest();
+
+        /// <summary>
+        /// Load an executable
+        /// </summary>
+
+        public static void Initialize(XmlNode config);
+        public static void RedirectRootRef();
+        public static IoMemory LoadImage(Process parent, String application, out Manifest man);
+        public static IoMemory LoadRawImage(string folderName, string exeName);
+
+        /// <summary>
+        /// Used to create a new channel from  system types
+        /// creates channel enpoints
+        ///    inserts imp at index in the process startup endpoint set
+        ///    binds exp according to global policy
+        /// </summary>
+
+        public static bool BindToService(
+            Process process,
+            SystemType impType,
+            SystemType expType,
+            string contract,
+            int startState,
+            int index);
+    }
+}
+

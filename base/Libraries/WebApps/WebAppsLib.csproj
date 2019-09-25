@@ -1,0 +1,38 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\WebApps\WebApps.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>WebApps</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="IHttpRequest.cs" />
+    <Compile Include="IWebApp.cs" />
+    <Compile Include="RemoteHttpRequest.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.csproj" />
+<!--    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj"/> -->
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

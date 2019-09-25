@@ -1,0 +1,39 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;;  singx86.def - Singularity Debugger Extension Export Table
+;;
+;;  Copyright Microsoft Corporation.  All rights reserved.
+;;
+;;  For more information, see http://ddkslingshot/webs/debugexw/
+;;
+
+EXPORTS
+
+;; Functions providing new command extensions.
+
+    apic
+    crashdump
+    bytev
+    charv
+    diagnose
+    help
+    ioapic
+    log
+    object
+    procs
+    sample
+    singreload
+    sips
+    stack
+    thread
+    threads
+
+;; Functions required by the debugger.
+
+    DebugExtensionNotify
+    DebugExtensionInitialize
+    DebugExtensionUninitialize
+    KnownStructOutput
+
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

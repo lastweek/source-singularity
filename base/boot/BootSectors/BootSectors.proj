@@ -1,0 +1,57 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Boot\BootSectors\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <!--
+     Truncate PATH for 16-bit tools because if it is
+     too long it'll give an out-of-memory error.
+    -->
+    <CC16>PATH ; &amp; &quot;$(BUILDDIR)\cl16.exe&quot;</CC16>
+    <LINK16>PATH ; &amp; for %%f in (&quot;$(BUILDDIR)\x86_x86\link16.exe&quot;) do %%~sf</LINK16>
+    <AS>&quot;$(BUILDDIR)\x86_x86\ml.exe&quot;</AS>
+    <SDIZEPDB>&quot;$(BUILDDIR)\sdizepdb.exe&quot;</SDIZEPDB>
+    <MLINKFLAGS>/NOD /STACK:0x8000 /ONERROR:NOEXE /FAR /PACKC /NOLOGO</MLINKFLAGS>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <BootProgram Include="Fat32_BS.asm"/>
+    <BootProgram Include="Fat16_BS.asm"/>
+    <BootProgram Include="Etfs_BS.asm"/>
+    <BootProgram Include="UsbFat16_BS.asm"/>
+  </ItemGroup>
+
+  <Target Name="Build" DependsOnTargets="CompileBootPrograms"/>
+
+  <Target Name="CreateDirs">
+    <MakeDir Directories="$(BOOTDIR)"/>
+  </Target>
+
+  <Target Name="CompileBootPrograms"
+          Inputs="@(BootProgram)"
+          Outputs="$(BOOTDIR)\%(BootProgram.filename).bin"
+          DependsOnTargets="CreateDirs">
+    <Exec Command="$(AS) /nologo /c /omf /Cp /AT /I&quot;$(BOOTDIR)&quot; /Fl&quot;$(BOOTDIR)\%(BootProgram.filename).lst&quot; /Fo&quot;$(BOOTDIR)\%(BootProgram.filename).obj&quot; %(BootProgram.identity)"/>
+    <Exec WorkingDirectory="$(BOOTDIR)"
+          Command="$(LINK16) /nologo /tiny %(BootProgram.filename).obj,%(BootProgram.filename).bin;"/>
+  </Target>
+
+  <Target Name="Clean">
+    <Delete Files="$(BOOTDIR)\%(BootProgram.filename).bin;$(BOOTDIR)\%(BootProgram.filename).obj;$(BOOTDIR)\%(BootProgram.filename).lst"/>
+  </Target>
+
+</Project>

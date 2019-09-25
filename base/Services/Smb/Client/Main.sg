@@ -1,0 +1,395 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/Client/Main.sg
+//
+//  Note:   SMB Network Filesystem Client
+//
+//      This file contains the process entry point for the SMB client driver.
+//      The SMB client is implemented as two different executables:
+//      SmbClientManager and SmbClient.  SmbClientManager is a singleton service;
+//      it is started when the system boots, and there is only ever one instance
+//      of the service.  That service creates instances of the SmbClient process,
+//      each of which is responsible for processing one SMB mapping / mount.
+//
+//      This file (assembly) contains the implementation of SmbClient.  At startup,
+//      the process acquires these two startup endpoints:
+//
+//          Index 0: SmbClientControllerContract.Exp
+//
+//          Index 1: SmbMuxNotify.Imp
+//
+//      Both of these endpoints must be present (and be the correct type) in order
+//      for the process to start correctly.
+//
+//      SmbClientManager service uses the SmbClientControllerContract channel to
+//      control the SmbClient process.  The SmbClient process uses the SmbMuxNotify
+//      channel to notify the SmbClientManager process of changes in its state
+//      (e.g. connected, disconnected, etc.).
+//
+//      All command-line arguments are ignored.  (Actually, the ConsoleTransform
+//      will inspect them, and will get grouchy if any are present.)
+//
+//      The current implementation uses a single thread, implemented in TransportMux,
+//      to service all incoming requests.  For now, some of the code is still in Main.sg,
+//      and some is in TransportMux.  This will be changed later; the two will be merged.
+//
+
+
+using System;
+using System.Threading;
+using System.Collections;
+using System.Diagnostics;
+using System.Net.IP;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Security;
+using NetStack.Contracts;
+using NetStack.Channels.Public;
+using Smb.PrivateChannels;
+using Smb.PublicChannels;
+using Smb.Shared;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+// These two declarations allow the process to register endpoints with the Directory Service.
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Smb.Client
+{
+    [ConsoleCategory(HelpMessage="Start the SMB client", DefaultAction=true)]
+    internal class SmbCommandParameters
+    {
+        [Endpoint]
+        public TRef<SmbClientControllerContract.Exp:Created> Controller;
+
+        [Endpoint]
+        public TRef<SmbMuxNotifier.Imp:Ready> Notifier;
+
+
+        reflective internal SmbCommandParameters();
+
+        internal int AppMain()
+        {
+            return Program.AppMain(this);
+        }
+    }
+
+    public static class Program
+    {
+        /// <summary>The UNC path to the remote resource, e.g. \\server\share.</summary>
+        static string! _UncPath;
+
+        ///<summary>
+        ///  The path of the local mount point, which allows Singularity processes
+        ///  to communicate with the SMB service.  The SMB client exports the DirectoryServiceContract
+        ///  contract at this path.
+        ///</summary>
+        static string! _MountPath;
+
+        ///<summary>
+        ///  The username to use when authenticating with the remote SMB server.
+        ///</summary>
+        static string! _CredentialsName;
+        static string! _CredentialsTag;
+
+        /// <summary>
+        /// The name of the remote server, parsed from the UNC path.
+        /// For now, this value can only be an IPv4 address.
+        /// </summary>
+        static string! _ServerName;
+
+        /// <summary>
+        /// The resource name part of the UNC; e.g., for a UNC of \\server\share,
+        /// it's the "share" part.
+        /// </summary>
+
+        static string! _ResourceName;
+
+        internal static string! UncPath { get { return (!)_UncPath; } }
+        internal static string! MountPath { get { return (!)_MountPath; } }
+        internal static string! CredentialsName { get { return (!)_CredentialsName; } }
+        internal static string! CredentialsTag { get { return (!)_CredentialsTag; } }
+
+        internal static int AppMain(SmbCommandParameters! args)
+        {
+            try {
+                ServiceProviderContract.Exp! namespace_provider;
+
+#if true
+                Endpoint* in ExHeap controller_ep = Process.GetStartupEndpoint(0);
+                if (controller_ep == null) {
+                    DebugLine("Endpoint 0 is not assigned.");
+                    DebugLine("Expected SmbClientControllerContract.Exp at startup endpoint 0.");
+                    DebugStub.Break();
+                    return -1;
+                }
+
+                SmbClientControllerContract.Exp controller = controller_ep as SmbClientControllerContract.Exp;
+                if (controller == null) {
+                    DebugLine("Endpoint 0 is wrong channel type.");
+                    DebugLine("Expected SmbClientControllerContract.Exp at startup endpoint 0.");
+                    DebugStub.Break();
+                    delete controller_ep;
+                    return -1;
+                }
+#else
+                // -XXX- This TRef isn't being set up.
+                if (args.Controller == null) {
+                    DebugLine("SMB process controller channel was null!  Can't do anything!");
+                    return -1;
+                }
+                SmbClientControllerContract.Exp! controller = args.Controller.Acquire();
+#endif
+
+                Endpoint* in ExHeap ep = Process.GetStartupEndpoint(1);
+                if (ep == null) {
+                    DebugLine("Endpoint 1 is not assigned.");
+                    DebugLine("Expected SmbMuxNotifier.Imp at startup endpoint 1.");
+                    DebugStub.Break();
+                    delete controller_ep;
+                    return -1;
+                }
+
+                SmbMuxNotifier.Imp notifier = ep as SmbMuxNotifier.Imp;
+                if (notifier == null) {
+                    DebugLine("Endpoint 1 is wrong channel type.");
+                    DebugLine("Expected SmbMuxNotifier.Imp at startup endpoint 1.");
+                    DebugStub.Break();
+                    delete controller_ep;
+                    delete ep;
+                    return -1;
+                }
+
+                // We now have a control channel established to the process that started this one.
+                // That process should be SmbClientManager.  We don't really care, as long as that
+                // process uses SmbClientControllerContract to communicate with us.  Next, we wait
+                // for SmbClientControllerContract to send a Configure message, which contains the
+                // configuration information for this SMB client process.
+
+                DebugLine("Waiting for Configure request on control channel.");
+                switch receive {
+                    case controller.Configure(config):
+                        DebugLine("Received configuration:");
+                        _UncPath = Bitter.ToString2(config.UncPath);
+                        _MountPath = Bitter.ToString2(config.MountPath);
+                        _CredentialsName = Bitter.ToString2(config.CredentialsName);
+                        _CredentialsTag = Bitter.ToString2(config.Tag);
+                        config.Dispose();
+
+                        controller.SendOk();
+                        break;
+
+                    case controller.ChannelClosed():
+                        throw new Exception("Controller channel closed!");
+                }
+
+                ParseUncPath(_UncPath, out _ServerName, out _ResourceName);
+
+                DebugLine("SMB client is starting.  Parameters from controller service:");
+                DebugLine("    UNC path:            " + _UncPath);
+                DebugLine("    Mount path:          " + _MountPath);
+                DebugLine("    Username:            " + _CredentialsName);
+
+                try {
+                    //
+                    // Next, register the directory service that represents the mount path.
+                    // This is what filesystem clients use to access the remote namespace on the SMB server.
+                    //
+
+                    namespace_provider = DirectoryUtil.RegisterService(_MountPath);
+                }
+                catch (Exception ex) {
+                    DebugLine("Failed to register namespace (mount path).");
+                    DebugLine("    Mount path: " + _MountPath);
+                    Util.ShowExceptionDebug(ex);
+                    return -1;
+                }
+
+                //
+                // Next, we start the thread that multiplexes access to the TCP connection to the server.
+                //
+
+                TransportMux.Run(
+                    namespace_provider,
+                    controller,
+                    notifier,
+                    _ServerName,
+                    _ResourceName);
+
+
+            // quit:
+                // -XXX- We should obviously do something a bit more graceful here.
+                return 0;
+
+            }
+            catch (Exception ex) {
+                ShowException(ex);
+                return -1;
+            }
+        }
+
+        static SmbClientConfig GetConfig()
+        {
+            SmbClientConfig config = new SmbClientConfig();
+            config.UncPath = Bitter.FromString2(_UncPath);
+            config.MountPath = Bitter.FromString2(_MountPath);
+            config.CredentialsName = Bitter.FromString2(_CredentialsName);
+            config.Tag = Bitter.FromString2(_CredentialsTag);
+            return config;
+        }
+
+        static void DebugLine(string msg)
+        {
+            DebugStub.WriteLine(msg);
+        }
+
+        static void DebugLine(string format, params object[] args)
+        {
+            DebugLine(String.Format(format, args));
+        }
+
+        public static void ShowException(Exception! chain)
+        {
+            Exception current = chain;
+            while (current != null)
+            {
+                DebugLine("{0}: {1}", current.GetType().FullName, current.Message);
+                current = current.InnerException;
+            }
+        }
+
+        static void ParseUncPath(string! unc, out string! server, out string! resource)
+        {
+            if (!unc.StartsWith("\\\\"))
+                throw new Exception(String.Format("The UNC path '{0}' is invalid.  All UNC paths must begin with '\\\\'.", unc));
+
+            int separator = unc.IndexOf('\\', 2);
+            assert (separator < 0) || (separator >= 2);
+            if (separator < 0 || separator == 2)
+                throw new Exception(String.Format("The UNC path '{0}' is invalid.  The server name is missing.", unc));
+
+            if (separator + 1 == unc.Length)
+                throw new Exception(String.Format("The UNC path '{0}' is invalid.  The resource name is missing.", unc));
+
+            server = unc.Substring(2, separator - 2);
+            resource = unc.Substring(separator + 1);
+        }
+    }
+
+    public class ClientStatusSnapshot
+    {
+        public ClientStatusSnapshot()
+        {
+        }
+
+        public ClientStatusSnapshot(SmbClientStatus status)
+        {
+            this.ConnectionStatus = status.ConnectionStatus;
+            this.ReasonDisconnected = status.ReasonDisconnected;
+            this.ServerOperatingSystem = Bitter.ToString(status.ServerOperatingSystem);
+            this.ServerDomainName = Bitter.ToString(status.ServerDomainName);
+            this.ServerMachineName = Bitter.ToString(status.ServerMachineName);
+            this.ActiveCredentialsName = Bitter.ToString(status.ActiveCredentialsName);
+        }
+
+        public SmbClientConnectionStatus ConnectionStatus;
+        public SmbReasonDisconnected ReasonDisconnected;
+        public string ServerOperatingSystem;
+        public string ServerDomainName;
+        public string ServerMachineName;
+        public string ActiveCredentialsName;
+
+        public SmbClientStatus ToExchange()
+        {
+            SmbClientStatus ex = new SmbClientStatus();
+            ex.ConnectionStatus = this.ConnectionStatus;
+            ex.ReasonDisconnected = this.ReasonDisconnected;
+            ex.ServerOperatingSystem = Bitter.FromString(ServerOperatingSystem);
+            ex.ServerDomainName = Bitter.FromString(this.ServerDomainName);
+            ex.ServerMachineName = Bitter.FromString(this.ServerMachineName);
+            ex.ActiveCredentialsName = Bitter.FromString(this.ActiveCredentialsName);
+            return ex;
+        }
+    }
+
+
+    class TrackedThreadStarter
+    {
+        public static Thread StartTrackedThreadContext([Claims]ITrackedThreadContext! context)
+        {
+            TrackedThreadStarter starter = new TrackedThreadStarter(context);
+            ThreadStart threadStart = new ThreadStart(starter.ThreadMain);
+            Thread thread = new Thread(threadStart);
+            thread.Start();
+            return thread;
+        }
+
+        private TrackedThreadStarter([Claims]ITrackedThreadContext! context)
+        {
+            _context = new TContainer<ITrackedThreadContext>(context);
+        }
+
+        private void ThreadMain()
+        {
+            assert _context != null;
+            ITrackedThreadContext! context = _context.Acquire();
+
+            try {
+                context.ThreadRoutine();
+            }
+            finally {
+                context.Dispose();
+            }
+        }
+
+        private TContainer<ITrackedThreadContext> _context;
+    }
+    interface ITrackedThreadContext : ITracked
+    {
+        void ThreadRoutine();
+    }
+
+    internal class RepStructCopier
+    {
+        public static char[]! in ExHeap Copy(char[]! in ExHeap array)
+        {
+            char[]! in ExHeap copy = new[ExHeap] char[array.Length];
+            for (int i = 0; i < array.Length; i++)
+                copy[i] = array[i];
+            return copy;
+        }
+
+        public static char[] in ExHeap Copy2(char[] in ExHeap array)
+        {
+            if (array == null)
+                return null;
+
+            char[]! in ExHeap copy = new[ExHeap] char[array.Length];
+            for (int i = 0; i < array.Length; i++)
+                copy[i] = array[i];
+            return copy;
+        }
+
+        public static SmbClientStatus Copy(SmbClientStatus status)
+        {
+            SmbClientStatus copy = new SmbClientStatus();
+            copy.ConnectionStatus       = status.ConnectionStatus;
+            copy.ReasonDisconnected     = status.ReasonDisconnected;
+            copy.ServerMachineName      = Copy2(status.ServerMachineName);
+            copy.ServerDomainName       = Copy2(status.ServerDomainName);
+            copy.ServerOperatingSystem  = Copy2(status.ServerOperatingSystem);
+            return copy;
+        }
+    }
+}

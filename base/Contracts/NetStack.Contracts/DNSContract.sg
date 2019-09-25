@@ -1,0 +1,57 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for interacting with the DNS Module
+//
+
+// NOTE: This is all IPv4 flavored for now.
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace NetStack.Contracts
+{
+    public contract DNSContract : ServiceContract
+    {
+        // This is the name under which the DNS module registers with the
+        // name server
+        public const string ModuleName = "/service/dns";
+
+        // Response messages
+        out message NotFound();
+        out message AddressList(uint[] in ExHeap addresses);
+        out message DNSResults(uint[] in ExHeap addresses, char[][] in ExHeap names);
+        out message IsValid(bool valid);
+        out message Address(uint address);
+        out message Ack();
+
+        // Request messages
+        in message AddNameServer(uint address);
+        in message RemoveNameServer(uint address);
+        in message RotateNameServers();
+        in message GetNameServers();
+        in message GetCurrentNameServer();
+        in message IsValidName(char[] in ExHeap name);
+
+        // host can be a host's textual name or the string of an address
+        in message Resolve(char[] in ExHeap host);
+
+        out message Ready();
+        override state Start : Ready! -> ReadyState;
+
+        state ReadyState : one
+        {
+            AddNameServer? -> Ack! -> ReadyState;
+            RemoveNameServer? -> Ack! -> ReadyState;
+            RotateNameServers? -> Ack! -> ReadyState;
+
+            GetCurrentNameServer? -> Address! -> ReadyState;
+            GetNameServers? -> AddressList! -> ReadyState;
+            Resolve? -> (NotFound! or DNSResults!) -> ReadyState;
+            IsValidName? -> IsValid! -> ReadyState;
+        }
+    }
+}

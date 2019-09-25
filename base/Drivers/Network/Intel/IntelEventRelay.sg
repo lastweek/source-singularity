@@ -1,0 +1,57 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:  Right now this interface waits for acks from the receiver.
+//         This adds an unnecessary context switch.  At some future point
+//         we may be able to have something more akin to a one-way single
+//         buffer-slot notification system, but for now we ack.
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Drivers.Network.Intel
+{
+    internal class IntelEventRelay
+    {
+        TRef<NicDeviceEventContract.Exp:RUNNING>! channel;
+        bool channelClosed;
+
+        internal IntelEventRelay([Claims]
+                                 NicDeviceEventContract.Exp:READY! ep)
+        {
+            channel       = new TRef<NicDeviceEventContract.Exp:RUNNING>(ep);
+            channelClosed = false;
+        }
+
+        internal void ForwardEvent(NicEventType theEvent)
+        {
+            if (channelClosed) {
+                return;
+            }
+
+            NicDeviceEventContract.Exp! exp = channel.Acquire();
+            exp.SendNicDeviceEvent(theEvent);
+            try {
+                exp.RecvAckNicDeviceEvent();
+            }
+            catch (ChannelClosedException) {
+                channelClosed = true;
+            }
+            finally {
+                channel.Release(exp);
+            }
+        }
+    }
+}

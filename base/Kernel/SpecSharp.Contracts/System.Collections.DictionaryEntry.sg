@@ -1,0 +1,32 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Contracts;
+
+namespace System.Collections
+{
+
+    public struct DictionaryEntry
+    {
+
+        public object! Key
+        {
+          [Pure] get;
+          set
+            requires value != null otherwise ArgumentNullException;
+        }
+
+        public object Value
+        {
+          [Pure] get;
+          set;
+        }
+
+        public DictionaryEntry (object! key, object value)
+            requires key != null otherwise ArgumentNullException;
+    }
+}

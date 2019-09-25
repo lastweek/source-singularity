@@ -1,0 +1,285 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   EMap.ssc
+//
+//  Note: 
+//        
+//        
+//
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+
+namespace Microsoft.Singularity.Channels
+{
+
+    using Microsoft.Singularity.V1.Threads;
+    
+    public class EMap<T, State, Data> : ITracked, ISelectable 
+      where T: unmanaged struct, IEventCollectionElement 
+    {
+
+        private AutoResetEventHandle evHandle;
+
+        public SyncHandle GetWaitHandle() { return evHandle; }
+
+        public void ResetWaitSignal() {
+            AutoResetEventHandle.Reset(this.evHandle);
+        }
+
+        private Node! listHead;
+
+        public EMap() {
+            this.listHead = new Node(this);
+            AutoResetEventHandle handleOnStack;
+            if (!AutoResetEventHandle.Create(false, out handleOnStack)) {
+                throw new System.Threading.HandleCreateException();
+            }
+            this.evHandle = handleOnStack;
+        }
+
+        private Node? lookAside;
+
+        private Node? nextScanStart;
+
+        private Node! GetFreshNode(T* in ExHeap opt(State) ep, Data data, EMap<T,State,Data>! parent) {
+            Node n = this.lookAside;
+            if (n == null) {
+                n = new Node(ep, data, parent);
+            }
+            else {
+                this.lookAside = null;
+                n.Init(ep, data, parent);
+            }
+            return n;
+        }
+
+        // we only want type visibility outside NewESet, but not member accessibility
+        private class Node {
+            unsafe internal T* opt(ExHeap) opt(State) endpoint;
+            internal Data data;
+            unsafe private EMap<T, State, Data>! parent;
+            internal Node! next;
+            internal Node! prev;
+
+            internal Node(T* opt(ExHeap) opt(State) ep, Data data, [Delayed] EMap<T, State, Data>! parent) {
+                this.next = this;
+                this.prev = this;
+                this.parent = parent;
+                this.Init(ep, data, parent);
+            }
+
+            [Delayed]
+            internal void Init(T* opt(ExHeap) opt(State) ep, Data data, [Delayed] EMap<T, State, Data>! parent) {
+                this.parent = parent;
+                this.endpoint = ep;
+                this.data = data;
+            }
+
+            /// <summary>
+            /// For constructing the dummy head node.            
+            /// </summary>
+            internal Node([Delayed] EMap<T, State, Data>! parent) {
+                this.next = this;
+                this.prev = this;
+                this.parent = parent;
+            }
+
+            internal T* opt(ExHeap) opt(State) Unlink(EMap<T,State,Data>! parent, out Data data) {
+                assert (parent == this.parent);
+                this.prev.next = this.next;
+                this.next.prev = this.prev;
+                this.next = this;
+                this.prev = this;
+                data = this.data;
+                T* in ExHeap opt(State) ep = this.endpoint;
+                this.endpoint = null;
+                ep->UnlinkFromCollection(parent.evHandle);
+                parent.lookAside = this;
+                return ep;
+            }
+
+            internal void LinkAsNext(T* opt(ExHeap) opt(State)! ep, Data data, EMap<T,State,Data>! parent) {
+                Node next = parent.GetFreshNode(ep, data, parent);
+                next.next = this.next;
+                this.next = next;
+                next.prev = this;
+                next.next.prev = next;
+                ep->LinkIntoCollection(parent.evHandle);
+            }
+        }
+
+        #region ITracked members
+
+        void ITracked.Release()
+        {
+            Node current = this.listHead.next;
+            while (current != this.listHead) {
+                // temporary hack until we fix the compiler to allow this upcast in receiver context
+                unsafe {
+                    current.endpoint->Release();
+                }
+                current = current.next;
+            }
+        }
+
+        void ITracked.Acquire()
+        {
+            Node current = this.listHead.next;
+            while (current != this.listHead) {
+                // temporary hack until we fix the compiler to allow this upcast in receiver context
+                unsafe {
+                    current.endpoint->Acquire();
+                }
+                current = current.next;
+            }
+        }
+
+        public void Dispose()
+        {
+            Node lh = this.listHead;
+            Node current = lh.next;
+            while (current != lh) {
+                Node next = current.next;
+                Data data;
+                T* opt(ExHeap) opt(State)! ep = (!)current.Unlink(this, out data);
+                unsafe { // needed because specializer does not add call usually done by delete
+                    ep->Dispose();
+                }
+                delete ep;
+                current = next;
+            }
+            lh.next = lh;
+            lh.prev = lh;
+            if (this.evHandle.id != UIntPtr.Zero) {
+                AutoResetEventHandle.Dispose(this.evHandle);
+                this.evHandle = new AutoResetEventHandle();
+            }
+        }
+
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+
+        #endregion
+
+        public void Add([Claims] T* opt(ExHeap) opt(State)! ep, Data data) {
+            this.listHead.LinkAsNext(ep, data, this);
+        }
+
+        public bool IsEmpty {
+            get {
+                return this.listHead == this.listHead.next;
+            }
+        }
+
+        ///
+        /// We have to be careful here. The node in nextScanStart might no longer
+        /// be in the set. 
+        ///
+        /// The policy is to start scanning from the successor of the last scanned 
+        /// point. 
+        private Node! NextScanStart {
+            get { 
+                Node candidate = this.nextScanStart;
+                if (candidate == null || candidate.endpoint == null) {
+                    // node might no longer be in the set
+                    return this.listHead;
+                }
+                return candidate;
+            }
+        }
+
+
+        public int GetCount() {
+            int count = 0;
+            Node current = this.listHead.next;
+            while (current != this.listHead) {
+                count++;
+                current = current.next;
+            }
+            return count;
+        }
+
+        /// possible set to false when match not possible. Never set to true!
+        public bool HeadMatches(int tag, ref bool possible, ref object setMatch)
+        {
+            // check if this tag is about the collection elements or about the collection itself:
+            if ((tag & (~0xff)) != 0) {
+              // about elements. Shift right 8 bits
+              tag = tag>>8;
+
+              // scan starting at different place each time
+              Node scanStart = this.NextScanStart;
+
+              bool setPossible = false;
+              Node current = scanStart;
+              do {
+                  if (current != this.listHead) {
+                      bool curPossible = true;
+                      if (current.endpoint->HeadMatches(tag, ref curPossible, ref setMatch)) {
+                          setMatch = current;
+                          this.nextScanStart = current.next;
+                          return true;
+                      }
+                      setPossible |= curPossible;
+                  }
+                  current = current.next;
+              } while (current != scanStart);
+
+              if (!setPossible) {
+                  possible = false;
+              }
+              return false;
+            }
+            else {
+              // about the map itself
+              switch (tag) {
+                  case EMapReceiveTag.Empty:
+                      if (this.listHead == null || this.listHead.next == this.listHead) {
+                          return true;
+                      }
+                      possible = false; // can't match on this select receive
+                      break;
+                  case EMapReceiveTag.Head:
+                      if (this.listHead != null && this.listHead.next != this.listHead) {
+                          return true;
+                      }
+                      possible = false; // can't match on this select receive
+                      break;
+              }
+              return false;
+            }
+        }
+
+
+        [Selectable((int)ESetReceiveTag.Empty)]
+        public void RecvEmpty() {
+        }
+
+        [Selectable((int)ESetReceiveTag.Head)]
+        public void RecvHead(out T*! in ExHeap opt(State) ep, out Data data) {
+            Node current = this.listHead.next;
+            assert current != this.listHead;
+            ep = (!)current.Unlink(this, out data);
+        }
+
+        public T* opt(ExHeap) opt(State)! Extract(object setMatch, out Data data) {
+            assert setMatch != null;
+            Node node = (Node)setMatch;
+        
+            T* opt(ExHeap) opt(State) result = node.Unlink(this, out data);
+            return (!)result;
+        }
+    }    
+
+    internal enum EMapReceiveTag {
+      Any = 1,
+      Empty = 2,
+      Head = 3,
+    }
+
+}

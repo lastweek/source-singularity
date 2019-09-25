@@ -1,0 +1,23 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <AssemblyName>mktests</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <ProjectGuid>{8B991225-8919-4367-80C2-26A933850E48}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="mktests.cs" />
+    <Reference Include="System" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+</Project>

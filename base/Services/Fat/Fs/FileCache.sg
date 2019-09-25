@@ -1,0 +1,41 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FileCache.sg
+//
+//  Note:
+//
+//  This cache is for recently closed files.  Opened
+//  files are not stored here.  This cache exists because
+//  opening a file entails a non-trivial amount of work.
+//
+//  File metadata does not have a fixed size and this cache
+//  should probably take this into account.
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal class FileCache
+    {
+        FsObjectCache! cache;
+
+        internal FileCache(uint capacity)
+        {
+            this.cache = new FsObjectCache(capacity);
+        }
+
+        internal void Add(int firstCluster, File! directory)
+            requires firstCluster != 0; // 0-byte files have inval firstCluster
+        {
+            cache.Add(firstCluster, directory);
+        }
+
+        internal File Get(int firstCluster)
+            requires firstCluster != 0; // 0-byte files have inval firstCluster
+        {
+            return (File)cache.Get(firstCluster);
+        }
+    }
+}

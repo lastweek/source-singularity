@@ -1,0 +1,423 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   File system operations for general use by webapps
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using Microsoft.Singularity;
+using System.Text;
+using System.Web;
+using FileSystem.Utils;
+
+namespace Microsoft.Singularity.WebApps
+{
+    public class WebAppFSUtils
+    {
+        private const string NoSuchPathPreamble =
+        "<html><head><title>No such path</title></head><body><h1 align=\"center\">No such path as \"";
+        private const string NoSuchPathPostamble = "\"</h1></body></html>";
+
+        private const string PathIsFilePreamble =
+        "<html><head><title>Path is file</title></head><body><h1 align=\"center\">Path \"";
+        private const string PathIsFilePostamble = "\" is a file</h1></body></html>";
+
+        private const string DirListingPreamble =
+        "<html><head><title>Directory Listing</title></head><body><h1>Directory Listing</h1>";
+        private const string DirListingPostamble = "</body></html>";
+
+        private const string NSListingPreamble =
+        "<html><head><title>Directory Listing</title></head><body><h1>Directory Listing</h1>";
+        private const string NSListingPostamble = "</body></html>";
+
+        private const string ErrorPreamble =
+        "<html><head><title>Error</title></head><body>";
+
+        private const string ErrorPostamble = "</body></html>";
+
+        private static TRef<DirectoryServiceContract.Imp:Ready>       m_epNS = null;
+        private static TRef<DirectoryServiceContract.Imp:Ready>  m_epWNS = null;
+
+        private static DirectoryServiceContract.Imp:Ready! GetDirectoryServiceContract()
+        {
+            if (m_epNS == null) {
+                m_epNS = new TRef<DirectoryServiceContract.Imp:Ready>(DirectoryService.NewClientEndpoint());
+            }
+
+            return m_epNS.Acquire();
+        }
+
+        private static void ReleaseDirectoryServiceContract([Claims] DirectoryServiceContract.Imp:Ready! imp)
+        {
+                m_epNS.Release(imp);
+        }
+
+        public static void CacheAndServeFSPath(string! path,
+                                               IHttpRequest! request,
+                                               DirectoryServiceContract.Imp:Ready! nsImp,
+                                               WebFileCache! webFileCache)
+        {
+            ErrorCode error;
+            FileAttributesRecord fileAttributes;
+
+            if (true == SdsUtils.GetAttributes(path, nsImp, out fileAttributes, out error)) {
+                if (fileAttributes.Type == NodeType.File) {
+                    DebugStub.WriteLine("Got file object of size {0}\n", __arglist(fileAttributes.FileSize));
+                    if (fileAttributes.FileSize < WebFileCache.CachedFileMaxSize) {
+                        FileContract.Imp:Ready fileImp = FileUtils.OpenFile(path, nsImp);
+                        if(fileImp == null) {
+                            DebugStub.Break();
+                            return;
+                        }
+                        byte[] in ExHeap buf = new[ExHeap] byte[fileAttributes.FileSize];
+                        fileImp.SendRead(buf, 0, 0, fileAttributes.FileSize);
+
+                        switch receive {
+                            case fileImp.AckRead( _buf, long bytesRead, int readError) :
+                                DebugStub.WriteLine("Read file got {0} bytes\n", __arglist(bytesRead));
+                                if ((readError != 0) || (_buf == null)) {
+                                    if (_buf != null) {
+                                        delete _buf;
+                                    }
+                                }
+                                else {
+                                    byte[]! in ExHeap original = _buf;
+
+                                    if (bytesRead > 0) {
+                                        if (bytesRead < fileAttributes.FileSize) {
+                                            // We must be at the end of the file; the FS only
+                                            // filled in part of our supplied block.
+                                            // Discard the remainder of the block.
+                                            DebugStub.WriteLine("ack! got fewer bytes than expected!!!\n");
+                                        }
+                                        //copy to cached version
+                                        byte[] in ExHeap cachedBuf = new[ExHeap] byte[fileAttributes.FileSize];
+                                        Bitter.Copy(cachedBuf, 0, (int) fileAttributes.FileSize, original, 0);
+                                        request.SendBodyData(original);
+                                        webFileCache.AddFileToWebCache(path, cachedBuf);
+                                    }
+                                    else {
+                                        delete original;
+                                    }
+                                }
+                                break;
+                            case fileImp.ChannelClosed() :
+                                break;
+
+                        }
+                        delete fileImp;
+                    }
+                }
+                else {
+                    DebugStub.WriteLine("Can't cache nodetype {0}\n",
+                                        __arglist(SdsUtils.NodeTypeToString(fileAttributes.Type)));
+                }
+
+                //Fall back to regular serve path
+                ServeFSPath(path, request, nsImp);
+            }
+            else {
+                DebugStub.WriteLine("WebAppFSUtils: Failed to get attributes for file {0} error {1}\n",
+                                    __arglist(path, SdsUtils.ErrorCodeToString(error)));
+
+
+                //Fall back to regular serve path
+                ServeFSPath(path, request, nsImp);
+            }
+        }
+
+        public static void ServeFSPath(string! path,
+                                       IHttpRequest! request,
+                                       DirectoryServiceContract.Imp:Ready! nsImp)
+        {
+            ulong startCycles, endCycles;
+
+            startCycles = Processor.CycleCount;
+            // First check if this is a file
+            FileContract.Imp:Ready fileChan = FileUtils.OpenFile(path, nsImp);
+            endCycles = Processor.CycleCount;
+
+            if ((endCycles - startCycles) > (ulong)((ulong)Processor.CyclesPerSecond / (ulong)5000)) {
+                //DebugStub.WriteLine("Slow file open");
+            }
+
+            if (fileChan != null) {
+                startCycles = Processor.CycleCount;
+                ServeFile(fileChan, request);
+                delete fileChan;
+                endCycles = Processor.CycleCount;
+
+                if ((endCycles - startCycles) > (ulong)((ulong)Processor.CyclesPerSecond / (ulong)5000)) {
+                    //DebugStub.WriteLine("Slow file read");
+                }
+                return;
+            }
+
+            // Fallback: can this path be enumerated via the namespace?
+            if (IsValidNSPath(path, nsImp)) {
+                ServeNSListing(path, request, nsImp);
+            }
+            else {
+                // OK, we give up
+                request.SendStatus(404, "Not Found");
+                request.SendHeader("Content-type", "text/html");
+                request.SendBodyData(Encoding.ASCII.GetBytes(NoSuchPathPreamble));
+                request.SendBodyData(Encoding.ASCII.GetBytes(path));
+                request.SendBodyData(Encoding.ASCII.GetBytes(NoSuchPathPostamble));
+                request.Done();
+            }
+        }
+
+        public static void ServeFSPath(string! path, IHttpRequest! request)
+        {
+            // First check if this is a file
+            DirectoryServiceContract.Imp! nsImp = GetDirectoryServiceContract();
+            try {
+                ServeFSPath(path, request, nsImp);
+            }
+            finally {
+                ReleaseDirectoryServiceContract(nsImp);
+            }
+        }
+
+        public static void ServeFile(FileContract.Imp:Ready! fileImp, IHttpRequest! request)
+        {
+            request.SendStatus(200, "OK");
+            TransmitFileContents(fileImp, request);
+            request.Done();
+        }
+
+
+        public static void TransmitFileContents(FileContract.Imp:Ready! fileImp, IHttpRequest! request)
+        {
+            long readSize = 1024 * 16; // 16KB
+            long readOffset = 0;
+            bool keepReading = true;
+
+            do {
+                byte[] in ExHeap buf = new[ExHeap] byte[readSize];
+                fileImp.SendRead(buf, 0, readOffset, readSize);
+
+                switch receive {
+                    case fileImp.AckRead( _buf, long bytesRead, int error) :
+                        if ((error != 0) || (_buf == null)) {
+                            if (_buf != null) {
+                                delete _buf;
+                            }
+
+                            keepReading = false;
+                        }
+                        else {
+                            byte[]! in ExHeap original = _buf;
+
+                            if (bytesRead > 0) {
+                                if (bytesRead < readSize) {
+                                    // We must be at the end of the file; the FS only
+                                    // filled in part of our supplied block.
+                                    // Discard the remainder of the block.
+                                    byte[]! in ExHeap remainder = Bitter.SplitOff(ref original, (int)bytesRead);
+                                    delete remainder;
+                                }
+
+                                request.SendBodyData(original);
+                                readOffset += bytesRead;
+                            }
+                            else {
+                                // By coincidence, our previous read took us to
+                                // exactly the end of the file. We should
+                                // optimize this away somehow
+                                delete original;
+                            }
+
+                            if (bytesRead < readSize) {
+                                // We're at the end
+                                keepReading = false;
+                            }
+                        }
+                        break;
+
+                    case fileImp.ChannelClosed() :
+                        keepReading = false;
+                        break;
+                }
+            } while (keepReading);
+        }
+
+        public static void ServeNSListing(string! path, IHttpRequest! request,
+                                          DirectoryServiceContract.Imp:Ready! nsImp)
+        {
+            ArrayList! listing;
+            ErrorCode errorOut;
+            long length;
+            NodeType nodeType;
+            bool ok;
+
+            int rc = GetNSListing(path, nsImp, out listing);
+
+            if (rc != 0) {
+                request.SendStatus(500, "Error code " + rc + " while generating listing");
+                request.SendHeader("Content-type", "text/html");
+                request.SendBodyData(Encoding.ASCII.GetBytes(ErrorPreamble));
+                request.SendBodyData(Encoding.ASCII.GetBytes("Error code " + rc + " while generating listing"));
+                request.SendBodyData(Encoding.ASCII.GetBytes(ErrorPostamble));
+                request.Done();
+            }
+            else {
+                request.SendStatus(200, "OK");
+                request.SendHeader("Content-type", "text/html");
+                request.SendBodyData(Encoding.ASCII.GetBytes(NSListingPreamble));
+
+                request.SendBodyData(Encoding.ASCII.GetBytes("<b> Listing for \"" + path + "\":</b><p>"));
+
+                foreach (string! subPath in listing) {
+                    string name;
+                    if (path == "/") name = subPath;
+                    else  name = path + "/" +subPath;
+                    ok = GetAttributes(name, nsImp, out length, out nodeType, out errorOut);
+                    if (!ok) {
+                        // No hyperlink
+                        request.SendBodyData(Encoding.ASCII.GetBytes(subPath + "(ERROR)<br/>"));
+                    }
+                    else  {
+                        if (nodeType == NodeType.File) {
+                            // Hyperlink + file info
+                            request.SendBodyData(Encoding.ASCII.GetBytes(
+                                                        GetNodeTypeString(nodeType) +
+                                                        "<a href=\"" + name + "\">" + subPath + "</a> " +
+                                                         " (" + length + ")<br/>"));
+                        }
+                        else   { // if (nodeType == NodeType.Directory) {
+                                // Hyperlink + directory info
+                                request.SendBodyData(Encoding.ASCII.GetBytes(
+                                                            GetNodeTypeString(nodeType) +
+                                                            "<a href=\"" + name + "\">[" + subPath + "]</a>"
+                                                            + "<br/>"));
+                        }
+                    }
+                }
+
+                request.SendBodyData(Encoding.ASCII.GetBytes("</p>" + NSListingPostamble));
+                request.Done();
+            }
+        }
+
+        private static bool GetAttributes(string! subPath,
+                                          DirectoryServiceContract.Imp:Ready! nsImp,
+                                          out long length,
+                                          out NodeType nodeType,
+                                          out ErrorCode errorOut)
+        {
+            FileAttributesRecord fileAttributes;
+            bool ok  = SdsUtils.GetAttributes(subPath, nsImp, out fileAttributes, out errorOut);
+            length   = fileAttributes.FileSize;
+            nodeType = fileAttributes.Type;
+            return ok;
+        }
+
+        private static string GetNodeTypeString(NodeType nodeType)
+        {
+            const string startVal = "(";
+            const string endVal = ")";
+            string retval = startVal;
+
+                switch (nodeType) {
+                    case NodeType.File:
+                        retval += "N";
+                        break;
+                    case NodeType.Directory:
+                        retval += "D";
+                        break;
+                    case NodeType.SymLink:
+                        retval += "L";
+                        break;
+                    case NodeType.ServiceProvider:
+                        retval += "S";
+                        break;
+                    case NodeType.IoMemory:
+                        retval += "I";
+                        break;
+                    case NodeType.BadNode:
+                        retval += "BAD";
+                        break;
+                }
+
+            if (retval.Equals(startVal)) {
+                return String.Empty;
+            }
+            else {
+                return retval + endVal;
+            }
+        }
+
+        private static bool IsValidNSPath(string! path, DirectoryServiceContract.Imp:Ready! nsImp)
+        {
+            NodeType nodeType;
+            long size;
+            ErrorCode error;
+
+            return GetAttributes(path, nsImp, out size, out nodeType, out error);
+        }
+
+        private static bool IsValidNSPath(string! path)
+        {
+            DirectoryServiceContract.Imp! epNS = GetDirectoryServiceContract();
+            try {
+                return IsValidNSPath(path, epNS);
+            }
+            finally {
+                ReleaseDirectoryServiceContract(epNS);
+            }
+        }
+
+        // Returns 0 on success; if return val != 0, outparam is null
+        private static int GetNSListing(string! path,
+                                        DirectoryServiceContract.Imp:Ready! nsImp,
+                                        out ArrayList! listing)
+        {
+            listing = new ArrayList();
+
+            ErrorCode errorOut;
+
+            DirectoryServiceContract.Imp! dirImp;
+            DirectoryServiceContract.Exp! dirExp;
+            DirectoryServiceContract.NewChannel(out dirImp, out dirExp);
+
+            bool ok  =  SdsUtils.Bind(path, nsImp, dirExp, out errorOut);
+            if (!ok) {
+                delete dirImp;
+                return -1;  //unable to bind to requested dir
+            }
+            dirImp.RecvSuccess();
+
+            EnumerationRecords[] in ExHeap responses =
+                SdsUtils.EnumerateDirectory (dirImp, out errorOut);
+
+            delete dirImp;
+            if (null == responses) {
+                return -1;
+            }
+            else {
+                for (int i = 0; i < responses.Length; i++) {
+                    string name;
+                    expose (responses[i]) {
+                        name = Bitter.ToString2(responses[i].Path);
+                        listing.Add(name);
+                    }
+                }
+                delete responses;
+                return 0;
+            }
+        }
+    }
+}

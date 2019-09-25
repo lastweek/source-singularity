@@ -1,0 +1,163 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity;
+
+namespace System.Threading
+{
+
+    public class Thread
+    {
+
+        public System.Globalization.CultureInfo! CurrentUICulture
+        {
+          get;
+          set
+            requires value != null otherwise ArgumentNullException;
+        }
+
+        public bool IsBackground
+        {
+          get;
+          set;
+        }
+
+        public bool IsThreadPoolThread
+        {
+          get;
+        }
+
+        public static Thread! CurrentThread
+        {
+          get;
+        }
+
+        public ThreadState ThreadState
+        {
+          get;
+        }
+
+        public bool IsAlive
+        {
+          get;
+        }
+
+        public string Name
+        {
+          get;
+          set;
+        }
+
+        public System.Globalization.CultureInfo! CurrentCulture
+        {
+          get;
+          set
+            requires value != null otherwise ArgumentNullException;
+        }
+
+        public static void MemoryBarrier ();
+
+        public static void VolatileWrite (ref object arg0, object arg1);
+
+        public static void VolatileWrite (ref double arg0, double arg1);
+
+        public static void VolatileWrite (ref Single arg0, Single arg1);
+
+        public static void VolatileWrite (ref UInt64 arg0, UInt64 arg1);
+
+        public static void VolatileWrite (ref UInt32 arg0, UInt32 arg1);
+
+        public static void VolatileWrite (ref int arg0, int arg1);
+
+        //public static void VolatileWrite (ref UInt32 arg0, UInt32 arg1);  WHERE DID THE REDUNDANT ONE COME FROM?
+
+        public static void VolatileWrite (ref UInt16 arg0, UInt16 arg1);
+
+        public static void VolatileWrite (ref SByte arg0, SByte arg1);
+
+        public static void VolatileWrite (ref Int64 arg0, Int64 arg1);
+
+        public static void VolatileWrite (ref IntPtr arg0, IntPtr arg1);
+
+        public static void VolatileWrite (ref Int16 arg0, Int16 arg1);
+
+        public static void VolatileWrite (ref byte arg0, byte arg1);
+
+        public static object VolatileRead (ref object arg0);
+
+        public static double VolatileRead (ref double arg0);
+
+        public static Single VolatileRead (ref Single arg0);
+
+        public static UInt64 VolatileRead (ref UInt64 arg0);
+
+        public static UInt32 VolatileRead (ref UInt32 arg0);
+
+        public static int VolatileRead (ref int arg0);
+
+        //public static UInt32 VolatileRead (ref UInt32 arg0);   WHERE DID THE REDUNDANT ONE COME FROM?
+
+        public static UInt16 VolatileRead (ref UInt16 arg0);
+
+        public static SByte VolatileRead (ref SByte arg0);
+
+        public static Int64 VolatileRead (ref Int64 arg0);
+
+        public static int VolatileRead (ref IntPtr arg0);
+
+        public static Int16 VolatileRead (ref Int16 arg0);
+
+        public static byte VolatileRead (ref byte arg0);
+
+        public static void SetData (LocalDataStoreSlot slot, object data);
+
+        public static object GetData (LocalDataStoreSlot slot);
+
+        public static void FreeNamedDataSlot (string name);
+
+        public static LocalDataStoreSlot GetNamedDataSlot (string name);
+
+        public static LocalDataStoreSlot AllocateNamedDataSlot (string name);
+
+        public static LocalDataStoreSlot AllocateDataSlot ();
+
+        public static void SpinWait (int arg0);
+
+        public static void Sleep (TimeSpan timeout);
+
+        public static void Sleep (int arg0);
+
+        public bool Join (TimeSpan timeout);
+
+        public bool Join (int arg0);
+
+        public void Join ();
+
+        public void Interrupt ();
+
+        public void Resume ();
+
+        public void Suspend ();
+
+        public static void ResetAbort ();
+
+        public void Abort ();
+
+        public void Abort (object stateInfo);
+
+        public void Start ();
+
+        public Thread (ThreadStart! start)
+            requires start != null otherwise ArgumentNullException;
+
+#if SINGULARITY_KERNEL
+        public static Thread! CreateThread(Process process,
+                                           ThreadStart! start);
+#endif
+
+    }
+}

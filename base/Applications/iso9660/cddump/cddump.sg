@@ -1,0 +1,165 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications.Iso9660.CDDump
+{
+    [ConsoleCategory(HelpMessage="Dump CD device", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "devName", Mandatory=true, Position=0, HelpMessage="Name of device.")]
+        internal string device;
+        
+        [LongParameter( "blocks", Mandatory=true, Position=1, HelpMessage="Number of blocks to dump.")]
+        internal long blocks;
+
+        [BoolParameter("d", Default=false, Position=2, HelpMessage="Dump to debugger, no console pause")]
+        public bool debugMode;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Iso9660.AppMain(this);
+        }
+    }
+
+    public class Iso9660
+    {
+        private static bool debugMode = false;
+
+        private static void dump (byte[]! in ExHeap data)
+        {
+            string s = "0000:  00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00  ................";
+                     // 0123456789012345678901234567890123456789012345678901234567890123456789012
+            string h = "0123456789abcdef";
+
+            char []str; str = new char[72]; for (int n = 0; n < 72; n++) str[n] = s[n];
+            char []hex; hex = new char[16]; for (int n = 0; n < 16; n++) hex[n] = h[n];
+
+            for (int i = 0; i < 2048; i += 16) {
+                if ((!debugMode) && (i > 0) && (i % 128 == 0)) {
+                    Console.WriteLine ("-- more --\r");
+                    int key = Console.Read();
+                    if (key != ' ' && key != '\n')
+                        break;
+                }
+                int z = i/256;
+                int y = i%256;
+
+                str[0] = hex[z/16];
+                str[1] = hex[z%16];
+
+                str[2] = hex[y/16];
+                str[3] = hex[y%16];
+
+                for (int j = 0; j < 16; j++) {
+                    int x = data[i+j] & 255;
+
+                    str[7+3*j] = hex[x/16];
+                    str[8+3*j] = hex[x%16];
+
+                    str[56+j] = (31 < x && x < 127)? (char)x: '.';
+                }
+                string dmp = ""; for (int n = 0; n < 72; n++) dmp += str[n];
+
+                Console.WriteLine (dmp);
+                if (debugMode) {
+                    DebugStub.WriteLine (dmp);
+                }
+            }
+        }
+
+        public static DiskDeviceContract.Imp:Ready OpenDevice(DirectoryServiceContract.Imp:Ready! ns, String! devname)
+        {
+            DiskDeviceContract.Exp! exp;
+            DiskDeviceContract.Imp! imp;
+            DiskDeviceContract.NewChannel(out imp, out exp);
+
+            ErrorCode errorOut;
+            bool success;
+            success  = SdsUtils.Bind(devname,ns, exp, out errorOut);
+            if (!success) {
+                Console.WriteLine("Bind of {0} failed. Reason:{1}\n",
+                                 devname, SdsUtils.ErrorCodeToString(errorOut));
+                delete imp;
+                return null;
+            }
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    Console.WriteLine("{0} does not support DiskDevice", devname);
+                    delete imp;
+                    return null;
+                case imp.ChannelClosed():
+                    Console.WriteLine("DiskDevice channel to {0} closed unexpectedly", devname);
+                    delete imp;
+                    return null;
+            }
+
+            return imp;
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            ulong n = (ulong) config.blocks;
+            debugMode = config.debugMode;
+            
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire(); 
+            if (ds == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+            
+            ds.RecvSuccess();
+
+            DiskDeviceContract.Imp disk = OpenDevice (ds, (!)config.device);
+            if (disk == null) {
+                delete ds; 
+                return 1;
+            }
+
+            byte[] in ExHeap buffer = new [ExHeap] byte [2048];
+            disk.SendRead (buffer, 0, 2048, n);
+
+            byte[]! in ExHeap data;
+            disk.RecvAckRead (out data);
+
+            dump (data);
+
+            delete data;
+            delete disk;
+            delete ds; 
+            return 0;
+        }
+    }
+}

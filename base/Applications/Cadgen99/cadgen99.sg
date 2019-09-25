@@ -1,0 +1,413 @@
+
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//     Ported literally SpecWeb99 source code.
+//
+//     Strongly avoid writing programs like this.
+//
+//     This file compiles under CSC for testing on Windows and SGC
+//     on Singularity.
+
+
+using System;
+using System.IO;
+
+
+using FileSystem.Utils;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using System.Text;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Show attributes associated with a file", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "d", Mandatory=true, HelpMessage="Directory in which to gen files")]
+        internal string directory;
+
+        [LongParameter( "e", Mandatory=true, HelpMessage="pttime")]
+        internal long pttime;
+
+        [LongParameter( "t", Mandatory=true, HelpMessage="max number of threads")]
+        internal long maxthread;
+
+        [LongParameter( "exp1", Mandatory=true, HelpMessage="expiredAd1")]
+        internal long expiredAd1;
+
+        [LongParameter( "exp2", Mandatory=true, HelpMessage="expiredAd2")]
+        internal long expiredAd2;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            CadGen99.AppMain(this);
+            return 0;
+        }
+    }
+
+
+///////////////////////////////////////
+// Quick and dirty abstraction of file operations
+//////////////////////////////////////
+
+public class FILE
+{
+    private TRef<FileContract.Imp:Ready>! connRef;
+    private long filePos;
+    private string! path;
+
+    public static FILE CreateFile(string! path)
+    {
+        if (FileUtils.CreateFile(path) != 0) {
+            return null;
+        }
+
+        return OpenFile(path);
+    }
+
+    public static FILE OpenFile(string! path)
+    {
+        FileContract.Imp conn = FileUtils.OpenFile(path);
+
+        if (conn != null) {
+            return new FILE(conn, path);
+        }
+        else {
+            return null;
+        }
+    }
+
+    private FILE([Claims] FileContract.Imp:Ready! conn, string! thePath)
+    {
+        connRef = new TRef<FileContract.Imp:Ready>(conn);
+        filePos = 0;
+        path = thePath;
+        base();
+    }
+
+    public int Write(string! str)
+    {
+        byte[] bytes = Encoding.ASCII.GetBytes(str);
+        return Write(bytes, 0, bytes.Length);
+    }
+
+    public int Write(byte[]! buf, int offset, int length)
+    {
+        FileContract.Imp conn = connRef.Acquire();
+        byte[]! in ExHeap bytes = Bitter.FromByteArray(buf, offset, length);
+
+        try {
+            long bytesWritten;
+            int error;
+            conn.SendWrite(bytes, 0, filePos, bytes.Length);
+            conn.RecvAckWrite(out bytes, out bytesWritten, out error);
+            delete bytes;
+            filePos += bytesWritten;
+
+            if (error != 0) {
+                return 0;
+            }
+        }
+        finally {
+            connRef.Release(conn);
+        }
+
+        return buf.Length;
+    }
+
+    public int Read(byte[]! buf, int offset, int maxLength)
+    {
+        FileContract.Imp conn = connRef.Acquire();
+        byte[]! in ExHeap bytes = new[ExHeap] byte[maxLength];
+
+        try {
+            long bytesRead;
+            int error;
+            conn.SendRead(bytes, 0, filePos, bytes.Length);
+            conn.RecvAckRead(out bytes, out bytesRead, out error);
+
+            filePos += bytesRead;
+
+            if (error != 0) {
+                delete bytes;
+                return 0;
+            }
+
+            Bitter.ToByteArray(bytes, 0, maxLength, buf, offset);
+            delete bytes;
+        }
+        finally {
+            connRef.Release(conn);
+        }
+
+        return buf.Length;
+    }
+
+    public int Size
+    {
+        // TODO
+        get {
+            long size;
+            FileAttributesRecord fileAttributes;
+            ErrorCode error; 
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+            bool ok  = FileUtils.GetAttributes(path, rootNS, out fileAttributes, out  error);
+            delete rootNS; 
+
+            if (!ok) {
+                throw new Exception("Failed to get attributes");
+            }
+            else {
+                return unchecked((int)fileAttributes.FileSize);
+            }
+        }
+    }
+
+    public void Close()
+    {
+        FileContract.Imp conn = connRef.Acquire();
+
+        try {
+            conn.SendClose();
+        }
+        finally {
+            connRef.Release(conn);
+        }
+    }
+}
+
+
+public class CadGen99
+{
+    // Constants from client.h
+    private const int CAD_SEARCH_INTERVAL = 24;
+    private const int CADFILE_ENTRIES     = 360;
+    private const int MAX_CAD_WEIGHT      = 75;
+
+    private static readonly string AdsFile = "Custom.Ads";
+
+    private static void Usage()
+    {
+        Console.WriteLine("cadgen99 -C <directory> -e <pttime> -t <threads> <expiredAd1> <expiredAd2>");
+        Console.WriteLine("All arguments are mandatory.");
+        Console.WriteLine("Expired ads beyond 1 and 2 can be supplied but are ignored per SpecWeb source.");
+        Console.WriteLine("Output written to: <directory>/{0}", AdsFile);
+        Console.WriteLine("NB <directory> better exist.");
+    }
+
+    internal static void AppMain(Parameters! config)
+    {
+        
+        string /*!*/ directory = "";
+        int pttime        = 0;
+        int maxthread     = 0;
+        
+        int [] expired = new int[2];
+        
+        pttime      = (int) config.pttime;
+        maxthread   = (int) config.maxthread; 
+        expired[0]  = (int) config.expiredAd1; 
+        expired[1]  = (int) config.expiredAd2; 
+        directory   = config.directory; 
+
+        if (pttime == 0) {
+            pttime = 1800;
+        }
+
+        // XXX : cadgen99 uses time(...) which is time in seconds
+        // since since January 1, 1970.  DateTime(1970, 1, 1).
+
+        TimeSpan delta1970 = DateTime.Now - new DateTime(1970, 1, 1);
+        int ts = ((int)delta1970.TotalSeconds) + (pttime * 2);
+        int exp_ts  = ts - 31622400;
+
+        int [] demographic  = new int [CADFILE_ENTRIES];
+        int [] weight       = new int [CADFILE_ENTRIES];
+        int [] minmatch     = new int [CADFILE_ENTRIES];
+        int [] expired_date = new int [CADFILE_ENTRIES];
+
+        //
+        // Cut-and-paste from cadgen99.c with minor edits
+        // (in-place type declarations and commenting out unused variables)
+        //
+        int my_n = CAD_SEARCH_INTERVAL;
+        int match1 = (maxthread + CAD_SEARCH_INTERVAL) % my_n;
+
+        int j;
+        int i;
+        for (j = 0; j < CADFILE_ENTRIES; j++) {
+            int k = (j * 10000)%12301;
+            if (k == 0) k = 12300;
+            int c4 = (k  )     & 0xf;
+            int c3 = (k >> 4)  & 0xf;
+            int c2 = (k >> 8)  & 0xf;
+            // int c1 = (k >> 12) & 0xf;    // XXX [oh]: not used in test
+
+            int gender =  (k) % 2;
+            if (gender == 1) gender = 0x20000000;
+            else               gender = 0x10000000;
+
+            int age     = (k) % 4;
+            if (age == 0) age = 0x08000000;
+            else if (age == 1) age = 0x04000000;
+            else if (age == 2) age = 0x02000000;
+            else if (age == 3) age = 0x01000000;
+
+            int area    = (c4 + c2) % 4;
+            if (area == 0)     area = 0x00800000;
+            else if (area == 1) area = 0x00400000;
+            else if (area == 2) area = 0x00200000;
+            else if (area == 3) area = 0x00100000;
+
+            int interest1 = (c4 + c3) % 10;
+            if (interest1 == 0) interest1 = 0x00080000;
+            if (interest1 == 1) interest1 = 0x00040000;
+            if (interest1 == 2) interest1 = 0x00020000;
+            if (interest1 == 3) interest1 = 0x00010000;
+            if (interest1 == 4) interest1 = 0x00008000;
+            if (interest1 == 5) interest1 = 0x00004000;
+            if (interest1 == 6) interest1 = 0x00002000;
+            if (interest1 == 7) interest1 = 0x00001000;
+            if (interest1 == 8) interest1 = 0x00000800;
+            if (interest1 == 9) interest1 = 0x00000400;
+
+
+            int interest2 = c4 % 10;
+            if (interest2 == 0) interest2 = 0x00000200;
+            else if (interest2 == 1) interest2 = 0x00000100;
+            else if (interest2 == 2) interest2 = 0x00000080;
+            else if (interest2 == 3) interest2 = 0x00000040;
+            else if (interest2 == 4) interest2 = 0x00000010;
+            else if (interest2 == 5) interest2 = 0x00000020;
+            else if (interest2 == 6) interest2 = 0x00000008;
+            else if (interest2 == 7) interest2 = 0x00000004;
+            else if (interest2 == 8) interest2 = 0x00000002;
+            else if (interest2 == 9) interest2 = 0x00000001;
+
+            int combined = gender | age | area | interest1 | interest2;
+            int wts=k*k;
+            wts = wts % 1048576;
+            if (wts == 0) wts = 0x27104;
+            int match = MAX_CAD_WEIGHT;
+
+            demographic[j]  = combined;
+            weight[j]       = wts;
+            minmatch[j]     = match;
+            expired_date[j] = ts;
+        }
+
+        for (j = 0; j < CADFILE_ENTRIES; j++) {
+            if (j == match1) {
+                minmatch[j] = 1;
+                weight[j] = 0x3ffff;
+                demographic[j] = demographic[j] | 0x3ff;
+                match1 = match1 + my_n;
+            }
+        }
+
+        // Mark two ranges as expired   
+        j = expired[0];
+        for (i = 0; i < my_n; i++) {
+            if (j > CADFILE_ENTRIES - 1)
+                expired_date[j-CADFILE_ENTRIES] = exp_ts;
+            else
+                expired_date[j] = exp_ts;
+            j = j+1;
+        }
+        j = expired[1];
+        for (i = 0; i < my_n; i++) {
+            if (j > CADFILE_ENTRIES - 1)
+                expired_date[j-CADFILE_ENTRIES] = exp_ts;
+            else
+                expired_date[j] = exp_ts;
+            j = j+1;
+        }
+
+        GenerateOutput(directory, demographic, weight, minmatch, expired_date);
+    }
+
+#if SINGULARITY
+
+    private static void GenerateOutput(string /*!*/ directory,
+                                       int [] /*!*/ demographic,
+                                       int [] /*!*/ weight,
+                                       int [] /*!*/ minmatch,
+                                       int [] /*!*/ expired_date)
+    {
+        FILE fp;
+
+        string path;
+        if (directory == "") {
+            path = AdsFile;
+        }
+        else if (directory[directory.Length - 1] == '/') {
+            path = directory + AdsFile;
+        }
+        else {
+            path = directory + "/" + AdsFile;
+        }
+
+        fp = FILE.CreateFile(path);
+        if (fp == null) {
+            Console.WriteLine("Can't open file \"" + path + "\"");
+            return;
+        }
+
+        for (int j = 0; j < CADFILE_ENTRIES; j++) {
+            fp.Write(
+                String.Format("{0,5:d} {1,8:X} {2,8:X} {3,3:d} {4,10:d}\n",
+                              j, demographic[j], weight[j],
+                              minmatch[j], expired_date[j])
+                );
+        }
+        fp.Close();
+    }
+
+#else
+
+    private static void GenerateOutput(string directory,
+                                       int [] demographic,
+                                       int [] weight,
+                                       int [] minmatch,
+                                       int [] expired_date)
+    {
+        for (int j = 0; j < CADFILE_ENTRIES; j++) {
+            Console.WriteLine("{0,5:d} {1,8:X} {2,8:X} {3,3:d} {4,10:d}",
+                              j, demographic[j], weight[j],
+                              minmatch[j], expired_date[j]);
+        }
+    }
+
+#endif
+
+}
+
+#if SINGULARITY
+}
+#endif

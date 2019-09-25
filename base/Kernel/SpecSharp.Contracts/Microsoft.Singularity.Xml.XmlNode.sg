@@ -1,0 +1,71 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Xml
+{
+    using System;
+    //    using System.IO;
+    using System.Collections;
+    /// <summary>
+    /// Summary description for XmlNode.
+    /// </summary>
+    public class XmlNode
+    {
+        public XmlNode(string name);
+
+        public int CountNamedChildren(string name);
+
+        public XmlNode GetNestedChild(String childName);
+
+        public XmlNode GetNestedChild(String[] childNames);
+
+        public string! Name
+        {
+            get;
+        }
+
+        public void AddChild(XmlNode node);
+
+        public ArrayList! Children
+        {
+            get;
+        }
+
+        public void AddText(string text);
+
+        public string Text
+        {
+            get;
+        }
+
+        public string this[string attributeName]
+        {
+            get;
+            set;
+        }
+
+        //
+        // Safe access to attributes:
+        //      since the kernel is going to use this object, we should
+        //      push the error-checking into the object instead of risking
+        //      the kernel forgetting to error check in some obscure method
+        //
+
+        public string GetAttribute(string attributeName,
+                                   string defaultValue);
+
+        public bool GetAttribute(string attributeName,
+                                 bool defaultValue);
+
+        public int GetAttribute(string attributeName,
+                                int defaultValue);
+
+        public UIntPtr GetAttribute(string attributeName,
+                                    UIntPtr defaultValue);
+
+        public bool HasAttribute(string attributeName);
+    }
+}

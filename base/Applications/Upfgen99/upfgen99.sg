@@ -1,0 +1,461 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//     Ported literally SpecWeb99 source code.
+//
+//     Strongly avoid writing programs like this.
+//
+//     This file compiles under CSC for testing on Windows and SGC
+//     on Singularity.
+
+
+using System;
+using System.IO;
+
+#if SINGULARITY
+
+using FileSystem.Utils;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using System.Text;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Generate files for Specweb. Output goes to directory/user.Personality", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [LongParameter( "n", Mandatory=true, HelpMessage="Max Load")]
+        internal long maxLoad;
+
+        [LongParameter( "t", Mandatory=true, HelpMessage="Number of Threads")]
+        internal long threads;
+
+        [StringParameter( "c", Mandatory=true,  HelpMessage="directory.")]
+        internal string directory;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            UpfGen99.AppMain(this);
+            return 0;
+        }
+    }
+
+    ///////////////////////////////////////
+    // Quick and dirty abstraction of file operations
+    //////////////////////////////////////
+
+    public class FILE
+    {
+        private TRef<FileContract.Imp:Ready>! connRef;
+        private long filePos;
+        private string! path;
+
+        public static FILE CreateFile(string! path)
+        {
+            if (FileUtils.CreateFile(path) != 0) {
+                return null;
+            }
+
+            return OpenFile(path);
+        }
+
+        public static FILE OpenFile(string! path)
+        {
+            FileContract.Imp conn = FileUtils.OpenFile(path);
+
+            if (conn != null) {
+                return new FILE(conn, path);
+            }
+            else {
+                return null;
+            }
+        }
+
+        private FILE([Claims] FileContract.Imp:Ready! conn, string! thePath)
+        {
+            connRef = new TRef<FileContract.Imp:Ready>(conn);
+            filePos = 0;
+            path = thePath;
+            base();
+        }
+
+        public int Write(string! str)
+        {
+            byte[] bytes = Encoding.ASCII.GetBytes(str);
+            return Write(bytes, 0, bytes.Length);
+        }
+
+        public int Write(byte[]! buf, int offset, int length)
+        {
+            FileContract.Imp conn = connRef.Acquire();
+            byte[]! in ExHeap bytes = Bitter.FromByteArray(buf, offset, length);
+
+            try {
+                long bytesWritten;
+                int error;
+                conn.SendWrite(bytes, 0, filePos, bytes.Length);
+                conn.RecvAckWrite(out bytes, out bytesWritten, out error);
+                delete bytes;
+                filePos += bytesWritten;
+
+                if (error != 0) {
+                    return 0;
+                }
+            }
+            finally {
+                connRef.Release(conn);
+            }
+
+            return buf.Length;
+        }
+
+        public int Read(byte[]! buf, int offset, int maxLength)
+        {
+            FileContract.Imp conn = connRef.Acquire();
+            byte[]! in ExHeap bytes = new[ExHeap] byte[maxLength];
+
+            try {
+                long bytesRead;
+                int error;
+                conn.SendRead(bytes, 0, filePos, bytes.Length);
+                conn.RecvAckRead(out bytes, out bytesRead, out error);
+
+                filePos += bytesRead;
+
+                if (error != 0) {
+                    delete bytes;
+                    return 0;
+                }
+
+                Bitter.ToByteArray(bytes, 0, maxLength, buf, offset);
+                delete bytes;
+            }
+            finally {
+                connRef.Release(conn);
+            }
+
+            return buf.Length;
+        }
+
+        public int Size
+        {
+            // TODO
+            get {
+                FileAttributesRecord attr;
+                ErrorCode error;
+
+                bool ok = FileUtils.GetAttributes(path, out attr, out error);
+                if (!ok) {
+                    throw new Exception("Failed to get attributes");
+                }
+                return unchecked((int)attr.FileSize);
+            }
+        }
+
+        public void Close()
+        {
+            FileContract.Imp conn = connRef.Acquire();
+
+            try {
+                conn.SendClose();
+            }
+            finally {
+                connRef.Release(conn);
+            }
+        }
+    }
+
+    #else
+namespace Microsoft.Singularity.Applications
+{
+    public class FILE
+    {
+        public static FILE CreateFile(string filename)
+        {
+            return (filename != null) ? new FILE() : null;
+        }
+
+        public void Write(string msg)
+        {
+            Console.Write(msg);
+        }
+
+        public void Close()
+        {
+        }
+    }
+
+    #endif // SINGULARITY
+
+    public class UpfGen99
+    {
+        // Constants from client.h
+        private const int CADFILE_ENTRIES = 360;
+        private const string UserFile = "User.Personality";
+
+        private static void Usage()
+        {
+            Console.WriteLine("upfgen99 -C <directory> -n maxload -t <threads>");
+            Console.WriteLine("All arguments are mandatory.");
+            Console.WriteLine("Output written to: <directory>/{0}", UserFile);
+            Console.WriteLine("NB <directory> better exist.");
+        }
+
+#if  SINGULARITY
+        internal static void AppMain(Parameters! config)
+        {
+
+            string /*!*/ directory = (!)config.directory;
+            int maxload    = (int) config.maxLoad;         // Unsigned in upfgen99.c
+            int maxthread  = (int) config.threads;         // Unsigned in upfgen99.c
+
+
+            if (maxthread <= 0) {
+                Usage();
+                return;
+            }
+
+            if (maxthread > maxload) {
+                maxload = maxthread;
+            }
+
+            string path;
+            if (directory == "") {
+                path = UserFile;
+            }
+            else if (directory[directory.Length - 1] == '/') {
+                path = directory + UserFile;
+            }
+            else {
+                path = directory + "/" + UserFile;
+            }
+
+            FILE file = FILE.CreateFile(path);
+            if (file == null) {
+                Console.WriteLine("Can't create file \"" + path + "\"");
+                return;
+            }
+
+            // Cut-and-pasted from upfgen99.c
+
+            for (int j = 0; j < maxload; j++) {
+                int k = ((j % CADFILE_ENTRIES) * 10000)%12301;
+                if (k == 0) k = 12300;
+                int c4 = k        & 0xf;
+                int c3 = (k >> 4)  & 0xf;
+                int c2 = (k >> 8)  & 0xf;
+                // int c1 = (k >> 12) & 0xf; // XXX: not used
+
+                int gender =  (k) % 2;
+                if (gender == 1) gender = 0x20000000;
+                else           gender = 0x10000000;
+
+                int age     = (k) % 4;
+                if (age == 0) age = 0x08000000;
+                else if (age == 1) age = 0x04000000;
+                else if (age == 2) age = 0x02000000;
+                else if (age == 3) age = 0x01000000;
+
+                int area    = (c4 + c2) % 4;
+                if (area == 0)     area = 0x00800000;
+                else if (area == 1) area = 0x00400000;
+                else if (area == 2) area = 0x00200000;
+                else if (area == 3) area = 0x00100000;
+
+                int interest1 = (c4 + c3) % 10;
+                if (interest1 == 0) interest1 = 0x00080000;
+                if (interest1 == 1) interest1 = 0x00040000;
+                if (interest1 == 2) interest1 = 0x00020000;
+                if (interest1 == 3) interest1 = 0x00010000;
+                if (interest1 == 4) interest1 = 0x00008000;
+                if (interest1 == 5) interest1 = 0x00004000;
+                if (interest1 == 6) interest1 = 0x00002000;
+                if (interest1 == 7) interest1 = 0x00001000;
+                if (interest1 == 8) interest1 = 0x00000800;
+                if (interest1 == 9) interest1 = 0x00000400;
+
+                int interest2 = c4 % 10;
+                if (interest2 == 0) interest2 = 0x00000200;
+                else if (interest2 == 1) interest2 = 0x00000100;
+                else if (interest2 == 2) interest2 = 0x00000080;
+                else if (interest2 == 3) interest2 = 0x00000040;
+                else if (interest2 == 4) interest2 = 0x00000020;
+                else if (interest2 == 5) interest2 = 0x00000010;
+                else if (interest2 == 6) interest2 = 0x00000008;
+                else if (interest2 == 7) interest2 = 0x00000004;
+                else if (interest2 == 8) interest2 = 0x00000002;
+                else if (interest2 == 9) interest2 = 0x00000001;
+
+                int combined = gender | age | area | interest1 | interest2;
+
+                file.Write(String.Format("{0,5:d} {1,8:X}\n", j, combined));
+            }
+            file.Close();
+        }
+#else
+        public static void Main(string[] /*!*/ args)
+        {
+    #if SINGULARITY
+            const int ArgsStart = 1;
+    #else
+            const int ArgsStart = 0;
+    #endif
+
+            if (args == null || args.Length < (ArgsStart + 6)) {
+                Console.WriteLine("Expecting 6 arguments, got {0}.",
+                                args.Length - ArgsStart);
+                Usage();
+                return;
+            }
+
+            string /*!*/ directory = "";
+            int maxload    = 0;         // Unsigned in upfgen99.c
+            int maxthread  = 0;         // Unsigned in upfgen99.c
+            bool needHelp  = false;
+
+            int i;
+            for (i = ArgsStart; i < args.Length; i++) {
+                string /*!*/ arg = /*^ (!)^*/ args[i];
+                if (arg.Length < 2 || (arg[0] != '-' && arg[0] != '/')) {
+                    break;
+                }
+
+                if (args.Length - i >= 2) {
+                    string /*!*/ optArg = /*^ (!)^*/ args[++i];
+                    // Parameterized arguments
+                    switch (Char.ToLower(arg[1])) {
+                        case 'c':
+                            directory = optArg;
+                            break;
+                        case 'n':
+                            try {
+                                maxload = Int32.Parse(optArg);
+                            }
+                            catch (Exception) {
+                                Console.WriteLine("Invalid maxload: ", optArg);
+                                return;
+                            }
+                            break;
+                        case 't':
+                            try {
+                                maxthread = Int32.Parse(optArg);
+                            }
+                            catch (Exception) {
+                                Console.WriteLine("Invalid maxthread: ", optArg);
+                                return;
+                            }
+                            break;
+                    }
+                }
+                else {
+                    // Flag arguments
+                    needHelp = true;
+                }
+            }
+
+            if (maxthread == 0 || needHelp == true) {
+                Usage();
+                return;
+            }
+
+            if (maxthread > maxload) {
+                maxload = maxthread;
+            }
+
+            string path;
+            if (directory == "") {
+                path = UserFile;
+            }
+            else if (directory[directory.Length - 1] == '/') {
+                path = directory + UserFile;
+            }
+            else {
+                path = directory + "/" + UserFile;
+            }
+
+            FILE file = FILE.CreateFile(path);
+            if (file == null) {
+                Console.WriteLine("Can't create file \"" + path + "\"");
+                return;
+            }
+
+            // Cut-and-pasted from upfgen99.c
+
+            for (int j = 0; j < maxload; j++) {
+                int k = ((j % CADFILE_ENTRIES) * 10000)%12301;
+                if (k == 0) k = 12300;
+                int c4 = k        & 0xf;
+                int c3 = (k >> 4)  & 0xf;
+                int c2 = (k >> 8)  & 0xf;
+                // int c1 = (k >> 12) & 0xf; // XXX: not used
+
+                int gender =  (k) % 2;
+                if (gender == 1) gender = 0x20000000;
+                else           gender = 0x10000000;
+
+                int age     = (k) % 4;
+                if (age == 0) age = 0x08000000;
+                else if (age == 1) age = 0x04000000;
+                else if (age == 2) age = 0x02000000;
+                else if (age == 3) age = 0x01000000;
+
+                int area    = (c4 + c2) % 4;
+                if (area == 0)     area = 0x00800000;
+                else if (area == 1) area = 0x00400000;
+                else if (area == 2) area = 0x00200000;
+                else if (area == 3) area = 0x00100000;
+
+                int interest1 = (c4 + c3) % 10;
+                if (interest1 == 0) interest1 = 0x00080000;
+                if (interest1 == 1) interest1 = 0x00040000;
+                if (interest1 == 2) interest1 = 0x00020000;
+                if (interest1 == 3) interest1 = 0x00010000;
+                if (interest1 == 4) interest1 = 0x00008000;
+                if (interest1 == 5) interest1 = 0x00004000;
+                if (interest1 == 6) interest1 = 0x00002000;
+                if (interest1 == 7) interest1 = 0x00001000;
+                if (interest1 == 8) interest1 = 0x00000800;
+                if (interest1 == 9) interest1 = 0x00000400;
+
+                int interest2 = c4 % 10;
+                if (interest2 == 0) interest2 = 0x00000200;
+                else if (interest2 == 1) interest2 = 0x00000100;
+                else if (interest2 == 2) interest2 = 0x00000080;
+                else if (interest2 == 3) interest2 = 0x00000040;
+                else if (interest2 == 4) interest2 = 0x00000020;
+                else if (interest2 == 5) interest2 = 0x00000010;
+                else if (interest2 == 6) interest2 = 0x00000008;
+                else if (interest2 == 7) interest2 = 0x00000004;
+                else if (interest2 == 8) interest2 = 0x00000002;
+                else if (interest2 == 9) interest2 = 0x00000001;
+
+                int combined = gender | age | area | interest1 | interest2;
+
+                file.Write(String.Format("{0,5:d} {1,8:X}\n", j, combined));
+            }
+            file.Close();
+        }
+
+#endif
+    }
+}

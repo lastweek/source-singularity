@@ -1,0 +1,28 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+// DefaultMemberAttribute is defines the Member of a Type that is the "default"
+//  member used by Type.InvokeMember.  The default member is simply a name given
+//  to a type.
+//
+
+using System;
+
+namespace System.Reflection
+{
+
+    //| <include file='doc\DefaultMemberAttribute.uex' path='docs/doc[@for="DefaultMemberAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface)]
+    public sealed class DefaultMemberAttribute : Attribute
+    {
+        // You must provide the name of the member, this is required
+        //| <include file='doc\DefaultMemberAttribute.uex' path='docs/doc[@for="DefaultMemberAttribute.DefaultMemberAttribute"]/*' />
+        public DefaultMemberAttribute(String memberName);
+
+    }
+}

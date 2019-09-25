@@ -1,0 +1,1135 @@
+/////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   WorkerFunctions.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.SDS;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+    using SharedHeap = Microsoft.Singularity.Memory.SharedHeap;
+
+    class WorkerFunctions
+    {
+
+    //------------------------------------------------------------------------------------
+    // Worker functions for DirectoryServiceWorker loop
+    //------------------------------------------------------------------------------------
+
+        public static void DoDeregister(Node! dir,
+                                   DirectoryServiceContract.Exp! ep ,
+                                   [Claims] char[]! in ExHeap i_path)
+        {
+            ErrorCode error;
+            bool reparse;
+            bool linkFound;
+            string link;
+            string prefix;
+            int position;
+            Char[] in ExHeap exPrefix;
+            Char[] in ExHeap exSuffix;
+            string pathCopy = Bitter.ToString2(i_path);
+            Principal pr = AclCore.EndpointPeer(ep);
+
+            try {
+                ServiceProviderContract.Imp:Start  service =
+                    dir.Deregister(new StringBuilder (Bitter.ToString2(i_path)),
+                                   pr,
+                                   ep,
+                                   0,
+                                   out position,
+                                   out linkFound, out error, out reparse, out link);
+
+                if (service != null) {
+                    ep.SendAckDeregister(service);
+                    Tracing.Log(Tracing.Debug,"Register success");
+                    delete i_path;
+                    return;
+                }
+
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakDeregister(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakDeregisterReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakDeregisterReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    //DebugStub.Break();
+                    ep.SendNakDeregister(error);
+                }
+
+            }
+            catch (Exception e) {
+                DebugStub.Print(" Exception {0}\n", __arglist(e.ToString()));
+            }
+            delete i_path;
+        }
+
+    //------------------------------------------------------------------------------------
+    // Directory Enumeration
+    //------------------------------------------------------------------------------------
+        public static void DoEnumerate(DirNode! dir,
+                            DirectoryServiceContract.Exp! ep
+                            )
+        {
+            ErrorCode error;
+            Principal pr = AclCore.EndpointPeer(ep);
+            EnumerationRecords[] in ExHeap results =
+                dir.Enumerate(pr, out error);
+            if (results == null) ep.SendEnumerationTerminated(ErrorCode.InsufficientResources);
+            else ep.SendEnumerationEntries(results, false);
+        }
+
+        public static void DoMore(DirNode! dir,
+                            DirectoryServiceContract.Exp! ep
+                            )
+        {
+
+            ep.SendEnumerationTerminated(ErrorCode.NotImplemented);
+        }
+
+        public static void DoStop(DirNode! dir,
+                            DirectoryServiceContract.Exp! ep
+                            )
+        {
+
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoRegister(DirNode! dir,
+                            DirectoryServiceContract.Exp! ep ,
+                            [Claims] char[]! in ExHeap i_path,
+                            [Claims] ServiceProviderContract.Imp:Start! i_provider
+                            )
+        {
+            ErrorCode error;
+            bool reparse;
+            bool linkFound;
+            string link;
+            string prefix;
+            int position;
+            Char[] in ExHeap exPrefix;
+            Char[] in ExHeap exSuffix;
+            string pathCopy = Bitter.ToString2(i_path);
+            Principal pr = AclCore.EndpointPeer(ep);
+
+            ServiceProviderContract.Imp reject = null;
+            try {
+                Tracing.Log(Tracing.Debug," Register started");
+                reject = dir.Register(new StringBuilder(Bitter.ToString2(i_path)),
+                                   pr,
+                                   i_provider,
+                                   0,
+                                   out position,
+                                   out linkFound, out error, out reparse, out link);
+
+                Tracing.Log(Tracing.Debug,"Register: linkFound={0}, reparse={1}",
+                            linkFound ? (UIntPtr) 1 : (UIntPtr) 0,
+                            reparse ? (UIntPtr) 1 : (UIntPtr) 0
+                            );
+                if (reject == null) {
+                    ep.SendAckRegister();
+                    Tracing.Log(Tracing.Debug,"Register success");
+                }
+                else {
+                    if  (reparse) {
+                        Tracing.Log(Tracing.Debug,"reparsing "+link);
+                        if (link == null) {
+                            DebugStub.Break();
+                            ep.SendNakRegister(reject,ErrorCode.Unknown);
+                        }
+                        else {
+                            if (linkFound) {
+                                Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                                exPrefix = Bitter.FromString2(link);
+                                exSuffix = Bitter.FromString2(link);
+                                ep.SendNakRegisterReparse(exPrefix,
+                                                        exSuffix,
+                                                        linkFound,
+                                                        reject);
+                            }
+                            else {
+                                Tracing.Log(Tracing.Debug,"Register(reparse)"+link);
+                                // need to construct prefix from original path
+                                if (position == 0) prefix = pathCopy;
+                                else prefix = pathCopy.Substring(0,position);
+
+                                exPrefix = Bitter.FromString2(prefix);
+                                exSuffix = Bitter.FromString2(link);
+                                ep.SendNakRegisterReparse(exPrefix,
+                                                    exSuffix,
+                                                    linkFound,
+                                                    reject);
+                            }
+                            //DebugStub.Break();
+                            }
+                    } // reparse
+                    else {
+                        Tracing.Log(Tracing.Debug," Bind failure!");
+                        ep.SendNakRegister(reject, error);
+                    }
+                }
+            }
+            catch (Exception e) {
+                DebugStub.Print(" Exception {0}\n", __arglist(e.ToString()));
+            }
+            delete i_path;
+            Tracing.Log(Tracing.Debug," register {0}", (reject == null) ? "failed" : "success");
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoNotify(DirNode! dir,
+                            DirectoryServiceContract.Exp! ep ,
+                            [Claims] char[]! in ExHeap i_path,
+                            [Claims] char[]!  in ExHeap i_pattern,
+                            bool sendExisting,
+                            [Claims] NotifyContract.Imp:Start! i_notifyImp
+                            )
+        {
+            bool reparse;
+            string link;
+            ErrorCode error;
+            bool linkFound;
+            string prefix;
+            int position;
+
+            Char[] in ExHeap exPrefix;
+            Char[] in ExHeap exSuffix;
+            Principal pr = AclCore.EndpointPeer(ep);
+
+
+            string path1 = Bitter.ToString2(i_path);
+            string pattern = Bitter.ToString2(i_pattern);
+            string pathCopy = Bitter.ToString2(i_path);
+
+            delete i_path;
+            delete i_pattern;
+
+            Tracing.Log(Tracing.Debug,"Notify {0} {1} "+path1,pattern);
+            NotifyContract.Imp reject =
+                dir.Notify(new StringBuilder(path1),
+                           pr,
+                           pattern,
+                           sendExisting,
+                           0,
+                           out position,
+                           out linkFound,
+                           out error, out reparse, out link, i_notifyImp);
+            if (reject == null) { // success
+                delete reject;
+                ep.SendAckNotify();
+                Tracing.Log(Tracing.Debug,"Notify success");
+            }
+            else {
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakNotify(reject,error);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakNotifyReparse(exPrefix, exSuffix, linkFound, reject);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakNotifyReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound,
+                                                reject);
+                        }
+                    }
+                } //reparse
+                else {
+                    Tracing.Log(Tracing.Debug," Bind failure!");
+                    ep.SendNakNotify(reject, error);
+                }
+            }
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+
+        public static void DoBind(DirNode! dir,
+                            DirectoryServiceContract.Exp! ep ,
+                            [Claims] char[]! in ExHeap i_path,
+                            [Claims] ServiceContract.Exp:Start! i_server
+                            )
+        {
+            try {
+                bool success;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                string linkPrefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(i_path);
+                Tracing.Log(Tracing.Debug," lookup started: {0}",pathCopy);
+#if !SINGULARITY_PROCESS
+                Monitoring.Log(Monitoring.Provider.Directory,
+                            (ushort)DirectoryEvent.DoBind,
+                            pathCopy);
+#endif
+                ServiceContract.Exp reject =
+                    dir.Bind(new StringBuilder (pathCopy),
+                             pathCopy,
+                             pr,
+                             0,
+                             out position,
+                             out success, out linkFound, out error, out reparse, out link, out linkPrefix, i_server);
+                Tracing.Log(Tracing.Debug," success={0}, linkFound={1}, reparse={2}",
+                            success ? (UIntPtr) 1 : (UIntPtr) 0,
+                            linkFound ? (UIntPtr) 1 : (UIntPtr) 0,
+                            reparse ? (UIntPtr) 1 : (UIntPtr) 0
+                            );
+                if (reject == null && success) { // success
+                    ep.SendAckBind();
+                    Tracing.Log(Tracing.Debug," Bind success");
+                }
+                else {
+                    if  (reparse) {
+                        Tracing.Log(Tracing.Debug,"reparsing "+link);
+                        if (link == null || reject == null) {
+                            DebugStub.Break();
+                            ep.SendNakBind(reject,ErrorCode.Unknown);
+                        }
+                        else {
+                            if (linkFound) {
+                                Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                                exPrefix = Bitter.FromString2(link);
+                                // TODO:  FIXFIX this is a bit backwards the prefix is being sent back
+                                // as the suffix for compatibility reasons
+                                assert linkPrefix != null;
+                                exSuffix = Bitter.FromString2(linkPrefix);
+                                ep.SendNakBindReparse(exPrefix,
+                                                        exSuffix,
+                                                        linkFound,
+                                                        reject);
+                            }
+                            else {
+                                Tracing.Log(Tracing.Debug,"Bind(reparse)"+link);
+                                // need to construct prefix from original path
+                                if (position == 0) prefix = pathCopy;
+                                else prefix = pathCopy.Substring(0,position);
+
+                                exPrefix = Bitter.FromString2(prefix);
+                                exSuffix = Bitter.FromString2(link);
+                                ep.SendNakBindReparse(exPrefix,
+                                                    exSuffix,
+                                                    linkFound,
+                                                    reject);
+                            }
+                            //DebugStub.Break();
+                            }
+                    } // reparse
+                    else {
+                        Tracing.Log(Tracing.Debug," Bind failure!");
+                        ep.SendNakBind(reject, error);
+                    }
+                }
+            }
+            catch (Exception e) {
+                DebugStub.Print(" Exception {0}\n", __arglist(e.ToString()));
+            }
+            delete i_path;
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoGetAttributes(DirNode! dir, DirectoryServiceContract.Exp! ep ,[Claims] char[]! in ExHeap i_path)
+        {
+            bool reparse;
+            string link;
+            ErrorCode error;
+            bool linkFound;
+            string prefix;
+            int position;
+            Char[] in ExHeap exPrefix;
+            Char[] in ExHeap exSuffix;
+            long length;
+            NodeType nodeType;
+            Principal pr = AclCore.EndpointPeer(ep);
+
+            string pathCopy = Bitter.ToString2(i_path);
+            string! path1 = Bitter.ToString2(i_path);
+            delete i_path;
+
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoGetAttributes,
+                        pathCopy);
+#endif
+            FileAttributesRecord fileAttributes = new FileAttributesRecord();
+            bool aSuccess = dir.GetAttributes(new StringBuilder(path1),
+                                pr,
+                                0,
+                                out position,
+                                out linkFound,
+                                out error,
+                                out reparse,
+                                out link,
+                                ref fileAttributes
+                                );
+
+            Tracing.Log(Tracing.Debug,"linkFound={1}, reparse={2}",
+                        linkFound ? (UIntPtr) 1 : (UIntPtr) 0,
+                        reparse ? (UIntPtr) 1 : (UIntPtr) 0
+                        );
+            if (aSuccess) {
+                //if (error != ErrorCode.NoError) DebugStub.Break();
+                ep.SendAckGetAttributes(fileAttributes);
+            }
+            else {
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakGetAttributes(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakGetAttributesReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            Tracing.Log(Tracing.Debug,"GetAttr(reparse)"+link);
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakGetAttributesReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                }
+                else {
+                    ep.SendNakGetAttributes(error);
+                }
+            }
+            Kernel.Waypoint(3401);
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoCreateDirectory(DirNode! dir, DirectoryServiceContract.Exp! ep ,[Claims] char[]! in ExHeap exPath)
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+                int position;
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+
+#if SINGULARITY_PROCESS
+                //DebugStub.Break();
+#else
+                Monitoring.Log(Monitoring.Provider.Directory,
+                            (ushort)DirectoryEvent.DoCreateDirectory,
+                            pathCopy);
+
+#endif
+                ok = dir.CreateDirectory(new StringBuilder (pathCopy),
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckCreateDirectory();
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakCreateDirectory(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakCreateDirectoryReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            // position points to last character parsed.
+                            DebugStub.WriteLine(" createdir: provider found, index = {0}", __arglist(position));
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakCreateDirectoryReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    //DebugStub.Break();
+                    ep.SendNakCreateDirectory(error);
+                }
+            }
+            finally {
+            }
+        }
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoCreateFile(DirNode! dir,
+                                        DirectoryServiceContract.Exp! ep,
+                                        [Claims] char[]! in ExHeap exPath)
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoCreateFile,
+                        pathCopy);
+#endif
+
+                ok = dir.CreateFile(new StringBuilder (pathCopy),
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckCreateFile();
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakCreateFile(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakCreateFileReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakCreateFileReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakCreateFile(error);
+                }
+            }
+            finally {
+            }
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoDeleteDirectory( DirNode! dir,  DirectoryServiceContract.Exp! ep ,[Claims] char[]! in ExHeap exPath)
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoDeleteDirectory,
+                        pathCopy);
+#endif
+                ok = dir.DeleteDirectory(new StringBuilder (pathCopy),
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckDeleteDirectory();
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakDeleteDirectory(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakDeleteDirectoryReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakDeleteDirectoryReparse(exPrefix,
+                                                                exSuffix,
+                                                                linkFound
+                                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakDeleteDirectory(error);
+                }
+            }
+            finally {
+            }
+        }
+
+    //------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------
+        public static void DoDeleteFile( DirNode! dir,  DirectoryServiceContract.Exp! ep,
+                                         [Claims] char[]! in ExHeap exPath)
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoCreateFile,
+                        pathCopy);
+#endif
+
+                ok = dir.DeleteFile(new StringBuilder (pathCopy),
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckDeleteFile();
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakDeleteFile(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakDeleteFileReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakDeleteFileReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakDeleteFile(error);
+                }
+            }
+            finally {
+            }
+        }
+
+
+        public static void DoQueryACL( DirNode! dir,
+                                 DirectoryServiceContract.Exp! ep ,
+                                 [Claims] char[]! in ExHeap exPath,
+                                 bool effective
+                                 )
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Acl acl;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                string! pathCopy = Bitter.ToString2(exPath);
+
+                delete exPath;
+
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                ok = dir.QueryACL(new StringBuilder (pathCopy),
+                                    effective,
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link,
+                                    out acl);
+                if (ok) {
+                    ep.SendAckQueryACL(Bitter.FromString(acl.Node),
+                                       Bitter.FromString(acl.Descendant));
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakQueryACL(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link", link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakQueryACLReparse(exPrefix, exSuffix, linkFound);
+                            return;
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakQueryACLReparse(exPrefix,
+                                                        exSuffix,
+                                                        linkFound);
+                            return;
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakQueryACL(error);
+                }
+            }
+            finally {
+            }
+        }
+
+        public static void DoStoreACL( DirNode! dir,
+                                 DirectoryServiceContract.Exp! ep ,
+                                 [Claims] char[]! in ExHeap exPath,
+                                 [Claims] char[]  in ExHeap nodePattern,
+                                 [Claims] char[]  in ExHeap descendantPattern
+                                 )
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                string! pathCopy = Bitter.ToString2(exPath);
+                Acl myacl = new Acl(Bitter.ToString(nodePattern), Bitter.ToString(descendantPattern));
+                Principal pr = AclCore.EndpointPeer(ep);
+                delete nodePattern;
+                delete descendantPattern;
+
+                delete exPath;
+
+                ok = dir.StoreACL(new StringBuilder (pathCopy),
+                                    pr,
+                                    myacl,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckStoreACL();
+                    return;
+                }
+
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakStoreACL(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link", link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakStoreACLReparse(exPrefix, exSuffix, linkFound);
+                            return;
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakStoreACLReparse(exPrefix,
+                                                        exSuffix,
+                                                        linkFound);
+                            return;
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakStoreACL(error);
+                }
+            }
+            finally {
+            }
+        }
+
+        public static void DoCreateAndBindFile(DirNode! dir,
+                                         DirectoryServiceContract.Exp! ep ,
+                                         [Claims] char[]! in ExHeap exPath,
+                                         [Claims] FileContract.Exp:Start! exp
+                                         )
+        {
+            ep.SendNakCreateAndBindFile(exp, ErrorCode.NotImplemented);
+            delete exPath;
+            return;
+        }
+
+    //------------------------------------------------------------------------------------
+    // DeleteLink
+    //------------------------------------------------------------------------------------
+        public static void DoDeleteLink( DirNode! dir,
+                                   DirectoryServiceContract.Exp! ep ,
+                                   [Claims] char[]! in ExHeap exPath)
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoDeleteLink,
+                        pathCopy);
+#endif
+                ok = dir.DeleteLink(new StringBuilder (pathCopy),
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckDeleteLink();
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakDeleteLink(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakDeleteLinkReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakDeleteLinkReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakDeleteLink(error);
+                }
+            }
+            finally {
+            }
+        }
+
+    //------------------------------------------------------------------------------------
+    // GetLinkValue
+    //------------------------------------------------------------------------------------
+        public static void DoGetLinkValue( DirNode! dir,
+                                   DirectoryServiceContract.Exp! ep ,
+                                   [Claims] char[]! in ExHeap exPath)
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoGetLinkValue,
+                        pathCopy);
+#endif
+                ok = dir.GetLinkValue(new StringBuilder (pathCopy),
+                                    pr,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    if (link == null) {
+                        DebugStub.Break();
+                        ep.SendNakGetLinkValue(ErrorCode.Unknown);
+                        return;
+                    }
+                    ep.SendAckGetLinkValue(Bitter.FromString2(link));
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakGetLinkValue(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakGetLinkValueReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakGetLinkValueReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound);
+                        }
+                    }
+                } //reparse
+                else {
+                    ep.SendNakGetLinkValue(error);
+                }
+            }
+            finally {
+            }
+        }
+
+        public static void DoCreateLink( DirNode! dir,
+                                   DirectoryServiceContract.Exp! ep ,
+                                   [Claims] char[]! in ExHeap exPath,
+                                   [Claims] char[]! in ExHeap exValue
+                                   )
+        {
+            try {
+                bool ok;
+                bool reparse;
+                string link;
+                ErrorCode error;
+                bool linkFound;
+                string prefix;
+                int position;
+                Char[] in ExHeap exPrefix;
+                Char[] in ExHeap exSuffix;
+                Principal pr = AclCore.EndpointPeer(ep);
+
+                string pathCopy = Bitter.ToString2(exPath);
+                delete exPath;
+                string value = Bitter.ToString2(exValue);
+                delete exValue;
+
+#if !SINGULARITY_PROCESS
+            Monitoring.Log(Monitoring.Provider.Directory,
+                        (ushort)DirectoryEvent.DoCreateLink,
+                        pathCopy);
+#endif
+
+                ok = dir.CreateLink(new StringBuilder (pathCopy),
+                                    pr,
+                                    value,
+                                    0,
+                                    out position,
+                                    out linkFound,
+                                    out error,
+                                    out reparse,
+                                    out link);
+                if (ok) {
+                    ep.SendAckCreateLink();
+                    return;
+                }
+                if (reparse) {
+                    if (null == link) {
+                        ep.SendNakCreateLink(ErrorCode.Unknown);
+                    }
+                    else {
+                        if (linkFound) {
+                            Tracing.Log(Tracing.Debug,"reparsing {0} as link",link);
+                            exPrefix = Bitter.FromString2(link);
+                            exSuffix = Bitter.FromString2("");
+                            ep.SendNakCreateLinkReparse(exPrefix, exSuffix, linkFound);
+                        }
+                        else {
+                            // need to construct prefix from original path
+                            if (position == 0) prefix = pathCopy;
+                            else prefix = pathCopy.Substring(0,position);
+
+                            exPrefix = Bitter.FromString2(prefix);
+                            exSuffix = Bitter.FromString2(link);
+                            ep.SendNakCreateLinkReparse(exPrefix,
+                                                exSuffix,
+                                                linkFound
+                                                );
+                        }
+                    }
+                } //reparse
+                else {
+                    //DebugStub.Break();
+                    ep.SendNakCreateLink(error);
+                }
+            }
+            finally {
+            }
+        }
+
+    } //WorkerFunctions class
+} //namespace

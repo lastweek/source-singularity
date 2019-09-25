@@ -1,0 +1,39 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\FileSystem.Utils\FileSystem.Utils.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>FileSystem.Utils</AssemblyName>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="DirectoryUtils.sg" />
+    <Compile Include="FileUtils.sg" />
+    <Compile Include="PathUtils.sg" />
+    <Compile Include="DiskSizeUtils.cs" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>

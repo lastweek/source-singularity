@@ -1,0 +1,17 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace System.Reflection
+{
+    //| <include file='doc\Module.uex' path='docs/doc[@for="Module"]/*' />
+    [RequiredByBartok]
+    public class Module
+    {
+    }
+}

@@ -1,0 +1,1245 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Directory.sg
+//
+//  Note:
+//
+
+//#define BREAK_ON_FAILURE
+//#define CHECK_TRAVERSE_ACCESS
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.SDS;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+#if SINGULARITY_PROCESS
+    public class Kernel
+    {
+        public static void Waypoint(int num)
+        {
+        }
+    }
+#endif
+
+    public class DirNode : Node
+    {
+        internal readonly SortedList! names;
+        internal Hashtable! notificationList;
+        private StringBuilder! sb;
+        DateTime creationTime;
+
+        private Mutex! dirMutex;
+
+        public void AcquireLock()
+        {
+            dirMutex.WaitOne();
+        }
+        public void ReleaseLock()
+        {
+            dirMutex.ReleaseMutex();
+        }
+
+        public DirNode(string! name, Node! parent)
+        {
+            names = new SortedList();
+            dirMutex = new Mutex();
+            notificationList = new Hashtable();
+            sb = new StringBuilder(256);
+            creationTime = DateTime.UtcNow;
+            base(NodeType.Directory, name, parent);
+        }
+
+        public DirNode(string! name, AclCore! core, ISdsAcl! aclT)
+        {
+            names = new SortedList();
+            dirMutex = new Mutex();
+            notificationList = new Hashtable();
+            sb = new StringBuilder(256);
+            creationTime = DateTime.UtcNow;
+            base(NodeType.Directory, name, core, aclT);
+        }
+
+        ///////////////////////////////////////////////////////////////////////////////
+        // begin kernel only functions
+        ///////////////////////////////////////////////////////////////////////////////
+#if !SINGULARITY_PROCESS
+
+        [System.Diagnostics.Conditional("BREAK_ON_FAILURE")]
+        private static void BreakOnFailure()
+        {
+            DebugStub.Break();
+        }
+
+        public bool CreateDirectory(string!       name,
+                                    out ErrorCode error,
+                                    out DirNode   newNode)
+        {
+            newNode = null;
+            error   = ErrorCode.NoError;
+
+            AcquireLock();
+            try {
+                if (names.ContainsKey(name)) {
+                    error = ErrorCode.AlreadyExists;
+                    BreakOnFailure();
+                    return false;
+                }
+                else {
+                    newNode = new DirNode(name, this);
+                    Tracing.Log(Tracing.Debug,
+                                "createDir:" + name + " in " + this.FullName);
+                    names.Add(name, newNode);
+                    HandleNotification(name, NotifyType.Creation);
+                    return true;
+                }
+            }
+            finally {
+                ReleaseLock();
+            }
+        }
+
+        public bool CreateDirectory(string! name, out ErrorCode error)
+        {
+            DirNode dummy;
+            return CreateDirectory(name, out error, out dummy);
+        }
+
+        internal bool GetDirectory(string! name, out ErrorCode error, out DirNode directory)
+        {
+            error     = ErrorCode.NoError;
+            directory = null;
+
+            AcquireLock();
+            try {
+                Node n = (Node)this.names[name];
+                if (n != null) {
+                    if (n is DirNode) {
+                        directory = (DirNode)n;
+                        return true;
+                    }
+                    else {
+                        error = ErrorCode.NotDirectory;
+                        return false;
+                    }
+                }
+                else {
+                    // Should look for directory
+                    int divider = name.IndexOf('/');
+                    // '/' invalid as first char or last
+                    if (divider <= 0 && divider != name.Length - 1) {
+                        error = ErrorCode.NotFound;
+                        return false;
+                    }
+                    else {
+                        string childName = name.Substring(0, divider);
+                        DirNode childNode = this.names[childName] as DirNode;
+                        if (childNode != null) {
+                            return childNode.GetDirectory(name.Substring(divider + 1), out error, out directory);
+                        }
+                        else {
+                            error = ErrorCode.NotFound;
+                            return false;
+                        }
+                    }
+                }
+            }
+            finally {
+                ReleaseLock();
+            }
+        }
+
+        public bool CreateLink(string! name, string! val)
+        {
+            bool success = false;
+            AcquireLock();
+            try {
+                if (names.ContainsKey(name)) {
+                    success = false;
+                    BreakOnFailure();
+                }
+                else {
+                    SymLinkNode sym = new SymLinkNode(val, name, this);
+                    names.Add(name,sym);
+                    success = true;
+                }
+            }
+            finally {
+                ReleaseLock();
+            }
+            return success;
+        }
+
+        public DirNode FindDirectory(StringBuilder! p)
+        {
+#if VERBOSE
+            sb.Append("Looking in:(");
+            sb.Append(this.FullName);
+            sb.Append(") for [");
+            sb.Append(p.ToString());
+            sb.Append("]\n");
+            DebugStub.WriteLine(sb.ToString());
+            Tracing.Log(Tracing.Debug,sb.ToString());
+#endif
+            if (p.Length == 0) {
+                return this;
+            }
+
+            string first = SbUtils.FirstElement(p);
+#if VERBOSE
+            sb.Length = 0;
+            sb.Append("FindDirectory(2): p=(");
+            sb.Append(p.ToString());
+            sb.Append(") First=(");
+            sb.Append(first);
+            sb.Append(")\n");
+            DebugStub.WriteLine(sb.ToString());
+#endif
+            if (null == first) {
+                return null;
+            }
+
+            Node n = (Node)this.names[first];
+            if (null == n) {
+                return null;
+            }
+            int pos;
+            p = SbUtils.RemoveFirstElement(p, out pos);
+#if VERBOSE
+            DebugStub.WriteLine("FindDirectory(3) found: {0}",__arglist(first));
+            sb.Length = 0;
+            sb.Append(" afterRemove: p=");
+            sb.Append(p.ToString());
+            sb.Append(" First=(");
+            sb.Append(first);
+            sb.Append(")\n");
+            DebugStub.WriteLine(sb.ToString());
+#endif
+            if (n is DirNode) {
+                return ((DirNode) n).FindDirectory(p);
+            }
+            else {
+                return null;
+            }
+        }
+
+        /// <returns>
+        /// Special kernel interface for adding in memory images to the namespace.
+        /// </returns>
+        public bool RegisterIoMemory(string! name, IoMemory! ioMemory)
+        {
+            Tracing.Log(Tracing.Debug,"RegisterIoMemory: "+name+" in "+name+" VA:{0} Len:{1}",
+                        ioMemory.VirtualAddress, (UIntPtr)ioMemory.Length);
+            if (ioMemory.VirtualAddress == UIntPtr.Zero) {
+                DebugStub.Break();
+            }
+            bool success = false;
+            try {
+                this.AcquireLock();
+                this.names.Add(name, new IoMemoryNode(ioMemory, name, this));
+                success = true;  //success
+            }
+            finally {
+                this.ReleaseLock();
+            }
+            return success;
+        }
+#endif
+        ///////////////////////////////////////////////////////////////////////////////
+        // end kernel only functions
+        ///////////////////////////////////////////////////////////////////////////////
+
+
+        public override bool GetAttributes(StringBuilder! p,
+                                           Principal pr,
+                                           int curpos,
+                                           out int position,
+                                           out bool linkFound,
+                                           out ErrorCode error,
+                                           out bool reparse,
+                                           out string link,
+                                           ref FileAttributesRecord fileAttributes
+                                           )
+        {
+            Kernel.Waypoint(3050);
+
+            position = 0;
+            reparse = false;
+            link = null;
+            fileAttributes.FileSize = 0;
+            linkFound = false;
+            error = ErrorCode.NoError;
+            fileAttributes.Type = NodeType.BadNode;
+
+            if (CheckEmpty(p)) {
+
+                //the user wants the attributes of the directory object
+                Kernel.Waypoint(3051);
+                Kernel.Waypoint(3052);
+                //check read access for this object
+                if (!CheckAccess(SdsAclPerms.ModeRead, pr)) {
+                    error = ErrorCode.AccessDenied;
+                    return false;
+                }
+                fileAttributes.Type = NodeType.Directory;
+                fileAttributes.CreationTime = creationTime.Ticks;
+                fileAttributes.LastWriteTime = creationTime.Ticks;
+                fileAttributes.LastAccessTime = creationTime.Date.Ticks;
+                return true;
+            }
+
+            // there is more path, continue processing
+            string first = SbUtils.FirstElement(p);
+            if (null == first) {
+                error = ErrorCode.NotFound;
+                return false;
+            }
+
+            // can the caller traverse the current node?
+            Kernel.Waypoint(3052);
+#if CHECK_TRAVERSE_ACCESS
+            if (!CheckAccess(SdsAclPerms.ModeTraverse, pr)) {
+                error = ErrorCode.AccessDenied;
+                Kernel.Waypoint(3053);
+                return false;
+            }
+#endif
+            Kernel.Waypoint(3054);
+            Node n = (Node)this.names[first];
+            if (null == n) {
+                error = ErrorCode.NotFound;
+                fileAttributes.Type = NodeType.BadNode;
+                return false;
+            }
+
+            int newpos;
+            n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                return false;
+            }
+            Kernel.Waypoint(3055);
+            bool ok =  n.GetAttributes(p,
+                                  pr,
+                                  newpos,
+                                  out position,
+                                  out linkFound,
+                                  out error,
+                                  out reparse,
+                                  out link,
+                                  ref fileAttributes
+                                );
+
+            Kernel.Waypoint(3056);
+            return ok;
+        }
+
+
+        public void HandleNotification(string! name, NotifyType type)
+        {
+            NotificationManager.EnqueueNotification(this, name, type);
+        }
+
+
+        /// <returns>
+        /// null on success, the service argument if it failed.
+        /// </returns>
+        public override ServiceContract.Exp Bind(StringBuilder! p,
+                                                 string! fullPath,
+                                                 Principal pr,
+                                                 int curpos,
+                                                 out int position,
+                                                 out bool success,
+                                                 out bool linkFound,
+                                                 out ErrorCode error,
+                                                 out bool reparse,
+                                                 out string link,
+                                                 out string linkPrefix,
+                                                 [Claims] ServiceContract.Exp! service)
+        {
+            position = curpos;
+            success = false;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            linkPrefix = null;
+            error = ErrorCode.NoError;
+
+            Tracing.Log(Tracing.Debug, "bind "+ SbUtils.PathString(p));
+            Kernel.Waypoint(3000);
+            if (CheckEmpty(p)) {
+                //the user wants to bind to a directory object in the namespace
+                Kernel.Waypoint(3001);
+                DirectoryServiceContract.Exp dirEP = service as DirectoryServiceContract.Exp;
+                Kernel.Waypoint(3002);
+                if (dirEP != null) {
+                    // check Traverse access for both caller and supplied EP
+#if CHECK_TRAVERSE_ACCESS
+                    if (!CheckAccess(SdsAclPerms.ModeTraverse, pr, service)) {
+                        DebugStub.WriteLine("No access to DirectoryService.Bind");
+                        Kernel.Waypoint(3003);
+                        error = ErrorCode.AccessDenied;
+                        return service;
+                    }
+#endif
+                    //Tracing.Log(Tracing.Debug," found '/' starting dir worker");
+                    Kernel.Waypoint(3004);
+
+                    DirectoryServiceWorker.Create(this, dirEP);
+
+                    Kernel.Waypoint(3005);
+                    success = true;
+                    return null;
+                }
+                else {
+                    error = ErrorCode.ContractNotSupported;
+                    return service;
+                }
+            }
+
+            Kernel.Waypoint(3006);
+            int newpos;
+            Node n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (null == n) {
+                return service;
+            }
+
+            Kernel.Waypoint(3009);
+            ServiceContract.Exp sp = n.Bind(p,
+                                            fullPath,
+                                            pr,
+                                            newpos,
+                                            out position,
+                                            out success,
+                                            out linkFound,
+                                            out error,
+                                            out reparse,
+                                            out link,
+                                            out linkPrefix,
+                                            service);
+            Kernel.Waypoint(3010);
+            return sp;
+        }
+
+
+        public override ServiceProviderContract.Imp Register(StringBuilder! p,
+                                      Principal pr,
+                                      [Claims] ServiceProviderContract.Imp! sp,
+                                      int curpos,
+                                      out int position,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            position = curpos;
+            bool firstFound;
+            Node n = null;
+
+            reparse = false;
+            linkFound = false;
+            link = null;
+            error = ErrorCode.NoError;
+            bool doReplacement = false;
+
+#if !SINGULARITY_PROCESS
+            Tracing.Log(Tracing.Debug,"({1:x8}) Register: path ={0}\n",
+                        SbUtils.PathString(p),(UIntPtr)Kernel.AddressOf(Thread.CurrentThread));
+#endif
+            this.AcquireLock();
+            try {
+                if (CheckEmpty(p)) {
+                    error = ErrorCode.NotFound;
+                    return sp;
+                }
+
+                if (SbUtils.IsTail(p)) {
+                    string! name = (!)SbUtils.FirstElement(p);
+                    if (names.ContainsKey(name)) {
+                        // see if this is a dangling ref -- if so continue with registration
+                        n = (Node) names[name];
+                        if (n != null && n is ProviderNode) {
+                            doReplacement = true;
+                        }
+                        else {
+                            error = ErrorCode.AlreadyExists;
+                            return sp;
+                        }
+                    }
+
+                    // check register access for both caller and EP
+                    if (!CheckAccess(SdsAclPerms.ModeRegister, pr, sp)) {
+                        error = ErrorCode.AccessDenied;
+                        return sp;
+                    }
+                    else {
+                        if (doReplacement) {
+                            assert n != null;
+                            // Perform replacement after access check
+                            // replace provider only succeeds if peer is closed.
+                            ServiceProviderContract.Imp ret = ((ProviderNode) n).ReplaceProvider(sp);
+                            if (ret != null) {
+                                error = ErrorCode.AlreadyExists;
+                            }
+                            else {
+                                HandleNotification(name, NotifyType.Deletion);
+                                HandleNotification(name, NotifyType.Creation);
+                            }
+                            return ret;
+                        }
+                        else {
+                            HandleNotification(name, NotifyType.Creation);
+                            this.names.Add(name, new ProviderNode(sp, name, this));
+                            error = ErrorCode.NoError;
+                            return null;
+                        }
+                    }
+                }
+                else {
+                    int newpos;
+                    n = GetNextNode(p, pr, curpos, out newpos, out error);
+                    if (n == null) {
+                        return sp;
+                    }
+                    return n.Register(p, pr, sp, newpos, out position, out linkFound, out error, out reparse, out link);
+                }
+            }
+            finally {
+                this.ReleaseLock();
+            }
+        }
+
+
+        /// <returns>
+        /// The endpoint on success, null, if it fails.
+        /// </returns>
+        public override ServiceProviderContract.Imp:Start Deregister(StringBuilder! p,
+                                                               Principal pr,
+                                                               DirectoryServiceContract.Exp! ep,
+                                                               int curpos,
+                                                               out int position,
+                                                               out bool linkFound,
+                                                               out ErrorCode error,
+                                                               out bool reparse,
+                                                               out string link
+                                                               )
+
+        {
+            position = curpos;
+            bool firstFound;
+            Node n;
+
+            reparse = false;
+            linkFound = false;
+            link = null;
+            error = ErrorCode.NoError;
+
+#if !SINGULARITY_PROCESS
+            Tracing.Log(Tracing.Debug,"({1:x8}) DeRegister: path ={0}\n",
+                        SbUtils.PathString(p),(UIntPtr)Kernel.AddressOf(Thread.CurrentThread));
+#endif
+            this.AcquireLock();
+            try {
+                if (CheckEmpty(p)) {
+                    error = ErrorCode.NotFound;
+                    return null;
+                }
+
+                if (SbUtils.IsTail(p)) {
+                    string! name = (!)SbUtils.FirstElement(p);
+                    if (!names.ContainsKey(name)) {
+                        error = ErrorCode.NotFound;
+                        return null;
+                    }
+                    // check deregister access of caller
+                    else if (!CheckAccess(SdsAclPerms.ModeRegister, pr)) {
+                        error = ErrorCode.AccessDenied;
+                        return null;
+                    }
+                    else {
+                        HandleNotification(name, NotifyType.Deletion);
+                        n = (Node) names[name];
+                        if (n != null && n is ProviderNode) {
+                            ServiceProviderContract.Imp:Start sp = ((ProviderNode) n).GetServiceEndpoint();
+                            names.Remove(name);
+                            n.ClearAcl();
+                            error = ErrorCode.NoError;
+                            return sp;
+                        }
+                        else {
+                            error = ErrorCode.NotProvider;
+                            return null;
+                        }
+                    }
+                }
+                else {
+                    int newpos;
+                    n = GetNextNode(p, pr, curpos, out newpos, out error);
+                    if (n == null) {
+                        return null;
+                    }
+                    return n.Deregister(p, pr, ep, newpos, out position, out linkFound, out error, out reparse, out link);
+
+                }
+            }
+
+            finally {
+                this.ReleaseLock();
+            }
+            return null;
+        }
+
+        /// <returns>
+        /// The a vector of vectors if success, null, if it fails.
+        /// </returns>
+        public EnumerationRecords[] in ExHeap Enumerate(Principal pr, out ErrorCode error)
+        {
+            Node n;
+            error = ErrorCode.Unknown;
+
+            // check read access for directory enumerate
+            if (!CheckAccess(SdsAclPerms.ModeRead, pr)) {
+                error = ErrorCode.AccessDenied;
+                return null;
+            }
+#if true
+            ArrayList deleteList = new ArrayList();
+            // inspect all entries for dangling refs. if found delete before generating
+            // enumeration records
+            for (int i = 0; i < names.Count; i++) {
+                n = (Node)names.GetByIndex(i);
+                if (n != null && n is ProviderNode) {
+                    string name = (string)names.GetKey(i);
+                    //DebugStub.WriteLine("enum: inspecting {0}", __arglist(name));
+                    if (((ProviderNode) n).DeleteIfPeerClosed()) {
+                        // need to remove from directory
+                        assert name != null;
+                        deleteList.Add(name);
+                    }
+                }
+            }
+
+            //DebugStub.WriteLine("enum: there are  {0} entries to be deleted", __arglist(deleteList.Count));
+
+            for (int i = 0; i < deleteList.Count; i++) {
+                string s = (string) deleteList[i];
+                //DebugStub.WriteLine("enum: deleting {0}", __arglist(s));
+                names.Remove(s);
+            }
+#endif
+            EnumerationRecords[] in ExHeap responses = new [ExHeap] EnumerationRecords[names.Count];
+#if false
+            DebugStub.Print("Enumerate: stuffing {0} strings into responses\n", __arglist(names.Count));
+            if(names.Count > 0) {
+                unsafe {
+                    expose(responses[0]) {
+                        DebugStub.WriteLine("address of responses {0,8:x} address od &responses[0] {1,8:x}\n", __arglist((uint) responses, (uint)&(responses[0])));
+                    }
+                }
+            }
+#endif
+            for (int i = 0; i < names.Count; i++) {
+                expose (responses[i]) {
+                    delete responses[i].Path; // checker doesn't know its null.
+                    //                    string local = ((string)names.GetKey(i));
+                    responses[i].Path = Bitter.FromString2((!)(string)names.GetKey(i));
+                    responses[i].Type = ((!) (Node)names.GetByIndex(i)).Type;
+#if false
+                    if (local == null) {
+                        DebugStub.Print("!!!ACK enumerating null string at responses {0}\n", __arglist(i));
+                    }
+                    else {
+                        unsafe {
+                        DebugStub.WriteLine("stuffing {0} length {1} addr of response[i] {2,8:x}\n", __arglist(local, local.Length, (uint)responses[i].Path));
+                        }
+                    }
+#endif
+                }
+            }
+            return responses;
+        }
+
+        /// <returns>
+        /// true on success, false, if it fails.
+        /// </returns>
+        public override NotifyContract.Imp Notify(StringBuilder! path,
+                                                  Principal pr,
+                                                  string! pattern,
+                                                  bool sendExisting,
+                                                  int curpos,
+                                                  out int position,
+                                                  out bool linkFound,
+                                                  out ErrorCode error,
+                                                  out bool reparse,
+                                                  out string link,
+                                                  [Claims] NotifyContract.Imp! notifyImp)
+        {
+            position = curpos;
+            error = ErrorCode.NoError;
+            linkFound = false;
+            reparse = false;
+            link = null;
+
+            //DebugStub.WriteLine(" dir Notify() sb.len={0}, s={1}",__arglist(pathSpec.Length,pathSpec.ToString()));
+            if (path.Length == 0) {
+                // got it!
+                DebugStub.Break();
+                return notifyImp;
+            }
+
+            if (SbUtils.IsTail(path)) {
+                string! first = (!)SbUtils.FirstElement(path);
+
+                // check access: can the caller AND dest EP received notifications for this object
+                if (!CheckAccess(SdsAclPerms.ModeNotify, pr, notifyImp)) {
+                    error = ErrorCode.AccessDenied;
+                    return notifyImp;
+                }
+                notifyImp.SendBegin();
+                TRef <NotifyContract.Imp:Notify> notifyEP =
+                    new TRef <NotifyContract.Imp:Notify> (notifyImp);
+
+                notificationList.Add(first,notifyEP);
+                Tracing.Log(Tracing.Debug,"notify: pattern="+first);
+                return null;
+            }
+            else {
+                // check access: can the caller traverse the current folder
+#if CHECK_TRAVERSE_ACCESS
+                if (!CheckAccess(SdsAclPerms.ModeTraverse, pr)) {
+                    error = ErrorCode.AccessDenied;
+                    return notifyImp;
+                }
+#endif
+                string first = SbUtils.FirstElement(path);
+                sb.Length = 0;
+                sb.Append(" dirnode Notify: str=");
+                sb.Append(path.ToString());
+                sb.Append(" first = ");
+                sb.Append(first);
+                //DebugStub.WriteLine(sb.ToString());
+
+                Node n = (Node)this.names[first];
+                if (null == n) {
+                    DebugStub.Break();
+                    return notifyImp;
+                }
+
+                int charsConsumed;
+                path = SbUtils.RemoveFirstElement(path, out charsConsumed);
+                return n.Notify(path, pr, pattern,  sendExisting,
+                                curpos, out position,
+                                out linkFound, out error, out reparse, out link, notifyImp);
+            }
+        }
+
+        public override FileContract.Imp CreateAndBindFile(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            position = curpos;
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return null;
+        }
+
+        public override bool CreateDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            Node n;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NoError;
+            position = curpos;
+            AcquireLock();
+            try {
+                if (SbUtils.IsTail(p)) {
+                    string! name = (!)SbUtils.FirstElement(p);
+                    if (names.ContainsKey(name)) {
+                        error = ErrorCode.AlreadyExists;
+                        return false;
+                    }
+                    // check write access to parent
+                    if (!CheckAccess(SdsAclPerms.ModeWrite, pr)) {
+                        error = ErrorCode.AccessDenied;
+                        return false;
+                    }
+                    else {
+                        DirNode d = new DirNode(name, this);
+#if false
+                        Tracing.Log(Tracing.Debug,"createDir: parent="+name);
+#endif // false
+                        names.Add(name,d);
+                        HandleNotification(name, NotifyType.Creation);
+                        return true;
+                    }
+                }
+                else {
+                    // pass the request on to the next node if there is one.
+                    if (CheckEmpty(p)) {
+                        error = ErrorCode.NotFound;
+                        DebugStub.Break();
+                        return false;
+                    }
+                    int newpos;
+                    n = GetNextNode(p, pr, curpos, out newpos, out error);
+                    if (n == null) {
+                        return false;
+                    }
+                    return n.CreateDirectory(p, pr, newpos, out position, out linkFound, out error, out reparse, out link);
+
+                }
+                return false;
+            }
+            finally {
+                ReleaseLock();
+            }
+        }
+
+        public override bool CreateFile(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            Node n;
+            position = curpos;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NoError;
+
+            if (SbUtils.IsTail(p)) {
+                    // true files are not supported in the namespace
+                error = ErrorCode.NotImplemented;
+                return false;
+            }
+            else {
+                // pass the request on to the next node if there is one.
+                if (CheckEmpty(p)) {
+                    error = ErrorCode.NotImplemented;
+                    return false;
+                }
+                int newpos;
+                n = GetNextNode(p, pr, curpos, out newpos, out error);
+                if (n == null) {
+                    return false;
+                }
+                return n.CreateFile(p, pr, newpos, out position, out linkFound, out error, out reparse, out link);
+
+            }
+            return false;
+        }
+
+        private bool CheckEmpty(StringBuilder! p)
+        {
+            if ((p.Length == 0) || ((p.Length == 1) && (p[0] == '/'))) {
+                 return true;
+            }
+            return false;
+        }
+
+        private Node GetNextNode(StringBuilder! p, Principal pr, int curpos, out int newpos, out ErrorCode error)
+        {
+            //DebugStub.Break();
+            newpos = curpos;
+            string first = SbUtils.FirstElement(p);
+            error = ErrorCode.NoError;
+            if (null == first) {
+                return null;
+            }
+
+            Kernel.Waypoint(3006);
+#if CHECK_TRAVERSE_ACCESS
+            if (!CheckAccess(SdsAclPerms.ModeTraverse, pr)) {
+                Kernel.Waypoint(3007);
+                error = ErrorCode.AccessDenied;
+                return null;
+            }
+#endif
+            Kernel.Waypoint(3008);
+
+            Node n = (Node)this.names[first];
+            if (null == n) {
+                error = ErrorCode.NotFound;
+                return null;
+            }
+
+            int charsConsumed;
+            SbUtils.RemoveFirstElement(p, out charsConsumed);
+            newpos = curpos + charsConsumed;
+            return n;
+        }
+
+        public override bool CreateLink(StringBuilder! p,
+                                        Principal pr,
+                                        string! value,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            position = curpos;
+            Node n;
+            linkFound = false;
+            link = null;
+            reparse = false;
+            error = ErrorCode.NoError;
+
+            if (SbUtils.IsTail(p)) {
+                string! name = (!)SbUtils.FirstElement(p);
+                if (names.ContainsKey(name)) {
+                    error = ErrorCode.AlreadyExists;
+                    return false;
+                }
+                // check write access to parent
+                else if (!CheckAccess(SdsAclPerms.ModeWrite, pr)) {
+                    error = ErrorCode.AccessDenied;
+                    return false;
+                }
+                else {
+                    SymLinkNode sym = new SymLinkNode(value, name, this);
+                    names.Add(name,sym);
+                    return true;
+                }
+            }
+            else { //recurse
+                if (CheckEmpty(p)) {
+                    error = ErrorCode.NotFound;
+                    return false;
+                }
+                int newpos;
+                n = GetNextNode(p, pr, curpos, out newpos, out error);
+                if (n == null) {
+                    return false;
+                }
+                return n.CreateLink(p, pr, value, newpos, out position, out linkFound, out error, out reparse, out link);
+            }
+        }
+
+        public override bool DeleteDirectory(StringBuilder! p,
+                                             Principal pr,
+                                             int curpos,
+                                             out int position,
+                                             out bool linkFound,
+                                             out ErrorCode error,
+                                             out bool reparse,
+                                             out string link
+                                             )
+        {
+            Node n;
+
+            position = curpos;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NotFound;
+            DirNode child;
+
+            if (CheckEmpty(p)) {
+                return false;
+            }
+
+            int newpos;
+            if (SbUtils.IsTail(p)) {
+                string! name = (!)SbUtils.FirstElement(p);
+                if (names.ContainsKey(name)) {
+                    // check to see if this node has entries
+                    // if so let the caller know
+                    n = GetNextNode(p, pr, curpos, out newpos, out error);
+                    if (n == null) {
+                        return false;
+                    }
+                    if (n is DirNode) {
+                        child = (DirNode) n;
+                        if (child.names.Count != 0) {
+                            DebugStub.WriteLine("Directory is not empty({0})!", __arglist(child.names.Count));
+                            error = ErrorCode.DirectoryNotEmpty;
+                            return false;
+                        }
+                        // check write access to parent
+                        else if (!CheckAccess(SdsAclPerms.ModeWrite, pr)) {
+                            error = ErrorCode.AccessDenied;
+                            return false;
+                        }
+                        // check write access to child
+                        else if (!n.CheckAccess(SdsAclPerms.ModeWrite, pr)) {
+                            error = ErrorCode.AccessDenied;
+                            return false;
+                        }
+                    }
+                    else {
+                        error = ErrorCode.NotDirectory;
+                        return false;
+                    }
+
+                    error = ErrorCode.NoError;
+                    names.Remove(name);
+                    n.ClearAcl();
+                    return true;
+                }
+                else {
+                    return false;
+                }
+            }
+
+           n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                linkFound = false;
+                reparse = false;
+                link = null;
+                return false;
+            }
+            return n.DeleteDirectory(p, pr, newpos, out position, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool DeleteFile(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            Node n;
+            position = curpos;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NotFound;
+
+            if (CheckEmpty(p)) {
+                error = ErrorCode.NotFound;
+                return false;
+            }
+            if (SbUtils.IsTail(p)) {
+                string! name = (!)SbUtils.FirstElement(p);
+                if (names.ContainsKey(name)) {
+                    // check write access to parent
+                    if (!CheckAccess(SdsAclPerms.ModeWrite, pr)) {
+                        error = ErrorCode.AccessDenied;
+                        return false;
+                    }
+                    // continue on to actual node for deletion
+                }
+                else {
+                    return false;
+                }
+            }
+
+            int newpos;
+            n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                return false;
+            }
+            return n.DeleteFile(p, pr, newpos, out position, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool DeleteLink(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+
+        {
+            Node n;
+            position = curpos;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NotFound;
+            //DebugStub.Break();
+
+            if (CheckEmpty(p)) {
+                return false;
+            }
+
+            if (SbUtils.IsTail(p)) {
+                string! name = (!)SbUtils.FirstElement(p);
+                if (names.ContainsKey(name)) {
+                    //check write access to parent
+                    if (!CheckAccess(SdsAclPerms.ModeWrite, pr)) {
+                        error = ErrorCode.AccessDenied;
+                        return false;
+                    }
+                    error = ErrorCode.NoError;
+                    // this should check whether the node is a link!
+                    n = (Node!) names[name];
+                    n.ClearAcl();
+                    names.Remove(name);
+                    return true;
+                }
+                else {
+                    return false;
+                }
+            }
+
+            int newpos;
+            n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                linkFound = false;
+                reparse = false;
+                link = null;
+                return false;
+            }
+            return n.DeleteLink(p, pr, newpos, out position, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool GetLinkValue(StringBuilder! p,
+                                          Principal pr,
+                                          int curpos,
+                                          out int position,
+                                          out bool linkFound,
+                                          out ErrorCode error,
+                                          out bool reparse,
+                                          out string link
+                                          )
+
+        {
+            Node n;
+            position = curpos;
+            error = ErrorCode.NotLink;
+            linkFound = false;
+            reparse = false;
+            link = null;
+
+            //DebugStub.Break();
+
+            if (CheckEmpty(p)) {
+                return false;
+            }
+
+            int newpos;
+            n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                return false;
+            }
+            return n.GetLinkValue(p, pr, newpos, out position, out linkFound, out error, out reparse, out link);
+        }
+
+
+        public override bool QueryACL(StringBuilder! p,
+                                      bool effective,
+                                      Principal pr,
+                                      int curpos,
+                                      out int position,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link,
+                                      out Acl acl
+                                      )
+        {
+            Node n;
+            position = curpos;
+            error = ErrorCode.NoError;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            acl = new Acl();
+
+            if (CheckEmpty(p)) {
+                if (!CheckAccess(SdsAclPerms.ModeRead, pr)) {
+                    error = ErrorCode.AccessDenied;
+                    return false;
+                }
+                if (effective)
+                    acl = new Acl(this.GetAclPattern());
+                else
+                    acl = this.GetInstanceAcl();
+                return true;
+            }
+            int newpos;
+            n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                return false;
+            }
+            return n.QueryACL(p, effective, pr, newpos, out position, out linkFound,
+                                   out error, out reparse, out link, out acl);
+        }
+
+        public override bool StoreACL(StringBuilder! p,
+                                      Principal pr,
+                                      Acl acl,
+                                      int curpos,
+                                      out int position,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            Node n;
+            position = curpos;
+            linkFound = false;
+            reparse = false;
+            link = null;
+            error = ErrorCode.NoError;
+
+            if (CheckEmpty(p)) {
+                if (!CheckAccess(SdsAclPerms.ModeSetAcl, pr)) {
+                    error = ErrorCode.AccessDenied;
+                    return false;
+                }
+                SetInstanceAcl(acl);
+                return true;
+            }
+            int newpos;
+            n = GetNextNode(p, pr, curpos, out newpos, out error);
+            if (n == null) {
+                return false;
+            }
+            return n.StoreACL(p, pr, acl, newpos, out position, out linkFound, out error, out reparse, out link);
+        }
+    }
+}

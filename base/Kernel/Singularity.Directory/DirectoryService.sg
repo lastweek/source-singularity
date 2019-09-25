@@ -1,0 +1,930 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using System.Text;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Hal;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Loader;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.SDS;
+using Microsoft.Singularity.Xml;
+
+using Allocation = Microsoft.Singularity.Memory.SharedHeap.Allocation;
+
+namespace Microsoft.Singularity.Directory
+{
+
+    [CLSCompliant(false)]
+    public enum DirectoryEvent : ushort
+    {
+        DoBind = 1,
+        DoGetAttributes = 2,
+        DoCreateDirectory = 3,
+        DoCreateFile = 4,
+        DoDeleteDirectory = 5,
+        DoDeleteLink = 6,
+        DoGetLinkValue = 7,
+        DoCreateLink = 8,
+    }
+
+    public partial class DirectoryService
+    {
+        public const string ManifestFile = "manifest";
+#if ISA_ARM
+        public const string ExecutableExtension = ".arm";
+        public const string ManifestExtension = ".arm.manifest";
+#elif ISA_IX64
+        public const string ExecutableExtension = ".x64";
+        public const string ManifestExtension = ".x64.manifest";
+#elif ISA_IX86
+        public const string ExecutableExtension = ".x86";
+        public const string ManifestExtension = ".x86.manifest";
+#endif
+        public const int ExecutableExtensionLength = 4; // Should be (ExecutableExtension.Length);
+
+        public const string ExecutablesNamespace = "init";
+        public const string ServicesNamespace = "service";
+        public const string StatusNamespace = "status";
+        public const string InstalledExecutablesRepository = "repository";
+
+        private static TRef<IoMemFSContract.Imp:Ready> ioFSImpRef;
+
+        private static DirNode! rootDir;
+        private static Process! dirServiceSipProcess;
+
+        internal static Process processForWorkerThreads;
+
+        private static bool userSpaceDirSerInit;
+        private static TRef<DirectoryServiceFeederContract.Imp:Ready> feederImpTRef;
+
+        /// <summary>
+        /// The provider of access control lists for objects
+        /// in this namespace.
+        /// </summary>
+        public static void Initialize(XmlNode! config)
+        {
+            NotificationManager.Initialize();
+
+            //RootDir = new RootDirectory("/");
+            ISdsAcl! aclT = new SdsAclImpl();
+            AclCore core = new AclCore("DS_Acl", new DirAclCoreSupport());
+            rootDir = new DirNode("/", core, aclT);
+
+            ErrorCode error;
+            rootDir.CreateDirectory(DirectoryService.ExecutablesNamespace, out error);
+            rootDir.CreateDirectory(DirectoryService.ServicesNamespace, out error);
+            rootDir.CreateDirectory(DirectoryService.StatusNamespace, out error);
+
+            processForWorkerThreads = Thread.CurrentProcess;
+            InstallLoadedApplications(config);
+            InstallOtherFiles(config);
+            InstallGroups(config);
+            InstallAcls(config, aclT);
+            userSpaceDirSerInit = false;
+        }
+
+        public static void StartNotificationThread()
+        {
+            NotificationManager.StartNotificationThread();
+        }
+
+        public static bool UserSpaceDirectoryServiceStarted()
+        {
+            return userSpaceDirSerInit;
+        }
+
+        private static void HandleInitRequests()
+        {
+            StringBuilder! sb;
+            sb = new StringBuilder(DirectoryService.ExecutablesNamespace.Length + 1);
+            sb.Append("/");
+            sb.Append(DirectoryService.ExecutablesNamespace);
+
+            string path = SbUtils.PathString(sb);
+            if(path == null) {
+                DebugStub.Break();
+                return;
+            }
+
+            DirNode initRoot = rootDir.FindDirectory(sb);
+            if (initRoot == null) {
+                DebugStub.Print("Couldn't get init directory???\n");
+                DebugStub.Break();
+                return;
+            }
+
+            DirectoryServiceContract.Imp newImp;
+            newImp = NewClientEndpointFromSIP();
+            if(newImp == null) {
+                DebugStub.Print("Couldn't get new endpoint from SIP!!!\n");
+                DebugStub.Break();
+                return;
+            }
+
+            ServiceProviderContract.Imp! initImp;
+            ServiceProviderContract.Exp! initExp;
+            ServiceProviderContract.NewChannel(out initImp, out initExp);
+
+            bool ok;
+            ErrorCode error;
+            bool run = true;
+
+            ok = SdsUtils.Register(path, newImp, initImp, out error);
+            if(!ok) {
+                DebugStub.Print("Failed to register init directory with SIP error {0}\n",
+                                __arglist(SdsUtils.ErrorCodeToString(error)));
+                DebugStub.Break();
+            }
+
+            while(run == true) {
+                switch receive {
+                    case initExp.Connect(ServiceContract.Exp:Start! exp) :
+                        DirectoryServiceContract.Exp dirExp  = exp as DirectoryServiceContract.Exp;
+                        if(dirExp == null) {
+                            initExp.SendNackConnect(exp);
+                        }
+                        else {
+                             DirectoryServiceWorker.Create(initRoot, dirExp);
+                             initExp.SendAckConnect();
+                        }
+                        break;
+                    case initExp.ChannelClosed() :
+                        run = false;
+                        break;
+                    case unsatisfiable :
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            delete initExp;
+            delete newImp;
+        }
+
+        private static void HandleGroupsRequests()
+        {
+            StringBuilder! sb;
+            sb = new StringBuilder(DirectoryService.ExecutablesNamespace.Length + 1);
+            sb.Append("/");
+            sb.Append("groups");
+
+            string path = SbUtils.PathString(sb);
+            if(path == null) {
+                DebugStub.Break();
+                return;
+            }
+
+            DirNode groupsRoot = rootDir.FindDirectory(sb);
+            if (groupsRoot == null) {
+                DebugStub.Print("Couldn't get groups directory???\n");
+                DebugStub.Break();
+                return;
+            }
+
+            DirectoryServiceContract.Imp newImp;
+            newImp = NewClientEndpointFromSIP();
+            if(newImp == null) {
+                DebugStub.Print("Couldn't get new endpoint from SIP!!!\n");
+                DebugStub.Break();
+                return;
+            }
+
+            ServiceProviderContract.Imp! initImp;
+            ServiceProviderContract.Exp! initExp;
+            ServiceProviderContract.NewChannel(out initImp, out initExp);
+
+            ErrorCode error;
+            bool run = true;
+
+            if(!SdsUtils.Register(path, newImp, initImp, out error)) {
+                DebugStub.Print("Failed to register groups directory with SIP error {0}\n",
+                                __arglist(SdsUtils.ErrorCodeToString(error)));
+                DebugStub.Break();
+            }
+
+            while(run == true) {
+                switch receive {
+                    case initExp.Connect(ServiceContract.Exp:Start! exp) :
+                        DirectoryServiceContract.Exp dirExp  = exp as DirectoryServiceContract.Exp;
+                        if(dirExp == null) {
+                            initExp.SendNackConnect(exp);
+                        }
+                        else {
+                             DirectoryServiceWorker.Create(groupsRoot, dirExp);
+                             initExp.SendAckConnect();
+                        }
+                        break;
+                    case initExp.ChannelClosed() :
+                        run = false;
+                        break;
+                    case unsatisfiable :
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            delete initExp;
+            delete newImp;
+        }
+
+
+        public static unsafe void StartUserSpaceDirectoryService()
+        {
+#if !SINGULARITY_PROCESS
+            ArrayList dirArgs = new ArrayList();
+            dirArgs.Add("DirectoryServiceApp");
+            String [] dirStringArgs = (string []) dirArgs.ToArray(typeof(string));
+
+            Manifest manifest = null;
+            IoMemory memory = Binder.LoadImage(Thread.CurrentProcess, "DirectoryServiceApp", out manifest);
+            int boolCount;
+            int longCount;
+            int arrayCount;
+            int stringCount;
+
+            if (memory == null || memory.Length == 0) {
+                DebugStub.WriteLine("The Binder failed to load DirTestApp image for the Service Manager");
+                DebugStub.Break();
+                return;
+            }
+
+            if (manifest == null) {
+                DebugStub.WriteLine("The Binder loaded the image DirTestApp, but could not load its manifest.");
+                DebugStub.Break();
+                return;
+            }
+
+            dirServiceSipProcess = new Process(Thread.CurrentProcess, memory, null, dirStringArgs, manifest);
+            DirectoryServiceFeederContract.Exp! feederExp;
+            DirectoryServiceFeederContract.Imp! feederImp;
+            DirectoryServiceFeederContract.NewChannel(out feederImp, out feederExp);
+
+            if (dirServiceSipProcess != null) {
+                dirServiceSipProcess.SetEndpointCount(1);
+                SharedHeap.Allocation* result = (SharedHeap.Allocation*) feederExp;
+                dirServiceSipProcess.SetEndpoint(0, ref result);
+                dirServiceSipProcess.Start();
+            }
+            switch receive {
+                case feederImp.InitializationComplete():
+                    DebugStub.Print("StartUserSpaceDirectoryService: Received InitializationComplete\n");
+                    userSpaceDirSerInit = true;
+                    break;
+                case feederImp.ChannelClosed():
+                    break;
+                case unsatisfiable:
+                    DebugStub.Print("Initializing App Dir Service failed?\n");
+                    DebugStub.Break();
+                    break;
+            }
+            feederImpTRef = new TRef<DirectoryServiceFeederContract.Imp:Ready>(feederImp);
+
+            //This is a race condition.  If the kernel asked for something within /init before
+            //this thread registers for init with the directory service SIP the request may fail.
+            //Ultimately, the directoryservice app should just grab mem images from init through
+            //a contract, which would eliminate the need for this thread.
+            Thread initThread = Thread.CreateThread(DirectoryService.processForWorkerThreads,
+                                                    new ThreadStart(HandleInitRequests));
+            if(initThread != null) {
+                initThread.Start();
+            }
+
+            Thread groupsThread = Thread.CreateThread(DirectoryService.processForWorkerThreads,
+                                                      new ThreadStart(HandleGroupsRequests));
+
+            if(groupsThread != null) {
+                groupsThread.Start();
+            }
+
+#else
+            return;
+#endif
+
+        }
+
+        private static unsafe DirectoryServiceContract.Imp NewClientEndpointFromSIP()
+        {
+            DirectoryServiceFeederContract.Imp! feederImp = feederImpTRef.Acquire();
+            feederImp.SendGetNewDirectoryChannel();
+            switch receive {
+                case feederImp.AckNewChannel(DirectoryServiceContract.Imp:Start! newImp):
+                    //Need to transfer ownership of this endpoint to the caller.
+                    //need to do it in two steps?
+                    Process kernelProcess = Process.KernelProcess;
+                    Process currentProcess = Thread.CurrentProcess;
+                    if((kernelProcess != null) && (currentProcess != null)) {
+                        EndpointCore.MoveEndpoint(dirServiceSipProcess.ProcessSharedHeap,
+                                                  SharedHeap.KernelSharedHeap,
+                                                  kernelProcess, (SharedHeap.Allocation*)newImp);
+
+                        EndpointCore.MoveEndpoint(SharedHeap.KernelSharedHeap,
+                                                  currentProcess.ProcessSharedHeap,
+                                                  currentProcess, (SharedHeap.Allocation*)newImp);
+                        newImp.RecvSuccess();
+                        feederImpTRef.Release(feederImp);
+                        return newImp;
+                    }
+                    else {
+                        DebugStub.Print("kernel or cur process null?~!?!?!?!\n");
+                        DebugStub.Break();
+                    }
+                    delete newImp;
+                    break;
+                case feederImp.NakNewChannel(error):
+                    //Should never happen
+                    DebugStub.Print("NewClientEndpoint: Failed to get new channel\n");
+                    break;
+                case unsatisfiable:
+                    DebugStub.Print("NewClientEnpoint: Unsatisfiable??\n");
+                    break;
+            }
+            feederImpTRef.Release(feederImp);
+            return null;
+        }
+
+        public static DirectoryServiceContract.Imp:Ready! GetLocalEndpoint()
+        {
+            DirectoryServiceContract.Imp! c;
+            DirectoryServiceContract.Exp! s;
+            DirectoryServiceContract.NewChannel(out c, out s);
+
+            DirectoryServiceWorker.Create(rootDir, s);
+            c.RecvSuccess();
+            return c;
+        }
+
+        public static  DirectoryServiceContract.Imp:Ready! NewClientEndpoint()
+        {
+#if !SINGULARITY_PROCESS
+            if(userSpaceDirSerInit == true) {
+                DirectoryServiceContract.Imp newImp;
+                newImp = NewClientEndpointFromSIP();
+                if(newImp != null) {
+                    return newImp;
+                }
+                DebugStub.Break();
+            }
+
+            //Contracts are initially served from the kernel until the SIP version is started
+            DirectoryServiceContract.Imp! c;
+            DirectoryServiceContract.Exp! s;
+            DirectoryServiceContract.NewChannel(out c, out s);
+
+            DirectoryServiceWorker.Create(rootDir, s);
+            c.RecvSuccess();
+            return c;
+#else
+            return null;
+#endif
+        }
+
+        public static unsafe SharedHeap.Allocation * NewClientEndpointEx()
+        {
+            // This sequence tells the ownership checker that we transfer
+            // the obligation to the result.
+            DirectoryServiceContract.Imp! imp = NewClientEndpoint();
+            SharedHeap.Allocation* result = (SharedHeap.Allocation*)imp;
+            return result;
+        }
+
+        //
+        // consts for accessing Xml tags and attributes
+        //
+
+        // tags describing entries in the binder
+        const string FileListXmlTag = "files";
+        const string FileEntryXmlTag = "file";
+        const string DistroNameXmlAttribute = "distroName";
+        const string FileNameXmlAttribute = "name";
+        const string BinderPositionXmlAttribute = "id";
+        const string ManifestBinderPositionXmlAttribute = "manifestId";
+        const string IsExecutableXmlAttribute = "executable";
+        const string IsManifestXmlAttribute = "manifest";
+
+        // security tags
+        const string GroupListXmlTag = "groups";
+        const string GroupEntryXmlTag = "group";
+        const string AclListXmlTag = "acls";
+        const string AclEntryXmlTag = "acl";
+        const string AclEntryPathTag = "path";
+        const string AclEntryThisTag = "this";
+        const string AclEntryInheritedTag = "inherited";
+
+        const string GroupListRootXmlAttribute = "root";
+        const string GroupEntryPathXmlAttribute = "path";
+        const string GroupEntryDescriptionXmlAttribute = "description";
+
+        const string NamespaceParametersTag = "namespace";
+        const string ProxyChannelsAttribute = "proxyChannels";
+        const int DefaultProxyChannels = 10;
+
+
+        private static bool SearchForManifestNode(int id,
+                                                  XmlNode[]! nodes,
+                                                  int start,
+                                                  int end,
+                                                  out XmlNode found)
+        {
+            found = null;
+            for (int i = start; i < end; i++) {
+                XmlNode! n  = (!)nodes[i];
+                int foundId = n.GetAttribute(BinderPositionXmlAttribute, -1);
+                if (foundId == id) {
+                    DebugStub.Assert(n.GetAttribute(IsManifestXmlAttribute, false));
+                    found = nodes[i];
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static XmlNode GetManifestNode(int id, XmlNode[]! nodes, int lastVisited)
+        {
+            XmlNode n;
+            if (SearchForManifestNode(id, nodes,
+                                      lastVisited + 1, nodes.Length, out n) ||
+                SearchForManifestNode(id, nodes,
+                                      0, lastVisited, out n)) {
+                return n;
+            }
+            return null;
+        }
+
+        private static void InstallLoadedApplication(DirNode!  dirNode,
+                                                     string!   exeName,
+                                                     IoMemory! exeImage,
+                                                     string    maniName,
+                                                     IoMemory  maniImage)
+        {
+            string! appDir = GetFolderName(exeName);
+
+            DirNode   appDirNode;
+            ErrorCode error;
+            if (dirNode.CreateDirectory(appDir, out error, out appDirNode) == false) {
+                if (error == ErrorCode.AlreadyExists) {
+                    if (dirNode.GetDirectory(appDir, out error, out appDirNode) == false) {
+                        DebugStub.Break();
+                        return;
+                    }
+                } else {
+                    //                    DebugStub.Break();
+                    return;
+                }
+            }
+
+            DebugStub.Assert(appDirNode != null);
+
+            if (appDirNode != null) {
+                if (appDirNode.RegisterIoMemory(exeName, exeImage) == false) {
+                    DebugStub.Break();
+                }
+                if (maniName != null && maniImage != null) {
+                    if (appDirNode.RegisterIoMemory(maniName, maniImage) == false) {
+                        DebugStub.Break();
+                    }
+                }
+            }
+        }
+
+        private static void InstallLoadedApplications(XmlNode! config)
+        {
+            // get all files to register from the xml
+            XmlNode! filesConfig = (!)config.GetChild(FileListXmlTag);
+
+            if (filesConfig == null) {
+                return;
+            }
+
+            ErrorCode error;
+            StringBuilder sb = new StringBuilder(DirectoryService.ExecutablesNamespace.Length + 1);
+            sb.Append("/");
+            sb.Append(DirectoryService.ExecutablesNamespace);
+
+            DirNode root = rootDir.FindDirectory(sb);
+            if (root == null) {
+                throw new Exception("Cannot find executables directory");
+            }
+
+            if (!root.CreateDirectory(DirectoryService.InstalledExecutablesRepository, out error)) {
+                throw new Exception("Cannot create executables Repository");
+            }
+
+            if (filesConfig.Children == null) {
+                DebugStub.WriteLine("Found no files to install.");
+                return;
+            }
+
+            for (int i = 0; i < filesConfig.Children.Length; i++) {
+                XmlNode! file = (!)filesConfig.Children[i];
+
+                if (file.Name != FileEntryXmlTag) {
+                    continue;
+                }
+
+                if (file.GetAttribute(IsExecutableXmlAttribute, false) == false) {
+                    // Skip non-executables. This is preserving legacy
+                    // behavior, but could easily add other files too.
+                    continue;
+                }
+
+
+                // Get Name and ordinal position so we can get IoMemory object
+                string! fileName = (!) file.GetAttribute(FileNameXmlAttribute, "");
+                int     fileOrder = file.GetAttribute(BinderPositionXmlAttribute, -1);
+
+                IoMemory! fileImage = (!)
+                    Resources.GetLoadedImageMemory(fileOrder);
+
+                if (file.GetAttribute(IsExecutableXmlAttribute, false)) {
+                    // An executable, create a directory then drop binary and manifest into it.
+                    int      manifestId    = file.GetAttribute(ManifestBinderPositionXmlAttribute, -1);
+                    string   manifestName  = null;
+                    IoMemory manifestImage = null;
+                    if (manifestId >= 0) {
+                        XmlNode manifestNode = GetManifestNode(manifestId, filesConfig.Children, i);
+                        if (manifestNode != null) {
+                            manifestName  = manifestNode.GetAttribute(FileNameXmlAttribute, "");;
+                            manifestImage = Resources.GetLoadedImageMemory(manifestId);
+                        }
+                    }
+
+                    InstallLoadedApplication(root, fileName, fileImage, manifestName, manifestImage);
+                }
+                else {
+                    // Plain old file, just gets dumped in place
+                    root.RegisterIoMemory(fileName, fileImage);
+                }
+            }
+        }
+
+        private static void InstallOtherFiles(XmlNode! config)
+        {
+            // get all files to register from the xml
+            XmlNode filesConfig = config.GetChild(FileListXmlTag);
+
+            if (filesConfig == null) {
+                return;
+            }
+
+            ErrorCode error;
+
+            StringBuilder sb = new StringBuilder(100);
+            sb.Append("/");
+            sb.Append(DirectoryService.ExecutablesNamespace);
+            DirNode root = rootDir.FindDirectory(sb);
+            if (root == null) {
+                throw new Exception("Cannot find executables directory");
+            }
+
+            foreach (XmlNode! file in filesConfig.Children) {
+                if (file.Name != FileEntryXmlTag) {
+                    continue;
+                }
+
+                bool executable = file.GetAttribute(IsExecutableXmlAttribute, false);
+                bool manifest = file.GetAttribute(IsManifestXmlAttribute, false);
+                int order = file.GetAttribute(BinderPositionXmlAttribute, -1);
+                int manifestId = file.GetAttribute(ManifestBinderPositionXmlAttribute, -1);
+
+                if (executable || manifest || order == -1 || manifestId != -1) {
+                    // skip executables, manifests, and non-existent files.
+                    // And the kernel which is not marked as executable but has a manifest.
+                    continue;
+                }
+                IoMemory memory;
+
+                // Support for sub directories below Distro/Files
+
+                string! name = (!)(file.GetAttribute(FileNameXmlAttribute, ""));
+                string [] nameSet = name.Split('/');
+                DirNode curNode = root;
+                if (nameSet.Length > 1) {
+                    name = (!)nameSet[nameSet.Length - 1];
+                    //need to construct direcories if they do not exist
+                    for (int i = 0; i <= nameSet.Length - 2; i++) {
+                        if (nameSet[i] == String.Empty) {
+                            continue;
+                        }
+                        sb.Length=0;
+                        sb.Append(nameSet[i]);
+                        assert curNode != null;
+                        if (!curNode.CreateDirectory(sb.ToString(), out error)) {
+                            if (error != ErrorCode.AlreadyExists) {
+                                DebugStub.Break();
+                            }
+                        }
+                        sb.Length = 0;
+                        sb.Append(nameSet[i]);
+                        curNode = curNode.FindDirectory(sb);
+                        if (curNode == null) {
+                            DebugStub.Break();
+                        }
+                    }
+                }
+
+                memory = Resources.GetLoadedImageMemory(order);
+
+                if (memory == null) {
+                    DebugStub.WriteLine("Failure loading name={0} order={1}",
+                                        __arglist(name, order));
+                    throw new Exception("Cannot load image");
+                }
+
+                // register the executable's image
+                assert curNode != null;
+                curNode.RegisterIoMemory(name, memory);
+            }
+        }
+
+        private static void InstallGroups(XmlNode! config)
+        {
+            UTF8Encoding encoder = new UTF8Encoding();
+
+            // get all group definitions to register from the xml
+            XmlNode groupsConfig = config.GetChild(GroupListXmlTag);
+
+            if (groupsConfig == null) {
+                return;
+            }
+
+            DirNode! groot = rootDir;
+
+            foreach (XmlNode! group in groupsConfig.Children) {
+                if (group.Name != GroupEntryXmlTag) {
+                    continue;
+                }
+                string! path = (!)group.GetAttribute(GroupEntryPathXmlAttribute, "");
+                string! desc = (!)group.GetAttribute(GroupEntryDescriptionXmlAttribute,
+                                                     "");
+
+                // DebugStub.WriteLine("Current group: name: {0}, description: {1}",
+                // __arglist(path, desc));
+
+                if (!path.Equals("")) {
+                    int length = path.Length;
+                    int index = path.LastIndexOf('/');
+
+                    if (index != length - 1) {
+                        string! name = (!)path.Substring(index+1);
+                        DirNode dir = GetContainingFolder(groot, path, false);
+
+                        if (dir != null) {
+                            byte[] bytes = encoder.GetBytes(desc);
+
+                            if (bytes == null) {
+                                continue;
+                            }
+
+                            int size = bytes.Length;
+                            IoMemory memory = IoMemory.AllocateRealFixed((UIntPtr)size);
+
+                            if (memory != null) {
+                                // DebugStub.WriteLine("wrote the bytes");
+                                memory.Write8(0, bytes);
+                                // register the group definition
+                                dir.RegisterIoMemory(name, memory);
+                                // DebugStub.WriteLine("Registered the memory");
+                            }
+                        }
+                        else {
+                            // DebugStub.WriteLine("Could not get the containing folder");
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void InstallAcls(XmlNode! config, ISdsAcl! aclT)
+        {
+            // read the rules section from the config
+            XmlNode node = config.GetChild(AclListXmlTag);
+            if (node == null) {
+                return;
+            }
+            foreach (XmlNode! rule in node.Children) {
+                if (rule.Name != AclEntryXmlTag) {
+                    continue;
+                }
+
+                string path = (!)rule.GetAttribute(AclEntryPathTag, null);
+                if (path == null) {
+                    continue;
+                }
+                string aclThis = rule.GetAttribute(AclEntryThisTag, null);
+                if (aclThis == null) {
+                    continue;
+                }
+
+                string aclInherited = rule.GetAttribute(AclEntryInheritedTag, null);
+                aclT.Set(path, new Acl(aclThis, aclInherited));
+            }
+        }
+
+        private static string! GetFolderName(string! exeName)
+        {
+            int dot = exeName.IndexOf('.');
+            if (dot >= 1) {
+                return exeName.Substring(0, dot);
+            }
+            return exeName;
+        }
+
+        private static DirNode GetContainingFolder(DirNode! start, string! path, bool mode)
+        {
+            // DebugStub.WriteLine("GetContainingFolder: Start: {0}, Path: {1}",
+            // __arglist(start.NodeName, path));
+            string[] split = (!)path.Split('/');
+
+            DirNode current = start;
+            int size;
+
+            if (mode) {
+                size = split.Length;
+            }
+            else {
+                size = split.Length - 1;
+            }
+
+            for (int i = 0; i < size; i++) {
+                // DebugStub.WriteLine("Current split: {0}", __arglist(split[i]));
+                if (split[i] != "") {
+                    StringBuilder sb = new StringBuilder(((!)split[i]).Length + 1);
+                    sb.Append("/");
+                    sb.Append(split[i]);
+                    // DebugStub.WriteLine("Looking up directory: /{0}", __arglist(split[i]));
+                    DirNode temp = current.FindDirectory(sb);
+                    ErrorCode error;
+                    if (temp == null) {
+                        // DebugStub.WriteLine("Directory does not exist. Trying to create");
+                        if (current.CreateDirectory((!)split[i], out error)) {
+                            // DebugStub.WriteLine("Created the directory");
+                            current = current.FindDirectory(sb);
+                            if (current != null) {
+                                // DebugStub.WriteLine("Found what created");
+                            }
+                            else {
+                                return null;
+                                // DebugStub.WriteLine("Cannot find what created");
+                            }
+                        }
+                        else {
+                            // DebugStub.WriteLine("Failed to create the directory");
+                            return null;
+                        }
+                    }
+                    else {
+                        current = temp;
+                    }
+                }
+            }
+            return current;
+        }
+
+///////////////////////////////////////////////////////////////////////////////
+// begin kernel only functions
+///////////////////////////////////////////////////////////////////////////////
+        public static bool SetIoFS([Claims]IoMemFSContract.Imp:Ready! imp)
+        {
+#if !SINGULARITY_PROCESS
+            ioFSImpRef = new TRef<IoMemFSContract.Imp:Ready>(imp);
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        public static IoMemFSContract.Imp:Ready AcquireIoFS()
+        {
+#if !SINGULARITY_PROCESS
+            if (ioFSImpRef != null) {
+                return ioFSImpRef.Acquire();
+            }
+            else {
+                DebugStub.Break();
+            }
+#endif
+            return null;
+        }
+
+
+        public static bool ReleaseIoFS([Claims]IoMemFSContract.Imp:Ready! io)
+        {
+#if !SINGULARITY_PROCESS
+            if (ioFSImpRef != null) {
+               ioFSImpRef.Release(io);
+               return true;
+            }
+            else {
+                DebugStub.Break();
+            }
+#endif
+            delete io;   // REVIEW: this is not right.
+            return false;
+        }
+
+
+        public static bool RegisterIoMemory(DirNode dirNode, string! path, IoMemory! ioMem)
+        {
+#if !SINGULARITY_PROCESS
+            if (dirNode != null)
+                return dirNode.RegisterIoMemory(path, ioMem);
+            return false;
+#else
+            return false;
+#endif
+        }
+
+        public static bool CreateDirectory(DirNode node, string! path)
+        {
+#if !SINGULARITY_PROCESS
+            if(userSpaceDirSerInit == true) {
+                DebugStub.Print("Kernel DirectoryService: UserSpace Init but still using internal functions??\n");
+            }
+
+            ErrorCode error;
+            if (null != node)
+                return node.CreateDirectory(path, out error);
+            return false;
+#else
+            return false;
+#endif
+        }
+
+        public static bool CreateSymbolicLink(DirNode node, string! path, string! val)
+        {
+#if !SINGULARITY_PROCESS
+            if(userSpaceDirSerInit == true) {
+                DebugStub.Print("Kernel DirectoryService: UserSpace Init but still using internal functions??\n");
+            }
+
+            if (null != node)
+                return node.CreateLink(path,val);
+            return false;
+#else
+            return false;
+#endif
+        }
+
+        public static DirNode FindDirectory(string! path)
+        {
+#if !SINGULARITY_PROCESS
+            if (path == "/")return rootDir;
+            return rootDir.FindDirectory(new StringBuilder(path));
+#else
+            return null;
+#endif
+         }
+
+
+        public static DirNode FindDirectory(string! path, bool createIfNull)
+        {
+            if(userSpaceDirSerInit == true) {
+                DebugStub.Print("Kernel DirectoryService: UserSpace Init but still using internal functions??\n");
+            }
+
+            if (!createIfNull) {
+                return FindDirectory(path);
+            }
+
+            // parse the name, one directory token at a time.  If the token
+            // exists, advance to it, otherwise, create it and advance to it
+            ErrorCode error;
+            DirNode nexttree;
+            DirNode! currenttree = (!) DirectoryService.FindDirectory("/");
+
+            foreach (string folder in path.Split('/')) {
+                // don't do the first entry, as it is the root, "/", which we
+                // already have in root
+                if (folder != "") {
+                    StringBuilder! p = new StringBuilder("/" + folder);
+
+                    nexttree = currenttree.FindDirectory(p);
+                    if (nexttree == null) {
+                        currenttree.CreateDirectory((!)folder, out error);
+                        nexttree = currenttree.FindDirectory(p);
+                    }
+                    currenttree = (!) nexttree;
+                }
+            }
+            return currenttree;
+        }
+
+///////////////////////////////////////////////////////////////////////////////
+// end kernel only functions
+///////////////////////////////////////////////////////////////////////////////
+
+        public static void Finalize()
+        {
+        }
+   }
+}

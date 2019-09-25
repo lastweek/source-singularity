@@ -1,0 +1,121 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Test.Contracts
+{
+    public contract LogContract
+    {
+        out message Log(char[]! in ExHeap msg, long atCycle, long atTime);
+        in  message OK();
+
+        state START : one {
+            Log! -> OK? -> START;
+        }
+    }
+
+    public contract ModuleTesterContract
+    {
+        in message Logger(LogContract.Exp:START! log, bool logSuccess);
+        out message GetLogger();
+
+        // manage the applications tester
+        in  message CleanupModule();
+
+        // manage a specific suite (test class) in the tester
+        in  message InitSuite(char[]! in ExHeap suite);
+        in  message CleanupSuite();
+
+        // Run a specific test (which will pass or fail
+        in  message RunTest(char[]! in ExHeap test);
+
+        out message Passed(long cycles, long duration);
+        out message Failed(char[]! in ExHeap error, long cycles, long duration);
+        out message Skipped(char[]! in ExHeap why);
+
+        state START : one {
+            GetLogger! -> Logger? -> GO;
+        }
+        state GO : one {
+            Passed! -> DO_MODULE;
+            Failed! -> END;
+            Skipped! -> END;
+        }
+        state DO_MODULE : one {
+            InitSuite? -> TRY_SUITE;
+            CleanupModule? -> RUNNING -> END;
+        }
+        state TRY_SUITE : one {
+            Passed! -> DO_SUITE;
+            Failed! -> DO_MODULE;
+            Skipped! -> DO_MODULE;
+        }
+        state DO_SUITE : one {
+            RunTest? -> RUNNING -> DO_SUITE;
+            CleanupSuite? -> RUNNING -> DO_MODULE;
+        }
+        state RUNNING : one {
+            Passed! ;
+            Failed! ;
+            Skipped! ;
+        }
+        state END: one {}
+    }
+}
+
+#if false
+    public contract ModuleTesterContract
+    {
+        // manage the applications tester
+        in  message CleanupModule();
+
+        // manage a specific suite (test class) in the tester
+        in  message InitSuite(char[]! in ExHeap suite);
+        in  message CleanupSuite();
+
+        // Run a specific test (which will pass or fail
+        in  message RunTest(char[]! in ExHeap test, bool reportAssertions);
+
+        out message Passed(long cycles, long duration);
+        out message Failed(char[]! in ExHeap error, long cycles, long duration);
+        out message Skipped(char[]! in ExHeap why);
+
+        state START : one {
+            Passed! -> DO_MODULE;
+            Failed! -> END;
+            Skipped! -> END;
+        }
+        state DO_MODULE : one {
+            InitSuite? -> TRY_SUITE;
+            CleanupModule? -> ENDING -> END;
+        }
+        state TRY_SUITE : one {
+            Passed! -> DO_SUITE;
+            Failed! -> DO_MODULE;
+            Skipped! -> DO_MODULE;
+        }
+        state DO_SUITE : one {
+            RunTest? -> RUNNING -> DO_SUITE;
+            CleanupSuite? -> ENDING -> DO_MODULE;
+        }
+        state RUNNING : one {
+            Passed! ;
+            Failed! ;
+            Skipped! ;
+        }
+        state ENDING : one {
+            Passed! ;
+            Failed! ;
+        }
+        state END: one {}
+    }
+#endif
+

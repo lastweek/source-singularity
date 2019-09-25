@@ -1,0 +1,323 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Provider-side helper for the IP Channel Contract
+//
+
+using NetStack.Common;
+using System;
+using System.Threading;
+using System.Net.IP;
+using Drivers.Net;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using NetStack.Contracts;
+using NetStack.Runtime;
+using System.Collections;
+
+namespace NetStack.Channels.Private
+{
+    public class IPExpManager : StoppableThread
+    {
+        private IPModule! ip;
+
+        protected override void Run(StopThreadContract.Exp:Ready! terminator)
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels. When we become a
+            // process, this will be present automatically,
+            // somehow.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(IPContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        DebugStub.Print("Registered the IP module as {0}\n",
+                                        __arglist(IPContract.ModuleName));
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the IP module.\n");
+                        delete rejectedEP;
+                        delete nsExp;
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<IPContract.Exp:ReadyState> epSet = new ESet<IPContract.Exp:ReadyState>();
+
+            while (true) {
+                switch receive {
+                    //
+                    // Don't forget that we're selecting IPContract endpoints
+                    // from the epSet endpoint-set. In each case that we
+                    // receive a message from one of those endpoints, we
+                    // need to remember to put the endpoint back into epSet
+                    // if we want to keep listening to it.
+                    //
+                    case ep.GetDomainName() in epSet :
+                    {
+                        ep.SendDomainName(Bitter.FromString2(ip.HostConfiguration.GetDomainName()));
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.SetDomainName(char[]! in ExHeap name) in epSet :
+                    {
+                        bool success = ip.HostConfiguration.SetDomainName(Bitter.ToString2(name));
+                        delete name;
+
+                        if (success) {
+                            ep.SendOK();
+                        }
+                        else {
+                            ep.SendErr();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.GetHostName() in epSet :
+                    {
+                        ep.SendHostName(Bitter.FromString2(ip.HostConfiguration.GetHostName()));
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.SetHostName(char[]! in ExHeap name) in epSet :
+                    {
+                        bool success = ip.HostConfiguration.SetHostName(Bitter.ToString2(name));
+                        delete name;
+
+                        if (success) {
+                            ep.SendOK();
+                        }
+                        else {
+                            ep.SendErr();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.StartDhcp(char[]! in ExHeap ifName) in epSet :
+                    {
+                        IAdapter intf = FindAdapter(Bitter.ToString(ifName));
+                        delete ifName;
+
+                        if (intf == null) {
+                            ep.SendInterfaceNotFound();
+                        }
+                        else {
+                            ip.HostConfiguration.StartDhcp(intf);
+                            ep.SendOK();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.StopDhcp(char[]! in ExHeap ifName) in epSet :
+                    {
+                        IAdapter intf = FindAdapter(Bitter.ToString(ifName));
+                        delete ifName;
+
+                        if (intf == null) {
+                            ep.SendInterfaceNotFound();
+                        }
+                        else {
+                            ip.HostConfiguration.StopDhcp(intf);
+                            ep.SendOK();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.IsRunningDhcp(char[]! in ExHeap ifName) in epSet :
+                    {
+                        IAdapter intf = FindAdapter(Bitter.ToString(ifName));
+                        delete ifName;
+
+                        if (intf == null) {
+                            ep.SendInterfaceNotFound();
+                        }
+                        else {
+                            ep.SendRunning(ip.HostConfiguration.IsRunningDhcp(intf));
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.SetInterfaceState(char[]! in ExHeap ifName, uint addr, uint mask, uint gway) in epSet :
+                    {
+                        IAdapter intf = FindAdapter(Bitter.ToString(ifName));
+                        delete ifName;
+
+                        if (intf == null) {
+                            ep.SendInterfaceNotFound();
+                        }
+                        else {
+                            HostConfiguration h = ip.HostConfiguration;
+
+                            // Remove existing interface binding, if any
+                            h.Bindings.Flush(intf);
+
+                            InterfaceIPConfiguration ipconf =
+                                new InterfaceIPConfiguration(new IPv4(addr),
+                                                             new IPv4(mask),
+                                                             new IPv4(gway));
+
+                            if (h.Bindings.Add(intf, ipconf) == false) {
+                                ep.SendErr();
+                            }
+                            else {
+                                ep.SendOK();
+                            }
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.GetInterfaces() in epSet :
+                    {
+                        // Count the number of interfaces
+                        ICollection adapters = Core.Instance().GetAdapterInfoCollection();
+                        char[][] in ExHeap names = new[ExHeap] char[adapters.Count][];
+                        int i = 0;
+
+                        foreach (AdapterInfo! ai in adapters) {
+                            expose (names[i]) {
+                                delete names[i]; // checker does not know its null
+                                names[i] = Bitter.FromString(ai.DeviceName);
+                            }
+                            i++;
+                        }
+
+                        ep.SendInterfaceList(names);
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.GetInterfaceState(char[]! in ExHeap ifName) in epSet :
+                    {
+                        IAdapter intf = FindAdapter(Bitter.ToString(ifName));
+                        delete ifName;
+
+                        if (intf == null) {
+                            ep.SendInterfaceNotFound();
+                        }
+                        else {
+                            HostConfiguration h = ip.HostConfiguration;
+                            InterfaceInfo retval = new InterfaceInfo();
+
+                            // Copy the global interface info
+                            retval.driverName = Bitter.FromString(intf.DriverName);
+                            retval.driverVersion = Bitter.FromString(intf.DriverVersion);
+                            retval.hardwareAddress.Set(intf.HardwareAddress.GetAddressBytes());
+                            retval.linkSpeed = intf.LinkSpeed;
+
+                            // Copy all the IP config info
+                            ArrayList configs = h.Bindings.GetAdapterIPConfigurations(intf);
+                            InterfaceIPInfo[] in ExHeap ipConfigs = new[ExHeap] InterfaceIPInfo[configs.Count];
+                            int i = 0;
+
+                            foreach (InterfaceIPConfiguration! ipc in configs) {
+                                ipConfigs[i].address = (uint)ipc.Address;
+                                ipConfigs[i].netmask = (uint)ipc.NetMask;
+                                ipConfigs[i].gateway = (uint)ipc.Gateway;
+                                i++;
+                            }
+
+                            retval.ipConfigs = ipConfigs;
+                            ep.SendInterfaceState(retval);
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.IsLocalAddress(uint addr) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        bool isLocal = h.Bindings.IsLocalAddress(new IPv4(addr));
+                        ep.SendIsLocal(isLocal);
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.ChannelClosed() in epSet :
+                        delete ep;
+                        break;
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                    {
+                        // We expect people to give us TCPContract.Exp instances
+                        IPContract.Exp newIpEp = newEp as IPContract.Exp;
+
+                        if (newIpEp == null) {
+                            // Invalid contract type. Fail.
+                            nsExp.SendNackConnect(newEp);
+                        }
+                        else {
+                            // Signal ready and start servicing this contract
+                            nsExp.SendAckConnect();
+                            newIpEp.SendReady();
+                            epSet.Add(newIpEp);
+                        }
+                    }
+                    break;
+
+                    case nsExp.ChannelClosed():
+                        // Exit this thread
+                        goto quit;
+
+                    case terminator.Terminate():
+                        terminator.SendAckTerminate();
+                        goto quit;
+                        
+                    case terminator.ChannelClosed():
+                        goto quit;
+                        
+                }
+            }
+            
+        quit:
+            epSet.Dispose();
+            delete nsExp;
+        }
+
+        private IAdapter FindAdapter(string deviceName)
+        {
+            return Core.Instance().GetAdapterByDeviceName(deviceName);
+        }
+
+        public IPExpManager()
+        {
+            ip = (IPModule!)Core.Instance().GetProtocolByName("IP");
+            base();
+        }
+    }
+}

@@ -1,0 +1,30 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+namespace Microsoft.Singularity
+{
+    using Microsoft.Bartok.Options;
+    using Microsoft.Singularity.Io;
+
+    [Mixin(typeof(Microsoft.Singularity.AppRuntime))]
+    public static class ConsoleAppRuntimeMixin
+    {
+        [MixinOverride]
+        public static void InitializeConsole()
+        {
+            ConsoleInput.Initialize();
+            ConsoleOutput.Initialize();
+        }
+
+        [MixinOverride]
+        public static void FinalizeConsole()
+        {
+            ConsoleInput.Finalize();
+            ConsoleOutput.Finalize();
+        }
+    }
+}

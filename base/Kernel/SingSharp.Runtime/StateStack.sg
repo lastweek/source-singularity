@@ -1,0 +1,47 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StateStack.cs
+//
+//  Note: File is part of Sing# runtime files and copied into Singularity tree
+//        whenever a new version of Sing# is dropped.
+//        Coordinate any changes with Sing# team.
+//
+
+using System;
+using Microsoft.Contracts;
+
+namespace Microsoft.Singularity.Channels
+{
+
+    public pointerfree struct StateStack {
+        public const int STATEBITS = 8;
+        public const int STATEMASK = (1 << STATEBITS) - 1;
+
+        private uint stack; // 4 x 8 bits for state of machine of this endpoint. Lowest bits = top of stack
+
+        public StateStack(int initialState) {
+          stack = (uint)initialState & STATEMASK;
+        }
+
+        public void Push(int i) {
+            stack = stack << STATEBITS | ((uint)i & STATEMASK);
+        }
+
+        public void Pop() {
+            stack = stack >> STATEBITS;
+        }
+
+        public void Set(int i) {
+            stack = (stack & (uint)~(uint)STATEMASK) | ((uint)i & STATEMASK);
+        }
+
+        [Pure]
+        public int Top() {
+            return (int)(stack & STATEMASK);
+        }
+    }
+}

@@ -1,0 +1,93 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StressDirect.sg
+//  Note:   Kernel diagnostics (testing and debugging)
+//
+//  (non-shipping extensions to kernel ABI, for testing and debugging)
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Stress.Contracts;
+using Microsoft.Singularity.Directory;
+using System.Runtime.CompilerServices;
+using System;
+using Microsoft.Singularity.V1.Services;
+
+namespace Microsoft.Singularity.Stress
+{
+    public class StressDirect
+    {
+        private static string[]! GetArgs(ArgList* in ExHeap exArgs, int count)
+        {
+            if (exArgs == null) {
+                return new string[count];
+            }
+            else {
+                expose(exArgs)
+                {
+                    char[] in ExHeap exArg = exArgs->arg;
+                    ArgList* in ExHeap next = exArgs->next;
+                    string[]! args = GetArgs(next, count + 1);
+                    args[count] = Bitter.ToString(exArg);
+                    return args;
+                }
+            }
+        }
+
+        public static unsafe uint KPTest(SharedHeap.Allocation* sharedArgs, int i)
+        {
+            ArgList* in ExHeap exArgs = (ArgList* in ExHeap) sharedArgs;
+            string[]! args = GetArgs(exArgs, 0);
+            if (exArgs != null) delete exArgs;
+            return new KPTestKernel().Go(args, i);
+//
+//          if (exArgs != null) delete exArgs;
+//          return 0;
+//
+//          char[][]! in ExHeap exArgs = (char[][]! in ExHeap) sharedArgs;
+//          string[]! args = new string[exArgs.Length];
+//          for (int j = 0; j < args.Length; j++) {
+////                SharedHeapService.Allocation* sharedArg = (SharedHeapService.Allocation*) (exArgs[j]);
+//              char[]! in ExHeap exArg = (char[]! in ExHeap) (exArgs[j]);
+//              args[j] = Bitter.ToString(exArg);
+//              delete exArg;
+//          }
+//          delete exArgs;
+//          return new KPTestKernel().Go(args, i);
+//
+//          SharedHeapService.Allocation*[]! in ExHeap exArgs = (SharedHeapService.Allocation*[]! in ExHeap) sharedArgs;
+//          string[]! args = new string[exArgs.Length];
+//          for (int j = 0; j < args.Length; j++) {
+//              SharedHeapService.Allocation* sharedArg = (SharedHeapService.Allocation*) (exArgs[j]);
+//              char[]! in ExHeap exArg = (char[]! in ExHeap) (sharedArg);
+//              args[j] = Bitter.ToString(exArg);
+////                delete exArg;
+//          }
+//          delete exArgs;
+//          return new KPTestKernel().Go(args, i);
+//
+        }
+    }
+
+    class KPTestKernel : KPTestBase
+    {
+        public override uint Go(string[]! args, int i)
+        {
+            if (i >= ((!) args).Length) return 0x87654321;
+            string arg = args[i];
+            if (arg == "throwstop") {
+                throw new ProcessStopException("ProcessStopException");
+            }
+            else {
+                return base.Go(args, i);
+            }
+        }
+    }
+}

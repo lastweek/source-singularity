@@ -1,0 +1,39 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets" />
+
+  <ItemGroup>
+    <ProjectReference Include="CLRProfiler\CLRProfiler.csproj"/>
+    <ProjectReference Include="CredentialsManager\CredentialsManager.Library.csproj"/>
+    <ProjectReference Include="Crypto\Crypto.csproj"/>
+    <ProjectReference Include="DirectoryService.AclUtils\DirectoryService.AclUtils.csproj"/>
+    <ProjectReference Include="DirectoryService.Utils\DirectoryService.Utils.csproj"/>
+    <ProjectReference Include="Drivers.Net\Drivers.Net.csproj"/>
+    <ProjectReference Include="FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="Manifest\Manifest.csproj"/>
+    <ProjectReference Include="NetStack.Channels.Public\NetStack.Channels.Public.csproj"/>
+    <ProjectReference Include="Ntlm\Ntlm.csproj"/>
+    <ProjectReference Include="Policy\Policy.csproj"/>
+    <ProjectReference Include="ProtoLisp\ProtoLisp.csproj"/>
+    <ProjectReference Include="Security\Security.csproj"/>
+    <ProjectReference Include="Security\SecurityDiagnostics.csproj"/>
+    <ProjectReference Include="Singularity.V1\Singularity.V1.App.csproj"/>
+    <ProjectReference Include="System.IO\System.IO.csproj"/>
+    <ProjectReference Include="System.Net\System.Net.csproj"/>
+    <ProjectReference Include="System.Net.IP\System.Net.IP.csproj"/>
+    <ProjectReference Include="System.Web\System.Web.csproj"/>
+    <ProjectReference Include="UnitTest\UnitTestLib.csproj"/>
+    <ProjectReference Include="WebApps\WebAppsLib.csproj"/>
+    <ProjectReference Include="Xml\Xml.csproj"/>
+    <ProjectReference Include="Xml2\Singularity.Xml2.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets" />
+</Project>

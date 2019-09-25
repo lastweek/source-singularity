@@ -1,0 +1,92 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\BaseTypes\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="..\BaseTypes\ArgumentException.csi" />
+    <Compile Include="..\BaseTypes\ArgumentNullException.csi" />
+    <Compile Include="..\BaseTypes\ArgumentOutOfRangeException.csi" />
+    <Compile Include="..\BaseTypes\ArithmeticException.csi" />
+    <Compile Include="..\BaseTypes\DivideByZeroException.csi" />
+    <Compile Include="..\BaseTypes\Exception.csi" />
+    <Compile Include="..\BaseTypes\IndexOutOfRangeException.csi" />
+    <Compile Include="..\BaseTypes\InvalidCastException.csi" />
+    <Compile Include="..\BaseTypes\InvalidOperationException.csi" />
+    <Compile Include="..\BaseTypes\NullReferenceException.csi" />
+    <Compile Include="..\BaseTypes\OutOfMemoryException.csi" />
+    <Compile Include="..\BaseTypes\OverflowException.csi" />
+    <Compile Include="..\BaseTypes\StackOverflowException.csi" />
+    <Compile Include="..\BaseTypes\SystemException.csi" />
+
+    <Compile Include="..\BaseTypes\ICloneable.csi" />
+    <Compile Include="..\BaseTypes\ICollection.csi" />
+    <Compile Include="..\BaseTypes\IComparable.csi" />
+    <Compile Include="..\BaseTypes\IComparer.csi" />
+    <Compile Include="..\BaseTypes\IDisposable.csi" />
+    <Compile Include="..\BaseTypes\IEnumerable.csi" />
+    <Compile Include="..\BaseTypes\IEnumerator.csi" />
+    <Compile Include="..\BaseTypes\IFormattable.csi" />
+    <Compile Include="..\BaseTypes\IList.csi" />
+
+    <Compile Include="..\BaseTypes\AssemblyAttributes.csi" />
+    <Compile Include="..\BaseTypes\Attribute.csi" />
+    <Compile Include="..\BaseTypes\AttributeTargets.csi" />
+    <Compile Include="..\BaseTypes\AttributeUsageAttribute.csi" />
+    <Compile Include="..\BaseTypes\CompilerServicesAttributes.csi" />
+    <Compile Include="..\BaseTypes\DefaultMemberAttribute.csi" />
+    <Compile Include="..\BaseTypes\FlagsAttribute.csi" />
+
+    <Compile Include="..\BaseTypes\Array.csi" />
+    <Compile Include="..\BaseTypes\Boolean.csi" />
+    <Compile Include="..\BaseTypes\Byte.csi" />
+    <Compile Include="..\BaseTypes\Char.csi" />
+    <Compile Include="..\BaseTypes\DateTime.csi" />
+    <Compile Include="..\BaseTypes\Decimal.csi" />
+    <Compile Include="..\BaseTypes\Delegate.csi" />
+    <Compile Include="..\BaseTypes\Double.csi" />
+    <Compile Include="..\BaseTypes\Enum.csi" />
+    <Compile Include="..\BaseTypes\Int16.csi" />
+    <Compile Include="..\BaseTypes\Int32.csi" />
+    <Compile Include="..\BaseTypes\Int64.csi" />
+    <Compile Include="..\BaseTypes\IntPtr.csi" />
+    <Compile Include="..\BaseTypes\Monitor.csi" />
+    <Compile Include="..\BaseTypes\MulticastDelegate.csi" />
+    <Compile Include="..\BaseTypes\Object.csi" />
+    <Compile Include="..\BaseTypes\RuntimeArgumentHandle.csi" />
+    <Compile Include="..\BaseTypes\RuntimeTypeHandle.csi" />
+    <Compile Include="..\BaseTypes\SByte.csi" />
+    <Compile Include="..\BaseTypes\SchedulerTime.csi" />
+    <Compile Include="..\BaseTypes\Single.csi" />
+    <Compile Include="..\BaseTypes\String.csi" />
+    <Compile Include="..\BaseTypes\TimeSpan.csi" />
+    <Compile Include="..\BaseTypes\Type.csi" />
+    <Compile Include="..\BaseTypes\TypeCode.csi" />
+    <Compile Include="..\BaseTypes\TypedReference.csi" />
+    <Compile Include="..\BaseTypes\UInt16.csi" />
+    <Compile Include="..\BaseTypes\UInt32.csi" />
+    <Compile Include="..\BaseTypes\UInt64.csi" />
+    <Compile Include="..\BaseTypes\UIntPtr.csi" />
+    <Compile Include="..\BaseTypes\ValueType.csi" />
+
+    <Compile Include="..\BaseTypes\RuntimeType.csi" />
+    <Compile Include="..\BaseTypes\RuntimeFieldHandle.csi" />
+    <Compile Include="..\BaseTypes\VTable.csi" />
+    <Compile Include="..\BaseTypes\Void.csi" />
+    <Compile Include="..\BaseTypes\BartokRT.csi" />
+    <Compile Include="..\BaseTypes\BartokAttributes.csi" />
+
+    <Compile Include="..\BaseTypes\BaseTypes.csi" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+clear
+fatcontrol '@format' '/dev/vol0.2'
+fatcontrol '@mount' '/dev/vol0.2' '/fs'
+wafgen99 '-v' '60' '/fs'
+clear
+echo '=============================================================================='
+echo 'When unmount has completed the initialization is complete.
+echo 'You must manually reset the machine to start the xwebfile benchmark.'
+echo '=============================================================================='
+echo 'Unmounting...'
+fatcontrol @unmount '/fs'
+echo '...Unmount completed.'

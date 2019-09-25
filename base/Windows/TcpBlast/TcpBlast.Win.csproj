@@ -1,0 +1,30 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Prototype|ApicMP' ">
+    <UseVSHostingProcess>false</UseVSHostingProcess>
+  </PropertyGroup>
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>TcpBlastWin</AssemblyName>
+    <ProjectGuid>{6C2034A4-385D-411C-B292-DA03D42E2D0D}</ProjectGuid>
+    <TcpBlastAppPath>$(SINGULARITY_ROOT)\Applications\Network\TcpBlast</TcpBlastAppPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="TcpBlastWin.cs" />
+    <Compile Include="$(TcpBlastAppPath)\IInt32Sequence.cs" />
+    <Compile Include="$(TcpBlastAppPath)\WellKnownSequences.cs" />
+    <Compile Include="$(TcpBlastAppPath)\FibonacciSequence.cs" />
+    <Compile Include="$(TcpBlastAppPath)\AscendingSequence.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+</Project>

@@ -1,0 +1,63 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace System.Text
+{
+    [RequiredByBartok]
+    public abstract class Encoding
+    {
+        public Encoding();
+        protected Encoding(int codePage);
+        public static byte[] Convert(Encoding srcEncoding, Encoding dstEncoding,
+                                     byte[] bytes);
+        public static byte[] Convert(Encoding srcEncoding, Encoding dstEncoding,
+                                     byte[] bytes, int index, int count);
+        public virtual byte[] GetPreamble();
+        public static Encoding ASCII { get; }
+
+        public virtual int GetByteCount(char[] chars);
+        public virtual int GetByteCount(String s);
+        public abstract int GetByteCount(char[] chars, int index, int count);
+        [RequiredByBartok]
+        public virtual byte[] GetBytes(char[] chars);
+        public virtual byte[] GetBytes(char[] chars, int index, int count);
+        public abstract int GetBytes(char[] chars, int charIndex, int charCount,
+                                     byte[] bytes, int byteIndex);
+        public virtual byte[] GetBytes(String s);
+        [RequiredByBartok]
+        public virtual int GetBytes(String s, int charIndex, int charCount,
+                                    byte[] bytes, int byteIndex);
+        public virtual int GetCharCount(byte[] bytes);
+        public abstract int GetCharCount(byte[] bytes, int index, int count);
+
+        [RequiredByBartok]
+        public virtual char[] GetChars(byte[] bytes);
+        public virtual char[] GetChars(byte[] bytes, int index, int count);
+        public abstract int GetChars(byte[] bytes, int byteIndex, int byteCount,
+                                     char[] chars, int charIndex);
+        public static Encoding Default { get; }
+#if DONT
+        public virtual Decoder GetDecoder();
+        public virtual Encoder GetEncoder();
+#endif
+
+        public abstract int GetMaxByteCount(int charCount);
+        public abstract int GetMaxCharCount(int byteCount);
+        [RequiredByBartok]
+        public virtual String GetString(byte[] bytes);
+        public virtual String GetString(byte[] bytes, int index, int count);
+
+        public static Encoding Unicode { get; }
+        public static Encoding BigEndianUnicode { get; }
+        public static Encoding UTF8 { get; }
+
+        public override bool Equals(Object value);
+        public override int GetHashCode();
+    }
+}

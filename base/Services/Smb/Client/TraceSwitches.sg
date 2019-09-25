@@ -1,0 +1,62 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   
+//
+//  Note:
+//
+
+using System;
+
+namespace Smb.Client
+{
+	///
+	//<summary>
+	//	This class contains control flags, that can turn certain debug print messages on/off.
+	//	For now, there's no run-time facility provided for controlling this; modify and rebuild.
+	//</summary>
+	//
+	/* static */ internal class TraceSwitches
+	{
+		public static bool ShowSmbMessageOneLineSummaries = false;
+		public static bool ShowSmbMessageDetails = false;
+		
+		// If enabled, will print a one-line message for each message
+		// sent or received on DirectoryServiceContract endpoints.
+		public static bool ShowDirectoryMessages = false;
+		
+		public static bool ShowIncrediblyNoisyDetail = false;
+		
+		// If enabled, will print a one-line message for each message
+		// sent or received on control channels; mostly in Main.sg.
+		public static bool ShowControlMessages = false;
+		
+
+		public static bool ShowNegotiation = true;
+		public static bool ShowNegotiationVerbose = false;
+
+        public static bool ShowAuthenticationMessages = false;
+        
+        public static bool ShowMuxStatusChanges = false;
+		
+		
+		// Show creation / deletion of transactors, and all state changes
+		// in transactors.
+		public static bool ShowTransactorMessages = false;
+		
+		// Show info about discovering message boundaries of incoming SMB messages,
+		// and of reassembling fragments.
+		public static bool ShowSmbReassembly = false;
+		
+		public static bool ShowTransactionFragmentationReassembly = false;
+		public static bool ShowTransactionFragmentationReassemblyVerbose = false;
+		
+		public static bool ShowFileActivity = false;
+		
+		// Information about messages sent on the notifier channel to the SmbClientManager.
+		public static bool ShowNotifierMessages = false;
+	}
+}

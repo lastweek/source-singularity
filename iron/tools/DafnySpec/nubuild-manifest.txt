@@ -1,0 +1,5 @@
+dependency DafnySpecAst.cs
+dependency lex.fsl
+dependency parse.fsy
+output dafnyspecast.dll
+output parser.dll

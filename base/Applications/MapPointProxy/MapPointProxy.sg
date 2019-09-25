@@ -1,0 +1,308 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   A simple proxy module for the MapPoint web service
+//
+
+using System;
+using System.Diagnostics;
+using System.Text;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.MapPointProxy.Contracts;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Xml;
+using System;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Security;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Mappoint proxy service", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "proxy", Mandatory=false, Position=0, HelpMessage="Proxy IP address")]
+        internal string ipAddress;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return MapPointProxy.AppMain(this);
+        }
+    }
+
+    public class MapPointProxy
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            string proxyHost = config.ipAddress;  //null; //"172.31.40.21"; // msr-proxy
+
+            // Configure proxy connection.
+            if (proxyHost != null) {
+                Console.WriteLine("MapPoint: HTTP Proxy: {0} port {1}", proxyHost, 80);
+                Console.WriteLine("MapPoint: Alternate proxy can be set on command line.");
+                HttpRequest.ConfigureProxy(proxyHost, 80);
+            }
+            else {
+                Console.WriteLine("MapPoint: No HTTP Proxy configured.");
+                Console.WriteLine("MapPoint: Proxy can be set on command line.");
+            }
+
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            DirectoryServiceContract.Imp ds = config.nsRef.Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+
+            try {
+                ds.SendRegister(Bitter.FromString2(MapPointProxyContract.ModuleName), nsImp);
+
+                switch receive {
+                    case ds.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case ds.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        Console.WriteLine("Failed to register the MapPoint proxy module as " +
+                                        MapPointProxyContract.ModuleName);
+                        delete nsExp;
+                        delete rejectedEP;
+                        return -1;
+
+                    case ds.ChannelClosed():
+                        Console.WriteLine("epNS channel closed");
+                        delete nsExp;
+                        return -1;
+                }
+            }
+            finally {
+                delete ds;
+            }
+
+            // Here is the set of client channels we service
+            ESet<MapPointProxyContract.Exp:ReadyState> epSet = new ESet<MapPointProxyContract.Exp:ReadyState>();
+
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people top give us MapPointProxyContract.Exp instances
+                            MapPointProxyContract.Exp newMapClient = newEp as MapPointProxyContract.Exp;
+
+                            if (newMapClient == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newMapClient.SendMapPointReady();
+                                epSet.Add(newMapClient);
+                            }
+                        }
+                        break;
+
+                        // ------------------------------- Requests on existing connections
+                        //
+                        // Don't forget that we're selecting endpoints
+                        // from the epSet endpoint-set. In each case that we
+                        // receive a message from one of those endpoints, we
+                        // need to remember to put the endpoint back into epSet
+                        // if we want to keep listening to it.
+                        //
+                        case ep.GetMap(char[]! in ExHeap centerLat, char[]! in ExHeap centerLong,
+                                    int zoom, MapPointProxyContract.PushPin[] in ExHeap pushPins) in epSet :
+                            {
+                                string! xml = BuildXml(centerLat, centerLong, zoom, pushPins);
+
+                                delete centerLat;
+                                delete centerLong;
+                                delete pushPins;
+
+                                string base64Data = GetBase64MapData(xml);
+
+                                if (base64Data != null) {
+                                    ep.SendMapDataBegin();
+                                    Base64Decoder decoder = new Base64Decoder(base64Data, 0);
+                                    byte[] chunk;
+
+                                    while ((chunk = decoder.Pump(base64Data.Length, 4096)) != null) {
+                                        ep.SendMapDataChunk(Bitter.FromByteArray(chunk));
+                                        ep.RecvAck();
+                                    }
+
+                                    ep.SendDone();
+                                }
+                                else {
+                                    ep.SendFailed();
+                                }
+
+                                epSet.Add(ep);
+                            }
+                        break;
+
+                    case nsExp.ChannelClosed() && epSet.Empty() :
+                        // The namespace channel is closed and we have no more client
+                        // channels, so pack up and go home.
+                        delete nsExp;
+                        epSet.Dispose();
+                        return -1;
+
+                    case ep.ChannelClosed() in epSet :
+                        // Dispose of channels when our clients close them
+                        delete ep;
+                        break;
+                }
+            }
+            return 0;
+        }
+
+        private static string GetIcon(ref MapPointProxyContract.PushPin pushPin)
+        {
+            expose(pushPin)
+                    {
+                        return Bitter.ToString(pushPin.icon);
+                    }
+        }
+
+        private static string GetLabel(ref MapPointProxyContract.PushPin pushPin)
+        {
+            expose(pushPin)
+                    {
+                        return Bitter.ToString(pushPin.label);
+                    }
+        }
+
+        private static string GetLatitude(ref MapPointProxyContract.PushPin pushPin)
+        {
+            expose(pushPin)
+                    {
+                        return Bitter.ToString(pushPin.latitude);
+                    }
+        }
+
+        private static string GetLongitude(ref MapPointProxyContract.PushPin pushPin)
+        {
+            expose(pushPin)
+                    {
+                        return Bitter.ToString(pushPin.longitude);
+                    }
+        }
+
+        private static string! BuildXml(char[]! in ExHeap centerLat, char[]! in ExHeap centerLong,
+                                        int zoom, MapPointProxyContract.PushPin[] in ExHeap pushPins)
+        {
+            string retval = "<?xml version=\"1.0\" encoding=\"utf-8\"?><soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\"><soap:Body><GetMap xmlns=\"http://s.mappoint.net/mappoint-30/\"><specification><DataSourceName>MapPoint.NA</DataSourceName><Options><RouteHighlightColor>DefaultColor</RouteHighlightColor><ConstructionDelayHighlightColor>DefaultColor</ConstructionDelayHighlightColor><ConstructionClosureHighlightColor>DefaultColor</ConstructionClosureHighlightColor><Format><Height>500</Height><Width>400</Width></Format><PanHorizontal>0</PanHorizontal><PanVertical>0</PanVertical><Style>DefaultStyle</Style><Zoom>";
+
+            retval += zoom.ToString();
+            retval += "</Zoom></Options><Pushpins>";
+
+            if (pushPins != null) {
+                for (int i = 0; i < pushPins.Length; ++i) {
+                    expose(pushPins[i]) {
+                        MapPointProxyContract.PushPin pushPin = pushPins[i];
+                        retval += "<Pushpin><IconDataSource>MapPoint.Icons</IconDataSource><IconName>";
+
+                        pushPin.UnExpose();
+                        string icon = GetIcon(ref pushPin);
+                        string label = GetLabel(ref pushPin);
+                        string latitude = GetLatitude(ref pushPin);
+                        string longitude = GetLongitude(ref pushPin);
+                        pushPin.Expose();
+                        pushPins[i] = pushPin;
+
+                        if (icon != null) {
+                            retval += icon;
+                        }
+
+                        retval += "</IconName><Label>";
+
+                        if (label != null) {
+                            retval += label;
+                        }
+
+                        retval += "</Label><LatLong><Latitude>";
+                        retval += latitude;
+                        retval += "</Latitude><Longitude>";
+                        retval += longitude;
+                        retval += "</Longitude></LatLong><ReturnsHotArea>false</ReturnsHotArea><LabelNearbyRoads>false</LabelNearbyRoads></Pushpin>";
+                    }
+                }
+            }
+
+            retval += "</Pushpins><Views><MapView xsi:type=\"ViewByScale\"><CenterPoint><Latitude>";
+            retval += Bitter.ToString2(centerLat);
+            retval += "</Latitude><Longitude>";
+            retval += Bitter.ToString2(centerLong);
+            retval += "</Longitude></CenterPoint></MapView></Views></specification></GetMap></soap:Body></soap:Envelope>";
+
+            return retval;
+        }
+
+        private static string GetBase64MapData(string! xml)
+        {
+            HttpRequest request = new HttpRequest("http://renderv3.bay.staging.mappoint.net/Render-30/RenderService.asmx");
+
+            request.AddHeader("SOAPAction", "\"http://s.mappoint.net/mappoint-30/GetMap\"");
+            request.ContentType = "text/xml; charset=utf-8";
+            request.RequestData = Encoding.ASCII.GetBytes(xml);
+            request.Method = "POST";
+
+            XmlNode bitsNode = null;
+
+            try {
+                HttpAuthenticator authenticator = new HttpAuthenticator(request, "7356", "0[[{NmN?UU5?U");
+                HttpResponse! response = (!)authenticator.GetResponse();
+
+                XmlReader xmlReader = new XmlReader();
+                XmlNode rootNode = (!)xmlReader.Parse(response.BodyData);
+                ArrayList nodes =  rootNode.ChildrenList;
+                if (nodes != null) {
+                    bitsNode = ((XmlNode!)nodes[0]).GetNestedChild(new string[]{"soap:Body", "GetMapResponse", "GetMapResult", "MapImage", "MimeData", "Bits"});
+                }    
+            }
+            catch (Exception) {
+                // Ignore and return null
+            }
+
+            if (bitsNode != null) {
+                return bitsNode.Text;
+            }
+            else {
+                return null;
+            }
+        }
+    }
+}

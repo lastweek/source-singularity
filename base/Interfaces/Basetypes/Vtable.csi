@@ -1,0 +1,274 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+using Microsoft.Bartok.Runtime;
+using Microsoft.Singularity;
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System;
+
+namespace System
+{
+
+#if !DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+    public struct InterfaceInfo {
+        public System.RuntimeType type;
+        public IntPtr offset;
+    }
+
+    [CCtorIsRunDuringStartup]
+    [RequiredByBartok]
+    public sealed class VTable {
+        public readonly StructuralType arrayOf;
+        public readonly VTable arrayElementClass;
+        public readonly int arrayElementSize;
+        public readonly InterfaceInfo[] interfaces;
+        public readonly uint baseLength;
+        public readonly uint baseAlignment;
+        public readonly UIntPtr pointerTrackingMask;
+        public readonly StructuralType structuralView;
+        public readonly RuntimeType vtableType;
+        public readonly int marshalSize;
+
+        public static bool runtimeInitialized;
+
+        // [MethodImplAttribute(MethodImplOptions.InternalCall)] :: Created by Bartok.
+        [RequiredByBartok]
+        private static void Initialize();
+
+        static public void Initialize(RuntimeType mainType);
+
+        public static Object InitObjectAt(UIntPtr addr, VTable vtable);
+
+        public static Object InitObjectAt(UIntPtr addr, VTable vtable, uint count);
+
+        public static Object InitObjectAt(UIntPtr addr, Type t);
+
+        public static Object InitObjectAt(UIntPtr addr, Type t, uint count);
+
+        static VTable();
+
+        public static void checkNonNull(object obj);
+
+        [RequiredByBartok]
+        public static void checkUnbox(object obj, int structuralType);
+        [RequiredByBartok]
+        public static void checkArrayStore(object obj1,object obj2);
+
+        [RequiredByBartok]
+        public static void checkArrayElementAddress(RuntimeType ty,
+                                                    object obj);
+
+        public static bool isValidAssignment(RuntimeType ty,RuntimeType objTy);
+
+        public static bool isValidAssignmentMedium(RuntimeType ty,
+                                                   RuntimeType objTy);
+
+        [RequiredByBartok]
+        public static Object isInstanceOf(RuntimeType ty,object obj);
+
+        [RequiredByBartok]
+        public static void checkClassCast(RuntimeType ty,object obj);
+
+        [RequiredByBartok]
+        internal static Object newIsInstanceOfNonNullExact(VTable v,
+                                                           Object obj,
+                                                           int vtargetDepth);
+        [RequiredByBartok]
+        internal static Object newIsInstanceOfExact(VTable v,
+                                                    Object obj,
+                                                    int vtargetDepth);
+
+        [RequiredByBartok]
+        public static Object newIsInstanceOfNonNullSimple(VTable v,
+                                                          Object obj,
+                                                          int vtargetDepth);
+
+        [RequiredByBartok]
+        public static Object newIsInstanceOfSimple(VTable v,
+                                                   Object obj,
+                                                   int vtargetDepth);
+
+        [RequiredByBartok]
+        public static Object newIsInstanceOfNonNullComplex(VTable v,
+                                                           Object obj,
+                                                           int vtargetDepth);
+
+        [RequiredByBartok]
+        public static Object newIsInstanceOfComplex(VTable v,
+                                                    Object obj,
+                                                    int vtargetDepth);
+
+        public static void newCheckClassCast(VTable v,
+                                             object obj,
+                                             int vtargetDepth,
+                                             bool mayBeNull,
+                                             bool mustBeExact,
+                                             bool alwaysSimple);
+
+        [RequiredByBartok]
+        internal static void newCheckClassCastNonNullExact(VTable v,
+                                                           object obj,
+                                                           int vtargetDepth);
+
+        [RequiredByBartok]
+        internal static void newCheckClassCastExact(VTable v,
+                                                    object obj,
+                                                    int vtargetDepth);
+
+        [RequiredByBartok]
+        public static void newCheckClassCastNonNullSimple(VTable v,
+                                                          object obj,
+                                                          int vtargetDepth);
+
+        [RequiredByBartok]
+        public static void newCheckClassCastSimple(VTable v,
+                                                   object obj,
+                                                   int vtargetDepth);
+
+        [RequiredByBartok]
+        public static void newCheckClassCastNonNullComplex(VTable v,
+                                                           object obj,
+                                                           int vtargetDepth);
+
+        [RequiredByBartok]
+        public static void newCheckClassCastComplex(VTable v,
+                                                    object obj,
+                                                    int vtargetDepth);
+
+        // Bartok intrinsics
+        public static UIntPtr addressOf(Object o);
+        public static Object fromAddress(UIntPtr v);
+        //        public static Thread toThread(Object o);
+        public static VTable toVTable(Object o);
+        public static Array toArray(Object o);
+        public static String toString(Object o);
+        public static RuntimeType toRuntimeType(Object o);
+        public static Type toType(Object o);
+
+        public static void calli(System.UIntPtr p);
+        public static void calli(System.UIntPtr p, System.UIntPtr v);
+
+        public static ulong mulUIntUIntToULong(uint x, uint y);
+
+        public static void callFinalizer(Object o);
+
+        [RequiredByBartok]
+        public static void initType(RuntimeType ty);
+
+        public static void throwNewClassCastException();
+        public static void throwNewArgumentOutOfRangeException();
+        [RequiredByBartok]
+        public static void throwNewIndexOutOfRangeException();
+        [RequiredByBartok]
+        public static void throwNewStringIndexOutOfRangeException();
+        public static void throwNewArrayTypeMismatchException();
+        [RequiredByBartok]
+        public static void throwNewOverflowException();
+        [RequiredByBartok]
+        public static void throwNewDivideByZeroException();
+        [RequiredByBartok]
+        public static void throwNewArithmeticException();
+
+        [RequiredByBartok]
+        public static IntPtr interfaceOffset(VTable v,RuntimeType ty);
+
+        public static void gcFromAllocate();
+
+        public static void structZero(object dest,int size);
+
+        [RequiredByBartok]
+        public static int doubleToInt(double d);
+        [RequiredByBartok]
+        public static long doubleToLong(double d);
+        [RequiredByBartok]
+        public static int floatToInt(float f);
+        [RequiredByBartok]
+        public static long floatToLong(float  f);
+        [RequiredByBartok]
+        public static int checkedDoubleToInt(double d);
+        [RequiredByBartok]
+        public static long checkedDoubleToLong(double d);
+        [RequiredByBartok]
+        public static int checkedFloatToInt(float f);
+        [RequiredByBartok]
+        public static long checkedFloatToLong(float  f);
+        [RequiredByBartok]
+        public static float floatRem(float f1, float f2);
+        [RequiredByBartok]
+        public static double doubleRem(double d1, double d2);
+        [RequiredByBartok]
+        static public long mulOverflowSigned64Bit(long x,long y);
+        [RequiredByBartok]
+        static public ulong mulOverflowUnsigned64Bit(ulong x,ulong y);
+        [RequiredByBartok]
+        static public ulong mulUnsigned64Bit(ulong x,ulong y);
+
+        public const bool enableLibraryOptions;
+        public static bool enableDebugPrint;
+        public static bool enableGCVerify;
+        public static bool enableGCTiming;
+        public static bool enableDumpSyncBlocks;
+        public static bool enableDumpInterface;
+        [RequiredByBartok]
+        public static bool useLinkedStack;
+
+        public static bool EnableLibraryNotImplemented();
+        public static bool EnableLibraryAsserts();
+        public static void NotImplemented();
+        public static void NotImplemented(String msg);
+        public static void NotReached();
+        public static void NotReached(String msg);
+
+        public static void Assert(bool expr);
+        public static void Deny(bool expr);
+        public static void AssertForRedundant(bool expr);
+        public static void DenyForRedundant(bool expr);
+        public static void Assert(bool expr, String s);
+        public static void Deny(bool expr, String s);
+
+        [RequiredByBartok]
+        static public void DebugPrint(String s);
+        static public void DebugPrint(byte b);
+        static public void DebugPrint(int i);
+        static public void DebugPrint(long l);
+        static public void DebugPrint(ulong l);
+        static public void DebugPrint(int i, int width);
+        static public void DebugPrint(long l, int width);
+        static public void DebugPrint(ulong l, int width);
+        static public void DebugPrint(bool b);
+        static public void DebugDump(object o);
+        static public void DebugBreak();
+        static public void DebugBreakSilent();
+        // static public void DebugTrap(ref X86ThreadContext context, bool firstChance);
+        static public void DebugStack();
+        static public bool DebugPoll();
+
+        static public void Kill(int action);
+
+        static public UIntPtr CommandLine();
+
+        static public bool IsExceptionHandler(Type t,Exception e);
+
+	[RequiredByBartok]
+        static public void Shutdown();
+
+        static public void TerminateByException(Exception e);
+
+        static public void DumpException(Exception e);
+
+        ////////////////////////////////////////////////////////////// Memcpy.
+        //
+        public unsafe static void memcpy(byte* src, int srcIndex, byte[] dest,
+                                         int destIndex, int len);
+        public static void memcpy(byte[] src, int srcIndex, byte* dest,
+                                  int destIndex, int len);
+        public unsafe static void memcpyimpl(byte* src, byte* dest, uint len);
+        public unsafe static void memcpyimpl(byte* src, byte* dest, int len);
+    }
+#endif // !DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+}

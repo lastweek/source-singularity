@@ -1,0 +1,15 @@
+# This script is used by the daily performance tester to
+# generate measurements.  The performance tester reads the
+# output from the debugger.  Feel free to add additional tests
+# to this file, but make sure they report their output in the
+# same XML output as singbench does when invoked with -x and
+# write their output to the debugger as well as the screen.
+
+i = 0
+while ($i < 20) {
+    singbench '-x'
+    i = $i + 1
+}
+
+shutdown
+

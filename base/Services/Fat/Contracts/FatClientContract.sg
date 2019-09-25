@@ -1,0 +1,64 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatClientContract.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Contracts
+{
+    public contract FatClientContract
+    {
+        in message Mount(FatMountSettings*! in ExHeap fms);
+        out message Success();
+        out message Fail(FatContractErrorCode why);
+
+        in message Unmount(bool force);
+
+        in message GetPreferredFormatSettings(
+            char []! in ExHeap diskName
+            );
+
+        out message PreferredFormatSettings(
+            FatFormatSettings*! in ExHeap fms
+            );
+
+        in message Format(
+            char []! in ExHeap diskName,
+            char []! in ExHeap volumeLabel,
+            FatFormatSettings*! in ExHeap fms
+            );
+
+        state Start : one {
+            Mount? -> MountPending;
+            GetPreferredFormatSettings? -> (Fail! or PreferredFormatSettings!) -> Start;
+            Format? -> (Fail! or Success!) -> Start;
+        }
+
+        state MountPending : one {
+            Success! -> Running;
+            Fail! -> Done;
+        }
+
+        state Running : one {
+            Unmount ? -> UnmountPending;
+        }
+
+        state UnmountPending : one {
+            Fail! -> Running;
+            Success! -> Done;
+        }
+
+        state Done : one {
+        }
+    }
+}

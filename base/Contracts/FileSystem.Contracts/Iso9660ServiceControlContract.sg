@@ -1,0 +1,54 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.FileSystem
+{
+
+    /// <summary>
+    /// This contract is exported by services that are filesystem controllers.
+    /// </summary>
+	public contract FileSystemControllerContract : ServiceContract
+	{		
+		in message Mount(char[]! in ExHeap device, char[]! in ExHeap mountPath);
+		out message AckMount();
+		out message NakMount();
+		
+		in message Unmount(char[]! in ExHeap mountPath);
+		out message AckUnmount();
+		out message NakUnmount();
+
+        out message Ok();
+        out message RequestFailed(ErrorCode error);
+		
+		out message Success();
+		
+		override state Start : one {
+			Success! -> Ready;
+		}
+		
+		state Ready : one {
+		    Mount? -> Mounting;
+		    Unmount? -> Unmounting;
+		}
+		
+		state Mounting : one {
+		    Ok! -> Ready;
+		    RequestFailed! -> Ready;
+		}
+		
+		state Unmounting : one {
+		    Ok! -> Ready;
+		    RequestFailed! -> Ready;
+		}
+	}
+}

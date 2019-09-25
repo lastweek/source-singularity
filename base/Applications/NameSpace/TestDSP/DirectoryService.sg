@@ -1,0 +1,231 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Directory;
+
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.SDS;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Application.DSP
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringParameter( "mountPoint", Mandatory=true, Position=0, HelpMessage="Location to mount DSP")]
+        internal string mountPoint;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return NameServiceDSP.AppMain(this);
+        }
+    }
+
+    public class NameServiceDSP
+    {
+
+        private static DirNode! rootDir;
+        private static string! mountPoint;
+
+        private static int Register(string! name, [Claims]ServiceProviderContract.Imp! imp)
+        {
+            // acquire namespace endpoint
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+            mountPoint = name;
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(name),imp);
+                switch receive {
+                    case epNS.AckRegister():
+                        break;
+                    case epNS.NakRegister(reject, error):
+                        DebugStub.Break();
+                        delete reject;
+                        return -1;
+                        break;
+                    case epNS.ChannelClosed():
+                        DebugStub.Break();
+                        return -1;
+                        break;
+                    case epNS.NakRegisterReparse(char[]! in ExHeap path,
+                               char[]! in ExHeap rest,
+                               bool linkFound,
+                               ServiceProviderContract.Imp:Start! reject) :
+                        DebugStub.Break();
+                        delete reject;
+                        delete path;
+                        delete rest;
+                        return -1;
+                        break;
+                    case unsatisfiable:
+                        Tracing.Log(Tracing.Debug,"unable to register NakConnect with Nameservice\n");
+                        DebugStub.Break();
+                        return -1;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            return 0;
+        }
+
+        private static int Deregister(string! name)
+        {
+            // acquire namespace endpoint
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+            mountPoint = name;
+
+            try {
+                epNS.SendDeregister(Bitter.FromString2(name));
+                switch receive {
+                    case epNS.AckDeregister(service):
+                        delete service;
+                        break;
+                    case epNS.NakDeregister(error):
+                        DebugStub.Break();
+                        break;
+                    case epNS.ChannelClosed():
+                        DebugStub.Break();
+                        break;
+                    case unsatisfiable:
+                        Tracing.Log(Tracing.Debug,"unable to register NakConnect with Nameservice\n");
+                        DebugStub.Break();
+                        return -1;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            return 0;
+        }
+
+        public static void Initialize()
+        {
+            NotificationManager.Initialize();
+            NotificationManager.StartNotificationThread();
+
+            ISdsAcl! aclT = new SdsAclImpl();
+            InstallAcls(aclT);
+            AclCore _core = new AclCore(null, new DirAclCoreSupport());
+            rootDir = new DirNode("/", _core, aclT);
+        }
+
+
+        // in the fullness of time, we should read the server configuration
+        // from a reified manifest including config information
+        // for now, we will just add a rule to allow **any** access
+        private static void InstallAcls(ISdsAcl! aclT)
+        {
+            //
+            //// read the rules section from the config
+            //XmlNode node = config.GetChild(PolicyListXmlTag);
+            //if (node == null) {
+            //  return;
+            //}
+//
+            //foreach (XmlNode! rule in node.Children) {
+            //  if (rule.Name != "rule") {
+            //      continue;
+            //  }
+//
+            //  string! resource = (!)rule.GetAttribute("resource", "");
+            //  if (resource.Equals("")) {
+            //      continue;
+            //  }
+            //  string! aclstr = (!)rule.GetAttribute("acl", "");
+            //  if (aclstr.Equals("")) {
+            //      continue;
+            //  }
+//
+            //  policy.AddRule(resource, aclstr);
+            //}
+            //
+            //policy.AddRule("/", "{/groups/anyall}");
+            aclT.Set("/", new Acl("{$dsanyrw}|{$dsregister}"));
+        }
+
+        public static void Finalize()
+        {
+            Deregister(mountPoint);
+        }
+
+
+        internal static  int  AppMain(Parameters! config)
+        {
+            int status;
+            Initialize();
+
+
+            ServiceProviderContract.Imp! imp;
+            ServiceProviderContract.Exp! s;
+            ServiceProviderContract.NewChannel(out imp, out s);
+            status = Register((!)config.mountPoint, imp);
+
+            if (status != 0) {
+                delete s;
+                return status;
+            }
+
+             try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        // Listen for new connections
+                        case s.Connect(ServiceContract.Exp:Start! candidate):
+                                DirectoryServiceContract.Exp:Start exp = candidate as DirectoryServiceContract.Exp:Start!;
+                                if (exp != null) {
+                                    s.SendAckConnect();
+                                    DirectoryServiceWorker.Create(rootDir,exp);
+                                }
+                                else s.SendNackConnect(candidate);
+                                break;
+                        case s.ChannelClosed() :
+                            run = false;
+                            Console.WriteLine("Channel Closed. DSP shutting down");
+                            break;
+                        case unsatisfiable:
+                            run = false;
+                            Console.WriteLine("Unsatisfiable. DSP shutting down");
+                            break;
+                    }
+                }
+            }
+            finally {
+            }
+            delete s;
+            Console.WriteLine(" last line of DSP... process should terminate");
+            return 0;
+        }
+   }
+}
+
+
+
+

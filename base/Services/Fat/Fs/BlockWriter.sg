@@ -1,0 +1,328 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   BlockWriter.sg
+//
+//  Note:
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    public interface IBlockWriterUser
+    {
+        /// <remarks>
+        /// This method is called immediately before the
+        /// BlockWriter attempts to write the data to disk.  The
+        /// receiver must give up the associated buffer.
+        /// </remarks>
+        byte[]! in ExHeap GetDataForWrite(ulong sectorId,
+                                          int   cookie);
+
+        /// <remarks>
+        /// This method is called by the BlockWriter when the data
+        /// has been written to the disk.
+        /// </remarks>
+        void WriteComplete(ulong                      sectorId,
+                           [Claims] byte[]! in ExHeap buffer,
+                           int                        cookie);
+    }
+
+    internal sealed class RequestQueue
+    {
+        private struct Request
+        {
+            IBlockWriterUser! user;
+            ulong             sectorId;
+            int               userCookie;
+
+            public Request(IBlockWriterUser! theUser,
+                           ulong             theSectorId,
+                           int               theUserCookie)
+            {
+                this.user       = theUser;
+                this.sectorId   = theSectorId;
+                this.userCookie = theUserCookie;
+            }
+
+            public IBlockWriterUser! User   { get { return user; } }
+            public ulong SectorId           { get { return sectorId; } }
+            public int UserCookie           { get { return userCookie; } }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        // Fields
+
+        Request[] requests;
+        int head;
+        int length;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Invariants
+
+        // invariant head >= 0 && head <= requests.Length;
+        // invariant length >= 0 && length <= requests.Length;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal RequestQueue(uint maxLength)
+            requires maxLength >= 0;
+        {
+            requests = new Request[maxLength];
+            head     = 0;
+            length   = 0;
+        }
+
+        internal int MaxLength
+        {
+            get { return requests.Length; }
+        }
+
+        internal int Length
+        {
+            get { return length; }
+        }
+
+        internal bool Full
+        {
+            get { return length == requests.Length; }
+        }
+
+        internal bool Empty
+        {
+            get { return length == 0; }
+        }
+
+        internal void Enqueue(IBlockWriterUser! user,
+                              ulong             theSectorId,
+                              int               userCookie)
+            requires (Full == false);
+            ensures (Length == old(Length) + 1);
+        {
+            int index = (head + length) % requests.Length;
+            requests[index] = new Request(user, theSectorId, userCookie);
+            length++;
+        }
+
+        internal void Dequeue(out IBlockWriterUser user,
+                              out ulong            sectorId,
+                              out int              userCookie)
+            requires Length != 0;
+            ensures  Length == old(Length) - 1;
+        {
+            user       = requests[head].User;
+            sectorId   = requests[head].SectorId;
+            userCookie = requests[head].UserCookie;
+            head   = (head + 1) % MaxLength;
+            length = length - 1;
+        }
+    }
+
+    /// <summary>
+    /// Block writer is responsible for writing blocks to disk.
+    /// It may operate synchronously or asynchronously.  When
+    /// synchronous, all writes occur immediately.  When
+    /// asynchronous they are performed when the request queue
+    /// over flows or when the periodic worker thread is woken
+    /// up.
+    /// </summary>
+    internal sealed class BlockWriter
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        private const int MinimumSleepSecs = 5;
+        private const int MaximumSleepSecs = 15;
+        private const int RangeSleepSecs = MaximumSleepSecs - MinimumSleepSecs;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Fields
+
+        AutoResetEvent   wakeEvent;
+        volatile bool    shutdown;
+        Disk             disk;
+        RequestQueue     requestQueue;
+        Thread           worker;
+
+        bool             writesAllowed;     // Sanity check for RO mount
+        bool             diskDirtied;       // Data written to disk
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        [ Microsoft.Contracts.NotDelayed ]
+        internal BlockWriter(Disk theDisk,
+                             uint maxQueueLength,   // Synchronous if zero
+                             bool areWritesAllowed)
+        {
+            this.wakeEvent     = new AutoResetEvent(false);
+            this.shutdown      = false;
+            this.disk          = theDisk;
+            this.diskDirtied   = false;
+            this.requestQueue  = new RequestQueue(maxQueueLength);
+            this.writesAllowed = areWritesAllowed;
+
+            if (requestQueue.MaxLength > 0) {
+                worker = new Thread(new ThreadStart(WorkerMain));
+                worker.Start();
+            }
+        }
+
+        internal void Shutdown()
+        {
+            lock (this) {
+                shutdown = true;
+            }
+
+            if (worker != null) {
+                wakeEvent.Set();
+                worker.Join();
+                worker = null;
+            }
+
+            if (this.diskDirtied) {
+                assert FatVolume.Fat.CleanShutdown == false;
+
+                if (FatVolume.FatVersion == FatVersion.Fat32) {
+                    Fat32 fat32 = (Fat32)FatVolume.Fat;
+                    fat32.UpdateFsInfo32();
+                }
+
+                // The following method sets the appropriate bit
+                // in the FAT(s), which will ripple down as a
+                // dirty blocks in the cache for FAT16 and FAT32
+                // (FAT12 does not record clean shutdown)
+                FatVolume.Fat.CleanShutdown = true;
+
+                // Synchronously flush the queue as the worker
+                // thread has exited.
+                int done = this.FlushQueue();
+                assert done >= 1 || FatVolume.FatVersion == FatVersion.Fat12;
+            }
+        }
+
+        private void WorkerMain()
+        {
+            Random rng = new Random();
+
+            while (shutdown == false) {
+                int secs = MinimumSleepSecs + (rng.Next() % RangeSleepSecs);
+                wakeEvent.WaitOne(TimeSpan.FromSeconds(secs));
+                Tracing.Log(Tracing.Debug, "BlockWriter worker flushing.");
+
+                if (this.diskDirtied &&
+                    FatVolume.FatVersion == FatVersion.Fat32) {
+                    // Update free space estimate.  This might be done
+                    // more conditionally, ie check whether free space has
+                    // changed.
+                    Fat32 fat32 = (Fat32)FatVolume.Fat;
+                    fat32.UpdateFsInfo32();
+                }
+
+                FlushQueue();
+            }
+        }
+
+        private int FlushQueue()
+        {
+            int done = 0;
+            for (;;) {
+                IBlockWriterUser user = null;
+                ulong            sectorId;
+                int              userCookie;
+
+                lock (this) {
+                    // We might want to be
+                    // smart and re-order write requests here or
+                    // add ordering to requests made to disk.
+                    //
+                    // We also want to look at changing
+                    // the disk driver interface to support scatter-gather
+                    // writes so we can write consecutive blocks back-to-back
+                    // and avoid unnecessary seeks.
+                    if (requestQueue.Empty)
+                        break;
+                    requestQueue.Dequeue(out user, out sectorId, out userCookie);
+                }
+                if (user != null) {
+                    WriteBlock(user, sectorId, userCookie);
+                    done++;
+                }
+            }
+            return done;
+        }
+
+        private void WriteBlock(IBlockWriterUser! user,
+                                ulong             sectorId,
+                                int               cookie)
+        {
+            assert writesAllowed == true;
+
+            if (this.diskDirtied == false) {
+                FatVolume.Fat.CleanShutdown = false;
+                this.diskDirtied = true;
+            }
+
+            //            DebugStub.Print("Writing sector {0}\n",
+            //              __arglist(sectorId));
+
+            byte[]! in ExHeap data = user.GetDataForWrite(sectorId, cookie);
+
+            byte[] in ExHeap doneData = disk.Write(sectorId, data);
+            user.WriteComplete(sectorId, (!) doneData, cookie);
+        }
+
+        internal bool Enqueue(IBlockWriterUser! user,
+                              ulong             sectorId,
+                              int               userCookie)
+        {
+            assert writesAllowed == true;
+
+            IBlockWriterUser pushUser       = null;
+            ulong            pushSectorId   = 0;
+            int              pushUserCookie = 0;
+
+            if (requestQueue.MaxLength == 0) {
+                // Queue has no capacity so we're synchronous and
+                // will need to push this write to disk
+                pushUser       = user;
+                pushSectorId   = sectorId;
+                pushUserCookie = userCookie;
+            }
+            else {
+                lock (this) {
+                    // We're async, and need to push head from queue if
+                    // queue overflows.
+                    if (requestQueue.Full) {
+                        requestQueue.Dequeue(out pushUser,
+                                             out pushSectorId,
+                                             out pushUserCookie);
+                    }
+                    requestQueue.Enqueue(user, sectorId, userCookie);
+                }
+            }
+
+            if (pushUser != null) {
+                Tracing.Log(Tracing.Audit,
+                            "Request enqueue pushed block to disk.");
+                WriteBlock(pushUser, pushSectorId, pushUserCookie);
+            }
+
+            return true;
+        }
+
+        internal void WakeUp()
+        {
+            wakeEvent.Set();
+        }
+    }
+}

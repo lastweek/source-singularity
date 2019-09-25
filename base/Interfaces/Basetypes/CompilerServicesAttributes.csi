@@ -1,0 +1,168 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+namespace System.Runtime.CompilerServices
+{
+
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Interface|
+                    AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Field,
+                    Inherited=false)]
+    [RequiredByBartok]
+    public sealed class AccessedByRuntimeAttribute: Attribute {
+    public AccessedByRuntimeAttribute(String option);
+    }
+
+    [AttributeUsage(AttributeTargets.Interface|
+                    AttributeTargets.Class|
+                    AttributeTargets.Struct, Inherited=false)]
+    public sealed class CCtorIsRunDuringStartupAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class ExternalStaticDataAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method)]
+    public sealed class NoHeapAllocationAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method|
+                    AttributeTargets.Property)]
+    public sealed class InlineAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Property,
+                    Inherited=false)]
+    public sealed class IntrinsicAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method|
+                    AttributeTargets.Property)]
+    public sealed class NoInlineAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Struct)]
+    internal sealed class InlineCopyAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method)]
+    internal sealed class DisableBoundsChecksAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method)]
+    internal sealed class DisableNullChecksAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class NoStackLinkCheckAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class NoStackLinkCheckTransAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    [RequiredByBartok]
+    public sealed class NoStackOverflowCheckAttribute: Attribute {
+    }
+
+#if false
+    // These attributes are used for Bjarne's Mixins.
+    //
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Enum)]
+    public sealed class MixinAttribute : Attribute {
+        public MixinAttribute(Type type);
+    }
+
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Enum,
+                    AllowMultiple=true)]
+    public sealed class MixinConditionalAttribute : Attribute {
+        public MixinConditionalAttribute(String option);
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Property|
+                    AttributeTargets.Field)]
+    public sealed class MixinOverrideAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Property)]
+    public sealed class MixinExtendAttribute : Attribute {
+        public MixinExtendAttribute(String option);
+    }
+#endif
+
+    // This attribute is used to mark method that needs pushStackMark
+    // and popStackMark around calls to it.
+    [AttributeUsage(AttributeTargets.Method,
+                    Inherited=false)]
+    [RequiredByBartok]
+    public sealed class OutsideGCDomainAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Field,
+                    Inherited=false)]
+    public sealed class ProvidedByOverrideAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Struct)]
+    public sealed class StructAlignAttribute : Attribute {
+        public StructAlignAttribute(int align);
+    }
+
+    [AttributeUsage(AttributeTargets.Method,
+                    Inherited=false)]
+    public sealed class StackBoundAttribute: Attribute {
+        public StackBoundAttribute(int bound);
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class StackLinkCheckAttribute: Attribute {
+    }
+
+    // This attribute is used to mark type/field/methods that are required
+    // by Bartok compiler.
+    [AttributeUsage(AttributeTargets.Class |
+                    AttributeTargets.Struct |
+                    AttributeTargets.Enum |
+                    AttributeTargets.Interface |
+                    AttributeTargets.Delegate |
+                    AttributeTargets.Method |
+                    AttributeTargets.Field,
+                    Inherited=false)]
+    public sealed class RequiredByBartokAttribute: Attribute {
+    }
+
+}

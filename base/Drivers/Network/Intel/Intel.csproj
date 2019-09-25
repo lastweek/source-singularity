@@ -1,0 +1,37 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>IntelGigEthernet</AssemblyName>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Intel.sg" />
+    <Compile Include="IntelConstants.cs" />
+    <Compile Include="IntelController.sg" />
+    <Compile Include="IntelResources.sg" />
+    <Compile Include="IntelDeviceChannel.sg" />
+    <Compile Include="IntelRingBuffer.sg" />
+    <Compile Include="IntelRxRingBuffer.sg" />
+    <Compile Include="IntelTxRingBuffer.sg" />
+    <Compile Include="IntelEventRelay.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Net.Contracts\Io.Net.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Drivers.Net\Drivers.Net.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\DriverCategory.targets" />
+
+</Project>

@@ -1,0 +1,65 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for the process diagnostic module
+//
+
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Diagnostics.Contracts
+{
+    public contract ProcessContract : ServiceContract
+    {
+        // The name you should use to look up this module using the NameServer.
+        public const string ModuleName = "/status/process";
+
+        // Signal our identity
+        out message Ready();
+
+        // Retrieve the list of processes
+        in message GetProcessIDs();
+        out message ProcessIDs(int[]! in ExHeap IDs);
+
+        // Retrieve a process name
+        in message GetProcessName(int procID);
+        out message ProcessName(char[]! in ExHeap procName);
+
+        // Retrieve the threadID set for a given a process
+        in message GetProcessThreadIDs(int procID);
+        out message ProcessThreadIDs(int[]! in ExHeap tids);
+
+        // Retrieve the process times for a given process
+        in message GetProcessTimes(int procID);
+        out message ProcessTimes(long totalTime, long deadThreadTime, long deadThreadCount);
+
+        // Retrieve the stats for a given Process
+        in message GetProcessGcStats(int procID);
+        out message ProcessGcStats(int count, long time, long bytes);
+
+        // Retrieve the ID of the process's parent
+        in message GetParentID(int procID);
+        out message ParentID(int parentID);
+
+        // Process not found
+        out message NotFound();
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            GetProcessIDs? -> ProcessIDs! -> ReadyState;
+            GetProcessThreadIDs? -> (ProcessThreadIDs! or NotFound!) -> ReadyState;
+            GetProcessTimes? -> (ProcessTimes! or NotFound!) -> ReadyState;
+            GetProcessGcStats? -> (ProcessGcStats! or NotFound!) -> ReadyState;
+            GetProcessName? -> (ProcessName! or NotFound!) -> ReadyState;
+            GetParentID? -> (ParentID! or NotFound!) -> ReadyState;
+        }
+    }
+}

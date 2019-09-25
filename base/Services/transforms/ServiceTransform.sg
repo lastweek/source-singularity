@@ -1,0 +1,139 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   WebAppTransform.sg
+//
+//  Creates startup boilerplate code from Resource descriptions for processes started by cassini.
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.V1.Services;
+using System;
+
+namespace Microsoft.Singularity.Services
+{
+
+    transform ServiceResourceTransform
+        where $EndpointType : unmanaged struct, Endpoint, ITracked
+        where $EpAttr : EndpointAttribute
+	{ 	
+        [Category("Service")]
+        class $Arguments
+        {
+
+            [$EpAttr(*)]
+            TRef<$EndpointType,$State> $$endpoints;
+            
+            [StringParameter(_, _, _)]
+            string $$strings;
+
+            [StringArrayParameter(_, _, _)]
+            string[] $$stringArrays;
+
+            [LongParameter(_, _, _)]
+            long $$longs;
+
+            [BoolParameter(_, _, _)]
+            bool $$bools;
+            
+			implement private $Arguments() {
+				//DebugStub.WriteLine("ServiceTransform applied");
+
+				int index;
+				ParameterCode code; 
+
+                index = 0; 
+				forall (; $s in $$strings ;) {
+                    string stringArg;
+				    code = Process.GetStartupStringArg(index, out stringArg);
+                    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup string array {0}. code={1}", index, code));
+                    }
+                    this.$s = stringArg;
+				    //DebugStub.WriteLine("got string {0}=({1})",__arglist(index, $s)); 
+				    ++index;  
+				}
+
+                index = 0; 
+				forall (; $sa in $$stringArrays ;) {
+                    string[] stringArrayArg;
+				    code = Process.GetStartupStringArrayArg(index, out stringArrayArg );
+				    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup string {0}. code={1}", index, code));
+				    } 
+                    this.$sa = stringArrayArg;
+				    //DebugStub.WriteLine("got string {0}=({1})",__arglist(index, $s)); 
+				    ++index;  
+				}
+                
+                index = 0; 
+				forall (; $l in $$longs ;) {
+                    long longArg;
+				    code = ProcessService.GetStartupLongArg(index, out longArg);
+				    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup integer {0}. code={1}", index, code));
+				    }
+                    this.$l = longArg;
+				    //DebugStub.WriteLine("got long {0}=({1})",__arglist(index, $l)); 
+				    ++index; 
+                }
+                
+                index = 0; 
+				forall (; $b in $$bools ;) {
+				    bool b;
+				    code = ProcessService.GetStartupBoolArg(index, out b);
+				    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup bool {0}. code={1}", index, code));
+				    }
+				    this.$b = b;
+				    //DebugStub.WriteLine("got bool {0}=({1})",__arglist(index, b)); 
+				    ++index; 
+				}
+                index = 0; 
+				forall (; $e in $$endpoints;) {
+				    Endpoint* in ExHeap untyped_endpoint = Process.GetStartupEndpoint(index);
+				    if (untyped_endpoint == null) {
+				        DebugStub.WriteLine(String.Format(
+				            "ServiceTransform: The startup endpoint at index {0} is not set, or could not be retrieved.", index));
+				        throw new ArgumentException(String.Format("Startup endpoint {0} was not set.", index));
+				    }
+				    
+                    $e.$EndpointType* in ExHeap opt($e.$State) ep = untyped_endpoint as $e.$EndpointType* in ExHeap opt($e.$State);
+                    if (ep == null) {
+                        DebugStub.WriteLine(String.Format(
+                            "ServiceTransform: The startup endpoint at index {0} is set, but cannot be converted to the required type.", index));
+                        
+                        Process.RetStartupEndpoint(index, untyped_endpoint);
+                        throw new ArgumentException(String.Format("Startup endpoint {0} has wrong type.", index));
+                    }
+			        $e = new TRef<$e.$EndpointType, $e.$State> (ep);
+			        //DebugStub.WriteLine("getting endpoint at {0}",__arglist(index));
+					++index;
+				}
+			}
+
+            generate public static int Main() {
+                $Arguments args = new $Arguments();
+
+                return $Application.AppMain(args);
+            }
+
+        }
+
+        class $Application
+        {
+
+            internal static int AppMain($Arguments! args);
+
+		}
+	}
+}

@@ -1,0 +1,160 @@
+.assembly '1darray2' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class sealed 'point'
+	extends [mscorlib]System.ValueType
+{
+.field private int32 'x'
+.field private int32 'y'
+.method hidebysig specialname rtspecialname public void .ctor(int32 'x',int32 'y') {
+ldarg.0
+ldarg 1 // x
+stfld int32 'point'::'x'
+ldarg.0
+ldarg 2 // y
+stfld int32 'point'::'y'
+ret
+.maxstack 2
+} // end of constructor point.point
+.method hidebysig virtual public instance string 'ToString'() {
+.locals init ([0]string 't0')
+ldstr "({0},{1})"
+ldarg.0
+ldfld int32 'point'::'x'
+box int32
+ldarg.0
+ldfld int32 'point'::'y'
+box int32
+call  string [mscorlib]System.String::'Format'(string,object,object)
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 3
+} // end of method point.ToString
+} // end of struct point
+.class public 'test'
+	extends [mscorlib]System.Object
+{
+.field static private value class 'point'[] 'x'
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]int32 't0')
+ldc.i4 0
+stloc 0 // k
+.locals init ([1]int32 't1')
+ldc.i4 0
+stloc 1 // i
+br $4
+$1:
+.locals init ([2]int32 't2')
+ldc.i4 0
+stloc 2 // j
+br $8
+$5:
+ldsfld value class 'point'[] 'test'::'x'
+ldloc 0 // k
+dup
+ldc.i4.1
+add
+.locals init ([3]int32 't3')
+stloc 3 // t3
+ldloc 3 // t3
+stloc 0 // k
+ldelema value class 'point'
+.locals init ([4]value class 'point' 't4')
+ldloca 4 // t4
+ldloc 1 // i
+ldloc 2 // j
+call instance void 'point'::.ctor(int32,int32)
+ldloc 4 // t4
+stobj value class 'point'
+$6:
+ldloc 2 // j
+ldc.i4.1
+add
+.locals init ([5]int32 't5')
+stloc 5 // t5
+ldloc 5 // t5
+stloc 2 // j
+$8:
+ldloc 2 // j
+ldc.i4 4
+blt $5
+$7:
+$2:
+ldloc 1 // i
+ldc.i4.1
+add
+.locals init ([6]int32 't6')
+stloc 6 // t6
+ldloc 6 // t6
+stloc 1 // i
+$4:
+ldloc 1 // i
+ldc.i4 2
+blt $1
+$3:
+ldsfld value class 'point'[] 'test'::'x'
+call  void 'test'::'print'(class [mscorlib]System.Collections.IEnumerable)
+ret
+.maxstack 4
+} // end of method test.Main
+.method hidebysig static private void 'print'(class [mscorlib]System.Collections.IEnumerable 'x') {
+.locals init ([0]value class 'point' 't0')
+.locals init ([1]class [mscorlib]System.Collections.IEnumerator 't1')
+ldarg 0 // x
+callvirt instance class [mscorlib]System.Collections.IEnumerator [mscorlib]System.Collections.IEnumerable::'GetEnumerator'()
+stloc 1 // t1
+.try {
+br $2
+$1:
+ldloc 1 // t1
+callvirt instance object [mscorlib]System.Collections.IEnumerator::'get_Current'()
+unbox value class 'point'
+ldobj value class 'point'
+stloc 0 // p
+ldloc 0 // p
+box value class 'point'
+call  void [mscorlib]System.Console::'WriteLine'(object)
+$2:
+ldloc 1 // t1
+callvirt instance bool [mscorlib]System.Collections.IEnumerator::'MoveNext'()
+brtrue $1
+$3:
+leave $5
+}
+finally {
+ldloc 1 // t1
+.locals init ([2]class [mscorlib]System.IDisposable 't2')
+isinst class [mscorlib]System.IDisposable
+stloc 2 // t2
+ldloc 2 // t2
+brfalse $6
+ldloc 2 // t2
+callvirt instance void [mscorlib]System.IDisposable::'Dispose'()
+$6:
+endfinally
+} // end .try
+$5:
+$4:
+ret
+.maxstack 1
+} // end of method test.print
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor test.test
+.method hidebysig specialname rtspecialname static private void .cctor() {
+ldc.i4 8
+newarr value class 'point'
+stsfld value class 'point'[] 'test'::'x'
+ret
+.maxstack 1
+} // end of constructor test.test
+} // end of class test

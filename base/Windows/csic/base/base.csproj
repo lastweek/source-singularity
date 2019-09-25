@@ -1,0 +1,165 @@
+﻿<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectType>Local</ProjectType>
+    <ProductVersion>8.0.50727</ProductVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{0D2B3F34-A443-4BA5-A822-3EF35F2181E6}</ProjectGuid>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ApplicationIcon>
+    </ApplicationIcon>
+    <AssemblyKeyContainerName>
+    </AssemblyKeyContainerName>
+    <AssemblyName>base</AssemblyName>
+    <AssemblyOriginatorKeyFile>
+    </AssemblyOriginatorKeyFile>
+    <DefaultClientScript>JScript</DefaultClientScript>
+    <DefaultHTMLPageLayout>Grid</DefaultHTMLPageLayout>
+    <DefaultTargetSchema>IE50</DefaultTargetSchema>
+    <DelaySign>false</DelaySign>
+    <OutputType>Library</OutputType>
+    <RootNamespace>base</RootNamespace>
+    <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>
+    <StartupObject>
+    </StartupObject>
+    <FileUpgradeFlags>
+    </FileUpgradeFlags>
+    <UpgradeBackupLocation>
+    </UpgradeBackupLocation>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <OutputPath>.\</OutputPath>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <BaseAddress>285212672</BaseAddress>
+    <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
+    <ConfigurationOverrideFile>
+    </ConfigurationOverrideFile>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <DocumentationFile>
+    </DocumentationFile>
+    <DebugSymbols>true</DebugSymbols>
+    <FileAlignment>4096</FileAlignment>
+    <NoStdLib>false</NoStdLib>
+    <NoWarn>
+    </NoWarn>
+    <Optimize>false</Optimize>
+    <RegisterForComInterop>false</RegisterForComInterop>
+    <RemoveIntegerChecks>false</RemoveIntegerChecks>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningLevel>4</WarningLevel>
+    <DebugType>full</DebugType>
+    <ErrorReport>prompt</ErrorReport>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <OutputPath>bin\Release\</OutputPath>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <BaseAddress>285212672</BaseAddress>
+    <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
+    <ConfigurationOverrideFile>
+    </ConfigurationOverrideFile>
+    <DefineConstants>TRACE</DefineConstants>
+    <DocumentationFile>
+    </DocumentationFile>
+    <DebugSymbols>false</DebugSymbols>
+    <FileAlignment>4096</FileAlignment>
+    <NoStdLib>false</NoStdLib>
+    <NoWarn>
+    </NoWarn>
+    <Optimize>true</Optimize>
+    <RegisterForComInterop>false</RegisterForComInterop>
+    <RemoveIntegerChecks>false</RemoveIntegerChecks>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningLevel>4</WarningLevel>
+    <DebugType>none</DebugType>
+    <ErrorReport>prompt</ErrorReport>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Bartok.DebugInfo">
+      <Name>Bartok.DebugInfo</Name>
+      <HintPath>..\Debug\Bartok.DebugInfo.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Bartok.MSIL">
+      <Name>Bartok.MSIL</Name>
+      <HintPath>..\Debug\Bartok.MSIL.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SHDocVw">
+      <Name>SHDocVw</Name>
+      <HintPath>..\Debug\SHDocVw.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System">
+      <Name>System</Name>
+    </Reference>
+    <Reference Include="System.Data">
+      <Name>System.Data</Name>
+    </Reference>
+    <Reference Include="System.Xml">
+      <Name>System.XML</Name>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="AST.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ASTRoot.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Attributes.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="BartokReader.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="BuiltinTypes.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Debug.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Imports.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="InputElement.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Lists.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="MessageWriter.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="NullReader.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ReflectionReader.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="SymbolRoot.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Symbols.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="SymbolTable.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Tracking.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Types.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="typeswitch-AST.cs">
+      <SubType>Code</SubType>
+    </Compile>
+  </ItemGroup>
+  <Target Name="Build"><Error Text="The solution and project files for csic are for editing and debugging only. Use nmake at a command line to build." /></Target>
+  <PropertyGroup>
+    <PreBuildEvent>
+    </PreBuildEvent>
+    <PostBuildEvent>
+    </PostBuildEvent>
+  </PropertyGroup>
+</Project>

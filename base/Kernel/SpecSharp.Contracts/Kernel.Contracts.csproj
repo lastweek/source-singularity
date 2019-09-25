@@ -1,0 +1,53 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Kernel.Contracts</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ShadowAssemblyPath>$(KERNEL_IL_DIR)\kernel.exe</ShadowAssemblyPath>
+    <DefineConstants>NOOWNERSHIPCHECK</DefineConstants>
+    <NoStandardLibraries>true</NoStandardLibraries>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Microsoft.Singularity.Process.sg"/>
+    <Compile Include="Microsoft.Singularity.Processor.sg"/>
+    <Compile Include="Microsoft.Singularity.Xml.XmlNode.sg"/>
+    <Compile Include="Microsoft.Singularity.Io.IoMemory.sg"/>
+    <Compile Include="Microsoft.Singularity.Io.IoPortRange.sg"/>
+    <Compile Include="System.Collections.DictionaryEntry.sg"/>
+    <Compile Include="System.Collections.Hashtable.sg"/>
+    <Compile Include="System.Collections.SortedList.sg"/>
+    <Compile Include="System.Int16.sg"/>
+    <Compile Include="System.Int32.sg"/>
+    <Compile Include="System.Int64.sg"/>
+    <Compile Include="System.IntPtr.sg"/>
+    <Compile Include="System.Object.sg"/>
+    <Compile Include="System.String.sg"/>
+    <Compile Include="System.Text.Encoding.sg"/>
+    <Compile Include="System.Text.StringBuilder.sg"/>
+    <Compile Include="System.Threading.Thread.sg"/>
+    <Compile Include="System.UInt16.sg"/>
+    <Compile Include="System.UInt32.sg"/>
+    <Compile Include="System.UInt64.sg"/>
+    <Compile Include="System.UIntPtr.sg"/>
+    <Compile Include="System.ValueType.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\System.Compiler.Runtime\System.Compiler.Runtime.Kernel.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets"/>
+
+</Project>

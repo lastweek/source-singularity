@@ -1,0 +1,26 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Drivers.csi
+//
+//  Note:   PnP Device Type Registration and Base Initialization.
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Drivers
+{
+    public class Devices
+    {
+        public static void RegisterPnpResources();
+        public static void RegisterInternalDrivers();
+    }
+}

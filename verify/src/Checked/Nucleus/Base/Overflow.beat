@@ -1,0 +1,10 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+implementation Overflow()
+{
+  eax := 0x55551001;
+  call debugBreak();
+  call Ret(old($RET)); return;
+}

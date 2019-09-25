@@ -1,0 +1,36 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   AutoResetEventHandle.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Threads
+{
+    public struct AutoResetEventHandle // : public WaitHandle
+    {
+        public readonly UIntPtr id; // could be moved to WaitHandle
+
+        [NoHeapAllocation]
+        public static bool Create(bool initialState,
+                                  out AutoResetEventHandle handle);
+        [NoHeapAllocation]
+        public static void Dispose(AutoResetEventHandle handle);
+
+        [NoHeapAllocation]
+        public static bool Reset(AutoResetEventHandle handle);
+        [NoHeapAllocation]
+        public static bool Set(AutoResetEventHandle handle);
+        [NoHeapAllocation]
+        public static bool SetAll(AutoResetEventHandle handle);
+        [NoHeapAllocation]
+        public static bool SetNoGC(AutoResetEventHandle handle);
+    }
+}

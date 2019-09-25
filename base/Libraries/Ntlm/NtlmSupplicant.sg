@@ -1,0 +1,560 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NtlmSupplicant.cs
+//
+//  Note:
+//
+//		This file contains an implementation of the NTLM v1 authentication 
+//		protocol.
+//
+//		This implementation contains only the logic for building, parsing, and
+//		validating, etc. NTLM messages and hashes.  This code does not handle
+//		anything related to a specific application of NTLM; it does not handle
+//		storing or retrieving credentials, nor does it handle transmitting
+//		NTLM messages to or from remote applications.  All of that logic depends
+//		on the situation in which NTLM is used, and so is omitted.
+//
+//		The NtlmSupplicant class provides methods for computing the NTLM v1
+//		hashes (both Lan Man and NT hashes), given a username, password, and
+//		a challenge (nonce) received from the authenticator (server).  These
+//		methods can be used in two different ways: they can act directly on
+//		already-parsed fields (useful when the application carries the fields
+//		separately, as basic SMB authentication does), or they can act on
+//		NTLMSSP messages.
+//
+//		NTLMSSP messages are those that are produced and consumed by the Windows
+//		NTLM SSPI package.  These messages are treated as opaque byte blobs by
+//		application protocols, and the NTLM SSPI package handles building and
+//		parsing these messages.  This simplifies integration of NTLM into
+//		application protocols, and also enables NTLM to be used with the SPNEGO
+//		multi-protocol negotiation protocol.
+//
+//
+// TODO:
+//
+//		*	Only the supplicant logic is provided.  Need to provide the methods that
+//			an authenticator would need.
+//
+//		*	Byte-order cleanup.  The protocol is little-endian.
+//
+//		*	NTLM v2
+//
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Diagnostics;
+using System.Text;
+using Microsoft.Singularity;
+using System.Security.Cryptography;
+using Utils;
+
+namespace System.Security.Protocols.Ntlm
+{
+	///
+	//<summary>
+	//	<para>
+	//		Implements the NTLM authentication protocol.
+	//	</para>
+	//	<para>
+	//		This is a "static" class; there are no instance fields or methods.
+	//		None of the methods of this class have any side-effects, outside of
+	//		operating on the parameters passed to them.
+	//	</para>
+	//</summary>
+	//
+    public /*static*/ sealed class NtlmSupplicant 
+    {
+		private NtlmSupplicant() {}
+		
+		///
+		//	<summary>
+		//		Builds an NTLMSSP "Negotiate" message, which begins an NTLM authentication exchange.
+		//		The caller supplies negotiation flags, which request certain behaviors, as well as
+		//		the domain name and workstation name of the client computer.
+		//	</summary>
+//
+		//	<remarks>
+		//		<para>
+		//			The caller can also provide the domain name and workstation name of the client.
+		//			These values are not required, and are usually used for event logging.
+		//		</para>
+		//		<para>
+		//			This method does not have any side-effects.
+		//		</para>
+		//	</remarks>
+		//	
+		//	<param name="flags">
+		//		Enables certain NTLM options.  See the NtlmNegotiateFlags enumerated type for more info.
+		//	</param>	
+		//	<param name="domain">
+		//		The domain name of the client computer.  If the caller does not want
+		//		to provide this information, pass an empty string.
+		//	</param>
+		//	<param name="workstation">
+		//		The name of the client computer.  If the caller does not want to provide this information,
+		//		then pass an empty string.
+		//	</param>
+		//	<returns>
+		//		A buffer containing the encoded NTLMSSP "Negotiate" message.  This message should be sent 
+		//		to any application that supports NTLM authentication, using whatever transport mechanism 
+		//		is appropriate for the application.
+		//	</returns>
+		//
+        public static byte[]! GetNegotiate(NtlmNegotiateFlags flags, string! domain, string! workstation)
+        {
+            Encoding encoding = Encoding.Unicode;
+            
+			// Build the fixed-length header of the message.  Also, compute the offsets and lengths
+			// of the variable-length fields (the strings).			
+
+			NtlmNegotiateMessage negotiate;			
+			negotiate.Header.MessageType = (uint)NtlmMessageType.Negotiate;
+			negotiate.Header.Signature = NtlmConstants.MessageSignature64Le;
+			negotiate.NegotiateFlags = (uint)(flags |
+                NtlmNegotiateFlags.RequestTarget
+                | NtlmNegotiateFlags.NegotiateNtlm
+                | NtlmNegotiateFlags.NegotiateNtOnly
+                | NtlmNegotiateFlags.NegotiateLmKey
+                | NtlmNegotiateFlags.NegotiateUnicode);
+            negotiate.Version = 0;
+            negotiate.OemDomainName = new BufferRegion((ushort)encoding.GetByteCount(domain), 0, (ushort)sizeof(NtlmNegotiateMessage));
+			negotiate.OemWorkstationName = new BufferRegion((ushort)encoding.GetByteCount(workstation), 0, (ushort)(sizeof(NtlmNegotiateMessage) + negotiate.OemDomainName.Length));
+
+			// Next, allocate the buffer, store the fixed-length header, and store the variable-length strings.
+			int messageLength = sizeof(NtlmNegotiateMessage) + negotiate.OemDomainName.Length + negotiate.OemWorkstationName.Length;
+			byte[]! negotiateBuffer = new byte[messageLength];
+			
+			ref NtlmNegotiateMessage negotiate_ref = ref negotiateBuffer[0];
+			negotiate_ref = negotiate; // copy the header
+			encoding.GetBytes(domain, 0, domain.Length, negotiateBuffer, negotiate.OemDomainName.Offset);
+			encoding.GetBytes(workstation, 0, workstation.Length, negotiateBuffer, negotiate.OemWorkstationName.Offset);
+
+            return negotiateBuffer;
+        }
+
+		#region From my DES port
+		
+        static byte[]! Convert7ByteKeyTo8ByteKey(byte[]! input)
+        {
+            // we pack the input into the HIGH bits of a 64-bit unsigned int
+            ulong x =
+                ((ulong)input[0] << 0x38) |
+                ((ulong)input[1] << 0x30) |
+                ((ulong)input[2] << 0x28) |
+                ((ulong)input[3] << 0x20) |
+                ((ulong)input[4] << 0x18) |
+                ((ulong)input[5] << 0x10) |
+                ((ulong)input[6] << 0x08);
+
+
+            ulong a = x;
+
+            byte[]! result = new byte[8];
+            for (int i = 0; i < 8; i++) {
+                // the LOWEST bit is the parity bit
+                // right now, we always set the parity bit to 0
+                byte b = (byte)((a >> 56) & 0xfe);
+                b = FixParity0(b); // this isn't actually necessary
+                result[i] = b;
+
+                a <<= 7;
+            }
+
+            return result;
+        }
+
+        // bit 0 is the parity bit!
+        static byte FixParity0(byte b)
+        {
+            byte temp = b;
+
+            int parity = 0;
+            for (int i = 1; i < 8; i++) {
+                parity ^= temp & 2;
+                temp >>= 1;
+            }
+
+            if (parity == 0)
+                return (byte)(b | 1);
+            else
+                return (byte)(b & 0xfe);
+        }
+        #endregion
+
+		///
+		//<summary>
+		//	<para>	
+		//		This method computes part of the NTLM hash function.  It operates on part of the password, 7 characters
+		//		at a time, and computes a hash of them.  The hash is then stored in the 'output' buffer at the offset
+		//		'outputindex'.  The hash is always 8 bytes long, so the 'output' buffer needs to have a length of at
+		//		least outputindex + 8.
+		//	</para>
+		//	<para>
+		//		This hash function is known to be cryptographically weak.
+		//	</para>
+		//	<para>
+		//		This method only works on passwords that contain only 7-bit ASCII character.
+		//		Lower-case characters are forced to upper-case.
+		//	</para>
+		//</summary>
+		//<param name="password">
+		//	The cleartext password of the user.
+		//	The method will read up to 7 characters of the password, starting at 'passwordindex'.
+		//</param>
+		//<param name="passwordindex">
+		//	The index of the first character within 'password' to read.
+		//	This value may legally be greater than or equal to the length of 'password'.
+		//	The method will read the first 7 characters, beginning at this index, and if there
+		//	are fewer than 7 valid characters (including no characters), the method will pad
+		//	with zeroes.
+		//</param>
+		//<param name="output">
+		//	The output buffer in which to store the 8-byte hash of the portion of the password.
+		//	The length of this buffer must be at least 'outputindex' + 8.
+		//</param>
+		//<param name="outputindex">The position within the 'output' buffer to store the hash.</param>
+		//
+        static void ComputeLmResponseHalf(string! password, int passwordindex, byte[]! output, int outputindex)
+			requires passwordindex >= 0;
+			// requires passwordindex <= password.Length; <-- This is *NOT* a precondition!
+			requires outputindex >= 0;
+			requires outputindex + 8 <= output.Length;
+        {
+            byte[]! desKey7 = new byte[7];
+            for (int i = 0; i < 7; i++) {
+                if (i + passwordindex < password.Length) {
+					char c = password[passwordindex + i];
+					if (c >= 0x80)
+						throw new ArgumentException("The password provided cannot be encoded.  NTLM/LM v1 does not support non-ASCII characters.");
+                    desKey7[i] = (byte)Char.ToUpper(c);
+                }
+                else
+                    desKey7[i] = 0;
+            }
+
+            byte[]! desKey8 = Convert7ByteKeyTo8ByteKey(desKey7);
+            byte[]! cleartext = new byte[8];
+            
+            const string cleartext_string = "KGS!@#$%";
+            
+            for (int i = 0; i < 8; i++)
+                cleartext[i] = (byte)cleartext_string[i];
+
+            byte[]! cipher = new byte[8];
+            Des.Encrypt(desKey8, cleartext, cipher);
+            for (int i = 0; i < 8; i++)
+                output[i + outputindex] = cipher[i];
+        }
+
+		///
+		//<summary>
+		//	This method computes the NTLM v1 One-Way Function.
+		//</summary>
+		//<param name="challenge">Contains the 8-byte challenge (nonce) generated by the server.</param>
+		//<param name="hash">
+		//	Contains the 21-byte intermediate password hash.
+		//	This buffer must be exactly 21 bytes long.
+		//</param>
+		//<returns>
+		//	The computed One-Way Function.  This is the value that is sent to the NTLM authenticator.
+		//</returns>
+		//
+        public static byte[]! ComputeOwf(byte[]! challenge, byte[]! hash)
+			requires challenge.Length >= 8;
+			requires hash.Length == 21;
+			ensures result.Length == 24;
+        {
+            if (hash.Length != 21)
+                throw new Exception("Hash is wrong length");
+
+#if NOISY
+            DebugLine("ComputeOwf: challenge=" + Util.ByteArrayToStringHex(challenge) + " hash=" + Util.ByteArrayToStringHex(hash));
+            DebugLine("    challenge: " + Util.ByteArrayToStringBitsLe(challenge));
+#endif
+
+            byte[] response = new byte[24];
+            for (int r = 0; r < 3; r++) {
+#if NOISY
+                DebugLine("    r = " + r);
+#endif
+
+                // Next, we encrypt the server's challenge three times, using the DES algorithm.
+                // The result is the LM response.
+                byte[] thirdKey7 = new byte[7];
+                Array.Copy(hash, r * 7, thirdKey7, 0, 7);
+
+                
+                byte[] thirdKey8 = Convert7ByteKeyTo8ByteKey(thirdKey7);
+#if NOISY
+                DebugLine("        key7 = " + Util.ByteArrayToStringHex(thirdKey7));
+                //DebugLine("        key7 = " + Util.ByteArrayToStringBitsLe(thirdKey7));
+                DebugLine("        key7 = " + Util.ByteArrayToStringBitsBe(thirdKey7));
+                DebugLine("        key8 = " + Util.ByteArrayToStringHex(thirdKey8));
+                //DebugLine("        key8 = " + Util.ByteArrayToStringBitsLe(thirdKey8));
+                DebugLine("        key8 = " + Util.ByteArrayToStringBitsBe(thirdKey8));
+#endif
+
+                byte[] cipher = new byte[8];
+                Des.Encrypt(thirdKey8, challenge, cipher);
+                Array.Copy(cipher, 0, response, r * 8, 8);
+
+#if NOISY
+                DebugLine("        cipher = " + Util.ByteArrayToStringBitsBe(cipher));
+                DebugLine("        cipher = " + Util.ByteArrayToStringHex(cipher));
+#endif
+            }
+
+#if NOISY
+            DebugLine("    response: " + Util.ByteArrayToStringHex(response));
+#endif
+            return response;
+        }
+
+		///
+		//<summary>
+		//	<para>
+		//		This method computes the NTLM v1 "LAN Manager" authentication response.
+		//		This response is known to be very weak, cryptographically.
+		//	</para>
+		//	<para>
+		//		The 'challenge' parameter contains the 8-byte challenge nonce, which was
+		//		generated by the NTLMSSP running in the context of the server application.
+		//		The 'password' parameter contains the clear-text user password.
+		//	</para>
+		//	<para>
+		//		This method does not have any side-effects.
+		//	</para>
+		//</summary>
+		//<param name="challenge">The 8-byte challenge (nonce) generated by the server.</param>
+		//<param name="password">The cleartext password of the authenticating user.</param>
+		//<returns>
+		//	The return value is a newly-allocated buffer containing the encoded NTLM
+		//	response hash, which proves that the client is in possession of the password
+		//	for an identified account.  This buffer is always 24 bytes in length.
+		//</returns>
+		//
+        public static byte[]! ComputeLmResponse(byte[]! challenge, string! password)
+			requires challenge.Length == 8;
+			ensures result.Length == 24;
+        {
+            byte[]! hash = new byte[21];
+            ComputeLmResponseHalf(password, 0, hash, 0);
+            ComputeLmResponseHalf(password, 7, hash, 8);
+            for (int i = 16; i < 21; i++)
+                hash[i] = 0;
+
+            byte[]! response = ComputeOwf(challenge, hash);
+#if NOISY
+            DebugLine("LM response: " + Util.ByteArrayToStringHex(response));
+#endif
+            return response;
+        }
+
+		///
+		//<summary>
+		//	<para>
+		//		This method computes the NTLM v1 "NT" authentication response.
+		//		This response is known to be weak, cryptographically, but is better than
+		//		the NTLM v1 "LAN Manager" response.
+		//	</para>
+		//	<para>
+		//		This method does not have any side-effects.
+		//	</para>
+		//</summary>
+//
+		//<param name="challenge">		
+		//	Contains the 8-byte challenge nonce, which was generated by the NTLMSSP running 
+		//	in the context of the server application.
+		//</param>
+		//<param name="password">Contains the clear-text user password.</param>
+		//<returns>
+		//	A buffer containing the encoded NTLM response hash, which proves that the client 
+		//	is in possession of the password for an identified account.  This buffer is always 
+		//	24 bytes in length.
+		//</returns>
+		//
+        public static byte[]! ComputeNtResponse(byte[]! challenge, string! password)
+			requires challenge.Length == 8;
+			ensures result.Length == 24;
+        {
+            byte[]! password_bytes = (!)Encoding.Unicode.GetBytes(password);
+#if true // THIS CAUSES BARTOK TO THROW AN UNHANDLED EXCEPTION!
+            byte[]! digest = (!)(MD4Context.GetDigest(password_bytes).ToArray());
+#else // compiler shuts up, but obviously the code doesn't work
+			IgnoreConsume(password_bytes);
+            byte[]! digest = new byte[0];
+#endif
+
+#if NOISY
+            DebugLine("Computing NTLM v1 response:");
+            DebugLine("    challenge:         " + Util.ByteArrayToStringHex(challenge));
+            DebugLine("    password:          " + password);
+            DebugLine("    password bytes:    " + Util.ByteArrayToStringHex(password_bytes));
+            DebugLine("    MD4(pw bytes):     " + Util.ByteArrayToStringHex(digest));
+#endif
+
+            // The hash is the MD4 digest, padded with zeroes to a length of 21.
+            // assert digest.Length == 16;
+            byte[]! hash = new byte[21];
+            ArrayCopy(digest, 0, hash, 0, 16);
+            ArrayClear(hash, 16, 5);
+
+            byte[]! response = ComputeOwf(challenge, hash);
+#if NOISY
+            DebugLine("NTLM v1 response: " + Util.ByteArrayToStringHex(response));
+#endif
+            return response;
+        }
+        
+        static void ArrayCopy(byte[]! src, int srcoffset, byte[]! dst, int dstoffset, int length)
+        {
+			for (int i = 0; i < length; i++)
+				dst[dstoffset + i] = src[srcoffset + i];
+        }
+        
+        static void ArrayClear(byte[]! dst, int offset, int length)
+        {
+			for (int i = 0; i < length; i++)
+				dst[offset + i] = 0;
+        }
+        
+        public const int ChallengeLength = 8;
+        public const int ResponseLength = 24;
+
+		///
+		//<summary>
+		//	This method generates an NTLMSSP "Response" message, given valid client credentials and
+		//	an NTLMSSP "Challenge" message.
+		//</summary>
+		//
+		//<param name="challenge_buffer">
+		//	Contains the encoded NTLMSSP "Response" message, which was generated by the remote 
+		//	NTLM-enabled application.
+		//</param>
+		//<param name="domain">The domain name of the authenticating user.</param>
+		//<param name="username">The username of the authenticating user.</param>
+		//<param name="password">The cleartext password of the authenticating user.</param>
+		//<returns>
+		//	A buffer containing the encoded NTLMSSP "Response" message.  This buffer should be 
+		//	sent to the remote application, using whatever transport is appropriate.
+		//</returns>
+		//
+        public static byte[]! GetResponse(
+			byte[]! challenge_buffer,
+			string! domain,
+			string! username,
+			string! workstation,
+			string! password)
+        {
+			if (challenge_buffer.Length < sizeof(NtlmChallengeMessage))
+				throw new Exception("The buffer supplied contains too little data to contain a valid NTLM challenge message.");
+				
+			ref NtlmChallengeMessage challenge_msg = ref challenge_buffer[0];
+			if (challenge_msg.Header.Signature != NtlmConstants.MessageSignature64Le)
+				throw new Exception("The NTLM message has an invalid signature.");
+			
+			if (challenge_msg.Header.MessageType != (uint)NtlmMessageType.Challenge)
+				throw new Exception("The NTLM message provided is not a Challenge message.");
+
+            byte[]! challenge_bytes = NtlmUtil.GetSubArray(challenge_buffer, 0x18, NtlmConstants.ChallengeLength);
+            
+// known good here			
+#if NOISY
+            string TargetName = NtlmUtil.GetCountedStringAt(challenge_buffer, challenge_msg.TargetName.Offset);
+            DebugLine("    TargetName:     " + TargetName);
+            DebugLine("    Challenge:      " + Util.ByteArrayToStringHex(challenge_bytes));
+#endif
+
+            //
+            // First, compute the ancient, horrible, insecure LM response.
+            //
+
+            byte[]! Lm_response = ComputeLmResponse(challenge_bytes, password);
+            byte[]! Nt_response = ComputeNtResponse(challenge_bytes, password);
+            
+            // assert Lm_response.Length == 24;
+            // assert Nt_response.Length == 24;
+
+			//
+			// Next, build the Authenticate message.  The message has a fixed-length header, described
+			// by NtlmAuthenticateMessage, followed by the string bodies.
+			//
+
+			System.Text.Encoding encoding = System.Text.Encoding.Unicode;
+			byte[]! domainBytes = (!)encoding.GetBytes(domain);
+			byte[]! usernameBytes = (!)encoding.GetBytes(username);
+			byte[]! workstationBytes = (!)encoding.GetBytes(workstation);
+			
+			int responseBufferLength = sizeof(NtlmResponseMessage)
+				+ Lm_response.Length
+				+ Nt_response.Length
+				+ domainBytes.Length
+				+ usernameBytes.Length
+				+ workstationBytes.Length;
+// known bad
+			
+            // Now we know the size of the entire response message.  Allocate it.
+            byte[]! responseBuffer = new byte[responseBufferLength];
+            
+            ref NtlmResponseMessage response = ref responseBuffer[0];
+            response.Header.Signature = NtlmConstants.MessageSignature64Le;
+            response.Header.MessageType = (uint)NtlmMessageType.Response;
+
+            byte[]![]! strings = {
+                Lm_response,
+                Nt_response,
+                domainBytes,
+                usernameBytes,
+                workstationBytes
+            };
+
+            // Scan through the variable-length strings again and store the string headers.
+            // Also copy the string body into place.
+            int write_pos = sizeof(NtlmResponseMessage);
+            for (int i = 0; i < strings.Length; i++) {
+				byte[]! stringbytes = strings[i];
+				ref BufferRegion region = ref responseBuffer[sizeof(NtlmMessageHeader) + i * sizeof(BufferRegion)];
+				region = new BufferRegion((ushort)stringbytes.Length, (ushort)stringbytes.Length, (ushort)write_pos);
+				Array.Copy(stringbytes, 0, responseBuffer, write_pos, stringbytes.Length);
+				write_pos += stringbytes.Length;
+            }
+            
+			return responseBuffer;
+        }
+
+#if NOISY
+		static void DebugLine(string msg)
+		{
+			DebugStub.WriteLine("NTLM: " + msg);
+		}
+#endif
+
+        static string! PadTruncate(string! s, int length)
+        {
+            if (s.Length == length)
+                return s;
+            if (s.Length > length)
+                return s.Substring(0, length);
+            return s.PadRight((Char)0);
+        }
+    }
+    
+    /*static*/ sealed class ByteOrder
+    {
+		private ByteOrder() {}
+		
+		public static ushort UInt16LeToHost(ushort value)
+		{
+			return value;
+		}
+		
+		public static uint UInt32LeToHost(uint value)
+		{
+			return value;
+		}
+    }
+}

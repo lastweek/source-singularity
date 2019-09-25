@@ -1,0 +1,92 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+    // This value type represents an absolute time on the scheduler timeline,
+    // which is kernel time increasing monotonically and independently of 
+    // the world time the machine thinks it is on. 
+    // The reason to separate world time and scheduler time is that world time can
+    // change at any time due to users changing the time and date, or due to
+    // adjustments for accuracy or daylight-savings.
+    //
+    public struct SchedulerTime : IComparable, IFormattable
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public static readonly SchedulerTime MinValue;
+        public static readonly SchedulerTime MaxValue;
+
+        public SchedulerTime(long ticks);
+        public SchedulerTime(int year, int month, int day);
+        public SchedulerTime(int year, int month, int day, int hour, int minute, int second);
+        public SchedulerTime(int year, int month, int day, int hour, int minute, int second, int millisecond);
+
+        public SchedulerTime Add(TimeSpan value);
+        public SchedulerTime AddDays(int value);
+        public SchedulerTime AddHours(int value);
+        public SchedulerTime AddMilliseconds(int value);
+        public SchedulerTime AddMinutes(int value);
+        public SchedulerTime AddMonths(int months);
+        public SchedulerTime AddSeconds(int value);
+        public SchedulerTime AddTicks(long value);
+        public SchedulerTime AddYears(int value);
+        public TimeSpan Subtract(SchedulerTime value);
+        public SchedulerTime Subtract(TimeSpan value);
+
+        public static int Compare(SchedulerTime t1, SchedulerTime t2);
+
+        public int CompareTo(Object value);
+
+#if false
+        public static int DaysInMonth(int year, int month);
+#endif
+
+        public override bool Equals(Object value);
+        public override int GetHashCode();
+        public override String ToString();
+        public String ToString(String format);
+
+        public static bool Equals(SchedulerTime t1, SchedulerTime t2);
+
+        public static SchedulerTime Now { get; }
+
+#if false        
+        public static SchedulerTime FromFileTimeUtc(long fileTime);
+
+        public SchedulerTime Date { get; }
+        public int Day { get; }
+        public int Hour { get; }
+        public int Millisecond { get; }
+        public int Minute { get; }
+        public int Month { get; }
+        public static SchedulerTime UtcNow { get; }
+        public int Second { get; }
+        public long Ticks { get; }
+        public TimeSpan TimeOfDay { get; }
+        public static SchedulerTime Today { get; }
+        public int Year { get; }
+
+        public static bool IsLeapYear(int year);
+
+        public String ToLongDateString();
+        public String ToLongTimeString();
+        public String ToShortDateString();
+        public String ToShortTimeString();
+#endif
+
+        public static SchedulerTime operator +(SchedulerTime d, TimeSpan t);
+        public static SchedulerTime operator -(SchedulerTime d, TimeSpan t);
+        public static TimeSpan operator -(SchedulerTime d1, SchedulerTime d2);
+        public static bool operator ==(SchedulerTime d1, SchedulerTime d2);
+        public static bool operator !=(SchedulerTime d1, SchedulerTime d2);
+        public static bool operator <(SchedulerTime t1, SchedulerTime t2);
+        public static bool operator <=(SchedulerTime t1, SchedulerTime t2);
+        public static bool operator >(SchedulerTime t1, SchedulerTime t2);
+        public static bool operator >=(SchedulerTime t1, SchedulerTime t2);
+    }
+}

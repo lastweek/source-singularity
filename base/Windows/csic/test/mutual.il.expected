@@ -1,0 +1,33 @@
+.assembly 'mutual' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class 'A'
+	extends [mscorlib]System.Object
+{
+.field static private class 'B' 'x'
+.field private int32 'y'
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor A.A
+} // end of class A
+.class public 'B'
+	extends [mscorlib]System.Object
+{
+.field static private class 'A' 'x'
+.method hidebysig static public void 'Main'() {
+.entrypoint
+ret
+.maxstack 0
+} // end of method B.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor B.B
+} // end of class B

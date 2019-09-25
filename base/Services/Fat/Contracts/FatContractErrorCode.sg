@@ -1,0 +1,38 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatContractErrorCode.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Contracts
+{
+    public enum FatContractErrorCode
+    {
+        NoError               = 0,
+        DiskUnavailable       = 1,
+        PathUnavailable       = 2,
+        UnableToStartProcess  = 3,
+        Busy                  = 4,
+        NotMounted            = 5,
+        InternalError         = 6,
+        NotFatPartition       = 7,
+        ReadFailed            = 8,
+        BadBPB                = 9,
+        ReadOnlyDisk          = 10,
+        InvalidStartSector    = 11,
+        InvalidSectorCount    = 12,
+        InvalidFormatSettings = 13,
+        InvalidVolumeLabel    = 14,
+        Max                   = InvalidVolumeLabel
+    }
+}

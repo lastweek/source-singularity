@@ -1,0 +1,239 @@
+procedure glr_header(state)
+	local d, t
+
+	# writes(dumpState("// ", state))
+	if state === startState then {
+		write("public class startState : nonterminalState {")
+		write("\tpublic startState() : base(null, \"START-STATE\", null, new Coordinate(null,0,0,null,0), false, 0) {")
+		write("\t}")
+		write()
+		write("\tpublic override object _rewrite2AST() {")
+		write("\t\treturn null;")
+		write("\t}")
+	} else if d := !state.items & member(terms, t := d.production.rhsList[d.index-1]) then {
+		write("public class ", Image(state), " : terminalState {")
+		write("\tpublic ", Image(state), "() {}")
+		write("\tpublic ", Image(state), "(state below, InputElement terminal, int serial)")
+		write("\t\t: base(below, terminal, serial) {")
+		write("\t}")
+		write()
+		write("\tpublic override object _rewrite2AST() {")
+		write("\t\treturn parse2AST.rewrite_terminal(this);")
+		write("\t}")
+	} else if state === acceptingState then {
+		write("public class ", Image(state), " : acceptingState {")
+		write("\tpublic ", Image(state), "() {}")
+		writes("\tpublic ", Image(state), "(state below")
+		write(", Coordinate end, string rule, state rightmost, bool rejected, int serial)")
+		write("\t\t: base(below, rule, rightmost, end, rejected, serial) {")
+		write("\t}")
+		write()
+		write("\tpublic override object _rewrite2AST() {")
+		write("\t\treturn rightmost.rewrite2AST();")
+		write("\t}")
+	} else {
+		write("public class ", Image(state), " : nonterminalState {")
+		write("\tpublic ", Image(state), "() {}")
+		writes("\tpublic ", Image(state), "(state below")
+		write(", Coordinate end, string rule, state rightmost, bool rejected, int serial)")
+		write("\t\t: base(below, rule, rightmost, end, rejected, serial) {")
+		write("\t}")
+		write()
+		write("\tpublic override object _rewrite2AST() {")
+		write("\t\treturn parse2AST.rewrite_", cs(state.sym), "(this);")
+		write("\t}")
+	}
+	write()
+end
+
+procedure glr_transitions(state)
+	local d, t, i, bundle, x, T, s
+
+	if state === acceptingState then {
+		write("\tpublic override void transitions(System.Collections.Queue wl, InputElement tok, int count) {")
+		write("\t\tif (tok.tag == \"<EOF>\") {")
+		write("\t\t\twl.Enqueue(this);")
+		write("\t\t}")
+		write("\t}")
+	} else {
+		write("\tpublic override void transitions(System.Collections.Queue wl, InputElement tok, int count) {")
+		write("\t\tstate s;")
+		T := table()
+		every d := !state.items do {
+			if d.index > *d.production.rhsList then {
+				every t := !d.lookaheads do {
+					/T[t] := set([])
+					insert(T[t], d)
+				}
+			}
+			if member(terms, t := d.production.rhsList[d.index]) then {
+				/T[t] := set([])
+				insert(T[t], d)
+			}
+		}
+		bundle := table()
+		every t := key(T) do {
+			s := ""
+			if d := !T[t] & t == d.production.rhsList[d.index] then {
+				s ||:= "\t\t\ts = new " || Image(state.transitions[t]) || "(this, tok, count);\n"
+				s ||:= "\t\t\twl.Enqueue(s);\n"
+			}
+			every d := !T[t] & d.index > *d.production.rhsList do {
+				s ||:= "\t\t\tif (true\n"
+				every i := 1 to *d.production.rhsList & \d.production.conditions[i] do {
+					x := "this"
+					every i to *d.production.rhsList-1 do {
+						x ||:= ".below"
+					}
+					s ||:= "\t\t\t\t&& ((terminalState)" || x || ").terminal.str ==" || image(d.production.conditions[i]) || "\n"
+				}
+				s ||:= "\t\t\t\t) {\n"
+				x := "this"
+				every !d.production.rhsList do {
+					x ||:= ".below"
+				}
+				s ||:= "\t\t\ts = " || x ||
+				       ".shiftNonterm(" ||
+				       image(d.production.lhs) ||
+				       ", count, tok.coord, " ||
+				       image(dumpProduction(d.production)) ||
+				       ", this);\n"
+				s ||:= "\t\t\t\tif (s != null) {\n"
+				s ||:= "\t\t\t\t\ts.transitions(wl, tok, count);\n"
+				s ||:= "\t\t\t\t}\n"
+				s ||:= "\t\t\t}\n"
+			}
+			s ||:= "\t\t\tbreak;"
+			/bundle[s] := set([])
+			insert(bundle[s], t)
+		}
+
+		write("\t\tswitch (tok.tag) {")
+		write("\t\tdefault: return;")
+		every t := key(bundle) do {
+			every write("\t\tcase ", image(!bundle[t]), ":")
+			write(t)
+		}
+		write("\t\t} // switch")
+		write("\t} // transitions")
+	}
+	write()
+end
+
+procedure glr_transitions_LR0(state)
+	local d, t, seen, i, x
+
+	if state === acceptingState then {
+		write("\tpublic override void transitions(System.Collections.Queue wl, InputElement tok, int count) {")
+		write("\t\tif (tok.tag == \"<EOF>\") {")
+		write("\t\t\twl.Enqueue(this);")
+		write("\t\t}")
+		write("\t}")
+	} else {
+		write("\tpublic override void transitions(System.Collections.Queue wl, InputElement tok, int count) {")
+		write("\t\tstate s;")
+		write("\t\tswitch (tok.tag) {")
+		write("\t\tdefault: break;")
+		seen := set([])
+		every d := !state.items do {
+			if member(terms, t := d.production.rhsList[d.index]) & not member(seen, t) then {
+				insert(seen, t)
+				write("\t\tcase ", image(t), ":")
+				write("\t\t\ts = new ", Image(state.transitions[t]), "(this, tok, count);")
+				write("\t\t\twl.Enqueue(s);")
+				write("\t\t\tbreak;")
+			}
+		}
+		write("\t\t} // switch")
+		every d := !state.items do {
+			if d.index > *d.production.rhsList then {
+				write("\t\tif (true")
+				every i := 1 to *d.production.rhsList & \d.production.conditions[i] do {
+					x := "this"
+					every i to *d.production.rhsList-1 do {
+						x ||:= ".below"
+					}
+					write("\t\t\t&& ((terminalState)", x, ").terminal.str ==", image(d.production.conditions[i]))
+				}
+				write("\t\t\t) {")
+				x := "this"
+				every !d.production.rhsList do {
+					x ||:= ".below"
+				}
+				write("\t\t\ts = ", x,
+				       ".shiftNonterm(",
+				       image(d.production.lhs),
+				       ", count, tok.coord, ",
+				       image(dumpProduction(d.production)), "this);")
+				write("\t\t\tif (s != null) {")
+				write("\t\t\t\ts.transitions(wl, tok, count);")
+				write("\t\t\t}")
+				write("\t\t}")
+			}
+		}
+		write("\t} // transitions")
+	}
+	write()
+end
+
+procedure glr_nonterm(state)
+	local t, count, memo
+
+	write("\tpublic override state shiftNonterm(string nonterm, int count, Coordinate end, string rule, state rightmost) {")
+	write("\t\tnonterminalState s;")
+	write("\t\tupdate(count);")
+	write("\t\tswitch(nonterm) {")
+	write("\t\tdefault: throw new System.Exception(\"\\\"\"+nonterm+\"\\\":\"+rule);")
+	count := 0
+	every t := key(state.transitions) & member(nonterms, t) do {
+		count +:= 1
+		memo := "memo" || count
+		write("\t\tcase ", image(t), ": {")
+		write("\t\t\t\tbool reject = false;")
+		write("\t\t\t\ts = new ", Image(state.transitions[t]), "(this, end, rule, rightmost, reject, count);")
+		write("\t\t\t\tif (", memo, " != null) {")
+		write("\t\t\t\t\t", memo, ".add(s, count);")
+		write("\t\t\t\t\treturn null;")
+		write("\t\t\t\t} else {")
+		write("\t\t\t\t\t", memo, " = s;")
+		write("\t\t\t\t\treturn s;")
+		write("\t\t\t\t}")
+		write("\t\t\t}")
+	}
+	write("\t\t} // switch")
+	write("\t} // shiftNonterm")
+	write()
+	every write("\tnonterminalState memo", 1 to count, ";")
+	write()
+	write("\tprivate int count = -1;")
+	write("\tprivate void update(int count) {")
+	write("\t\tif (this.count != count) {")
+	write("\t\t\tthis.count = count;")
+	every write("\t\t\tmemo", 1 to count, " = null;")
+	write("\t\t}")
+	write("\t}")
+	write()
+end
+
+procedure writeGLR(fsm)
+	local i, s, t, state, flag, p, rT
+	local d, T, bundle, x, count, memo
+
+	count := 0
+	every state := !fsm do {
+		glr_header(state)
+		# glr_transitions_LR0(state)
+		glr_transitions(state)
+		if member(nonterms, key(state.transitions)) then {
+			glr_nonterm(state)
+		}
+
+		# write trailer
+		write("} // ", Image(state))
+		write()
+	}
+end
+
+procedure cs(s)
+	return map(s, "-;", "_A")
+end

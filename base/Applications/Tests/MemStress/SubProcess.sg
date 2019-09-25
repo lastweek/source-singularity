@@ -1,0 +1,94 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+          using System;
+//using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Test.Contracts;
+using Microsoft.Singularity.Xml;
+
+using FileSystem.Utils;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+//using System.Collections;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Directory;
+using Microsoft.Contracts;
+
+namespace Microsoft.Singularity.Applications
+{
+
+    public class ProcessLauncher {
+
+        internal static Process CreateSubProcess(
+            Parameters! config,
+            string[] args
+            )
+        {
+            DirectoryServiceContract.Imp ds = config.nsRef.Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+
+            PipeMultiplexer outputMux = MuxOut();
+            if (outputMux == null) {
+                delete ds;
+                return null;
+            }
+
+            Manifest manifest;
+
+            Process child = Binder.CreateProcess(ds, args, outputMux, out manifest);
+            if (child == null) {
+                Console.WriteLine("Error creating process");
+                DebugStub.Print("Error creating process");
+                outputMux.Dispose();
+                delete ds;
+                return null;
+            }
+
+            child.Start();
+
+            child.Join();
+
+            outputMux.Dispose();
+            delete ds;
+
+            if (null == child) {
+                return null;
+            }
+
+            // Allow the caller to the get childs exit status
+            return child;
+        }
+
+        // Redirect our standard output into a multiplexer so we can interleave
+        // output from child processes
+        static private PipeMultiplexer MuxOut()
+        {
+            // Swap our real stdOut with a newly created one
+            UnicodePipeContract.Exp! newOutputExp;
+            UnicodePipeContract.Imp! newOutputImp;
+            UnicodePipeContract.NewChannel(out newOutputImp, out newOutputExp);
+            UnicodePipeContract.Imp stdOut = ConsoleOutput.Swap(newOutputImp);
+            if (stdOut == null) {
+                // TODO may not require stdout once we report to debugStub
+                Console.WriteLine("test expects a STDOUT pipe");
+                delete newOutputExp;
+                return null;
+            }
+            // Use a mux to splice our own output together with the child
+            // processes we will run.
+            return PipeMultiplexer.Start(stdOut, newOutputExp);
+        }
+    }
+}
+

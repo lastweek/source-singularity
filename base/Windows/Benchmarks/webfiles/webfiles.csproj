@@ -1,0 +1,30 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <ProductVersion>8.0.50727</ProductVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <AssemblyName>webfiles</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\..\applications\benchmarks\specweb99\webfiles\webfiles.cs" />
+    <Compile Include="..\..\..\applications\benchmarks\specweb99\webfiles\random.cs" />
+    <Compile Include="..\..\..\applications\benchmarks\specweb99\webfiles\urlcache.cs" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+
+</Project>

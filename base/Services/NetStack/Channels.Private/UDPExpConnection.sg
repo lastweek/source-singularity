@@ -1,0 +1,222 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   UdpExpConnection.sg
+//
+//  Note:   Provider-side helper for the Udp Channel Contract
+//
+
+// #define DEBUG_UDPEXPCONNECTION
+
+using System.Threading;
+using System.Net.IP;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using NetStack.Contracts;
+using NetStack.Runtime;
+using System.Collections;
+using System;
+
+namespace NetStack.Channels.Private
+{
+    public class UdpConnectionExpThread
+    {
+        private TRef<UdpConnectionContract.Exp:Start>! chanEP;
+        private UdpSession! session;
+
+        [ System.Diagnostics.Conditional("DEBUG_UDPEXPCONNECTION") ]
+        static void DebugPrint(string format, params object [] args)
+        {
+            DebugStub.Print(
+                "UdpConnectionExpThread [{0}]: {1}",
+                __arglist(
+                    Thread.CurrentThread.GetThreadId(),
+                    string.Format(format, args)
+                    )
+                );
+        }
+
+        public void Run()
+        {
+            UdpConnectionContract.Exp! ep = chanEP.Acquire();
+
+            while (true) {
+                switch receive {
+                    case ep.BindLocalEndPoint(uint srcIP, ushort srcPort) :
+                    {
+                        DebugPrint("BindLocalEndPoint ({0:x8}/{1} ->)\n",
+                                   srcIP, srcPort);
+                        IPv4 srcAddr = new IPv4(srcIP);
+                        if (srcAddr != IPv4.Any &&
+                            session.IsLocalAddress(srcAddr) == false) {
+                            ep.SendInvalidEndPoint(srcIP, srcPort);
+                        }
+                        else {
+                            session.BindLocalEndPoint(srcAddr, srcPort);
+                            ep.SendOK();
+                        }
+                    }
+                    break;
+
+                    case ep.ConnectWithAnyLocalEndPoint(uint   dstIP,
+                                                        ushort dstPort) :
+                    {
+                        DebugPrint(
+                            "ConnectWithAnyLocalEndPoint (-> {0:x8}/{1})\n",
+                            dstIP, dstPort
+                            );
+
+                        session.BindRemoteEndPoint(new IPv4(dstIP), dstPort);
+                        ep.SendOK();
+                    }
+                    break;
+
+                    case ep.Connect(uint srcIP, ushort srcPort,
+                                    uint dstIP, ushort dstPort) :
+                    {
+                        DebugPrint(
+                            "BindLocalEndPoint ({0:x8}/{1} -> {2:x8}/{3})\n",
+                            srcIP, srcPort, dstIP, dstPort
+                            );
+
+                        session.BindEndPoints(new IPv4(srcIP), srcPort,
+                                              new IPv4(dstIP), dstPort);
+                        ep.SendOK();
+                    }
+                    break;
+
+                    case ep.PollSelectRead(int millis) :
+                    {
+                        if (ep.InState(UdpConnectionContract.Start.Value)) {
+                            ep.SendPollSelectResult(false);
+                        }
+                        else {
+                            bool result = session.PollSelectRead(millis);
+                            ep.SendPollSelectResult(result);
+                        }
+                    }
+                    break;
+
+                    case ep.PollSelectWrite(int millis) :
+                    {
+                        bool result = session.PollSelectWrite(millis);
+                        ep.SendPollSelectResult(result);
+                    }
+                    break;
+
+                    case ep.Read() :
+                    {
+                        byte[] in ExHeap data = session.ReadData();
+
+                        // Currently, there is no way of
+                        // detecting that the connection has
+                        // been closed underneath us. We should
+                        // fix that.
+                        if (data == null) {
+                            ep.SendNoData();
+                        }
+                        else {
+                            ep.SendData(0, 0, data);
+                        }
+                    }
+                    break;
+
+                    case ep.PollRead(int timeoutMillis) :
+                    {
+                        byte[] in ExHeap data = session.PollData(TimeSpan.FromMilliseconds(timeoutMillis));
+                        // Currently, there is no way of
+                        // detecting that the connection has
+                        // been closed underneath us. We should
+                        // fix that.
+                        if (data == null) {
+                            ep.SendNoData();
+                        }
+                        else {
+                            ep.SendData(0, 0, data);
+                        }
+                    }
+                    break;
+
+                    case ep.Write(byte[]! in ExHeap data) :
+                    {
+                        DebugPrint("Write {0} bytes.\n", data.Length);
+                        if (session.WriteData(data) == data.Length) {
+                            ep.SendOK();
+                        }
+                        else {
+                            ep.SendDataTooLarge();
+                        }
+                        delete data;
+                    }
+                    break;
+
+                    case ep.WriteTo(uint dstIP, dstPort, byte[]! in ExHeap data) :
+                    {
+                        DebugPrint("WriteTo {0} bytes -> {1:x8}/{2}.\n",
+                                   data.Length, dstIP, dstPort);
+                        int written = session.WriteDataTo(new IPv4(dstIP),
+                                                          dstPort, data);
+                        if (written == data.Length) {
+                            ep.SendOK();
+                        }
+                        else {
+                            ep.SendDataTooLarge();
+                        }
+                        delete data;
+                    }
+                    break;
+
+                    case ep.Close() :
+                        session.Close();
+                        break;
+
+                    case ep.GetLocalAddress() :
+                        ep.SendIPAddress((uint)session.LocalAddress);
+                        break;
+
+                    case ep.GetLocalPort() :
+                        ep.SendPort(session.LocalPort);
+                        break;
+
+                    case ep.GetRemoteAddress() :
+                        ep.SendIPAddress((uint)session.RemoteAddress);
+                        break;
+
+                    case ep.GetRemotePort() :
+                        ep.SendPort(session.RemotePort);
+                        break;
+
+                    case unsatisfiable :
+                        // Exit this thread
+                        session.Dispose();
+                        delete ep;
+                        return;
+                        break;
+                }
+            }
+        }
+
+        public UdpConnectionExpThread([Claims]UdpConnectionContract.Exp:Start! ep)
+        {
+            chanEP = new TRef<UdpConnectionContract.Exp:Start>(ep);
+            session = (UdpSession!)Core.Instance().CreateSession("UDP");
+        }
+
+        private UdpConnectionExpThread([Claims]UdpConnectionContract.Exp:Connected! ep,
+                                       UdpSession! newSession)
+        {
+            chanEP = new TRef<UdpConnectionContract.Exp:Start>(ep);
+            this.session = newSession;
+        }
+
+        public void Start()
+        {
+            Thread newThread = new Thread(new ThreadStart(Run));
+            newThread.Start();
+        }
+    }
+}

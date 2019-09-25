@@ -1,0 +1,42 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\Singularity.V1\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="..\Singularity.V1\Processes\ProcessHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Security\PrincipalHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Services\DeliveryHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Services\ChannelService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\DebugService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\DeviceService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\PciPortHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Services\PageTableService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\PlatformService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\ProcessService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\SharedHeapService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\StackService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\MemoryInfoService.csi"/>
+    <Compile Include="..\Singularity.V1\Services\DiagnosisService.csi"/>
+    <Compile Include="..\Singularity.V1\Stress\StressDirect.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\AutoResetEventHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\ContainerHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\InterruptHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\ManualResetEventHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\MutexHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\SyncHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\ThreadHandle.csi"/>
+    <Compile Include="..\Singularity.V1\Threads\ThreadState.csi"/>
+    <Compile Include="..\Singularity.V1\Types\SystemType.csi"/>
+    <Compile Include="..\Singularity.V1\Singularity.V1.csi"/>
+  </ItemGroup>
+</Project>

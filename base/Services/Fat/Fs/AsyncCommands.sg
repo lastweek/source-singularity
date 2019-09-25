@@ -1,0 +1,964 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   AsyncCommands.sg
+//
+//  Note:
+//
+
+// #define VERBOSE
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using System;
+using System.Diagnostics;
+
+using MSD = Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal abstract class AsyncCommand : ITracked
+    {
+        internal abstract void Execute();
+
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Dispose()
+        {
+            DebugStub.Print("Class is missing implementation of ITracked.Dispose()\n");
+            DebugStub.Break();
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    //
+    // DIRECTORY CONTRACT COMMANDS
+    //
+    // ------------------------------------------------------------------------
+
+    internal class BindCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                          cio;         // Endpoint listener
+        Directory                          parent;
+        DirectoryServiceContract.Exp:Ready parentExp;
+        char [] in ExHeap                  path;        // Relative path
+        ServiceContract.Exp:Start          pathExp;     // Endpoint for path
+
+        internal
+        BindCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! parentExp,
+            Directory!                                   parent,
+            [Claims] char[]! in ExHeap                   path,
+            [Claims] ServiceContract.Exp:Start!          pathExp
+            )
+        {
+            this.cio       = cio;
+            this.parent    = parent;
+            this.parentExp = parentExp;
+            this.path      = path;
+            this.pathExp   = pathExp;
+        }
+
+        private void BindDirectory(
+            [Claims]DirectoryServiceContract.Exp:Ready! dsc
+            )
+        {
+            expose (this) {
+                assert this.path != null;
+                assert this.parentExp != null;
+
+                CommandLogger.Log("BindDirectory(\"{0}\") ",
+                                  Bitter.ToString(this.path));
+
+                Directory child;
+                MSD.ErrorCode error =
+                    PathOpen.GetDirectory(this.parent, this.path, out child);
+                if (error == MSD.ErrorCode.NoError) {
+                    CommandLogger.Log(" -> OK\n");
+                    dsc.SendSuccess();
+                    this.cio.EnqueueTuple(dsc, (!)child, false);
+                    this.parentExp.SendAckBind();
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    this.parentExp.SendNakBind(dsc, error);
+                }
+                this.cio.EnqueueTuple(this.parentExp, this.parent, true);
+
+                this.path      = null;
+                this.parentExp = null;
+                this.cio       = null;
+            }
+        }
+
+        private void BindFile([Claims]FileContract.Exp:Ready! fc)
+        {
+            expose (this) {
+                assert this.path      != null;
+                assert this.parentExp != null;
+
+                CommandLogger.Log("BindFile(\"{0}\") ",
+                                  Bitter.ToString(this.path));
+
+                File child;
+                MSD.ErrorCode error =
+                    PathOpen.GetFile(this.parent, this.path, out child);
+                if (error == MSD.ErrorCode.NoError) {
+                    CommandLogger.Log(" -> OK\n");
+                    fc.SendSuccess();
+                    this.cio.EnqueueTuple(fc, (!)child, false);
+                    this.parentExp.SendAckBind();
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    this.parentExp.SendNakBind(fc, error);
+                }
+                this.cio.EnqueueTuple(this.parentExp, this.parent, true);
+
+                this.path      = null;
+                this.parentExp = null;
+                this.cio       = null;
+            }
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.path      != null;
+                assert this.pathExp   != null;
+                assert this.parent    != null;
+                assert this.parentExp != null;
+                assert this.cio       != null;
+
+                DirectoryServiceContract.Exp dsc =
+                    this.pathExp as DirectoryServiceContract.Exp;
+                if (dsc != null) {
+                    this.pathExp = null;
+                    BindDirectory(dsc);
+                    return;
+                }
+
+                FileContract.Exp fc = this.pathExp as FileContract.Exp;
+                if (fc != null) {
+                    this.pathExp = null;
+                    BindFile(fc);
+                    return;
+                }
+
+                assert this.parentExp != null;
+
+                CommandLogger.Log(
+                    "Bad Bind attempt (not file/directory) \"{0}\"\n",
+                    Bitter.ToString(this.path)
+                    );
+
+                this.parentExp.SendNakBind(this.pathExp,
+                                           ErrorCode.NotProvider);
+                this.pathExp = null;
+
+                this.cio.EnqueueTuple(this.parentExp, this.parent, true);
+                this.parentExp = null;
+
+                delete this.path;
+                this.path      = null;
+
+                this.cio       = null;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            CommandLogger.Log("Dispose BindCommand\n");
+            delete this.parentExp;
+            delete this.path;
+            delete this.pathExp;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class EnumerateCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        Directory                    dir;
+        DirectoryServiceContract.Exp exp;
+
+        internal
+        EnumerateCommand(
+            ChannelIo!                                       cio,
+            [Claims] DirectoryServiceContract.Exp:Enumerate! exp,
+            Directory!                                       dir
+            )
+        {
+            this.cio = cio;
+            this.dir = dir;
+            this.exp = exp;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                try {
+                    assert this.cio != null;
+                    assert this.exp != null;
+                    assert this.dir != null;
+
+                    uint cursor = 0;
+                    ErrorCode error = ErrorCode.NoError;
+                    while (true) {
+                        EnumerationRecords [] in ExHeap records =
+                            this.dir.Enumerate2(cursor, out cursor);
+
+                        if (records == null) {
+                            error = ErrorCode.InsufficientResources;
+                            break;
+                        }
+                        exp.SendEnumerationEntries(
+                            records,
+                            records.Length == Directory.EnumerationChunkSize
+                            );
+                        switch receive {
+                            case exp.EndEnumeration():
+                                cio.EnqueueTuple(this.exp, this.dir, true);
+                                this.exp = null;
+                                return;
+
+                            case exp.ReadEnumeration():
+                                break;
+                        }
+                    }
+                    exp.SendEnumerationTerminated(error);
+
+                    cio.EnqueueTuple(this.exp, this.dir, true);
+                }
+                catch (ChannelClosedException) {
+                    delete this.exp;
+                }
+                this.exp = null;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            CommandLogger.Log("Dispose EnumerateCommand\n");
+            delete this.exp;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class GetAttributesCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        DirectoryServiceContract.Exp exp;
+        Directory                    dir;
+        char[] in ExHeap             path;
+
+        internal
+        GetAttributesCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! exp,
+            Directory!                                   dir,
+            [Claims] char[]! in ExHeap                   path
+            )
+        {
+            this.cio  = cio;
+            this.dir  = dir;
+            this.exp  = exp;
+            this.path = path;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio  != null;
+                assert this.dir  != null;
+                assert this.exp  != null;
+                assert this.path != null;
+
+                CommandLogger.Log("GetAttributes(\"{0}\")",
+                                  Bitter.ToString2(this.path));
+
+                FsObject fsObject = null;
+                ErrorCode error = PathOpen.GetFsObject(this.dir,
+                                                       this.path,
+                                                       out fsObject);
+                this.path = null;
+                if (error == ErrorCode.NoError) {
+                    assert fsObject != null;
+
+                    FileAttributesRecord fileAttributes = 
+                        new FileAttributesRecord();
+                       
+                    fsObject.GetAttributes(ref fileAttributes);
+
+                    CommandLogger.Log(" -> Type {0} Size {1}\n",
+                                      fileAttributes.Type, fileAttributes.FileSize);
+                     this.exp.SendAckGetAttributes(fileAttributes);
+                    fsObject.CloseInstance();
+                }
+                else {
+                    CommandLogger.Log(" -> Failed\n");
+
+                    assert fsObject == null;
+                    this.exp.SendNakGetAttributes(error);
+                }
+                this.cio.EnqueueTuple(this.exp, this.dir, true);
+                this.exp = null;
+            }
+            return;
+        }
+
+        void ITracked.Dispose()
+        {
+            CommandLogger.Log("Dispose GetAttributesCommand\n");
+            delete exp;
+            delete path;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class CreateDirectoryCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        DirectoryServiceContract.Exp exp;
+        Directory                    dir;
+        char[] in ExHeap             path;
+
+        internal
+        CreateDirectoryCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! exp,
+            Directory!                                   dir,
+            [Claims] char[]! in ExHeap                   path)
+        {
+            this.cio  = cio;
+            this.dir  = dir;
+            this.exp  = exp;
+            this.path = path;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio  != null;
+                assert this.dir  != null;
+                assert this.exp  != null;
+                assert this.path != null;
+
+                CommandLogger.Log("CreateDirectory(\"{0}\", \"{1}\")",
+                                  this.dir.FullPathName,
+                                  Bitter.ToString(this.path));
+
+                Directory        parent    = null;
+                char[] in ExHeap childName = null;
+
+                ErrorCode error =
+                    PathOpen.GetTargetAndDirectory(this.dir,
+                                                   this.path,
+                                                   out childName,
+                                                   out parent);
+                if (error == ErrorCode.NoError) {
+                    assert parent    != null;
+                    assert childName != null;
+
+                    error = parent.CreateDirectory(childName);
+                    parent.Close();
+
+                    delete childName;
+                    childName = null;
+                    if (error == ErrorCode.NoError) {
+                        CommandLogger.Log(" -> OK\n");
+                        this.exp.SendAckCreateDirectory();
+                    }
+                    else {
+                        CommandLogger.Log(" -> Failed ({0})\n", error);
+                        this.exp.SendNakCreateDirectory(error);
+                    }
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    assert parent    == null;
+                    assert childName == null;
+                    this.exp.SendNakCreateDirectory(error);
+                }
+
+                this.cio.EnqueueTuple(this.exp, this.dir, true);
+                this.exp  = null;
+                this.path = null;
+
+                return;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            delete exp;
+            delete path;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class DeleteDirectoryCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        DirectoryServiceContract.Exp exp;
+        Directory                    dir;
+        char[] in ExHeap             path;
+
+        internal
+        DeleteDirectoryCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! exp,
+            Directory!                                   dir,
+            [Claims] char[]! in ExHeap                   path
+            )
+        {
+            this.cio  = cio;
+            this.dir  = dir;
+            this.exp  = exp;
+            this.path = path;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio  != null;
+                assert this.dir  != null;
+                assert this.exp  != null;
+                assert this.path != null;
+
+                CommandLogger.Log("DeleteDirectory(\"{0}\", \"{1}\")",
+                                  this.dir.FullPathName,
+                                  Bitter.ToString(this.path));
+
+                Directory        parent    = null;
+                char[] in ExHeap childName = null;
+
+                ErrorCode error =
+                    PathOpen.GetTargetAndDirectory(this.dir,
+                                                   this.path,
+                                                   out childName,
+                                                   out parent);
+                if (error == ErrorCode.NoError) {
+                    assert parent    != null;
+                    assert childName != null;
+
+                    error = parent.DeleteDirectory(childName);
+                    parent.Close();
+                    delete childName;
+                    childName = null;
+                    if (error == ErrorCode.NoError) {
+                        CommandLogger.Log(" -> OK\n");
+                        this.exp.SendAckDeleteDirectory();
+                    }
+                    else {
+                        CommandLogger.Log(" -> Failed ({0})\n", error);
+                        this.exp.SendNakDeleteDirectory(error);
+                    }
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    if (childName != null) {
+                        delete childName;
+                    }
+                    this.exp.SendNakDeleteDirectory(error);
+                }
+
+                this.cio.EnqueueTuple(this.exp, this.dir, true);
+                this.exp  = null;
+                this.path = null;
+
+                return;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            delete exp;
+            delete path;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class CreateFileCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        DirectoryServiceContract.Exp exp;
+        Directory                    dir;
+        char[] in ExHeap             path;
+
+        internal
+        CreateFileCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! exp,
+            Directory!                                   dir,
+            [Claims] char[]! in ExHeap                   path
+            )
+        {
+            this.cio  = cio;
+            this.dir  = dir;
+            this.exp  = exp;
+            this.path = path;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio  != null;
+                assert this.dir  != null;
+                assert this.exp  != null;
+                assert this.path != null;
+
+                CommandLogger.Log("CreateFile(\"{0}\", \"{1}\")",
+                                  this.dir.FullPathName,
+                                  Bitter.ToString(this.path));
+
+                Directory        parent    = null;
+                char[] in ExHeap childName = null;
+
+                ErrorCode error =
+                    PathOpen.GetTargetAndDirectory(this.dir,
+                                                   this.path,
+                                                   out childName,
+                                                   out parent);
+                if (error == ErrorCode.NoError) {
+                    assert parent    != null;
+                    assert childName != null;
+
+                    error = parent.CreateFile(childName);
+                    parent.Close();
+                    delete childName;
+                    childName = null;
+                    if (error == ErrorCode.NoError) {
+                        CommandLogger.Log(" -> OK\n");
+                        this.exp.SendAckCreateFile();
+                    }
+                    else {
+                        CommandLogger.Log(" -> Failed ({0})\n", error);
+                        this.exp.SendNakCreateFile(error);
+                    }
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    assert parent    == null;
+                    assert childName == null;
+                    this.exp.SendNakCreateFile(error);
+                }
+
+                this.cio.EnqueueTuple(this.exp, this.dir, true);
+                this.exp  = null;
+                this.path = null;
+
+                return;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            delete exp;
+            delete path;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class CreateAndBindFileCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        DirectoryServiceContract.Exp exp;
+        Directory                    dir;
+        char[] in ExHeap             path;
+        FileContract.Exp:Start       fileExp;
+
+        internal
+        CreateAndBindFileCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! exp,
+            Directory!                                   dir,
+            [Claims] char[]! in ExHeap                   path,
+            [Claims] FileContract.Exp:Start!             fileExp
+            )
+        {
+            this.cio     = cio;
+            this.dir     = dir;
+            this.exp     = exp;
+            this.path    = path;
+            this.fileExp = fileExp;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio     != null;
+                assert this.dir     != null;
+                assert this.exp     != null;
+                assert this.path    != null;
+                assert this.fileExp != null;
+
+                CommandLogger.Log("CreateAndBindFile(\"{0}\", \"{1}\")",
+                                  this.dir.FullPathName,
+                                  Bitter.ToString(this.path));
+
+                Directory        parent    = null;
+                char[] in ExHeap childName = null;
+
+                ErrorCode error =
+                    PathOpen.GetTargetAndDirectory(this.dir, this.path,
+                                                   out childName, out parent);
+                if (error == ErrorCode.NoError) {
+                    assert parent    != null;
+                    assert childName != null;
+
+                    File newFile;
+                    error = parent.CreateAndOpenFile(childName, out newFile);
+                    parent.Close();
+                    delete childName;
+                    childName = null;
+                    if (error == ErrorCode.NoError) {
+                        CommandLogger.Log(" -> OK\n");
+                        assert newFile != null;
+                        this.fileExp.SendSuccess();
+                        this.cio.EnqueueTuple(this.fileExp, newFile, false);
+                        this.exp.SendAckCreateAndBindFile();
+                    }
+                    else {
+                        CommandLogger.Log(" -> Failed ({0})\n", error);
+                        assert newFile == null;
+                        this.exp.SendNakCreateAndBindFile(this.fileExp,
+                                                          error);
+                    }
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    assert parent    == null;
+                    assert childName == null;
+                    this.exp.SendNakCreateAndBindFile(this.fileExp, error);
+                }
+
+                this.cio.EnqueueTuple(this.exp, this.dir, true);
+                this.exp  = null;
+                this.path = null;
+                this.fileExp = null;
+
+                return;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            delete exp;
+            delete path;
+            delete fileExp;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class DeleteFileCommand : AsyncCommand, ITracked
+    {
+        ChannelIo                    cio;
+        DirectoryServiceContract.Exp exp;
+        Directory                    dir;
+        char[] in ExHeap             path;
+
+        internal
+        DeleteFileCommand(
+            ChannelIo!                                   cio,
+            [Claims] DirectoryServiceContract.Exp:Ready! exp,
+            Directory!                                   dir,
+            [Claims] char[]! in ExHeap                   path
+            )
+        {
+            this.cio  = cio;
+            this.dir  = dir;
+            this.exp  = exp;
+            this.path = path;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio  != null;
+                assert this.dir  != null;
+                assert this.exp  != null;
+                assert this.path != null;
+
+                CommandLogger.Log("DeleteFile(\"{0}\", \"{1}\")",
+                                  this.dir.FullPathName,
+                                  Bitter.ToString(this.path));
+
+                Directory        parent    = null;
+                char[] in ExHeap childName = null;
+
+                ErrorCode error =
+                    PathOpen.GetTargetAndDirectory(this.dir, this.path,
+                                                   out childName, out parent);
+                if (error == ErrorCode.NoError) {
+                    assert parent    != null;
+                    assert childName != null;
+
+                    error = parent.DeleteFile(childName);
+                    parent.Close();
+                    delete childName;
+                    childName = null;
+                    if (error == ErrorCode.NoError) {
+                        CommandLogger.Log(" -> OK\n");
+                        this.exp.SendAckDeleteFile();
+                    }
+                    else {
+                        CommandLogger.Log(" -> Failed ({0})\n", error);
+                        this.exp.SendNakDeleteFile(error);
+                    }
+                }
+                else {
+                    CommandLogger.Log(" -> Failed ({0})\n", error);
+                    if (childName != null) {
+                        delete childName;
+                    }
+                    this.exp.SendNakDeleteFile(error);
+                }
+
+                this.cio.EnqueueTuple(this.exp, this.dir, true);
+                this.exp  = null;
+                this.path = null;
+
+                return;
+            }
+        }
+
+        void ITracked.Dispose()
+        {
+            delete exp;
+            delete path;
+        }
+
+        void ITracked.Acquire()  {}
+        void ITracked.Release()  {}
+        void ITracked.Expose()   {}
+        void ITracked.UnExpose() {}
+    }
+
+    // ------------------------------------------------------------------------
+    //
+    // FILE CONTRACT COMMANDS
+    //
+    // ------------------------------------------------------------------------
+
+    internal class FileReadCommand : AsyncCommand, ITracked
+    {
+        ChannelIo        cio;
+        FileContract.Exp fc;
+        File             file;
+        byte[] in ExHeap buffer;
+        long             bufferOffset;
+        long             fileOffset;
+        long             maxLength;
+
+        internal FileReadCommand(ChannelIo!                 cio,
+                                 [Claims] FileContract.Exp! fc,
+                                 File!                      file,
+                                 [Claims] byte[]! in ExHeap buffer,
+                                 long                       bufferOffset,
+                                 long                       fileOffset,
+                                 long                       maxLength)
+        {
+            this.cio          = cio;
+            this.fc           = fc;
+            this.file         = file;
+            this.buffer       = buffer;
+            this.bufferOffset = bufferOffset;
+            this.fileOffset   = fileOffset;
+            this.maxLength    = maxLength;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio    != null;
+                assert this.fc     != null;
+                assert this.file   != null;
+                assert this.buffer != null;
+
+                if (bufferOffset < 0 || bufferOffset > Int32.MaxValue ||
+                    fileOffset < 0 || fileOffset > UInt32.MaxValue ||
+                    maxLength < 0 || maxLength > Int32.MaxValue) {
+                    // No enumeration for file error codes (grrr!)
+                    this.fc.SendAckRead(this.buffer, 0, -1);
+                }
+                else {
+                    int bytesRead;
+                    FileError error = this.file.Read(this.buffer,
+                                                     (int)this.bufferOffset,
+                                                     (uint)this.fileOffset,
+                                                     (int)this.maxLength,
+                                                     out bytesRead);
+
+                    if (error != FileError.NoError) {
+                        CommandLogger.Log("Read error {0}\n", error);
+                        Tracing.Log(Tracing.Error,
+                                    "FatFs read error {0}",
+                                    (UIntPtr)error);
+                    }
+
+                    this.fc.SendAckRead(this.buffer, bytesRead,
+                                        (FileError.NoError == error) ? 0 : -1);
+
+                }
+
+                this.cio.EnqueueTuple(this.fc, this.file, true);
+
+                this.fc     = null;
+                this.file   = null;
+                this.buffer = null;
+            }
+        }
+
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Dispose()
+        {
+            delete this.fc;
+            delete this.buffer;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+
+    internal class FileWriteCommand : AsyncCommand, ITracked
+    {
+        ChannelIo        cio;
+        FileContract.Exp fc;
+        File             file;
+        byte[] in ExHeap buffer;
+        long             bufferOffset;
+        long             fileOffset;
+        long             maxLength;
+
+        internal FileWriteCommand(ChannelIo!                 cio,
+                                  [Claims] FileContract.Exp! fc,
+                                  File!                      file,
+                                  [Claims] byte[]! in ExHeap buffer,
+                                  long                       bufferOffset,
+                                  long                       fileOffset,
+                                  long                       maxLength)
+        {
+            this.cio          = cio;
+            this.fc           = fc;
+            this.file         = file;
+            this.buffer       = buffer;
+            this.bufferOffset = bufferOffset;
+            this.fileOffset   = fileOffset;
+            this.maxLength    = maxLength;
+        }
+
+        internal override void Execute()
+        {
+            expose (this) {
+                assert this.cio    != null;
+                assert this.fc     != null;
+                assert this.file   != null;
+                assert this.buffer != null;
+
+                if (bufferOffset < 0 || bufferOffset > Int32.MaxValue ||
+                    fileOffset < 0 || fileOffset > UInt32.MaxValue ||
+                    maxLength < 0 || maxLength > Int32.MaxValue) {
+                    // No enumeration for file error codes (grrr!)
+                    this.fc.SendAckWrite(this.buffer, 0, -1);
+                }
+                else {
+                    int bytesWritten;
+                    FileError error = this.file.Write(this.buffer,
+                                                      (int)this.bufferOffset,
+                                                      (uint)this.fileOffset,
+                                                      (int)this.maxLength,
+                                                      out bytesWritten);
+                    if (error != FileError.NoError) {
+                        CommandLogger.Log("Write error {0}\n", error);
+                        Tracing.Log(Tracing.Error,
+                                    "FatFs write error {0}",
+                                    (UIntPtr)error);
+                    }
+
+                    this.fc.SendAckWrite(
+                        this.buffer, bytesWritten,
+                        (FileError.NoError == error) ? 0 : -1
+                        );
+                }
+
+                cio.EnqueueTuple(this.fc, this.file, true);
+
+                this.fc     = null;
+                this.file   = null;
+                this.buffer = null;
+            }
+            return;
+        }
+
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Dispose()
+        {
+            delete this.fc;
+            delete this.buffer;
+        }
+    }
+
+    internal class CommandLogger
+    {
+        [ System.Diagnostics.Conditional("VERBOSE") ]
+        internal static void Log(string format, params object[] args)
+        {
+            DebugStub.Print(String.Format(format, args));
+        }
+    }
+}

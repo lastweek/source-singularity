@@ -1,0 +1,126 @@
+.assembly 'delegate' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class sealed 'D'
+	extends [mscorlib]System.MulticastDelegate
+{
+.method hidebysig public instance void .ctor(object 'object',native int 'method') runtime managed {
+} // end of method D.D
+.method hidebysig public virtual instance void 'Invoke'(int32 'x') runtime managed {
+} // end of method D.Invoke
+} // end of delegate D
+.class 'A'
+	extends [mscorlib]System.Object
+{
+.method hidebysig public static void 'A1'(int32 'i') {
+ldstr "A1: {0}"
+ldarg 0 // i
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object)
+ret
+.maxstack 2
+} // end of method A.A1
+.method hidebysig public instance void 'A2'(int32 'i') {
+ldstr "A2: {0}"
+ldarg 1 // i
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object)
+ret
+.maxstack 2
+} // end of method A.A2
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor A.A
+} // end of class A
+.class 'T'
+	extends [mscorlib]System.Object
+{
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]class 'D' 't0')
+ldnull
+ldftn  void 'A'::'A1'(int32)
+newobj instance void 'D'::.ctor(object,native int)
+stloc 0 // x
+ldloc 0 // x
+ldc.i4 1
+callvirt instance void 'D'::'Invoke'(int32)
+.locals init ([1]class 'A' 't1')
+newobj instance void 'A'::.ctor()
+stloc 1 // t
+.locals init ([2]class 'D' 't2')
+ldloc 1 // t
+ldftn instance void 'A'::'A2'(int32)
+newobj instance void 'D'::.ctor(object,native int)
+stloc 2 // y
+ldloc 2 // y
+ldc.i4 2
+callvirt instance void 'D'::'Invoke'(int32)
+.locals init ([3]class 'D' 't3')
+ldloc 2 // y
+ldftn instance void 'D'::'Invoke'(int32)
+newobj instance void 'D'::.ctor(object,native int)
+stloc 3 // z
+ldloc 3 // z
+ldc.i4 3
+callvirt instance void 'D'::'Invoke'(int32)
+.locals init ([4]class 'D' 't4')
+ldloc 0 // x
+ldloc 2 // y
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'D'
+stloc 4 // q
+ldloc 4 // q
+ldc.i4 11
+callvirt instance void 'D'::'Invoke'(int32)
+ldloc 4 // q
+ldloc 3 // z
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'D'
+.locals init ([5]class 'D' 't5')
+stloc 5 // t5
+ldloc 5 // t5
+stloc 4 // q
+ldloc 4 // q
+ldc.i4 12
+callvirt instance void 'D'::'Invoke'(int32)
+ldloc 4 // q
+ldloc 0 // x
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Remove'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'D'
+.locals init ([6]class 'D' 't6')
+stloc 6 // t6
+ldloc 6 // t6
+stloc 4 // q
+ldloc 4 // q
+ldc.i4 13
+callvirt instance void 'D'::'Invoke'(int32)
+.locals init ([7]class 'D' 't7')
+ldloc 4 // q
+ldloc 2 // y
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Remove'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'D'
+ldloc 0 // x
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'D'
+ldftn instance void 'D'::'Invoke'(int32)
+newobj instance void 'D'::.ctor(object,native int)
+stloc 7 // r
+ldloc 7 // r
+ldc.i4 14
+callvirt instance void 'D'::'Invoke'(int32)
+ret
+.maxstack 3
+} // end of method T.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor T.T
+} // end of class T

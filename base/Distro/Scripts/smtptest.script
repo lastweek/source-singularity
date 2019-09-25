@@ -1,0 +1,11 @@
+# Configure the network defaults
+ipconfig '@dhcp' '/dev/nic0' 'start'
+
+# Show our address
+ipconfig '@show'
+
+#mount file system
+fatcontrol '@mount' '/dev/disk0' '/fs'
+
+
+

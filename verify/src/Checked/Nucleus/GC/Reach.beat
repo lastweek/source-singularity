@@ -1,0 +1,10 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+axiom (forall a:int, t:Time::reached(a, t) == true);
+
+implementation newTime() {}
+implementation reachStackRoot($s:int, $frame:int, $j:int, $t:Time) {}
+implementation reachStaticRoot($s:int, $j:int, $t:Time) {}
+implementation reach($a:int, $j:int, $t:Time) {}

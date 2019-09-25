@@ -1,0 +1,147 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ExHeap.sg
+//
+//  Note: This is the KERNEL version of the ExHeap custom allocator.
+//
+
+
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+
+namespace Microsoft.Singularity.Channels
+{
+
+    using Microsoft.Singularity.V1.Services;
+    using Microsoft.Singularity.V1.Types;
+    using EndpointCore = Microsoft.Singularity.V1.Services.EndpointCore;
+
+    public class ExHeap : CustomAllocator {
+
+        unsafe public static void*! in ExHeap Allocate(Type! type)
+        {
+            int size = Marshal.StructSize(type);
+#if SINGULARITY
+            SystemType st = type.GetSystemType();
+            Tracing.Log(Tracing.Debug, "ExHeap.Allocate {0} size {1:x} type {2:x}",
+                        type.FullName, (UIntPtr)unchecked((uint)size),
+                        st.TypeId);
+#else
+            Console.WriteLine("ExHeap.Allocate {0} of size {1}", type.FullName, size);
+            SystemType st = new SystemType();
+#endif
+            SharedHeapService.Allocation* ptr = SharedHeapService.Allocate((UIntPtr)size, st, 0);
+#if SINGULARITY_KERNEL
+            Tracing.Log(Tracing.Debug, "  result = {0:x8}", Kernel.AddressOf(ptr));
+#elif SINGULARITY_PROCESS
+            Tracing.Log(Tracing.Debug, "  result = {0:x8}", (UIntPtr)ptr);
+#endif // SINGULARITY_PROCESS
+            if (ptr == null) throw new OutOfMemoryException("SharedHeap.Allocate returned null");
+            return (void* in ExHeap)ptr;
+        }
+
+        unsafe public static void* opt(ExHeap[])! AllocateVector(Type! type, int elems)
+        {
+            ulong elemSize = (ulong)Marshal.StructSize(type);
+#if SINGULARITY
+            SystemType st = type.GetSystemType();
+            Tracing.Log(Tracing.Debug, "ExHeap.AllocateVector {0} size {1:x} type {2:x}",
+                        type.FullName, (UIntPtr)unchecked(elemSize * (ulong)elems),
+                        st.TypeId);
+#else
+            SystemType st = new SystemType();
+#endif
+            checked {
+                SharedHeapService.Allocation* ptr =
+                    SharedHeapService.Allocate( (UIntPtr)(elemSize * (ulong)elems), st, 0);
+
+                if (ptr == null) throw new OutOfMemoryException("SharedHeap.Allocate returned null");
+#if SINGULARITY
+                Tracing.Log(Tracing.Debug, "  result = {0:x8}", (UIntPtr)ptr);
+#endif
+                return (void* opt(ExHeap[]))ptr;
+            }
+        }
+
+        unsafe public static void Free([Claims] void* in ExHeap ptr)
+        {
+            // Should adhere to contract. ptr can be null.
+            if (ptr == null) return;
+
+#if SINGULARITY_KERNEL
+            Tracing.Log(Tracing.Debug, "ExHeap.Free: {0:x8}", Kernel.AddressOf(ptr));
+#elif SINGULARITY_PROCESS
+            Tracing.Log(Tracing.Debug, "ExHeap.Free: {0:x8}", (UIntPtr)ptr);
+#endif // SINGULARITY_PROCESS
+            SharedHeapService.Allocation* alloc = (SharedHeapService.Allocation*)ptr;
+            //            DebugStub.WriteLine("ExHeap free ptr {0,8:x}, alloc data {1,8:x}\n", __arglist((uint) ptr, (uint) SharedHeapService.GetData(alloc)));
+            SystemType epType = typeof(Endpoint).GetSystemType();
+            if (SystemType.IsSubtype(alloc, epType)) {
+                EndpointCore.Free(alloc);
+            }
+            else {
+                SharedHeapService.Free(alloc);
+            }
+        }
+
+        unsafe public static bool IsInst(void* in ExHeap ptr, System.Type! targetType)
+        {
+#if SINGULARITY
+            SystemType targetst = targetType.GetSystemType();
+            SharedHeapService.Allocation* alloc = (SharedHeapService.Allocation*)ptr;
+            return SystemType.IsSubtype(alloc, targetst);
+#else
+            return false;
+#endif
+        }
+
+        unsafe public static UIntPtr GetSize(void* in ExHeap ptr)
+        {
+            SharedHeapService.Allocation* alloc = (SharedHeapService.Allocation*)ptr;
+            return SharedHeapService.GetSize(alloc);
+        }
+
+        unsafe public static void* IndirectToData(void* in ExHeap ptr)
+        {
+            SharedHeapService.Allocation* alloc = (SharedHeapService.Allocation*)ptr;
+            UIntPtr data = SharedHeapService.GetData(alloc);
+#if DEBUG
+            if (data == UIntPtr.Zero) throw new ApplicationException("SharedHeapService.GetData returned 0");
+#endif
+            void* result = (void*!)data;
+            return result;
+        }
+
+        unsafe public static void*! in ExHeap Share(void* in ExHeap ptr) {
+            SharedHeapService.Allocation* alloc = (SharedHeapService.Allocation*)ptr;
+            UIntPtr size = SharedHeapService.GetSize(alloc);
+            return (void*! in ExHeap)SharedHeapService.Share(alloc, (UIntPtr)0, size);
+        }
+    }
+
+    /// <summary>
+    /// Specialized entry point for allocating endpoints rather than other exchangeable objects
+    /// </summary>
+    class ChannelHeap : CustomAllocator
+    {
+
+        unsafe public static void*! in ExHeap Allocate(Type! type)
+        {
+            uint size = (uint)Marshal.StructSize(type);
+            Tracing.Log(Tracing.Debug, "EndpointHeap.Allocate {0} with size {1:x}",
+                        type.FullName, (UIntPtr)size);
+
+            SystemType st = type.GetSystemType();
+            SharedHeapService.Allocation* ptr = EndpointCore.Allocate(size, st);
+            if (ptr == null) throw new OutOfMemoryException("EndpointCore.Allocate returned null");
+            return (void* in ExHeap)ptr;
+        }
+
+    }
+}

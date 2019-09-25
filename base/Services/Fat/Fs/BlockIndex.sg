@@ -1,0 +1,530 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   BlockIndex.sg
+//
+//  Note:
+//          The BlockIndex is used to provide fast block location within
+//  files and directories.  Its structure is fairly similar to the direct
+//  and indirect blocks of a traditional inode.
+//
+//  The maximum size of a FAT file is 4GB.  The code support 3 levels
+//  of indirection.  The direct block fan out is 32 and the
+//  indirect block fan out is 64.  On the third indirection we can
+//  address all of a 4GB file with 512 byte clusters:
+//
+//  Addressable region = 32 * 64^3 * 512 == 4GB
+//
+//  In practice, we should expect to see 4k cluster sizes and upwards.
+//
+
+using System;
+using System.Diagnostics;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal sealed class BlockIndex
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Internal class definitions
+
+        internal abstract class BaseBlock
+        {
+        }
+
+        internal sealed class DirectBlock : BaseBlock
+        {
+            internal const int Shift    = 6;
+            internal const int MaxItems = 1 << Shift;
+
+            private int []! items;
+
+            internal DirectBlock()
+            {
+                items = new int [MaxItems];
+                base();
+            }
+
+            public int this[int index]
+            {
+                get { return items[index]; }
+                set { items[index] = value; }
+            }
+        }
+
+        internal sealed class IndirectBlock : BaseBlock
+        {
+            internal const int Shift    = 7;
+            internal const int MaxItems = 1 << Shift;
+
+            private BaseBlock [] items;
+
+            internal IndirectBlock()
+            {
+                items = new BaseBlock [MaxItems];
+            }
+
+            public BaseBlock this[int index]
+            {
+                get { return items[index]; }
+                set { Debug.Assert(items[index] == null); items[index] = value; }
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        private const int MaxIndirects = 3;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Members
+
+        int           count;
+        readonly int  maxCount;
+        DirectBlock   direct;
+        IndirectBlock [] indirects;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal BlockIndex()
+        {
+            this.indirects = new IndirectBlock[MaxIndirects];
+            this.direct = new DirectBlock();
+
+            maxCount = DirectBlock.MaxItems;
+            int delta = IndirectBlock.MaxItems * DirectBlock.MaxItems;
+            for (int i = 0; i < MaxIndirects; i++) {
+                maxCount += delta;
+                delta *= IndirectBlock.MaxItems;
+            }
+        }
+
+        static private int DirectOffset(int value)
+        {
+            return value & ((1 << DirectBlock.Shift) - 1);
+        }
+
+        static private int IndirectOffset(int maxDepth, int depth, int value)
+        {
+            value >>= DirectBlock.Shift;
+            value >>= (IndirectBlock.Shift * (maxDepth - depth));
+            return value & ((1 << IndirectBlock.Shift) - 1);
+        }
+
+        /// <summary>
+        /// Accessor providing number of blocks indexed.
+        /// </summary>
+        internal int Count { get { return count; } }
+
+        /// <summary>
+        /// Lookup the block id of the nth block in the index.
+        ///
+        /// <returns> true if block exists in index,
+        /// false otherwise. </returns>
+        /// </summary>
+        internal bool Lookup(int nthBlock, out int blockId)
+        {
+            if (count <= nthBlock) {
+                blockId = Int32.MinValue;
+                return false;
+            }
+
+            // Check if block is in direct blocks
+            if (nthBlock < DirectBlock.MaxItems) {
+                blockId = direct[nthBlock];
+                return true;
+            }
+            nthBlock -= DirectBlock.MaxItems;
+
+            // Must be an indirect block.  Find which indirect block to
+            // start from.
+            int threshold  = IndirectBlock.MaxItems * DirectBlock.MaxItems;
+            int depth      = 0;
+
+            while (nthBlock >= threshold) {
+                nthBlock  -= threshold;
+                threshold *= IndirectBlock.MaxItems;
+                depth++;
+            }
+
+            // Walk from root indirect block down to block containing
+            // appropriate direct block.
+            IndirectBlock! ib = (!) indirects[depth];
+            for (int i = 0; i < depth; i++) {
+                ib = (IndirectBlock!) ib[IndirectOffset(depth, i, nthBlock)];
+            }
+
+            // Get entry in direct block and pray for forgiveness.
+            DirectBlock! db =
+                (DirectBlock)(!)ib[IndirectOffset(depth, depth, nthBlock)];
+            blockId = db[DirectOffset(nthBlock)];
+
+            return true;
+        }
+
+        private bool ScanDirectBlockForId(DirectBlock! db,
+                                          int          blockLength,
+                                          int          blockId,
+                                          out int      dbIndex)
+        {
+            for (dbIndex = 0; dbIndex < blockLength; dbIndex++) {
+                if (db[dbIndex] == blockId) {
+                    return true;
+                }
+            }
+            dbIndex = -1;
+            return false;
+        }
+
+        private bool ScanIndirectBlockForId(int             depth,
+                                            IndirectBlock!  idb,
+                                            int             done,
+                                            int             stepSize,
+                                            int             blockId,
+                                            out DirectBlock db,
+                                            out int         dbIndex,
+                                            out int         absoluteIndex)
+        {
+            if (depth == 0) {
+                int i = 0;
+                while (i < IndirectBlock.MaxItems && done < this.count) {
+                    db = (!)((DirectBlock)idb[i]);
+                    if (ScanDirectBlockForId(db,
+                                             Math.Min(this.count - done,
+                                                      DirectBlock.MaxItems),
+                                             blockId, out dbIndex)) {
+                        absoluteIndex = done + dbIndex;
+                        return true;
+                    }
+                    done += stepSize;
+                    i++;
+                }
+            }
+            else {
+                int i = 0;
+                while (i < IndirectBlock.MaxItems && done < this.count) {
+                    IndirectBlock! child = (IndirectBlock!) idb[i];
+                    int childStepSize    = stepSize / IndirectBlock.MaxItems;
+                    if (ScanIndirectBlockForId(depth - 1, child,
+                                               done, childStepSize, blockId,
+                                               out db,
+                                               out dbIndex,
+                                               out absoluteIndex)) {
+                        return true;
+                    }
+                    done += stepSize;
+                    i++;
+                }
+            }
+
+            db            = null;
+            dbIndex       = 0;
+            absoluteIndex = 0;
+
+            return false;
+        }
+
+        private bool FindId(int blockId,
+                            out DirectBlock db,
+                            out int         dbIndex,
+                            out int         absoluteIndex)
+        {
+            db            = null;
+            dbIndex       = -1;
+            absoluteIndex = -1;
+
+            // NB need to watch end of index bounds
+            if (ScanDirectBlockForId(this.direct,
+                                     Math.Min(count, DirectBlock.MaxItems),
+                                     blockId, out dbIndex)) {
+                db = this.direct;
+                absoluteIndex = dbIndex;
+                return true;
+            }
+
+            if (this.count <= DirectBlock.MaxItems) {
+                return false;
+            }
+
+            int done  = DirectBlock.MaxItems;
+            int step  = DirectBlock.MaxItems;
+            int depth = 0;
+            while (done < this.count) {
+                IndirectBlock! idb = (!)((IndirectBlock)this.indirects[depth]);
+                if (ScanIndirectBlockForId(
+                        depth, idb, done, step, blockId,
+                        out db, out dbIndex, out absoluteIndex)
+                    ) {
+                    return true;
+                }
+                depth++;
+                step *= IndirectBlock.MaxItems;
+                done += step;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Replace bad block id with new block id.
+        /// </summary>
+        ///
+        /// <para> This method performs a linear search through the
+        /// known block id's and replaces the target id if found.
+        /// </para>
+        internal bool Replace(int oldBlockId, int newBlockId)
+        {
+            DirectBlock db;
+            int         dbIndex;
+            int         absIndex;
+            if (FindId(oldBlockId, out db, out dbIndex, out absIndex)) {
+                assert db != null;
+                assert dbIndex >= 0 && dbIndex < DirectBlock.MaxItems;
+                assert db[dbIndex] == oldBlockId;
+                db[dbIndex] = newBlockId;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Truncate at specified block id.  Remove blockId and all block
+        /// id's later in index.
+        /// </summary>
+        ///
+        /// <para> This method performs a linear search through
+        /// the known block id's truncates the collection at the
+        /// specified point if found.
+        /// </para>
+        internal bool TruncateAtBlockId(int lastBlockId)
+        {
+            DirectBlock db;
+            int         dbIndex;
+            int         absIndex;
+            if (FindId(lastBlockId, out db, out dbIndex, out absIndex)) {
+                assert absIndex >= 0 && absIndex < count;
+                assert db != null;
+                assert db[dbIndex] == lastBlockId;
+                this.count = absIndex;
+                return true;
+            }
+            return false;
+        }
+
+        internal bool TruncateToLength(int clusterLength)
+            requires clusterLength >= 0 && clusterLength <= this.Count;
+        {
+            this.count = clusterLength;
+            return true;
+        }
+
+        /// <summary>
+        /// Append blockId at end of index.
+        ///
+        /// The caller should check that file being added does not push
+        /// the file size over FAT's maximum supported size (4GB).
+        /// </summary>
+        internal bool Append(int blockId)
+        {
+            if (this.count == this.maxCount) {
+                return false;
+            }
+
+            int nthBlock = this.count;
+            this.count++;
+
+            // Check if we can place this in direct block
+            if (nthBlock < DirectBlock.MaxItems) {
+                if (this.direct == null) this.direct = new DirectBlock();
+                this.direct[nthBlock] = blockId;
+                return true;
+            }
+
+            // Must be placed in an indirect block.  Find which
+            // indirect block to start search from.
+            nthBlock -= DirectBlock.MaxItems;
+            int threshold = IndirectBlock.MaxItems * DirectBlock.MaxItems;
+            int depth = 0;
+            while (nthBlock >= threshold) {
+                nthBlock  -= threshold;
+                threshold *= IndirectBlock.MaxItems;
+                depth++;
+            }
+
+            if (indirects[depth] == null) {
+                indirects[depth] = new IndirectBlock();
+            }
+
+            // Walk from root indirect block down to block containing
+            // appropriate direct block.
+            IndirectBlock ib = indirects[depth];
+            for (int i = 0; i < depth; i++) {
+                int offset = IndirectOffset(depth, i, nthBlock);
+                if (((!)ib)[offset] == null) {
+                    IndirectBlock tmp = new IndirectBlock();
+                    ib[offset] = tmp;
+                    ib = tmp;
+                }
+                else {
+                    ib = (IndirectBlock)ib[offset];
+                }
+            }
+
+            // Allocate direct block if it does not exist
+            int lastOffset = IndirectOffset(depth, depth, nthBlock);
+            DirectBlock db;
+            if (((!)ib)[lastOffset] == null) {
+                db = new DirectBlock();
+                ib[lastOffset] = db;
+            }
+            else {
+                db = (DirectBlock)ib[lastOffset];
+            }
+
+            // Set entry in direct block and run.
+            ((!)db)[DirectOffset(nthBlock)] = blockId;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Append series of blockId's at end of index.
+        /// </summary>
+        /// <returns> true on success, false if capacity would be exceeded.
+        /// </returns>
+        internal bool Append(int startBlockId, int length)
+            requires length >= 1;
+        {
+            if (this.count + length >= this.maxCount) {
+                return false;
+            }
+
+            int done = 0;
+            while (done != length) {
+                if (this.Append(startBlockId + done) == false) {
+                    // This shouldn't happen.
+                    goto undo;
+                }
+                done++;
+            }
+            return true;
+
+          undo:
+            this.count -= done;
+            return false;
+        }
+
+#if TEST
+        private static void TestLookup()
+        {
+            Console.WriteLine("Testing Lookup.");
+
+            const int MaxLookupItems = 4 * 1024 * 1024;
+            const int TickPeriod = 1000000;
+
+            BlockIndex bi = new BlockIndex();
+
+            for (int i = 0; i < bi.maxCount; i++) {
+                bi.Append(i);
+                int j;
+                bool r = bi.Lookup(i, out j);
+                Debug.Assert(i == j);
+                Debug.Assert(r == true);
+                Debug.Assert(bi.Lookup(i + 1, out j) == false);
+                if ((i % TickPeriod) == 0) Console.Write(".");
+            }
+
+            Debug.Assert(bi.Append(0) == false);
+
+            for (int i = 0; i < MaxLookupItems; i++) {
+                int u = bi.Count - i - 1;
+                int j;
+                bool r = bi.Lookup(u, out j);
+                Debug.Assert(r == true);
+                Debug.Assert(j == u);
+                if ((i % TickPeriod) == 0) Console.Write("o");
+            }
+
+            Debug.Assert(bi.Append(0) == false);
+
+            for (int i = 0; i < MaxLookupItems; i++) {
+                int u = (7 * i) % MaxLookupItems;
+                int j;
+                bool r = bi.Lookup(u, out j);
+                Debug.Assert(r == true);
+                Debug.Assert(j == u);
+                if ((i % TickPeriod) == 0) Console.Write("O");
+            }
+            Console.Write("\n");
+        }
+
+        static private void TestTruncate()
+        {
+            Console.WriteLine("Testing Truncate.");
+
+            const int MaxTruncateItems = 4 * 1024 * 1024;
+
+            BlockIndex bi = new BlockIndex();
+            for (int i = 0; i < MaxTruncateItems; i++) {
+                bi.Append(i);
+            }
+
+            Debug.Assert(!bi.TruncateAtBlockId(MaxTruncateItems));
+
+            int done  = 0;
+            int where = bi.Count - 1;
+            do {
+                Debug.Assert(where < bi.Count);
+                bool r = bi.TruncateAtBlockId(where);
+                Debug.Assert(r == true);
+                Debug.Assert(bi.Count == where);
+                done++;
+                where = Math.Max((bi.Count * 97 / 100) - 1, 0);
+            } while (bi.Count > 0);
+
+            Debug.Assert(!bi.TruncateAtBlockId(MaxTruncateItems));
+        }
+
+        static private void TestReplace()
+        {
+            Console.WriteLine("Testing Replace.");
+
+            const int MaxReplaceItems = 4 * 1024 * 1024;
+
+            BlockIndex bi = new BlockIndex();
+            for (int i = 0; i < MaxReplaceItems; i++) {
+                bi.Append(i);
+            }
+
+            Debug.Assert(!bi.Replace(MaxReplaceItems, MaxReplaceItems));
+
+            int done = 0;
+            int where = MaxReplaceItems - 1;
+            while (where >= 0) {
+                int newWhere = MaxReplaceItems + where;
+                bi.Replace(where, newWhere);
+
+                int checkWhere = 0;
+                bi.Lookup(where, out checkWhere);
+                Debug.Assert(checkWhere == newWhere);
+
+                where = (where * 98 / 100) - 1;
+                done++;
+            }
+
+            Debug.Assert(!bi.Replace(MaxReplaceItems, MaxReplaceItems));
+        }
+
+        static public void Main()
+        {
+            TestTruncate();
+            TestReplace();
+            TestLookup();
+        }
+#endif // TEST
+    }
+}

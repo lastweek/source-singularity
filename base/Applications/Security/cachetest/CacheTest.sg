@@ -1,0 +1,105 @@
+//////////////////////////////////////////////////////////////////////$
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Test function of Cache.sg module.
+// 
+  
+using System;
+using System.Text;
+using Microsoft.Singularity.Security.AccessControl;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return CacheTest.AppMain(this);
+        }
+    }
+
+
+    public class CacheTest
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            Cache cache = new Cache(10, (15*60), 25, "");
+
+            Console.WriteLine("Populating cache ...");
+            cache.AddEntry("removeMe", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("removeMe2", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("a", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("b", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("c", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("d", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("e", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("f" ,new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("g", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("h", new ICacheValue(cache, DateTime.MaxValue));
+
+            Console.Write(DumpCacheToString(cache));
+            Console.Write("Next add should remove \"removeMe*\" entries ...");
+            cache.AddEntry("i", new ICacheValue(cache, DateTime.MaxValue));
+
+            string[] keys = new string[]{"a", "b", "c", "d", "e", "f", "g", "h", "i"};
+            bool ok = true;
+            if (cache.GetEntry("RemoveMe") != null ||
+                             cache.GetEntry("RemoveMe1") != null)
+                ok = false;
+            else {
+                for (int i = 0; i < keys.Length; i++) {
+                    if (cache.GetEntry((!)(keys[i])) == null)
+                        ok = false;
+                }
+            }
+            if (ok)
+                Console.WriteLine(" OK");
+            else
+                Console.WriteLine(" FAILED!");
+
+            Console.Write("Testing LRU, accessing: ");
+
+            Random r = new Random();
+
+            for (int i = 0; i < keys.Length; i++) {
+                int n = r.Next() % keys.Length;
+                Console.Write(((i==0)? "" : ", ") + keys[n]);
+                cache.GetEntry((!)keys[n]);
+            }
+            Console.WriteLine();
+            Console.Write(DumpCacheToString(cache));
+
+            Console.WriteLine("Adding more, to provoke another pruning");
+            cache.AddEntry("y", new ICacheValue(cache, DateTime.MaxValue));
+            cache.AddEntry("z", new ICacheValue(cache, DateTime.MaxValue));
+            Console.Write(DumpCacheToString(cache));
+            return 0; 
+        }
+
+        private static string! DumpCacheToString(Cache! cache)
+        {
+            StringBuilder sb = new StringBuilder();
+            cache.DumpCache(sb);
+            return sb.ToString();
+        }
+    }
+}

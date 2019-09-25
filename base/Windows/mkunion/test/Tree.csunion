@@ -1,0 +1,15 @@
+using System;
+using NodeData = System.Int32;
+
+%%
+
+datatype Tree : Microsoft.Singularity.Applications.TreeTestBase {
+    Leaf,  // Leaves do not contain data
+    Node(NodeData value, Tree left, Tree right)
+    %%
+    public static void Bar()
+    {
+        Console.WriteLine("Bar");
+    }
+    %%
+}

@@ -1,0 +1,41 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>sms</AssemblyName>
+    <ProjectGuid>{321976B8-9161-4408-A8E5-1621A1AC8526}</ProjectGuid>
+    <DefineConstants>TRACE</DefineConstants>
+    <ApplicationCategory>Custom</ApplicationCategory>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AccessControlException.cs" />
+    <Compile Include="Service.sg" />
+    <Compile Include="ServiceManager.sg" />
+    <Compile Include="ServiceWatcher.sg" />
+    <Compile Include="ServiceStarter.sg" />
+    <Compile Include="Util.sg" />
+    <Compile Include="ServiceProcess.sg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="..\..\Contracts\ServiceManager.Contracts\ServiceManager.Contracts.csproj">
+      <Project>{3651F014-C6EA-42D7-BDCD-E2C6C2A31724}</Project>
+      <Name>ServiceManager.Contracts</Name>
+    </ProjectReference>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Manifest\Manifest.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Xml\Xml.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

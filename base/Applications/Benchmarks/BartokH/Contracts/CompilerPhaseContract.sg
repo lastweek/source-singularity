@@ -1,0 +1,67 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity.Extending;
+
+namespace Bartok.Contracts
+{
+    public enum RequestKind {
+        GetPhaseName    = 1,
+        ProcessFunction = 2,
+        Terminate   = 3,
+    };
+
+    public contract CompilerPhaseContract : ExtensionContract
+    {
+        in  message InitPhaseReq(byte[]! in ExHeap buffer);
+        out message InitPhaseRsp(byte[]! in ExHeap buffer);
+
+#if USE_SWITCH_RECEIVE
+        in  message GetPhaseNameReq();
+        out message GetPhaseNameRsp(char[]! in ExHeap name);
+
+        in  message ProcessFunctionReq(byte[]! in ExHeap buffer);
+        out message ProcessFunctionRsp(byte[]! in ExHeap buffer);
+
+        in  message TermPhaseReq();
+        out message TermPhaseRsp();
+#else
+        in  message Request(int which, byte[]! in ExHeap buffer);
+        out message Response(byte[]! in ExHeap buffer);
+#endif
+
+        out message ReadyToInit();
+
+        override state Start : one {
+            ReadyToInit! -> PreInit;
+        }
+
+        state PreInit : one {
+            InitPhaseReq? -> InitPhaseRsp! -> Running;
+        }
+
+        state Running : one {
+#if USE_SWITCH_RECEIVE
+            GetPhaseNameReq? -> GetPhaseNameRsp! -> Running;
+            ProcessFunctionReq? -> ProcessFunctionRsp! -> Running;
+            TermPhaseReq? -> TermPhaseRsp! -> End;
+#else
+            Request? -> Response! -> Running;
+#endif
+        }
+
+        state End: ;
+    }
+}

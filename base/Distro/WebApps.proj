@@ -1,0 +1,52 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+
+  <ItemGroup>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Shell\Shell.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tty\tty.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Iso9660\Iso9660.proj"/>
+
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Disk\Disk.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Network\Tulip\Tulip.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\VolumeManager\VolumeManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\LegacyKeyboard\LegacyKeyboard.csproj"/>
+
+    <Application Include="$(SINGULARITY_ROOT)\Services\NetStack\NetStackService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\IPConfig\IPConfig.csproj"/>
+
+
+    <Application Include="$(SINGULARITY_ROOT)\Services\Iso9660\Iso9660.csproj"/>
+
+    <Application Include="$(SINGULARITY_ROOT)\Services\ServiceManager\ServiceManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\ServiceManager\SMSClient\SMSClient.csproj"/>
+
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Utilities\Utilities.proj"/>
+
+    <Application Include="$(SINGULARITY_ROOT)\Applications\WebApps\**\*.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\WebHost\WebHost.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\cassini\cassini.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\ChildPing\ChildPing.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\ChildPong\ChildPong.csproj"/>
+
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tasklist\tasklist.csproj"/>
+
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.BVT.proj"/>
+  <ItemGroup Condition="!Exists('$(SINGULARITY_ROOT)\internal')">
+      <Application Include="$(SINGULARITY_ROOT)\precompiled\Drivers\Network\nForce4\nForce4.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

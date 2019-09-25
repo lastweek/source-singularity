@@ -1,0 +1,317 @@
+//////////////////////////////////////////////////////////////////////////////////
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ConsoleInput.sg
+//
+//  Note:   Read a line or a char of the Console
+//
+
+using DirectoryService.Utils;
+using System.GC;
+using System.Runtime.Remoting;
+using System.Threading;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.Singularity.V1.Services;
+
+
+namespace Microsoft.Singularity.Io
+{
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.V1.Services;
+    using Microsoft.Singularity.V1.Threads;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Directory;
+
+    using System;
+    using System.Text;
+    using System.Globalization;
+    using System.Runtime.CompilerServices;
+
+    using Microsoft.Singularity.Extending;
+    using Microsoft.Singularity.Runtime;
+    using Microsoft.Singularity.Io;
+    using System.Runtime.InteropServices;
+
+
+
+    public sealed class ConsoleInput // : ITracked, ISelectable   
+    {
+        private static TContainer<PipeLookAhead> consoleContainer;
+        // protected by TContainer lock.
+        private static char[]! readLineBuffer = new char[16];
+
+        //
+//
+        //private char[]! in ExHeap side;
+        //private UnicodePipeContract.Exp conn;
+        //private int charCount;
+        //private int charPos;
+//
+        //private ConsoleInput([Claims] UnicodePipeContract.Exp? pipe)
+        //{
+        //  this.side = new[ExHeap] char [280];
+        //  this.charCount = 0;
+        //  this.charPos = 0;
+        //  this.conn = pipe;
+//
+        //  base();
+        //}
+        //
+
+        private ConsoleInput() {}
+
+        private static UnicodePipeContract.Exp? GetPipe()
+        {
+            UnicodePipeContract.Exp con = null;
+
+            Endpoint * in ExHeap pipeep = Process.GetStartupEndpoint(0);
+            if (pipeep != null) {
+                con = pipeep as UnicodePipeContract.Exp;
+                if (con == null) {
+                    // This is benign.  Processes that use manifests to declare their endpoints
+                    // will probably not have a UnicodePipeContract.Exp at index 0.  In fact,
+                    // if they declare such, they will encounter problems because of the conflict
+                    // with this method (and its caller).  Need to determine the right way to do
+                    // this.
+                    Process.RetStartupEndpoint(0,pipeep);
+                    return null;
+                }
+                else {
+                    //DebugStub.WriteLine("ConsoleInput: connected to pipe.");
+                    return con;
+                }
+            }
+            return null;
+        }
+
+
+        public static void Initialize()
+        {
+            UnicodePipeContract.Exp pipe = GetPipe();
+            PipeLookAhead bufferedPipe = new PipeLookAhead(pipe, 100);
+            ConsoleInput.consoleContainer = new TContainer<PipeLookAhead>(bufferedPipe);
+        }
+
+        //
+        //public void Dispose()
+        //{
+        //  delete this.side;
+        //  delete this.conn;
+        //}
+//
+        //void ITracked.Acquire() {
+        //  Tracing.Log(Tracing.Debug,"ConsoleInput.Acquire");
+        //}
+        //void ITracked.Release() {
+        //  Tracing.Log(Tracing.Debug,"ConsoleInput.Release");
+        //}
+        //void ITracked.Expose() {
+        //  Tracing.Log(Tracing.Debug,"ConsoleInput.Expose");
+        //}
+        //void ITracked.UnExpose() {
+        //  Tracing.Log(Tracing.Debug,"ConsoleInput.UnExpose");
+        //}
+        //
+
+        public static void Finalize()
+        {
+            //            TContainer<ConsoleInput> chandle = consoleContainer;
+            TContainer<PipeLookAhead> chandle = consoleContainer;
+            consoleContainer = null;
+
+            if (chandle == null) return;
+
+            PipeLookAhead co = chandle.Acquire();
+            co.Dispose();
+        }
+
+        //
+        //private int InternalReadChar()
+        //{
+        //  expose (this) {
+        //      if (this.conn != null) {
+        //          if (this.charCount == 0) {
+        //              UnicodePipeContract.Exp pipe = this.conn;
+//
+        //          tryAgain:
+        //              switch receive {
+        //                  case pipe.Write(buffer,a,b):
+        //                      if (b == 0) {
+        //                          pipe.SendAckWrite(buffer);
+        //                          goto tryAgain;
+        //                      }
+        //                      if (b == 1) {
+        //                          int theChar = (int) buffer[a];
+        //                          pipe.SendAckWrite(buffer);
+        //                          return theChar;
+        //                      }
+        //                      else {
+        //                          // switch our buffer with theirs
+        //                          pipe.SendAckWrite(this.side);
+        //                          this.side = buffer;
+        //                          this.charPos = a+1;
+        //                          this.charCount = b-1;
+        //                          return (int)buffer[a];
+        //                      }
+//
+        //                  case pipe.ChannelClosed():
+        //                      return -1;
+        //              }
+        //          }
+        //          else {
+        //              // there are more chars in the buffer
+        //              int theChar = this.side[this.charPos++];
+        //              this.charCount--;
+        //              return theChar;
+        //          }
+        //      }
+        //  } //expose
+        //  return -1;
+        //}
+        //
+
+        public static void Close()
+        {
+        }
+
+        public static int ReadChar()
+        {
+            if (consoleContainer == null) return -1;
+            PipeLookAhead co = consoleContainer.Acquire();
+            int key = co.ReadChar();
+            if (key == -1) {
+                co.Dispose();
+                consoleContainer = null;
+                return key;
+            }
+            consoleContainer.Release(co);
+            return key;
+        } //ReadChar
+
+        ////////////////////////////////////////////////////////
+        //
+        public static string ReadLine()
+        {
+            if (consoleContainer == null) return null;
+            PipeLookAhead bufferedPipe = consoleContainer.Acquire();
+
+            int pos = 0;
+            int key;
+
+            do {
+                key = bufferedPipe.ReadChar();
+                if (key == -1) {
+                    bufferedPipe.Dispose();
+                    consoleContainer = null;
+                    return null;
+                }
+                if (key == '\r') {
+                    // DebugStub.WriteLine("key {0}", key);
+                    continue;
+                }
+                if (key == '\n') {
+                    // DebugStub.WriteLine("key {0}", key);
+                    break;
+                }
+                if (pos + 1 >= readLineBuffer.Length) {
+                    char[] temp = new char[readLineBuffer.Length *2];
+                    Array.Copy(readLineBuffer,temp,readLineBuffer.Length);
+                    readLineBuffer = temp;
+                }
+                readLineBuffer[pos++] = (char) key;
+                if (key > 31 && key < 126) {
+                    // DebugStub.WriteLine("key {0}", key);
+                }
+            } while (key != -1);
+
+            string s = new string(readLineBuffer,0,pos);
+            //DebugStub.WriteLine("in: count={0}, s=({1})",__arglist(pos, s));
+
+            consoleContainer.Release(bufferedPipe);
+            return s;
+        } //ReadLine
+
+        //
+        //internal enum ReceiveTag {
+        //  Any = 1,
+        //  GetChar = 2,
+        //}
+//
+        //[Selectable((int)ReceiveTag.GetChar)]
+        //public void RecvGetChar(out int key) {
+        //  key = this.InternalReadChar();
+        //}
+//
+        ///// <summary>
+        ///// Tests if the message at the head of the queue matches the given tag. If so,
+        ///// returns true.
+        /////
+        ///// If no match is possible in the future given the current message, possible must
+        ///// be set to false.
+        ///// Implementations are disallowed from setting possible to true
+        ///// so that the context can chain them.
+        /////
+        ///// If the underlying object is an endpoint set, it also returns an object that
+        ///// serves to extract the endpoint having the match from the set later.
+        /////
+        ///// Again, implementations are disallowed from setting match setMatch to null
+        ///// so that the context can chain the calls.
+        /////
+        ///// </summary>
+        //bool ISelectable.HeadMatches(int tag, ref bool possible, ref object setMatch) {
+        //  // Only handle pipe case
+        //  expose (this) {
+        //      if (this.conn != null) {
+        //          if (this.charCount == 0) {
+        //              UnicodePipeContract.Exp pipe = this.conn;
+//
+        //              // negative tag is channel closed
+        //              int pipeTag = (tag < 0)?tag : UnicodePipeContract.Tags.Write;
+//
+        //              return pipe.HeadMatches(pipeTag, ref possible, ref setMatch);
+        //          }
+        //          else {
+        //              // there are more chars in the buffer
+        //              if (tag < 0) {
+        //                  // not closed
+        //                  possible = false;
+        //                  return false;
+        //              }
+        //              return true;
+        //          }
+        //      }
+        //      else {
+        //          // no pipe
+        //          possible = false;
+        //          return false;
+        //      }
+        //  } //expose
+        //}
+//
+        //SyncHandle ISelectable.GetWaitHandle() {
+        //  expose (this) {
+        //      assert(this.conn != null);
+        //      return this.conn.GetWaitHandle();
+        //  }
+        //}
+//
+        //
+        public static PipeLookAhead! AcquireInput() {
+            assert consoleContainer != null;
+
+            PipeLookAhead bufferedPipe = consoleContainer.Acquire();
+            return bufferedPipe;
+        }
+
+        public static void ReleaseInput([Claims] PipeLookAhead! bufferedPipe) {
+            assert consoleContainer != null;
+
+            consoleContainer.Release(bufferedPipe);
+        }
+
+    } //ConsoleInput
+}//namespace

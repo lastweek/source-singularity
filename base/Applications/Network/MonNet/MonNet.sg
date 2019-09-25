@@ -1,0 +1,817 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Tool to transfer monitoring log entries over network
+//
+using System;
+
+using System.IO;
+
+using Microsoft.Singularity;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Naming;
+
+using System.Net.IP;
+using NetStack.Contracts;
+using NetStack.Channels.Public;
+
+using Microsoft.Singularity.Applications.Network;
+using Microsoft.Singularity.Diagnostics.Contracts;
+
+using Microsoft.Singularity.V1.Types;
+
+// For contract type handle dumping:   
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.FileSystem;
+
+using Thread = System.Threading.Thread;
+
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [BoolParameter( "help", Default=false, HelpMessage="Display Extended help message.")]
+        internal bool doHelp;
+
+        [StringArrayParameter( "args", HelpMessage="arg bucket")]
+        internal string[] args;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Monnet.AppMain(this);
+        }
+    }
+
+    public class Monnet
+    {
+        public class Proc
+        {
+            public static ProcessContract.Imp:ReadyState BindToProcessDiagnostics()
+            {
+                ProcessContract.Exp! exp;
+                ProcessContract.Imp! imp;
+                ProcessContract.NewChannel(out imp, out exp);
+
+                // get NS endpoint
+                DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+                try {
+                    ErrorCode errorOut;
+                    bool ok = SdsUtils.Bind(ProcessContract.ModuleName, ns, exp, out errorOut);
+                    if (!ok) {
+                        delete imp;
+                        Console.WriteLine("Bind of {0} failed. reason: {1}\n", MemoryContract.ModuleName,SdsUtils.ErrorCodeToString(errorOut) );
+                        if (errorOut == ErrorCode.ChannelClosed) {
+                            throw new Exception("Encountered a ChannelClosed to NameServer");
+                        }
+                        return null;
+                    }
+                    else {
+                        imp.RecvReady();
+                    }
+                }
+                finally {
+                    delete ns;
+                }
+                return imp;
+            }
+
+            public static int []! GetProcessIDs(ProcessContract.Imp:ReadyState! imp)
+            {
+                int [] ids = null;
+                int[]! in ExHeap xids;
+                imp.SendGetProcessIDs();
+                imp.RecvProcessIDs(out xids);
+                // REVIEW: The kernel process is being returned twice so we're
+                // skipping one of the entries if the process ID matches.
+                int startIndex = 0;
+                if (xids[0] == xids[1])
+                    startIndex++;
+                ids = new int[xids.Length - startIndex];
+                for (int i = startIndex; i < xids.Length; i++) {
+                    ids[i - startIndex] = xids[i];
+                }
+                delete xids;
+                return ids;
+            }
+
+            public static int [] GetProcessThreadIDs(ProcessContract.Imp:ReadyState! imp, int procID)
+            {
+                imp.SendGetProcessThreadIDs(procID);
+                int [] retVal = null;
+
+                switch receive {
+                    case imp.NotFound() :
+                        break;
+
+                    case imp.ProcessThreadIDs(int[]! in ExHeap tids) :
+                        retVal = new int[tids.Length];
+                        for (int i = 0; i < tids.Length; i++) {
+                            retVal[i] = tids[i];
+                        }
+                        delete tids;
+                        break;
+
+                    case imp.ChannelClosed() :
+                        throw new Exception("GetProcessThreadIDs: imp channel closed");
+                }
+                return retVal;
+            }
+
+            public static string []! GetProcessNames(ProcessContract.Imp:ReadyState! imp, int []! ids)
+            {
+                string [] names = new string[ids.Length];
+                for (int i = 0; i < ids.Length; i++) {
+                    imp.SendGetProcessName(ids[i]);
+
+                    switch receive {
+                        case imp.NotFound() :
+                            break;
+
+                        case imp.ProcessName(char[]! in ExHeap procName) :
+                            names[i] = Bitter.ToString(procName);
+                            delete procName;
+                            break;
+
+                        case imp.ChannelClosed() :
+                            throw new Exception("GetProcessNames: imp channel closed");
+                    }
+                }
+                return names;
+            }
+        } // public class Proc
+
+        public enum SysInfoEvent : ushort
+        {
+            CpuSpeed = 1,
+                ContractName = 2,
+                PidInfo = 3,
+                ThreadInfo = 4,
+                }
+        private static Monitoring.LogEntry newSysInfoEvent(SysInfoEvent type)
+        {
+            Monitoring.LogEntry ev = new Monitoring.LogEntry();
+
+            ev.provider = Monitoring.Provider.SysInfo;
+            ev.type = (ushort)type;
+            ev.version = 0;
+            return ev;
+        }
+        private static void postSysInfoEvent(ref Monitoring.LogEntry ev,
+                                             string msg)
+        {
+            if (msg != null) {
+                textlen = System.Text.Encoding.ASCII.GetBytes(msg, 0, msg.Length,
+                                                              text, 0);
+                unsafe {
+                    ev.text = (byte *)textlen;
+                }
+            }
+
+            int ret = Marshall(ref ev);
+            if (ret != 0) {
+                Console.WriteLine("Error marshalling sysinfo event... continuing anyway");
+            }
+        }
+
+
+        // Add system info (CPU speeds, memory, disks, process
+        // & thread run-downs) to event buffer
+        private static void dumpSysInfo()
+        {
+            Monitoring.LogEntry ev = newSysInfoEvent(SysInfoEvent.CpuSpeed);
+
+            // TODO: foreach CPU...
+            ev.cpu = 0;
+            ulong hz = (ulong)Processor.CyclesPerSecond;
+            ev.arg0 = (uint)hz;
+            ev.arg1 = (uint)(hz >> 32);
+            postSysInfoEvent(ref ev, null);
+
+            dumpContractTypeHandles();
+            dumpPidEntries();
+
+            // TODO: disk ID -> name rundowns
+        }
+
+        private static void dumpPidEntries()
+        {
+            Monitoring.LogEntry ev = newSysInfoEvent(SysInfoEvent.PidInfo);
+            Monitoring.LogEntry ev2 = newSysInfoEvent(SysInfoEvent.ThreadInfo);
+
+            ProcessContract.Imp:ReadyState   pDiag = Proc.BindToProcessDiagnostics();
+
+            if (pDiag == null) {
+            }
+            else {
+                int [] procIds = Proc.GetProcessIDs(pDiag);
+                string [] names = Proc.GetProcessNames(pDiag,procIds);
+
+                for (int i = 0; i < procIds.Length; i++) {
+                    ev.arg0 = (uint)procIds[i];
+                    postSysInfoEvent(ref ev,names[i]);
+
+                    int [] threads = Proc.GetProcessThreadIDs(pDiag, procIds[i]);
+                    if (threads != null) {
+                        for (int j = 0; j < threads.Length; j++) {
+                            ev2.arg0 = (uint) threads[j];
+                            ev2.arg1 = (uint) procIds[i];
+                            postSysInfoEvent(ref ev2, null);
+                        }
+                    }
+                }
+                delete pDiag;
+            }
+        }
+
+        // list of interesting contracts we dump SystemType handles for
+        private static System.Type []! contractTypes = new System.Type [] {
+            // NetStack.Contracts.dll   
+            typeof(DNSContract.Exp),
+            typeof(DNSContract.Imp),
+            typeof(IPContract.Exp),
+            typeof(IPContract.Imp),
+            typeof(RoutingContract.Exp),
+            typeof(RoutingContract.Imp),
+            typeof(TcpConnectionContract.Exp),
+            typeof(TcpConnectionContract.Imp),
+            typeof(TcpContract.Exp),
+            typeof(TcpContract.Imp),
+            typeof(UdpConnectionContract.Exp),
+            typeof(UdpConnectionContract.Imp),
+            typeof(UdpContract.Exp),
+            typeof(UdpContract.Imp),
+
+            // Io.Contracts.dll   
+            typeof(ConsoleDeviceContract.Exp),
+            typeof(ConsoleDeviceContract.Imp),
+            typeof(DeviceContract.Exp),
+            typeof(DeviceContract.Imp),
+            typeof(DiskDeviceContract.Exp),
+            typeof(DiskDeviceContract.Imp),
+            typeof(KeyboardDeviceContract.Exp),
+            typeof(KeyboardDeviceContract.Imp),
+            typeof(PnpContract.Exp),
+            typeof(PnpContract.Imp),
+            typeof(SoundDeviceContract.Exp),
+            typeof(SoundDeviceContract.Imp),
+            typeof(VideoDeviceContract.Exp),
+            typeof(VideoDeviceContract.Imp),
+            typeof(VolumeManagerContract.Exp),
+            typeof(VolumeManagerContract.Imp),
+            typeof(NicDeviceContract.Exp),
+            typeof(NicDeviceContract.Imp),
+            typeof(NicDeviceEventContract.Exp),
+            typeof(NicDeviceEventContract.Imp),
+
+            // Directory.Contracts.dll   
+            typeof(DirectoryServiceContract.Exp),
+            typeof(DirectoryServiceContract.Imp),
+            typeof(FileContract.Exp),
+            typeof(FileContract.Imp),
+            typeof(NotifyContract.Exp),
+            typeof(NotifyContract.Imp),
+            typeof(ServiceContract.Exp),
+            typeof(ServiceContract.Imp),
+            typeof(ServiceProviderContract.Exp),
+            typeof(ServiceProviderContract.Imp),
+            typeof(Microsoft.Singularity.Extending.ExtensionContract.Exp),
+            typeof(Microsoft.Singularity.Extending.ExtensionContract.Imp),
+
+            // Security.Contracts.dll   
+            typeof(Microsoft.Singularity.Security.SecurityDiagnosticsContract.Exp),
+            typeof(Microsoft.Singularity.Security.SecurityDiagnosticsContract.Imp),
+
+            // FileSystem.Contracts.dll   
+            typeof(ThreadPoolControlContract.Exp),
+            typeof(ThreadPoolControlContract.Imp),
+
+            // Diagnostics.Contracts.dll   
+            typeof(Microsoft.Singularity.Diagnostics.Contracts.ChannelContract.Exp),
+            typeof(Microsoft.Singularity.Diagnostics.Contracts.ChannelContract.Imp),
+            typeof(Microsoft.Singularity.Diagnostics.Contracts.MemoryContract.Exp),
+            typeof(Microsoft.Singularity.Diagnostics.Contracts.MemoryContract.Imp),
+            typeof(Microsoft.Singularity.Diagnostics.Contracts.ProcessContract.Exp),
+            typeof(Microsoft.Singularity.Diagnostics.Contracts.ProcessContract.Imp),
+        };
+
+        private static void dumpContractTypeHandles()
+        {
+            Monitoring.LogEntry ev =newSysInfoEvent(SysInfoEvent.ContractName);
+
+            for (int i = 0; i < contractTypes.Length; i++) {
+                System.Type! ty = (System.Type!) contractTypes[i];
+                SystemType st = ty.GetSystemType();
+                string! fullname = (string!)ty.FullName;
+                ev.arg0 = (uint)st.TypeId;
+
+                // trim the enclosing type off the fullname
+                int idx = fullname.LastIndexOf('+');
+                string smallname;
+                if (idx >= 0)
+                    smallname = fullname.Substring(idx+1);
+                else
+                    smallname = fullname;
+
+                postSysInfoEvent(ref ev, smallname);
+            }
+        }
+
+
+        public static byte[]! buf; // event buffer
+        public static int bufoffset; // current position in event buffer
+        public static byte[] text; // buffer for event string
+        public static int textlen; // length of event string
+
+        public static TcpConnectionContract.Imp:Connected!
+        OpenConnection(IPv4 address, ushort port)
+        {
+            TcpConnectionContract.Imp tcpConn = Utils.GetNewTcpEndPoint();
+            if (tcpConn == null) {
+                Console.WriteLine("Could not initialize TCP endpoint.");
+                throw new ArgumentException("Could not initialize TCP endpoint.");
+            }
+
+            Console.Write("Connecting...");
+
+            // Try to connect to the remote host
+            tcpConn.SendConnect((uint)address, port);
+
+            switch receive {
+                case tcpConn.CouldNotConnect(TcpError error) :
+                    Console.WriteLine("Failed to connect: TcpError = " + System.Net.Sockets.TcpException.GetMessageForTcpError(error));
+                    delete tcpConn;
+                    throw new ArgumentException("Failed to connect.");
+                    break;
+
+                case tcpConn.OK() :
+                    // success;
+                    break;
+
+                case tcpConn.ChannelClosed() :
+                    // how rude
+                    Console.WriteLine("Netstack channel closed unexpectedly");
+                    delete tcpConn;
+                    throw new ArgumentException("Netstack channel closed unexpectedly");
+                    break;
+            }
+
+            Console.WriteLine("Connected");
+            return tcpConn;
+        }
+
+        public static TcpConnectionContract.Imp:Connected
+        SetupNetwork(string sIp, string sPort)
+        {
+            IPv4 host;
+            try {
+                host = IPv4.Parse(sIp);
+            }
+            catch (FormatException e) {
+                Console.WriteLine("{0}: {1}", e, sIp);
+                return null;
+            }
+
+            ushort port;
+            try {
+                port = UInt16.Parse(sPort);
+            }
+            catch (FormatException) {
+                Console.WriteLine("Malformed port number: {0}", sPort);
+                return null;
+            }
+            catch (OverflowException) {
+                Console.WriteLine("Port number out of range: {0}", sPort);
+                return null;
+            }
+
+            TcpConnectionContract.Imp! conn = OpenConnection(host, port);
+
+            return conn;
+        }
+
+
+        // we segment our large buffer into COMMSZ chunks for punting through
+        // to the network stack
+        private static int COMMSZ = 64*1024;  // 64KB
+
+        public static int SendLogBuffer(TcpConnectionContract.Imp! conn)
+        {
+            int sendidx = 0;
+            int sendlen;
+            byte[]! in ExHeap data;
+
+            // copy data to exheap in chunks and send
+            Console.Write("Sending");
+            while (sendidx < bufoffset) {
+                sendlen = Math.Min(COMMSZ, bufoffset - sendidx);
+                data = Bitter.FromByteArray(buf, sendidx, sendlen);
+
+                conn.SendWrite(data);
+                switch receive {
+                    case conn.OK() :
+                        Console.Write(".");
+                        break;
+
+                    case conn.CantSend() :
+                        Console.WriteLine(": Connection closed unexpectedly (CantSend)");
+                        return -1;
+                        break;
+
+                    case conn.ConnectionClosed():
+                        Console.WriteLine(": Connection closed unexpectedly (ConnectionClosed)");
+                        return -1;
+                        break;
+                }
+
+                sendidx += sendlen;
+            }
+
+            Console.WriteLine("OK");
+            return 0;
+        }
+
+        public static int marshalled; // count of events marshalled
+
+        public static int Marshall(ref Monitoring.LogEntry e)
+        {
+            int tl = (textlen > 0)? textlen : 0;
+            if (sizeof(Monitoring.LogEntry) + bufoffset + tl > buf.Length) {
+                Console.WriteLine("Marshall: buffer full");
+                return -1;
+            }
+
+            unsafe {
+                fixed (byte *bp = &buf[bufoffset]) {
+                    // Use a simple cast   
+                    Monitoring.LogEntry *lep = (Monitoring.LogEntry *)bp;
+                    *lep = e;
+                }
+            }
+            bufoffset += sizeof(Monitoring.LogEntry);
+
+            if (textlen > 0) {
+                Array.Copy(text, 0, buf, bufoffset, textlen);
+                bufoffset += textlen;
+            }
+            textlen = 0;
+
+            marshalled++;
+            return 0;
+        }
+
+        // Fill event buffer until either duration has passed or
+        // we have maxevents
+        public static int FillEventBuffer(ulong duration, ulong maxevents,
+                                          ulong evstart)
+        {
+            int ret = -1;
+            ulong counter = evstart;
+            ulong old_counter = 0;
+            ulong count_lost = 0;
+            ulong sum_lost = 0;
+
+            ulong hz = (ulong)Processor.CyclesPerSecond;
+            ulong now = Processor.CycleCount;
+            ulong end = now + duration * hz;
+
+            ulong evcount = 0;
+
+            Monitoring.LogEntry e = new Monitoring.LogEntry();
+
+            Console.WriteLine("MonNet: collecting with duration={0}secs, maxevents={1}",
+                              duration, maxevents);
+
+            bool done = false;
+            while (!done) {
+                // Get an event
+                while (true) {
+                    ret = -1;
+                    now = Processor.CycleCount;
+                    if (now > end || evcount >= maxevents) {
+                        done = true;
+
+                        if (now > end)
+                            Console.WriteLine("Timed out ({0}ms late)", (now-end)*1000/hz);
+                        if (evcount >= maxevents)
+                            Console.WriteLine("Got enough events");
+                        break;
+                    }
+
+                    unsafe {
+                        ret = Monitoring.GetEntry(ref counter, out e);
+                    }
+                    if (old_counter != counter) {
+                        count_lost++;
+                        sum_lost += counter - old_counter;
+                        //Console.Write("X{0}", counter - old_counter);
+                    }
+                    old_counter = counter;
+
+                    if (ret == 0) {// Got an event
+                        evcount++;
+                        break;
+                    }
+                    else { // No event to get, sleep and try again
+                        // are we just using defaults?
+                        if (duration == ((ulong)DEF_DUR) &&
+                            maxevents == ((ulong)DEF_MAXEV))
+                        {
+                            done = true;
+                            Console.WriteLine("No more events");
+                            break;
+                        }
+                        else {
+                            Thread.Sleep(100);
+                        }
+                    }
+                }
+                counter++;
+
+                if (ret == 0) {
+                    if (e.cycleCount == 0) {
+                        //          Console.Write('^');
+                        evcount--;
+                        continue;  // got illegal entry, so try next
+                    }
+
+                    // Try to get text buffer for event
+                    if (e.text != null) {
+                        int size;
+                        unsafe {
+                            assume text != null;
+                            fixed (byte * b = text) {
+                                size = Monitoring.FillTextEntry(e.text, e.cycleCount,
+                                                                b, text.Length);
+                            }
+                        }
+
+                        if (size != 0) // fixup size in event structure
+                        {
+                            if (size < 0) // error: dropped text string
+                                Console.WriteLine("size={0}", size);
+
+                            unsafe {
+                                e.text = (byte *)size;
+                            }
+                            textlen = size;
+                        }
+                    }
+
+                    // put event in buffer
+                    ret = Marshall(ref e);
+                    if (ret != 0) {
+                        Console.WriteLine("BUFFER FULL: exiting EARLY!");
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            Console.WriteLine("Got {0} events", evcount);
+            return ret;
+        }
+
+
+        // We can't actually "clear" the kernel log; what this does
+        // is find the counter number for the log's current end,
+        // so we can pass it into FillEventBuffer() later.   
+        private static ulong clearLog()
+        {
+            int ret;
+            ulong counter = 0;
+            Monitoring.LogEntry e = new Monitoring.LogEntry();
+            int i = 0;
+
+            while (true) {
+                unsafe {
+                    ret = Monitoring.GetEntry(ref counter, out e);
+                }
+                if (ret == 0) {
+                    counter++; // got an event; try next one
+                }
+                else {
+                    break;  // failed to get an event, we're done
+                }
+
+                // sanity check   
+                if (i++ > 5000000) {
+                    Console.WriteLine("error: clearLog() looped 5000000 times; bailing");
+                    break;
+                }
+            }
+
+            return counter;
+        }
+
+
+
+        ////////////////////////////////////////////////  
+        // Command line gubbins   
+
+
+        private static int doTransfer(string sIp, string sPort)
+        {
+            int ret;
+
+            // Setup the networking stuff.
+            // Due to a race in the netstack, must open the connection
+            // and start sending data on it promptly, otherwise you'll get
+            // a RST and an exception.
+            TcpConnectionContract.Imp conn = SetupNetwork(sIp, sPort);
+            if (conn == null)
+                return -1;
+
+            // Transmit the buffer
+            ret = SendLogBuffer(conn);
+
+            // Tidy up
+            conn.SendClose();
+            delete conn;
+
+            return ret;
+        }
+
+
+        private static int doSlurp(long runTime, long maxevents,
+                                   ulong evstart)
+        {
+            // Allocate the buffers
+            buf = new Byte[16<<20]; // should be big enough
+            bufoffset = 0;
+            text = new byte[256];
+            textlen = 0;
+
+            marshalled = 0;     // num events copied to buf
+
+            // Put preamble into buffer
+            dumpSysInfo();
+
+            return FillEventBuffer((ulong)runTime, (ulong)maxevents, evstart);
+        }
+
+
+        public static bool ParseNumber(string/*!*/ arg,
+                                       string/*!*/ name,
+                                       out long value)
+        {
+            // arg should look like "[-][A-z]:[0-9]*"
+            if (arg.Length >= 4) {
+                try {
+                    value = Int64.Parse(arg.Substring(3));
+                    return true;
+                }
+                catch (FormatException) {
+                    Console.WriteLine("format ex");
+                }
+                catch (OverflowException) {
+                    Console.WriteLine("overflow ex");
+                }
+            }
+            Console.WriteLine("Could not parse {0}, {1}", name,arg.Substring(3));
+            value = 0;
+            return false;
+        }
+
+        internal static int usage()
+        {
+            Console.WriteLine("Usage: monnet /d /c /w:WARMUP /e /r:RUNTIME /n:MAXEVENTS /s /t:IP:PORT");
+            Console.WriteLine("  /d           disable logging");
+            Console.WriteLine("  /c           \"clear\" log: ie note current end");
+            Console.WriteLine("  /w:WARMUP    pause for WARMUP seconds");
+            Console.WriteLine("  /e           enable logging");
+            Console.WriteLine("  /r:RUNTIME   set event slurp limit to RUNTIME seconds");
+            Console.WriteLine("  /n:MAXEVENTS set event slurp limit to MAXEVENTS");
+            Console.WriteLine("     (without /r or /n options: slurp until log empty or marshal buffer full)");
+            Console.WriteLine("  /s           slurp events according to limits");
+            Console.WriteLine("  /t:IP:PORT transfer via TCP to IPADDR:PORT");
+            Console.WriteLine("All options can occur in any order, zero or more times");
+            Console.WriteLine("They are executed in order.  Example:");
+            Console.WriteLine("monnet /d /c /w:300 /e /r:300 /s /d /t:10.99.99.1:5000");
+            return -1;
+        }
+
+        private static long DEF_DUR = 999999999; // seconds ie forever
+        private static long DEF_MAXEV = 999999999;
+
+        internal static int AppMain(Parameters! config)
+        {
+            int ret = 0;
+            long runTime = DEF_DUR, maxevents = DEF_MAXEV;
+            ulong evstart = 0;
+            string[] args = config.args;
+
+            if (config.doHelp) return usage();
+
+            if (args == null) {
+                return usage();
+            }
+
+            bool  needHelp = (args.Length == 0);
+
+            int i;
+            for (i = 0; !needHelp && i < args.Length; i++) {
+                string arg = args[i];
+
+                if (arg == null || arg.Length < 2 || (arg[0] != '-' && arg[0] != '/')) {
+                    Console.WriteLine("Invalid argument: {0}", arg);
+                    return usage();
+                }
+
+                long temp;
+                switch (arg[1]) {
+                    case 'd':
+                    case 'e':
+                        bool active = (arg[1] == 'e');
+                        Console.WriteLine(active?"Enabling logging":"Disabling logging");
+                        Monitoring.setActive(active);
+                        break;
+
+                    case '?':
+                    case 'h':
+                        needHelp = true;
+                        break;
+
+                    case 'c':
+                        Console.WriteLine("Clearing log");
+                        evstart = clearLog();
+                        break;
+
+                    case 'w':
+                        ParseNumber(arg, "Warmup time", out temp);
+                        Console.WriteLine("Pausing {0}secs for warmup", temp);
+                        Thread.Sleep(((int)temp) * 1000);
+                        break;
+
+                    case 'r':
+                        ParseNumber(arg, "Run time", out runTime);
+                        break;
+
+                    case 'n':
+                        ParseNumber(arg, "Maxevents", out maxevents);
+                        break;
+
+                    case 's':
+                        doSlurp(runTime, maxevents, evstart);
+                        break;
+
+                    case 't':
+                        int colon = arg.IndexOf(':', 3);
+                        if (colon < 0) {
+                            Console.WriteLine("argument error: missing colon in '{0}': expecting IPADDR:PORT", arg);
+                            return usage();
+                        }
+                        string ipaddr = arg.Substring(3, colon-3);
+                        string port = arg.Substring(colon+1);
+                        ret = doTransfer(ipaddr, port);
+                        if (ret != 0)
+                            return ret;
+                        break;
+                    case 'y':
+                        unsafe {
+                            fixed (byte *bp = &buf[0])
+                            {
+                                int addr = (int)bp;
+                                DebugStub.WriteLine("Type the following line in debugger to save the ets file localy:");
+                                DebugStub.WriteLine("!log -Y {0:x} {1:x} <filename>", __arglist(addr , bufoffset));
+                                DebugStub.Break();
+                            }
+                            return 0;
+                        }
+
+                    default:
+                        Console.WriteLine("Unknown option {0}", arg);
+                        needHelp = true;
+                        break;
+                }
+            } // for args
+
+            if (needHelp) {
+                return usage();
+            }
+
+            return 0;
+        }
+
+    }
+}

@@ -1,0 +1,65 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+
+AppRuntime.targets
+
+This file contains definitions for assemblies that are part of the application
+runtime environment.  This is used by only a handful of assemblies:
+
+    Corlib.dll
+    System.Compiler.Runtime.dll
+    Microsoft.SingSharp.Runtime.dll
+    Corlibsg.dll
+    
+Projects that import AppRuntime.targets inherit the following behaviors:
+
+  * The OutputPath is always set to $(APPRUNTIMEDIR).
+    
+  * CompilerPlatformVersion is always set to "cli1".
+  
+  * CompilerPlatformDir is always set to $(APPRUNTIMEDIR).
+
+  * Stdlib is always set to $(APPRUNTIMEDIR)\Corlib.dll.
+
+The NoStandardLibraries property is ignored.
+
+This file imports SingSharp.targets, and so projects that import this file should
+not also import SingSharp.targets.
+
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Condition="'$(RuntimePathsIncluded)'==''" Project="RuntimePaths.target"/>
+
+  <PropertyGroup>
+    <!-- sgc/csc will stop processing additional names if it sees a ;; in the /d: list, e.g. /d:foo;;bar, bar is ignored -->
+    <OutputPath>$(APPRUNTIMEDIR)</OutputPath>
+    <DefineConstants Condition="'$(DefineConstants)'!=''">$(DefineConstants);</DefineConstants>
+    <DefineConstants>$(DefineConstants)SINGULARITY_PROCESS</DefineConstants>
+    <CompilerPlatformVersion>cli1</CompilerPlatformVersion>
+    <CompilerPlatformDir>$(APPRUNTIMEDIR)</CompilerPlatformDir>
+    <Stdlib>$(APPRUNTIMEDIR)\Corlib.dll</Stdlib>
+    <Language Condition="'$(Language)'==''">Sing#</Language>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(NoStdLib)'!='true'">
+    <!-- This brings in Corlib.dll for the native image generation phase. -->
+    <ProjectReference Include="$(APPRUNTIMESRCDIR)\App.Corlib.csproj">
+      <ExcludeFromILReferences>true</ExcludeFromILReferences>
+    </ProjectReference>
+    <!-- Yes, this is necessary. -->
+    <DependentProject Include="$(APPRUNTIMESRCDIR)\App.Corlib.csproj" />
+  </ItemGroup>
+
+  <Import Project="SingSharp.targets"/>
+
+</Project>

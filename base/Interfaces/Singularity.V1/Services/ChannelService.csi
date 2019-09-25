@@ -1,0 +1,210 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ChannelService.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Security;
+using Microsoft.Singularity.V1.Threads;
+using Microsoft.Singularity.V1.Types;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+
+namespace Microsoft.Singularity.V1.Services
+{
+    [CLSCompliant(false)]
+    unsafe public struct EndpointCore
+    {
+
+        /// <summary>
+        /// Used to allocate a channel endpoint. The size must be correctly computed by
+        /// the trusted caller (currently trusted code NewChannel)
+        /// </summary>
+        [NoHeapAllocation]
+        public static Allocation* //EndpointCore* opt(ExHeap)!  
+        Allocate(uint size, SystemType st);
+
+        /// <summary>
+        /// Closes this end of the channel and frees associated resources, EXCEPT the block
+        /// of memory for this endpoint. It must be released by the caller. Sing# does this
+        /// for the programmer.
+        /// Returns true for success, false for failure.
+        /// </summary>
+        [NoHeapAllocation]
+        public static bool Dispose(ref EndpointCore endpoint);
+
+        /// <summary>
+        /// Deallocates this end of the channel. If other end is also
+        /// deallocated, the entire channel is deallocated.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void Free(Allocation* /* EndpointCore* opt(ExHeap) */ endpoint);
+
+        /// <summary>
+        /// Performs the initialization of the core part of each endpoint and cross links
+        /// them to form a channel.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void Connect(
+            Allocation* /*EndpointCore* opt(ExHeap)!*/ imp,
+            Allocation* /*EndpointCore* opt(ExHeap)!*/ exp,
+            Allocation* /*EndpointCore* opt(ExHeap)!*/ ep);
+
+        /// <summary>
+        /// Indicates if this endpoint is closed
+        /// </summary>
+        [NoHeapAllocation]
+        public static bool Closed(ref EndpointCore ep);
+
+        /// <summary>
+        /// Indicates if this endpoint is closed
+        /// </summary>
+        [NoHeapAllocation]
+        public static bool PeerClosed(ref EndpointCore ep);
+
+        /// <summary>
+        /// Indicates if this endpoint is closed (ABI call version)
+        /// </summary>
+        [NoHeapAllocation]
+        public static bool PeerClosedABI(ref EndpointCore ep);
+
+
+        /// <summary>
+        /// Set this endpoint to closed
+        /// </summary>
+        [NoHeapAllocation]
+        public static void Close(ref EndpointCore ep);
+
+        /// <summary>
+        /// The endpoint to which this endpoint is connected.
+        /// </summary>
+        [NoHeapAllocation]
+        public static Allocation* /*EndpointCore* opt(ExHeap) */ GetPeer(ref EndpointCore ep,
+                                                                         out bool marshall);
+
+        /// <summary>
+        /// The endpoint to which this endpoint is connected. (ABI version)
+        /// </summary>
+        [NoHeapAllocation]
+        public static Allocation* GetPeerABI(ref EndpointCore ep,
+                                                    out bool marshall);
+
+        /// <summary>
+        /// The event to wait for messages on this endpoint. Used by Select.
+        /// </summary>
+        [NoHeapAllocation]
+        public static SyncHandle GetWaitHandle(ref EndpointCore ep);
+
+        /// <summary>
+        /// Notify the the peer endpoint that a message is ready.
+        /// Notifies the set if the peer endpoint is part of a set.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void NotifyPeer(ref EndpointCore ep);
+
+        /// <summary>
+        /// Wait for a message to arrive on this endpoint.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void Wait(ref EndpointCore ep);
+
+        /// <summary>
+        /// Transfer the given Allocation block to the target endpoint
+        /// <summary>
+        [NoHeapAllocation]
+        public static void TransferBlockOwnership(Allocation* ptr, ref EndpointCore target);
+
+        /// <summary>
+        /// Transfer any contents that needs to be adjusted from the transferee to the target
+        /// endpoint.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void TransferContentOwnership(
+           ref EndpointCore transferee,
+           ref EndpointCore target);
+
+        [NoHeapAllocation]
+        public static void AcceptDelegation(Allocation* /*EndpointCore* opt(ExHeap)!*/ imp,
+                                            Allocation* /*EndpointCore* opt(ExHeap)!*/ exp,
+                                            Allocation* /*EndpointCore* opt(ExHeap)!*/ ep);
+
+        [NoHeapAllocation]
+        public static void EnableDelegation(ref EndpointCore ep, bool allowMediation);
+
+        /// <summary>
+        /// Obtain the process identifier of the owner.
+        /// </summary>
+        [NoHeapAllocation]
+        public static int GetOwnerProcessID(ref EndpointCore ep);
+
+        /// <summary>
+        /// Obtain the principal identifier of the owner.
+        /// </summary>
+        [NoHeapAllocation]
+        public static PrincipalHandle GetOwnerPrincipalHandle(ref EndpointCore ep);
+
+        /// <summary>
+        /// Obtain the process identifier of the owner of the other endpoint
+        /// </summary>
+        [NoHeapAllocation]
+        public static int GetPeerProcessID(ref EndpointCore ep);
+
+        /// <summary>
+        /// Obtain the process identifier of the owner of the other endpoint (ABI version)
+        /// </summary>
+        [NoHeapAllocation]
+        public static int GetPeerProcessIDABI(ref EndpointCore ep);
+
+
+        /// <summary>
+        /// Obtain the principal identifier of the owner of the other endpoint
+        /// </summary>
+        [NoHeapAllocation]
+        public static PrincipalHandle GetPeerPrincipalHandle(ref EndpointCore ep);
+
+        /// <summary>
+        /// Obtain the channel identifier of this endpoint.
+        /// </summary>
+        [NoHeapAllocation]
+        public static int GetChannelID(ref EndpointCore ep);
+
+        /// <summary>
+        /// Instruct the selectable object to signal events on the given AutoResetEvent
+        /// rather than its normal event in order to aggregate signalling into a set.
+        /// A selectable object need only support being part of a single collection at
+        /// any point in time.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void LinkIntoCollection(ref EndpointCore ep, AutoResetEventHandle ev);
+
+        /// <summary>
+        /// Instruct the selectable object to stop signalling events on the given
+        /// AutoResetEvent.
+        /// </summary>
+        [NoHeapAllocation]
+        public static void UnlinkFromCollection(ref EndpointCore ep, AutoResetEventHandle ev);
+
+
+        /// <summary>
+        /// Called when sending a message across domains. Instructs the kernel
+        /// to prepare an update record to push into the peer when the peer
+        /// is running.
+        ///
+        /// This call starts a sequence of MarshallPointer calls that will
+        /// end with a call to NotifyPeer.
+        /// </summary>
+        [NoHeapAllocation]
+        unsafe public static void MarshallMessage(ref EndpointCore ep, byte* basep, byte* source, int* tagAddress, int msgSize);
+
+        [NoHeapAllocation]
+        unsafe public static void MarshallPointer(ref EndpointCore ep, byte* basep, byte** target, SystemType type, byte* parent, int offset);
+    }
+}

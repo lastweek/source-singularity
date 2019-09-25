@@ -1,0 +1,127 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatThreadPool.sg
+//
+//  Note:
+//
+
+using System.Collections;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <remarks>This class implements a non-Singleton
+    /// threadpool and has a configurable work queue
+    /// size. </remarks>
+    internal sealed class FatThreadPool
+    {
+        object                            monitor;
+        TContainer<TQueue<AsyncCommand>>! commandContainer;
+        int                               queuedItems;
+        readonly int                      maxQueuedItems;
+        volatile int                      threadCount;
+        volatile bool                     shutdown;
+        ManualResetEvent                  shutdownEvent;
+
+        [ Microsoft.Contracts.NotDelayed ]
+        internal FatThreadPool(int maxThreads, int maxQueuedItems)
+            requires maxThreads > 0;
+            requires maxQueuedItems > 0;
+            requires maxThreads <= maxQueuedItems;
+        {
+            this.monitor          = new object();
+            this.commandContainer =
+                new TContainer<TQueue<AsyncCommand>>(
+                    new TQueue<AsyncCommand>()
+                    );
+            this.queuedItems      = 0;
+            this.maxQueuedItems   = maxQueuedItems;
+            this.threadCount      = maxThreads;
+            this.shutdown         = false;
+            this.shutdownEvent    = new ManualResetEvent(false);
+            base();
+
+            for (int i = 0; i < maxThreads; i++) {
+                Thread t = new Thread(new ThreadStart(WorkerMain));
+                t.Start();
+            }
+        }
+
+        /// <summary> Queues call to constructor supplied
+        /// delegate with user supplied object.  This method
+        /// blocks if maximum queue size is reached.  </summary>
+        internal void QueueUserWorkItem([Claims] AsyncCommand! command)
+        {
+            Monitor.Enter(this.monitor);
+            while (this.queuedItems == this.maxQueuedItems) {
+                Monitor.Wait(this.monitor);
+            }
+            TQueue<AsyncCommand> commands = commandContainer.Acquire();
+            commands.AddHead(command);
+            commandContainer.Release(commands);
+            this.queuedItems++;
+            Monitor.Pulse(this.monitor);
+            Monitor.Exit(this.monitor);
+        }
+
+        private void WorkerMain()
+        {
+            while (true) {
+                AsyncCommand command;
+                lock (this.monitor) {
+                    while (queuedItems == 0 && !shutdown) {
+                        Monitor.Wait(this.monitor);
+                    }
+
+                    if (queuedItems == 0 && shutdown) {
+                        break;
+                    }
+
+                    TQueue<AsyncCommand> commands = commandContainer.Acquire();
+                    command = commands.ExtractTail();
+                    assert(command != null);
+                    commandContainer.Release(commands);
+
+                    if (this.queuedItems-- == this.maxQueuedItems) {
+                        Monitor.Pulse(this.monitor);
+                    }
+                }
+                command.Execute();
+                ((ITracked)command).Dispose();
+            }
+
+            lock (this.monitor) {
+                if (--this.threadCount == 0) {
+                    shutdownEvent.Set();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Shutdown thread pool instance.  Caller blocks until
+        /// the threads in the pool have finished outstanding
+        /// work items.
+        /// </summary>
+        internal void Shutdown()
+        {
+            lock (this.monitor) {
+                shutdown = true;
+                Monitor.PulseAll(this.monitor);
+            }
+
+            shutdownEvent.WaitOne();
+
+            TQueue<AsyncCommand> commands = commandContainer.Acquire();
+            DebugStub.Assert(commands.Empty);
+            commandContainer.Release(commands);
+        }
+    }
+}
+

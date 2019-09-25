@@ -1,0 +1,34 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   
+
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>CacheTest</AssemblyName>
+    <KERNELDIR>..\..\..\Kernel</KERNELDIR>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="CacheTest.sg" />
+    <Compile Include="$(KERNELDIR)\Singularity.Security\AccessControl\Cache.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

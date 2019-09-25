@@ -1,0 +1,33 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RamDiskContractErrorCode.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.RamDisk.Contracts
+{
+    public enum RamDiskContractErrorCode
+    {
+        NoError               = 0,
+        AccessDenied          = 1,
+        CapacityReached       = 2,
+        InsufficientResources = 3,
+        DirectoryFull         = 4,
+        IsOpen                = 5,
+        DoesNotExist          = 6,
+        InternalError         = 7,
+        OutOfMemory           = 8,
+        IsInUse               = 9,
+        Max                   = InternalError
+    }
+}

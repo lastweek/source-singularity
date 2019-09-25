@@ -1,0 +1,224 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   test parameter matching code 
+//
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace app
+    {
+        [ConsoleCategory(Action="action1", HelpMessage="Test action1.")]
+        internal class PlayConfiguration 
+        {
+            private const string help1 = "this is a help message"; 
+            private const string helpForever = "this is a help for forever"; 
+            private const string helpNumThreads = "Number Of Threads to start"; 
+            private const string helpIsBool = "this is a help for isBool"; 
+
+            [InputEndpoint("data")]
+            //[Endpoint]
+            public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+            [OutputEndpoint("data")]
+            //[Endpoint]
+            public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+            [Endpoint]
+            public readonly TRef<SoundDeviceContract.Imp:Start> ImpRef;
+
+            [StringParameter( "filename", Mandatory=false, Default="hello world")]
+            internal string foo4;
+
+            [StringArrayParameter( "EverythingElse", Mandatory=false)]
+            internal string[] Args;
+
+            [StringParameter( "filename", Mandatory=false, Default="/fs/init", Position=0)]
+            internal string file;
+
+            [StringParameter( "string2", Mandatory=false)]
+            internal string string2;
+
+            [LongParameter( "numThreads", Mandatory=true, Default=1, HelpMessage=helpNumThreads)]
+            internal long numThreads;
+
+            [LongParameter( "numThreads2", Mandatory=false, Default=32, Position=1)]
+            internal long numThreads2;
+
+            [BoolParameter( "isBool", Mandatory=false, Default=false, HelpMessage=helpIsBool) ]
+            internal  bool isBool;
+
+            [BoolParameter( "isBool2", Mandatory=false, Default=true)]
+            internal  bool isBool2;
+
+            [BoolParameter( "forever", Mandatory=false, Default=false, HelpMessage=helpForever) ]
+            internal  bool forever;
+
+            reflective internal PlayConfiguration();
+
+            internal int AppMain() {
+                return Play.AppMain(this);
+            }
+        }
+
+        [ConsoleCategory(HelpMessage="Parameter test program.", 
+                         DefaultAction=true)]
+        internal class Action1
+        {
+            [InputEndpoint("data")]
+            public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+            [OutputEndpoint("data")]
+            public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+            [LongParameter( "count", HelpMessage="count", Default=1)]
+            internal long count;
+
+            [NotDelayed]
+            reflective internal Action1();
+
+            internal int AppMain() {
+                Console.WriteLine("Action1 invoked: count = {0}", count);
+                return 0;
+            }
+        }
+
+
+    public class Play
+    {
+        private static SoundDeviceContract.Imp:Ready OpenSoundDevice(PlayConfiguration! config)
+        {
+            // extract imp handed in as part of process creation
+            SoundDeviceContract.Imp! imp = ((!)config.ImpRef).Acquire();
+
+            // get it into the ready state
+            Console.WriteLine("[{0}] Waiting for SB channel.", Thread.CurrentThread.GetThreadId());
+            switch receive {
+                case imp.Success():
+                    Console.WriteLine("[{0}] Got SB channel.", Thread.CurrentThread.GetThreadId());
+                    break;
+                case imp.ContractNotSupported():
+                    delete imp;
+                    throw new Exception("Didn't Get SB channel. (ContractNotSupported)");
+                case imp.ChannelClosed():
+                    delete imp;
+                    throw new Exception("Didn't Get SB channel. (Channel closed)");
+            }
+            return imp;
+        }
+
+        internal static int AppMain(PlayConfiguration! config)
+        {
+            Console.WriteLine("isBool ={0}", config.isBool); 
+            Console.WriteLine("isBool2 ={0}", config.isBool2); 
+            Console.WriteLine("forever ={0}", config.forever); 
+            Console.WriteLine("foo4 ={0}", config.foo4); 
+            Console.WriteLine("numThreads ={0}", config.numThreads); 
+            Console.WriteLine("numThreads2 ={0}", config.numThreads2); 
+            Console.WriteLine("string2 ={0}", config.string2); 
+    
+            string[] s = config.Args; 
+            if (s != null) {
+                for (int i = 0; i < s.Length; i++) {
+                    Console.WriteLine("EverythingElse[{0}]={1}",i,s[i]);
+                } 
+            } 
+    
+            if (config.string2 == null) {
+                Console.WriteLine("string 2 is null (default)"); 
+            }
+            if (WavAudio.Content == null || WavAudio.Content.Length == 0) {
+                Console.WriteLine("No WAV audio to play.");
+                return 1;
+            }
+
+             if (config.numThreads > 0) {
+                for (int i = 0; i < config.numThreads; i++) {
+                    Thread t = new Thread(new ThreadStart(new Play(config).DoPlayThread));
+                    t.Start();
+                }
+             
+            }
+            else {
+                return DoPlay(config);
+            }
+
+            return 0;
+        }
+
+        PlayConfiguration! config;
+        private Play(PlayConfiguration! config) {
+            this.config = config;
+        }
+
+        public void DoPlayThread() {
+            DoPlay(this.config);
+        }
+
+        static int DoPlay(PlayConfiguration! config) {
+            SoundDeviceContract.Imp audio = OpenSoundDevice(config);
+            if (audio == null) {
+                Console.WriteLine("Couldn't open audio device.");
+                return 2;
+            }
+
+            int threadId = Thread.CurrentThread.GetThreadId();
+
+            assume WavAudio.Content != null;
+
+            try {
+                for (int i = 0; i < WavAudio.Content.Length; i++) {
+                    Console.WriteLine("[{1}] Playing WAV audio {0}.", i, threadId);
+
+                    byte[] wav = (!)WavAudio.Content[i];
+
+                    byte[] in ExHeap buffer = Bitter.FromByteArray(wav);
+
+                        // Copy contents into buffer WavAudio.Content[i]
+
+                        audio.SendPlayWav(buffer);
+                        switch receive {
+                            case audio.RecvAckPlayWav(oldbuffer):
+                                Console.WriteLine("[{1}] Done playing WAV audio {0}.", i,
+                                                  threadId);
+                            delete oldbuffer;
+                            break;
+
+                        case audio.RecvNakPlayWav(oldbuffer):
+                            Console.WriteLine("[{1}] Failed to play WAV audio {0}.",
+                                              i, threadId);
+                            delete oldbuffer;
+                            break;
+
+                        case audio.ChannelClosed():
+                            Console.WriteLine("[{1}] SoundDevice channel closed unexpectedly {0}.",
+                                                  i, threadId);
+                            return 1;
+                    }
+                }
+            }
+            finally {
+                delete audio;
+            }
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,37 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SharedHeap.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.Memory
+{
+    public class SharedHeap
+    {
+        public static unsafe Allocation *Allocate(  // Returns new region.
+            UIntPtr bytes,  // Number of bytes to allocate.
+            UIntPtr type,  // Type information.
+            uint alignment,  // Allocation alignment requirement.
+            ref AllocationOwner owner);
+
+        public static unsafe void Free(
+            Allocation *allocation,  // Allocated region to be freed.
+            ref AllocationOwner owner);  // Current owner of allocation.
+
+        public struct Allocation {
+        }
+
+        public struct AllocationOwner {
+        }
+    }
+}
+

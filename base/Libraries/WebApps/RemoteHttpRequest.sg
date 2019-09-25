@@ -1,0 +1,206 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RemoteHttpRequest.sg
+//
+//  Note:
+//    This file wraps a HttpRequestContract so it can be accessed like a
+//    regular object.
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.WebApps.Contracts;
+
+namespace Microsoft.Singularity.WebApps
+{
+    public class RemoteHttpRequest : IHttpRequest
+    {
+        private TRef<HttpRequestContract.Imp:Start> m_Conn;
+
+        public RemoteHttpRequest([Claims] HttpRequestContract.Imp:Start! conn)
+        {
+            m_Conn = new TRef<HttpRequestContract.Imp:Start>(conn);
+        }
+
+        public string! GetUriPath()
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[]! in ExHeap uriChars;
+                conn.SendGetUriPath();
+                conn.RecvUriPath(out uriChars);
+                string retval = Bitter.ToString2(uriChars);
+                delete uriChars;
+                return retval;
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public string GetQueryString()
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[] in ExHeap queryChars;
+                conn.SendGetQueryString();
+                conn.RecvQueryString(out queryChars);
+
+                if (queryChars != null) {
+                    string retval = Bitter.ToString(queryChars);
+                    delete queryChars;
+                    return retval;
+                }
+                else {
+                    return null;
+                }
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public string GetVerb()
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[]! in ExHeap verbChars;
+                conn.SendGetVerb();
+                conn.RecvVerb(out verbChars);
+                string retval = Bitter.ToString(verbChars);
+                delete verbChars;
+                return retval;
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public string GetHeader(string! headerName)
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[] in ExHeap headerChars;
+                conn.SendGetHeader(Bitter.FromString2(headerName));
+                conn.RecvHeaderValue(out headerChars);
+
+                if (headerChars != null) {
+                    string retval = Bitter.ToString(headerChars);
+                    delete headerChars;
+                    return retval;
+                }
+                else {
+                    return null;
+                }
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public byte[] GetBodyData()
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                byte[] in ExHeap bodyBytes;
+                conn.SendGetBody();
+                conn.RecvBodyData(out bodyBytes);
+
+                if (bodyBytes != null) {
+                    byte[] retval = Bitter.ToByteArray(bodyBytes);
+                    delete bodyBytes;
+                    return retval;
+                }
+                else {
+                    return null;
+                }
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public string! GetRemoteAddress()
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[]! in ExHeap addrChars;
+                conn.SendGetRemoteAddress();
+                conn.RecvRemoteAddress(out addrChars);
+                string! retval = Bitter.ToString2(addrChars);
+                delete addrChars;
+                return retval;
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public void SendStatus(int code, string! description)
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[]! in ExHeap descChars = Bitter.FromString2(description);
+                conn.SendSendStatus(code, descChars);
+                conn.RecvOK();
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public void SendHeader(string! name, string! value)
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                char[]! in ExHeap nameChars = Bitter.FromString2(name);
+                char[]! in ExHeap valChars = Bitter.FromString2(value);
+                conn.SendSendHeader(nameChars, valChars);
+                conn.RecvOK();
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public void SendBodyData(byte[]! data)
+        {
+            SendBodyData(Bitter.FromByteArray(data));
+        }
+
+        public void SendBodyData([Claims]byte[]! in ExHeap data)
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            try {
+                conn.SendSendBodyData(data);
+                conn.RecvOK();
+            }
+            finally {
+                m_Conn.Release(conn);
+            }
+        }
+
+        public void Done()
+        {
+            HttpRequestContract.Imp conn = m_Conn.Acquire();
+
+            conn.SendDone();
+            delete conn;
+        }
+    }
+}

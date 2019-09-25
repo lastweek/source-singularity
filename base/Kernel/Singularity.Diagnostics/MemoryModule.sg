@@ -1,0 +1,326 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Memory diagnostic module
+//
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Directory;
+using System;
+using System.Collections;
+using System.Diagnostics;
+
+namespace Microsoft.Singularity.Diagnostics
+{
+    public class MemoryModule
+    {
+        private void Run()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(MemoryContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the Memory Diagnostic module.\n");
+                        if (rejectedEP != null) {
+                            delete rejectedEP;
+                        }
+                        delete nsExp;
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<MemoryContract.Exp:ReadyState> epSet = new ESet<MemoryContract.Exp:ReadyState>();
+
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people to give us MemoryContract.Exp instances
+                            MemoryContract.Exp newDiagEp = newEp as MemoryContract.Exp;
+
+                            if (newDiagEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newDiagEp.SendReady();
+                                epSet.Add(newDiagEp);
+                            }
+                        }
+                        break;
+
+                    // ------------------------------- Requests on existing connections
+                    //
+                    // Don't forget that we're selecting MemoryContract endpoints
+                    // from the epSet endpoint-set. In each case that we
+                    // receive a message from one of those endpoints, we
+                    // need to remember to put the endpoint back into epSet
+                    // if we want to keep listening to it.
+                    //
+                    case ep.GetFreeMemory() in epSet :
+                        {
+                            ep.SendMemory((long)Microsoft.Singularity.Memory.MemoryManager.GetFreePhysicalMemory());
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetUsedMemory() in epSet :
+                        {
+                            ep.SendMemory((long)Microsoft.Singularity.Memory.MemoryManager.GetUsedPhysicalMemory());
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetMaxMemory() in epSet :
+                        {
+                            ep.SendMemory((long)Microsoft.Singularity.Memory.MemoryManager.GetMaxPhysicalMemory());
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetProcessUsedMemory(int processId) in epSet:
+                        {
+                            // REVIEW: This returns 0 bytes if the process ID is not recognized.
+                            long bytes = 0;
+                            Process proc = Process.GetProcessByID(processId);
+                            if (proc != null) {
+                                bytes = (long)proc.AllocatedMemory;
+                            }
+                            ep.SendMemory(bytes);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetProcessPeakMemory(int processId) in epSet:
+                        {
+                            // REVIEW: This returns 0 bytes if the process ID is not recognized.
+                            long bytes = 0;
+                            Process proc = Process.GetProcessByID(processId);
+                            if (proc != null) {
+                                bytes = (long)proc.PeakAllocatedMemory;
+                            }
+                            ep.SendMemory(bytes);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.TotalUsedCommunicationHeap() in epSet:
+                        {
+                            long blocks, bytes;
+                            ComputeCommunicationHeapMemory(0, out blocks, out bytes);
+                            ep.SendBlocksAndTotal(blocks, bytes);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.ProcessUsedCommunicationHeap(int processId) in epSet:
+                        {
+                            long blocks, bytes;
+                            ComputeCommunicationHeapMemory(processId, out blocks, out bytes);
+                            ep.SendBlocksAndTotal(blocks, bytes);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.DumpExHeap() in epSet :
+                        {
+                            ep.SendExHeapDump(TranslateHeapDump(DumpExHeap()));
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.CollectGarbage() in epSet :
+                        {
+                            GC.Collect();
+                            ep.SendMemory(0);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetProcessHandlePages(int processId) in epSet :
+                        {
+                            long pages = 0;
+                            Process proc = Process.GetProcessByID(processId);
+                            if (proc != null) {
+                                pages = (long)proc.NumHandlePages;
+                            }
+                            ep.SendPages(pages);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        {
+                            // Just toss the closed channel
+                            delete ep;
+                        }
+                        break;
+
+                    case epSet.Empty() && nsExp.ChannelClosed():
+                        {
+                            delete nsExp;
+                            epSet.Dispose();
+                            return;
+                        }
+                        break;
+                }
+            }
+        }
+
+        //
+        // This helper object counts up the blocks and bytes attributable to a specific
+        // process ID (procID zero for a total of all blocks/bytes)
+        //
+        private class ProcessBlocksAccumulator
+        {
+            public long blockAccumulator;
+            public long bytesAccumulator;
+            private int procId;
+
+            public ProcessBlocksAccumulator(int processIdFilter)
+            {
+                procId = processIdFilter;
+                blockAccumulator = 0;
+                bytesAccumulator = 0;
+            }
+
+            public void
+            AccumulateCommunicationHeap(SharedHeap.Allocation* alloc)
+            {
+                int owningProcess =
+                    SharedHeap.Allocation.GetOwnerProcessId(alloc);
+
+                if (procId == 0 || owningProcess == procId) {
+                    blockAccumulator++;
+                    bytesAccumulator +=
+                        (long)SharedHeap.Allocation.GetSize(alloc);
+                }
+            }
+        }
+
+        private void ComputeCommunicationHeapMemory(int      processId,
+                                                    out long blocks,
+                                                    out long bytes)
+        {
+            ProcessBlocksAccumulator accumulator =
+                new ProcessBlocksAccumulator(processId);
+
+            Process! process = (!)Thread.CurrentProcess;
+            SharedHeap! sharedHeap = (!)process.ProcessSharedHeap;
+
+            sharedHeap.DataOwnerId.Iterate(
+                new SharedHeap.AllocationVisitor(
+                    accumulator.AccumulateCommunicationHeap
+                    )
+                );
+            blocks = accumulator.blockAccumulator;
+            bytes  = accumulator.bytesAccumulator;
+        }
+
+        //
+        // This helper object collects information on every block in the ExHeap
+        //
+        private class HeapDumper
+        {
+            public struct BlockInfo
+            {
+                public UIntPtr size;
+                public UIntPtr type;
+                public int ownerProcID;
+            }
+
+            public SortedList! blockDetails; // Holds BlockInfo structs
+
+            public HeapDumper()
+            {
+                blockDetails = new SortedList();
+            }
+
+            public void AccumulateBlockInfo(SharedHeap.Allocation* alloc)
+            {
+                BlockInfo info = new BlockInfo();
+                info.ownerProcID = SharedHeap.Allocation.GetOwnerProcessId(alloc);
+                info.type = SharedHeap.Allocation.GetType(alloc);
+                info.size = SharedHeap.Allocation.GetSize(alloc);
+                unsafe {
+                    blockDetails.Add((Int64)alloc, info);
+                }
+            }
+        }
+
+        private SortedList! DumpExHeap() {
+            HeapDumper dumper = new HeapDumper();
+
+            assert SharedHeap.KernelSharedHeap != null;
+            SharedHeap.KernelSharedHeap.DataOwnerId.Iterate(
+                    new SharedHeap.AllocationVisitor(dumper.AccumulateBlockInfo));
+            SharedHeap.KernelSharedHeap.EndpointOwnerId.Iterate(
+                    new SharedHeap.AllocationVisitor(dumper.AccumulateBlockInfo));
+
+            return dumper.blockDetails;
+        }
+
+        private MemoryContract.BlockInfo[]! in ExHeap TranslateHeapDump(SortedList! dump)
+        {
+            MemoryContract.BlockInfo[]! in ExHeap retval = new[ExHeap] MemoryContract.BlockInfo[dump.Count];
+            int i = 0;
+
+            foreach (DictionaryEntry entry in dump) {
+                object! val = (!)entry.Value;
+                HeapDumper.BlockInfo info = (HeapDumper.BlockInfo)val;
+
+                retval[i].ptrVal = (long)((!)entry.Key);
+                retval[i].size = (long)info.size;
+                retval[i].type = (long)info.type;
+                retval[i].ownerProcID = info.ownerProcID;
+                i++;
+            }
+
+            Debug.Assert(i == dump.Count);
+            return retval;
+        }
+
+        internal static void Initialize()
+        {
+            MemoryModule module = new MemoryModule();
+            Thread thread = Thread.CreateThread(Thread.CurrentProcess,
+                                                new ThreadStart(module.Run));
+
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+    }
+}

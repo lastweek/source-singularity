@@ -1,0 +1,104 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    public struct UIntPtr
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+
+        public static readonly UIntPtr Zero;
+        public static readonly int Size;
+
+        [NoHeapAllocation]
+        public UIntPtr(uint value);
+        [NoHeapAllocation]
+        public UIntPtr(int value);
+        [NoHeapAllocation]
+        public UIntPtr(ulong value);
+        [NoHeapAllocation]
+        public unsafe UIntPtr(void* value);
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+        [NoHeapAllocation]
+        public uint ToUInt32();
+        [NoHeapAllocation]
+        public ulong ToUInt64();
+        public override String ToString();
+        public String ToString(String format);
+        [NoHeapAllocation]
+        public static explicit operator IntPtr (UIntPtr value);
+        [NoHeapAllocation]
+        public static implicit operator UIntPtr (uint value);
+        [NoHeapAllocation]
+        public static implicit operator UIntPtr (ulong value);
+        [NoHeapAllocation]
+        public static explicit operator uint (UIntPtr  value);
+        [NoHeapAllocation]
+        public static explicit operator ulong (UIntPtr  value);
+        [NoHeapAllocation]
+        public static unsafe explicit operator UIntPtr (void* value);
+        [NoHeapAllocation]
+        public static unsafe explicit operator void* (UIntPtr value);
+
+        [NoHeapAllocation]
+        public static bool operator == (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static bool operator != (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator - (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator - (UIntPtr value1, uint value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator - (UIntPtr value1, int value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator -- (UIntPtr value);
+        [NoHeapAllocation]
+        public static UIntPtr operator + (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator + (UIntPtr value1, uint value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator + (UIntPtr value1, int value2);
+        [NoHeapAllocation]
+        public static unsafe sbyte * operator + (sbyte *value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static unsafe short * operator + (short *value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static unsafe short * operator - (short *value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator ++ (UIntPtr value);
+        [NoHeapAllocation]
+        public static UIntPtr operator * (UIntPtr value1, uint value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator / (UIntPtr value1, uint value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator >> (UIntPtr value, int shift);
+        [NoHeapAllocation]
+        public static UIntPtr operator << (UIntPtr value, int shift);
+        [NoHeapAllocation]
+        public static uint operator & (UIntPtr value1, uint value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator & (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator | (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static UIntPtr operator ~ (UIntPtr value);
+        [NoHeapAllocation]
+        public static bool operator < (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static bool operator > (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static bool operator <= (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public static bool operator >= (UIntPtr value1, UIntPtr value2);
+        [NoHeapAllocation]
+        public unsafe void* ToPointer();
+    }
+}

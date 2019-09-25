@@ -1,0 +1,747 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+//using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Test.Contracts;
+using Microsoft.Singularity.Xml;
+
+using FileSystem.Utils;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+//using System.Collections;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Applications;
+using Microsoft.Contracts;
+using Microsoft.Singularity.Configuration;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Test
+{
+
+    [ConsoleCategory(HelpMessage="Test harness", DefaultAction=true)]
+    internal sealed class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter("TestProfile", Mandatory=true, Position=0,
+                         HelpMessage="Name of test profile to run") ]
+        internal string profileName;
+
+        [BoolParameter("FailFast", Default=false,
+                       HelpMessage="Terminate testing on first failure")]
+        public bool failFast;
+
+        [BoolParameter("Verbose", Default=false,
+                       HelpMessage="Report assertions even when they pass")]
+        public bool reportAssertions;
+
+        [BoolParameter("Timings", Default=false,
+                       HelpMessage="Prepend a fixed profix and timing information")]
+        public bool reportTimes;
+
+        [LongParameter("TestTimeout", Default=60000L,
+                       HelpMessage="Default timeout in millisecond for each test (default=60 seconds)")]
+        public long defaultTimeout;
+
+        [LongParameter("Iterations", Default=1L,
+                       HelpMessage="Number of times to run the profiles (default = 1)")]
+        public long iterations;
+
+        [LongParameter("Pass", Default=0L,
+                       HelpMessage="Only run tests from the profile that are designated for this pass (default Pass 0).")]
+        public long testPass;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            try {
+                return TestDriver.AppMain(this);
+            }
+            catch (Exception e) {
+                Console.WriteLine("Execution failed: {0}", e);
+                return -1;
+            }
+        }
+    }
+
+    [ConsoleCategory(HelpMessage="Run a single test case", Action="manual")]
+    internal sealed class SingleParameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter("Module", Mandatory=true, Position=0, HelpMessage="Name of test module") ]
+        internal string moduleName;
+        [StringParameter("Suite", Mandatory=true, Position=1, HelpMessage="Name of test suite") ]
+        internal string suiteName;
+        [StringArrayParameter("Tests", Mandatory=false, HelpMessage="Names of tests to run") ]
+        internal string[] testNames;
+
+        [BoolParameter("FailFast", Default=false,
+                       HelpMessage="Terminate testing on first failure.")]
+        public bool failFast;
+
+        [BoolParameter("Verbose", Default=false,
+                       HelpMessage="Report assertions even when they pass")]
+        public bool reportAssertions;
+
+        [BoolParameter("Timings", Default=false,
+                       HelpMessage="Prepend a fixed profix and timing information")]
+        public bool reportTimes;
+
+        [LongParameter("TestTimeout", Default=60000L,
+                       HelpMessage="Default timeout in millisecond for each test (default=60 seconds)")]
+        public long defaultTimeout;
+
+        [LongParameter("Iterations", Default=1L,
+                       HelpMessage="Number of times to run the profiles (default = 1)")]
+        public long iterations;
+
+        reflective internal SingleParameters();
+
+        internal int AppMain() {
+            try {
+                return TestDriver.SingleMain(this);
+            }
+            catch (Exception e) {
+                Console.WriteLine("Execution failed: {0}", e);
+                return -1;
+            }
+        }
+    }
+
+    internal struct Progress
+    {
+        public readonly int passed;
+        public readonly int skipped;
+        public readonly int failures;
+        public readonly int knownFailures;
+
+        public Progress(int p, int s, int f, int k) {
+            passed = p;
+            skipped = s;
+            failures = f;
+            knownFailures = k;
+        }
+    }
+
+    public class TestDriver
+    {
+        internal const long CYCLE_ADJUST = 10000;
+        // 3 second delay for a process to stop
+        private readonly TimeSpan CHILD_STOP_WAIT = new TimeSpan(3000);
+        internal const string PASSED = "PASSED";
+        internal const string FAILED = "FAILED";
+        internal const string SKIPPED = "SKIPPED";
+        internal const string PARTIAL = "PARTIAL";
+
+        private const string INFO = "INFO";
+        private const string CHANNEL_CLOSED = "CONNECTION CLOSED";
+        private const string TIMED_OUT = "test timed out";
+        private const string STOP_TIMED_OUT = "MODULE SHUTDOWN TIMED OUT";
+        private const string PREVIOUS_FAILURE = "previous failures";
+        private const string SETUP_FAILED = "previous setup failure";
+        private const string SETUP_SKIPPED = "previous setup skipped";
+        private const string ASSERT_FAILED = "ASSERTION FAILED";
+
+        internal const string BEGIN = "BEGIN";
+        internal const string END = "END";
+        internal const string INIT = "INIT";
+        internal const string CLEANUP = "CLEANUP";
+
+        internal const string PROFILE = "PROFILE";
+        internal const string MODULE = "MODULE";
+        internal const string SUITE = "SUITE";
+        internal const string TEST = "TEST";
+
+        private const string DEFAULT_FOLDER = "/init/";
+        private const string DEFAULT_EXT = ".tst";
+
+        // STATE ////////////////////////////////////////////
+
+        private bool m_reportAsserts;
+        private bool m_failFast;
+        private int m_testPass;
+
+        private XmlNode! m_profile;
+        private TestContext! m_root;
+
+        private int m_passed;
+        private int m_failures;
+        private int m_knownFailures;
+        private int m_skipped;
+
+        // CREATION //////////////////////////////////////
+        public TestDriver(string! profileName,
+                          XmlNode! node,
+                          long timeout,
+                          bool failFast,
+                          bool reportAll,
+                          bool reportTimes,
+                          int testPass)
+        {
+            m_root = new TestContext((!)node.GetAttribute("Name", profileName),
+                                     node,
+                                     TimeSpan.FromMilliseconds(timeout),
+                                     reportTimes);
+            m_profile = node;
+            m_failFast = failFast;
+            m_reportAsserts = reportAll;
+            m_testPass = testPass;
+        }
+
+        // QUERIES /////////////////////////////////////////
+
+        internal Progress SoFar
+        {
+            get {
+                return new Progress(m_passed, m_skipped, m_failures, m_knownFailures);
+            }
+        }
+
+        // OPERATIONS //////////////////////////////////////
+
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp ds = config.nsRef.Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+
+            string! name;
+            string! fname = PathAndName(config.profileName, out name);
+            XmlReader reader = new XmlReader();
+            XmlNode! root;
+            try {
+                root = (!) reader.Parse(fname);
+            }
+            catch (Exception ex) {
+                Console.WriteLine(ex.ToString());
+                throw new Exception("Unable to load test profile: " + config.profileName);
+            }
+
+            PipeMultiplexer outputMux = MuxOut();
+            if (outputMux == null) {
+                delete ds;
+                return -1;
+            }
+
+            int problems = 0;
+            try {
+                for (int i = 0; config.iterations == -1 || i < config.iterations; i++) {
+                    TestDriver driver =
+                        new TestDriver(name,
+                                       root,
+                                       config.defaultTimeout,
+                                       config.failFast,
+                                       config.reportAssertions,
+                                       config.reportTimes,
+                                       (int)config.testPass);
+                    driver.RunProfile(ds, outputMux);
+                    problems += driver.m_failures + driver.m_skipped;
+                }
+            }
+            catch (Exception ex) {
+                Console.WriteLine(ex.ToString());
+                throw;
+            }
+            finally {
+                outputMux.Dispose();
+                delete ds;
+            }
+            return problems;
+        }
+
+        internal static int SingleMain(SingleParameters! config)
+        {
+            DirectoryServiceContract.Imp ds = config.nsRef.Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+            PipeMultiplexer outputMux = MuxOut();
+
+            XmlNode! root = new XmlNode("");
+            XmlNode! profile = new XmlNode("Profile");
+            root.AddAttribute("Name", "manual");
+            root.AddChild(profile);
+            XmlNode! module = new XmlNode("Module");
+            module.AddAttribute("Name", config.moduleName);
+            profile.AddChild(module);
+            XmlNode! suite = new XmlNode("Suite");
+            suite.AddAttribute("Name", config.suiteName);
+            module.AddChild(suite);
+            foreach (string! t in config.testNames) {
+                XmlNode! tx = new XmlNode("Test");
+                tx.AddAttribute("Name", t);
+                suite.AddChild(tx);
+            }
+
+            int problems = 0;
+            try {
+                for (int i = 0; config.iterations == -1 || i < config.iterations; i++) {
+                    TestDriver driver =
+                        new TestDriver("manual",
+                                       root,
+                                       config.defaultTimeout,
+                                       config.failFast,
+                                       config.reportAssertions,
+                                       config.reportTimes,
+                                       0);
+                    driver.RunProfile(ds, outputMux);
+                    problems += driver.m_failures + driver.m_skipped;
+                }
+            }
+            catch (Exception ex) {
+                Console.WriteLine(ex.ToString());
+                throw;
+            }
+            finally {
+                outputMux.Dispose();
+                delete ds;
+            }
+            return problems;
+        }
+
+        // Redirect our standard output into a multiplexer so we can interleave
+        // output from child processes
+        static private PipeMultiplexer! MuxOut()
+        {
+            // Swap our real stdOut with a newly created one
+            UnicodePipeContract.Exp! newOutputExp;
+            UnicodePipeContract.Imp! newOutputImp;
+            UnicodePipeContract.NewChannel(out newOutputImp, out newOutputExp);
+            UnicodePipeContract.Imp stdOut = ConsoleOutput.Swap(newOutputImp);
+            if (stdOut == null) {
+                // TODO may not require stdout once we report to debugStub
+                delete newOutputExp;
+                throw new Exception("test expects a STDOUT pipe");
+            }
+            // Use a mux to splice our own output together with the child
+            // processes we will run.
+            return PipeMultiplexer.Start(stdOut, newOutputExp);
+        }
+
+        // return a full path, and output the core name (without extension or path)
+        static private string! PathAndName(string! arg, out string! name)
+        {
+            string! res = arg.StartsWith("/") ? arg : DEFAULT_FOLDER + arg;
+            int ext = res.LastIndexOf('.');
+            if (ext == -1) {
+                ext = res.Length;
+                res += DEFAULT_EXT;
+            }
+            int nStart = res.LastIndexOf("/") + 1;
+            name = res.Substring(nStart, ext - nStart);
+            return res;
+        }
+
+        internal void RunProfile(DirectoryServiceContract.Imp! ds,
+                                 PipeMultiplexer! outputMux)
+        {
+            Progress current = SoFar;
+            m_root.Nest(INIT, m_root.Node).Report(BEGIN, PROFILE);
+            foreach (XmlNode p in (!) m_root.Node.Children) {
+                if (p != null && p.Name == "Profile") {
+                    foreach (XmlNode child in (!) p.Children) {
+                        if (child != null && child.Name == "Module") {
+                            SpawnModule(m_root.Nest(child), ds, outputMux);
+                            if (m_failures > 0 && m_failFast) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            ReportEnd(m_root, PROFILE, current);
+            // TODO do we want to count the tests skipped?
+            //if (skips > 0) {
+            //    Report(SKIPPED, skips + FAIL_SKIPS);
+            // m_skipped += skips;
+            //            }
+            // TODO
+            // Report(SKIPPED, skips + FAIL_SKIPS);
+
+        }
+
+        internal void SpawnModule(TestContext! ctx,
+                             DirectoryServiceContract.Imp! ds,
+                             PipeMultiplexer! outputMux)
+        {
+            TestContext setupCtx = ctx.Nest(INIT, ctx.Node);
+            setupCtx.Report(BEGIN, MODULE);
+
+            // This is a test app, so we expect to run it with the
+            // "test" action. If that doesn't work, something is wrong
+            // REVIEW: how is failure signaled?
+            string name = ctx.Name;
+            string[] args = new string[2];
+            args[0] = name;
+            args[1] = "@test";
+
+            Manifest manifest;
+            Process child = Binder.CreateProcess(ds, args, outputMux, out manifest);
+            if (null == child) {
+                ctx.Report(SKIPPED, "Test module or manifest missing: " + ctx.Name);
+                // TODO count the number of tests skipped
+                return;
+            }
+
+            // Make a channel for the test module
+            // The child gets the pipe that goes into our output MUX
+            ModuleTesterContract.Exp! testerExp;
+            ModuleTesterContract.Imp! tester;
+            ModuleTesterContract.NewChannel(out tester, out testerExp);
+            // Make a channel for the test module
+            LogContract.Exp! logExp;
+            LogContract.Imp! log;
+            LogContract.NewChannel(out log, out logExp);
+
+            Debug("Setting slot 2 in test SIP", name);
+            child.SetStartupEndpoint(2, testerExp);
+            Debug("Starting test SIP", name);
+            child.Start();
+            Debug("Started test SIP", name);
+            Progress current = SoFar;
+            string! summary = MODULE;
+            try {
+                tester.RecvGetLogger();
+                Debug("Sending logger", name);
+                tester.SendLogger(logExp, m_reportAsserts);
+
+                Debug("Beginning Test", name);
+                if (WaitResult(setupCtx, tester, log)) {
+                    RunSuites(ctx, tester, log);
+                    CleanupModule(ctx.Nest(CLEANUP, ctx.Node), tester, log);
+                }
+            }
+            catch (Exception ex) {
+                summary = (!) ex.ToString();
+            }
+            finally {
+                delete tester;
+                delete log;
+                if (! child.Join(CHILD_STOP_WAIT)) {
+                    // TODO count this as a failure m_failures++;
+                    ctx.Report(INFO, STOP_TIMED_OUT);
+                    child.Stop();
+                }
+                Debug("Terminating test sip", name);
+                ReportEnd(ctx, summary, current);
+            }
+        }
+
+        private static void Debug(string msg, string data)
+        {
+#if DEBUG_TEST_SETUP
+            DebugStub.WriteLine("{0} [{1}]", __arglist(msg, data));
+#endif
+        }
+
+        internal void CleanupModule(TestContext! ctx,
+                                    ModuleTesterContract.Imp:DO_MODULE! tester,
+                                    LogContract.Imp! log)
+        {
+            tester.SendCleanupModule();
+            WaitResult(ctx, tester, log);
+        }
+
+        internal void RunSuites(TestContext! ctx,
+                                ModuleTesterContract.Imp:DO_MODULE! tester,
+                                LogContract.Imp! log)
+        {
+            foreach (XmlNode n in (!) ctx.Node.Children) {
+                if (n != null && n.Name == "Suite") {
+                    RunSuite(ctx.Nest(n), tester, log);
+                    if (m_failures > 0 && m_failFast) {
+                        break;
+                    }
+                }
+            }
+            // TODO do we want to count the tests skipped?
+            //if (skips > 0) {
+            //    Report(SKIPPED, skips + FAIL_SKIPS);
+            // m_skipped += skips;
+            //            }
+        }
+
+        internal void RunSuite(TestContext! ctx,
+                               ModuleTesterContract.Imp:DO_MODULE! tester,
+                               LogContract.Imp! log)
+        {
+            TestContext setupCtx = ctx.Nest(INIT, ctx.Node);
+            setupCtx.Report(BEGIN, SUITE);
+            Progress current = SoFar;
+            bool setup = setupCtx.SkipReason == null;
+            if (setup) {
+                tester.SendInitSuite(Bitter.FromString2(ctx.Name));
+                if (!WaitResult(setupCtx, tester, log)) {
+                    setup = false;
+                    ctx.StartSkipping(SETUP_FAILED);
+                }
+            }
+            else {
+                setupCtx.Report(SKIPPED, ctx.SkipReason);
+            }
+            // We will at least visit each test, and perhaps just report
+            // skipping it there
+            RunTests(ctx, tester, log);
+            if (setup) {
+                //only cleanup if we actually setup
+                CleanupSuite(ctx.Nest(CLEANUP, ctx.Node), tester, log);
+            }
+            ReportEnd(ctx, SUITE, current);
+        }
+
+        internal void CleanupSuite(TestContext! ctx,
+                                   ModuleTesterContract.Imp:DO_MODULE! tester,
+                                   LogContract.Imp! log)
+        {
+            tester.SendCleanupSuite();
+            WaitResult(ctx, tester, log);
+        }
+
+        internal void RunTests(TestContext! suite,
+                               ModuleTesterContract.Imp:DO_MODULE! tester,
+                               LogContract.Imp! log)
+        {
+            foreach (XmlNode n in (!) suite.Node.Children) {
+                if (n != null && n.Name == "Test") {
+                    RunTest(suite.Nest(n), tester, log);
+                }
+            }
+        }
+
+        internal void RunTest(TestContext! ctx,
+                              ModuleTesterContract.Imp:DO_SUITE! tester,
+                              LogContract.Imp! log)
+        {
+            if (ctx.Pass != m_testPass) {
+                // Ignore the test entry
+                return;
+            }
+            if (ctx.SkipReason != null) {
+                m_skipped++;
+                // TODO should this support fail recursion as well?
+                ctx.Report(SKIPPED, ctx.SkipReason);
+                return;
+            }
+            ctx.Nest(INIT, ctx.Node).Report(BEGIN, TEST);
+            tester.SendRunTest(Bitter.FromString2(ctx.Name));
+            WaitResult(ctx, tester, log);
+        }
+
+        internal bool WaitResult(TestContext! ctx,
+                                 ModuleTesterContract.Imp:DO_SUITE! tester,
+                                 LogContract.Imp! log)
+        {
+            while (true) {
+                switch receive {
+                    case log.Log(char[]! in ExHeap msg, long atCycle, long atTime):
+                        // TODO decide whether to check the report flag
+                        ctx.Report(INFO, Bitter.ToString2(msg), atCycle, atTime);
+                        delete msg;
+                        log.SendOK();
+                        break;
+
+                    case tester.Passed(long cycles, long duration):
+                        ctx.Report(PASSED, "", cycles, duration);
+                        m_passed++;
+                        return true;
+
+                    case tester.Failed(char[]! in ExHeap error, long cycles, long duration):
+                        string err = Bitter.ToString2(error);
+                        delete error;
+                        ctx.Report(FAILED, PrepareFailure(ctx, err), cycles, duration);
+                        FailFast();
+                        return false;
+
+                    case tester.Skipped(char[]! in ExHeap why):
+                        // TODO does this also need to handle known failures?
+                        ctx.Report(SKIPPED, Bitter.ToString2(why));
+                        delete why;
+                        m_skipped++;
+                        return false;
+
+                    case tester.ChannelClosed():
+                        ctx.Report(FAILED, PrepareFailure(ctx, CHANNEL_CLOSED));
+                        throw new ChannelClosedException();
+                    case timeout(ctx.Timeout):
+                        ctx.Report(FAILED, PrepareFailure(ctx, TIMED_OUT));
+                        throw new Exception(TIMED_OUT);
+                }
+            }
+        }
+
+        private string! PrepareFailure(TestContext! ctx, string! msg)
+        {
+            if (ctx.KnownFailure == null) {
+                m_failures++;
+                return msg;
+            }
+            else {
+                m_knownFailures++;
+                return string.Format("KNOWN FAILURE({0}): {1}", ctx.KnownFailure, msg);
+            }
+        }
+
+        private string! PrepareSkip(TestContext! ctx, string! msg)
+        {
+            if (ctx.KnownFailure == null) {
+                m_skipped++;
+                return msg;
+            }
+            else {
+                m_knownFailures++;
+                return string.Format("KNOWN FAILURE({0}): {1}", ctx.KnownFailure, msg);
+            }
+        }
+
+        /// Throw if we are supposed to abort after the first failure
+        internal void FailFast() {
+            if (m_failFast && m_failures > 0) {
+                throw new Exception("Test Failed");
+            }
+        }
+
+        private void ReportEnd(TestContext! ctx, string! tag, Progress before)
+        {
+            // TODO deal with skipped
+            int passed = m_passed - before.passed;
+            int failed = m_failures - before.failures;
+            int known = m_knownFailures - before.knownFailures;
+            int skipped = m_skipped - before.skipped;
+            string fmt = known > 0
+                ? "{0} Passed: {1} Skipped: {2} Failed: {3} +{4} known failure"
+                : "{0} Passed: {1} Skipped: {2} Failed: {3}";
+            string msg = string.Format(fmt, tag, passed, skipped, failed, known);
+            string status = failed > 0 ? FAILED : (skipped + known > 0) ? PARTIAL : PASSED;
+            ctx.Report(status, msg);
+        }
+    }
+
+    internal class TestContext
+    {
+        internal TimeSpan Timeout;
+        internal int Pass;
+        internal string! Name;
+        internal string! Current;
+        internal XmlNode! Node;
+        // If non-null, then tests should be skipped for that reason
+        internal string SkipReason;
+        internal string KnownFailure;
+        private bool m_reportTimes;
+
+        public TestContext(string! name, XmlNode! node, TimeSpan timeout, bool reportTimes)
+        {
+            Timeout = timeout;
+            Current = name;
+            Name = name;
+            Node = node;
+            SkipReason = null;
+            KnownFailure = node.GetAttribute("KnownFailure", null);
+            m_reportTimes = reportTimes;
+        }
+        private TestContext(string! name, XmlNode! node, TestContext! prev)
+        {
+            Node = node;
+            Name = name;
+            Current = prev.Current + ":" + name;
+            Timeout = TimeSpan.FromMilliseconds(node.GetAttribute("Timeout", prev.Timeout.TotalMilliseconds));
+            Pass = node.GetAttribute("Pass", prev.Pass);
+            SkipReason = prev.SkipReason;
+            KnownFailure = node.GetAttribute("KnownFailure", prev.KnownFailure);
+            m_reportTimes = prev.m_reportTimes;
+        }
+
+        // QUERIES ///////////////////////////////////////////////////
+        public static long CycleCount
+        {
+            get {
+#if AFFINITY_SCHEDULER
+                return Processor.CycleCount;
+#else
+                // If we're not using the affinity scheduler, substitute
+                // TickCount for CycleCount.  TickCount will be consistent
+                // across processors.
+                return (long) Environment.TickCount;
+#endif
+            }
+        }
+
+        public static long Ticks
+        {
+            get { return DateTime.Now.Ticks; }
+        }
+
+        public TestContext! Nest(string! sub, XmlNode! node)
+        {
+            return new TestContext(sub, node, this);
+        }
+
+        public TestContext! Nest(XmlNode! node)
+        {
+            return Nest((!) node.GetAttribute("Name", "unknown"), node);
+        }
+
+        override public string! ToString()
+        {
+            return Current;
+        }
+
+        public void Report(string tag, string msg, long cycles, long time)
+        {
+            DateTime t = new DateTime(time);
+            // HACK Singularity doesn't support string formats
+            // string ts = t.ToString("yyyy/MM/ddTHH:mm:ss:fff");
+            string ts = String.Format("{0:d04}/{1:d02}/{2:d02}T{3:d02}:{4:d02}:{5:d02}:{6:d03}",
+                                      t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second, t.Millisecond);
+            string fmt = m_reportTimes ? "TEST>{3}# {4} {0} {1} {2}"
+                                     : "{0} {1} {2}";
+            // show on console for any fail/skip or for END of a non INIT/CLEANUP
+            if ((tag != TestDriver.PASSED && tag != TestDriver.BEGIN) ||
+                (tag != TestDriver.BEGIN && Name != TestDriver.INIT && Name != TestDriver.CLEANUP))
+            {
+                Console.WriteLine(fmt, tag, Current.Substring(Current.IndexOf(":")+1), msg, cycles, ts);
+            }
+
+            DebugStub.WriteLine("");
+            DebugStub.WriteLine(fmt, __arglist(tag, Current, msg, cycles, ts));
+        }
+
+        public void Report(string tag, string msg)
+        {
+            Report(tag, msg, CycleCount, Ticks);
+        }
+
+        // OPERATIONS ////////////////////////////////////////////////
+        public void StartSkipping(string! reason)
+        {
+            SkipReason = reason;
+        }
+
+    }
+}

@@ -1,0 +1,55 @@
+.assembly 'enum1' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.namespace N {
+.class auto ansi serializable sealed 'A' extends [mscorlib]System.Enum
+{
+.field public static literal valuetype N.A X = int32(0)
+.field public static literal valuetype N.A Y = int32(1)
+.field public static literal valuetype N.A Z = int32(2)
+.field public static literal valuetype N.A W = int32(7)
+.field public rtspecialname specialname int32 value__
+} // end of enumeration N.A
+.class auto ansi serializable sealed 'B' extends [mscorlib]System.Enum
+{
+.field public static literal valuetype N.B W = int32(3)
+.field public static literal valuetype N.B X = int32(4)
+.field public rtspecialname specialname int32 value__
+} // end of enumeration N.B
+.class public 'Test'
+	extends [mscorlib]System.Object
+{
+.field static private value class N.A 'x'
+.method hidebysig public static void 'Main'() {
+.entrypoint
+ldstr "{0}={1}"
+ldsfld value class N.A 'N.Test'::'x'
+box value class N.A
+ldsfld value class N.A 'N.Test'::'x'
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object,object)
+ldstr "{0}={1}"
+ldc.i4 7
+box value class N.A
+ldc.i4 7
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object,object)
+ret
+.maxstack 3
+} // end of method N.Test.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor N.Test.Test
+.method hidebysig specialname rtspecialname static private void .cctor() {
+ldc.i4 2
+stsfld value class N.A 'N.Test'::'x'
+ret
+.maxstack 1
+} // end of constructor N.Test.Test
+} // end of class N.Test
+} // end of namespace N

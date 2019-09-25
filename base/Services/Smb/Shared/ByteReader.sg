@@ -1,0 +1,331 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+namespace Smb.Shared
+{
+    public class ExByteReader
+    {
+        private int _start;
+        private int _length;
+        private int _pos;
+
+        public ExByteReader(int start, int length)
+        {
+            _start = start;
+            _length = length;
+            _pos = 0;
+        }
+
+#if false
+        public ByteReader(ArraySpan<byte> span)
+            : this(span.ContainingArray, span.Offset, span.Length)
+        {
+        }
+#endif
+
+        public int Position
+        {
+            get { return _pos; }
+
+            set
+            {
+                if (value < 0)
+                    throw new ArgumentException("Position cannot be negative");
+                if (value > _length)
+                    throw new ArgumentException("Position cannot exceed length of data");
+                _pos = value;
+            }
+        }
+
+        public int Length
+        {
+            get { return _length; }
+        }
+
+        public byte ReadByte(byte[]! in ExHeap buffer)
+        {
+            if (_pos < _length)
+                return buffer[_start + _pos++];
+            else
+                throw new Exception("The buffer has ended.  Cannot read more data.");
+        }
+
+        public byte[]! ReadBytes(byte[]! in ExHeap buffer, int count)
+        {
+            if (count < 0)
+                throw new ArgumentException("Count cannot be negative.");
+            if (_pos + count > _length)
+                throw new InvalidOperationException("Attempt to read beyond end of buffer.");
+            if (count == 0)
+                return new byte[0];
+
+            byte[] result = new byte[count];
+            Bitter.ToByteArray(buffer, _pos, count, result, 0);
+            _pos += count;
+            return result;
+        }
+
+        public ulong ReadUInt64Le(byte[]! in ExHeap buffer)
+        {
+            byte b0 = ReadByte(buffer);
+            byte b1 = ReadByte(buffer);
+            byte b2 = ReadByte(buffer);
+            byte b3 = ReadByte(buffer);
+            byte b4 = ReadByte(buffer);
+            byte b5 = ReadByte(buffer);
+            byte b6 = ReadByte(buffer);
+            byte b7 = ReadByte(buffer);
+            return (ulong)b0
+                | (ulong)b1 << 8
+                | (ulong)b2 << 0x10
+                | (ulong)b3 << 0x18
+                | (ulong)b4 << 0x20
+                | (ulong)b5 << 0x28
+                | (ulong)b6 << 0x30
+                | (ulong)b7 << 0x38;
+        }
+
+        public long ReadInt64Le(byte[]! in ExHeap buffer)
+        {
+            byte b0 = ReadByte(buffer);
+            byte b1 = ReadByte(buffer);
+            byte b2 = ReadByte(buffer);
+            byte b3 = ReadByte(buffer);
+            byte b4 = ReadByte(buffer);
+            byte b5 = ReadByte(buffer);
+            byte b6 = ReadByte(buffer);
+            byte b7 = ReadByte(buffer);
+            return (long)b0
+                | (long)b1 << 8
+                | (long)b2 << 0x10
+                | (long)b3 << 0x18
+                | (long)b4 << 0x20
+                | (long)b5 << 0x28
+                | (long)b6 << 0x30
+                | (long)b7 << 0x38;
+        }
+
+        // Reads a zero-terminated string.
+        public string! ReadStringUnicode(byte[]! in ExHeap buffer)
+        {
+			StringBuilder str = new StringBuilder();
+			for (;;)
+			{
+				// Not too happy with this.
+				if (_pos + 2 > _length)
+					return str.ToString();
+					
+				char c = (char)ReadUInt16Le(buffer);
+				if (c == 0)
+					return str.ToString();
+				str.Append(c);
+			}
+        }
+
+        public uint ReadUInt32Le(byte[]! in ExHeap buffer)
+        {
+            byte b0 = ReadByte(buffer);
+            byte b1 = ReadByte(buffer);
+            byte b2 = ReadByte(buffer);
+            byte b3 = ReadByte(buffer);
+            return (UInt32)(b0 | (b1 << 8) | (b2 << 0x10) | (b3 << 0x18));
+        }
+
+        public int ReadInt32Le(byte[]! in ExHeap buffer)
+        {
+            return (int)ReadUInt32Le(buffer);
+        }
+
+        public ushort ReadUInt16Le(byte[]! in ExHeap buffer)
+        {
+            byte b0 = ReadByte(buffer);
+            byte b1 = ReadByte(buffer);
+            return (UInt16)(b0 | (b1 << 8));
+        }
+
+        public void Skip(int count)
+        {
+            if (_pos + count > _length)
+                throw new Exception("Cannot seek to requested position.");
+            _pos += count;
+        }
+
+        public Guid ReadGuid(byte[]! in ExHeap buffer)
+        {
+            byte[]! data = ReadBytes(buffer, 16);
+            return new Guid(data);
+        }
+    }
+    
+    public class ByteReader
+    {
+        private byte[]! _buffer;
+        private int _start;
+        private int _length;
+        private int _pos;
+
+        public ByteReader(byte[]! buffer, int start, int length)
+        {
+            _buffer = buffer;
+            _start = start;
+            _length = length;
+            _pos = 0;
+        }
+        
+        public ByteReader(byte[]! buffer)
+        {
+			this(buffer, 0, buffer.Length);
+        }
+
+#if false
+        public ByteReader(ArraySpan<byte> span)
+            : this(span.ContainingArray, span.Offset, span.Length)
+        {
+        }
+#endif
+
+        public int Position
+        {
+            get { return _pos; }
+
+            set
+            {
+                if (value < 0)
+                    throw new ArgumentException("Position cannot be negative");
+                if (value > _length)
+                    throw new ArgumentException("Position cannot exceed length of data");
+                _pos = value;
+            }
+        }
+
+        public int Length
+        {
+            get { return _length; }
+        }
+
+        public byte ReadByte()
+        {
+            if (_pos < _length)
+                return _buffer[_start + _pos++];
+            else
+                throw new Exception("The buffer has ended.  Cannot read more data.");
+        }
+
+        public byte[]! ReadBytes(int count)
+        {
+            if (count < 0)
+                throw new ArgumentException("Count cannot be negative.");
+            if (_pos + count > _length)
+                throw new InvalidOperationException("Attempt to read beyond end of buffer.");
+            if (count == 0)
+                return new byte[0];
+
+            byte[] result = new byte[count];
+            Buffer.BlockCopy(_buffer, _pos, result, 0, count);
+            _pos += count;
+            return result;
+        }
+
+        public ulong ReadUInt64Le()
+        {
+            byte b0 = ReadByte();
+            byte b1 = ReadByte();
+            byte b2 = ReadByte();
+            byte b3 = ReadByte();
+            byte b4 = ReadByte();
+            byte b5 = ReadByte();
+            byte b6 = ReadByte();
+            byte b7 = ReadByte();
+            return (ulong)b0
+                | (ulong)b1 << 8
+                | (ulong)b2 << 0x10
+                | (ulong)b3 << 0x18
+                | (ulong)b4 << 0x20
+                | (ulong)b5 << 0x28
+                | (ulong)b6 << 0x30
+                | (ulong)b7 << 0x38;
+        }
+
+        public long ReadInt64Le()
+        {
+            byte b0 = ReadByte();
+            byte b1 = ReadByte();
+            byte b2 = ReadByte();
+            byte b3 = ReadByte();
+            byte b4 = ReadByte();
+            byte b5 = ReadByte();
+            byte b6 = ReadByte();
+            byte b7 = ReadByte();
+            return (long)b0
+                | (long)b1 << 8
+                | (long)b2 << 0x10
+                | (long)b3 << 0x18
+                | (long)b4 << 0x20
+                | (long)b5 << 0x28
+                | (long)b6 << 0x30
+                | (long)b7 << 0x38;
+        }
+
+        public uint ReadUInt32Le()
+        {
+            byte b0 = ReadByte();
+            byte b1 = ReadByte();
+            byte b2 = ReadByte();
+            byte b3 = ReadByte();
+            return (UInt32)(b0 | (b1 << 8) | (b2 << 0x10) | (b3 << 0x18));
+        }
+
+        public int ReadInt32Le()
+        {
+            return (int)ReadUInt32Le();
+        }
+
+        public ushort ReadUInt16Le()
+        {
+            byte b0 = ReadByte();
+            byte b1 = ReadByte();
+            return (UInt16)(b0 | (b1 << 8));
+        }
+
+        public void Skip(int count)
+        {
+            if (_pos + count > _length)
+                throw new Exception("Cannot seek to requested position.");
+            _pos += count;
+        }
+        
+        // Reads a zero-terminated string.
+        public string! ReadStringUnicode()
+        {
+			StringBuilder str = new StringBuilder();
+			for (;;)
+			{
+				// Not too happy with this.
+				if (_pos + 2 > _length)
+					return str.ToString();
+					
+				char c = (char)ReadUInt16Le();
+				if (c == 0)
+					return str.ToString();
+				str.Append(c);
+			}
+        }
+
+        public Guid ReadGuid()
+        {
+            byte[]! data = ReadBytes(16);
+            return new Guid(data);
+        }
+    }
+
+}

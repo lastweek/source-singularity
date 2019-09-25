@@ -1,0 +1,260 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatVolume.sg
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Services.Fat.Contracts;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal sealed class FatVolume
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+        const int DiskChannels = 4;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Static Members
+
+        static private string       diskName;
+        static private Fat!         theFat;
+        static private BlockCache!  theSectorCache;  // Cache of initial-sectors
+        static private BlockCache!  theClusterCache; // Cache of data clusters
+        static private BlockWriter! theBlockWriter;  // Dirty block flusher
+        static private bool            isReadOnly;
+        static private BpbSummary      theBpbSummary;
+        static private FileCache!      theFileCache;
+        static private DirectoryCache! theDirectoryCache;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Static Methods
+
+        internal static bool IsReadOnly
+        {
+            get { return isReadOnly; }
+        }
+
+        internal static Fat! Fat
+        {
+            get { return theFat; }
+        }
+
+        internal static BlockCache! NonClusterCache
+        {
+            get { return theSectorCache; }
+        }
+
+        internal static BlockCache! ClusterCache
+        {
+            get { return theClusterCache; }
+        }
+
+        internal static BpbSummary! BpbSummary
+        {
+            get { return theBpbSummary; }
+        }
+
+        internal static DirectoryCache! DirectoryCache
+        {
+            get { return theDirectoryCache; }
+        }
+
+        internal static FileCache! FileCache
+        {
+            get { return theFileCache; }
+        }
+
+        internal static FatVersion FatVersion
+        {
+            get { return theBpbSummary.Version; }
+        }
+
+        private static BpbSummary
+        CreateBpbSummary(string! diskName, [Claims]byte[]! in ExHeap sector0)
+        {
+            try {
+                return new BpbSummary(sector0);
+            }
+            catch (BpbException be) {
+                LogError("Found invalid BPB data on \"{0}\" - {1}.",
+                         diskName, be.Message);
+                return null;
+            }
+            finally {
+                delete sector0;
+            }
+        }
+
+        internal static FatContractErrorCode
+        Mount(
+            string! diskName,
+            bool    readOnly,
+            uint    cacheMB,
+            uint    directoryCacheSize,
+            uint    fileCacheSize,
+            uint    writeQueueSize)
+        {
+            DirectoryServiceContract.Imp dsImp =
+                DirectoryService.NewClientEndpoint();
+
+            try {
+                Disk disk = Disk.Create(dsImp, diskName, DiskChannels);
+                if (disk == null) {
+                    LogError("Could not find disk \"{0}\".", diskName);
+                    return FatContractErrorCode.DiskUnavailable;
+                }
+
+                byte [] in ExHeap sector0 = disk.Read(0, 512);
+                if (sector0 == null) {
+                    LogError("Failed to read sector 0 of \"{0}\".", diskName);
+                    return FatContractErrorCode.ReadFailed;
+                }
+
+                FatVolume.theBpbSummary = CreateBpbSummary(diskName, sector0);
+                if (theBpbSummary == null) {
+                    return FatContractErrorCode.BadBPB;
+                }
+
+                if (theBpbSummary.TotalSectors > disk.TotalSectors) {
+                    LogError("FAT claims more sectors than present on disk" +
+                             " ({0} > {1}).",
+                             theBpbSummary.TotalSectors, disk.TotalSectors);
+                    return FatContractErrorCode.BadBPB;
+                }
+
+
+                FatVolume.diskName = diskName;
+                if (readOnly == false) {
+                    FatVolume.isReadOnly =
+                        ((disk.DiskAttributes & DiskAttributes.ReadOnly) ==
+                         DiskAttributes.ReadOnly);
+                }
+                else {
+                    FatVolume.isReadOnly = readOnly;
+                }
+
+                //
+                // Initialize write queue
+                //
+                writeQueueSize = Math.Min(writeQueueSize,
+                                          FatMountSettings.MaxWriteQueueSize);
+                FatVolume.theBlockWriter = new BlockWriter(disk,
+                                                           writeQueueSize,
+                                                           !readOnly);
+
+                cacheMB = Math.Min(cacheMB, FatMountSettings.MaxCacheMB);
+
+                //
+                // Initialize cache for portion of disk addressed by sector
+                //
+                uint sectorCacheKB  = cacheMB * 1024 / 16;
+
+                FatVolume.theSectorCache = new BlockCache(
+                    new BlockCacheConfiguration(
+                        0, theBpbSummary.BytesPerSector, 1,
+                        (uint)theBpbSummary.FirstClusterSector,
+                        sectorCacheKB),
+                    disk, theBlockWriter);
+
+                //
+                // Initialize cache for portion of disk addressed by cluster
+                //
+                // The first two entries in
+                // FAT are used for media type and status bits.
+                //
+                // See page 18 of the Fat32 File System Spec (1.03).
+                //
+                uint clusterCacheKB = cacheMB * 1024 - sectorCacheKB;
+                uint clusterZeroOffset = 2 * theBpbSummary.SectorsPerCluster;
+
+                FatVolume.theClusterCache = new BlockCache(
+                    new BlockCacheConfiguration(
+                        theBpbSummary.FirstClusterSector - clusterZeroOffset,
+                        theBpbSummary.BytesPerSector,
+                        theBpbSummary.SectorsPerCluster,
+                        theBpbSummary.ClusterCount,
+                        clusterCacheKB),
+                    disk, theBlockWriter);
+
+                switch (theBpbSummary.Version) {
+                    case FatVersion.Fat12:
+                        DebugStub.Print("Mounting Fat12 volume\n");
+                        FatVolume.theFat = new Fat12(theSectorCache,
+                                                     theBpbSummary);
+                        break;
+                    case FatVersion.Fat16:
+                        DebugStub.Print("Mounting Fat16 volume\n");
+                        FatVolume.theFat = new Fat16(theSectorCache,
+                                                     theBpbSummary);
+                        break;
+                    case FatVersion.Fat32:
+                        DebugStub.Print("Mounting Fat32 volume\n");
+                        FatVolume.theFat = new Fat32(theSectorCache,
+                                                     theBpbSummary);
+                        break;
+                    default:
+                        // NOTREACHED   
+                        assert false;
+                        break;
+                }
+
+                //
+                // Initialize caches for recently closed files and
+                // directories used to mitigate the cost of re-opens
+                //
+                directoryCacheSize =
+                    Math.Min(directoryCacheSize,
+                             FatMountSettings.MaxDirectoryCacheSize);
+                theDirectoryCache = new DirectoryCache(directoryCacheSize);
+
+                DebugStub.Print("Directory cache size = {0} directories\n",
+                                __arglist(directoryCacheSize));
+
+                fileCacheSize =
+                    Math.Min(fileCacheSize, FatMountSettings.MaxFileCacheSize);
+                theFileCache = new FileCache(fileCacheSize);
+                DebugStub.Print("File cache size = {0} files\n",
+                                __arglist(fileCacheSize));
+            }
+            finally {
+                delete dsImp;
+            }
+            return FatContractErrorCode.NoError;
+        }
+
+        internal static void Unmount()
+        {
+            Tracing.Log(Tracing.Debug, "Unmount of {0} beginning.",
+                        FatVolume.diskName);
+
+            FatVolume.theBlockWriter.Shutdown();
+            NonClusterCache.ValidateAllClean();
+            ClusterCache.ValidateAllClean();
+
+            Tracing.Log(Tracing.Debug, "Unmount of {0} complete.",
+                        FatVolume.diskName);
+        }
+
+        internal static void LogError(string! message)
+        {
+            Tracing.Log(Tracing.Error, message);
+            DebugStub.Print(message);
+        }
+
+        internal static void LogError(string! message, params object[] values)
+        {
+            LogError(String.Format(message, values));
+        }
+    }
+}

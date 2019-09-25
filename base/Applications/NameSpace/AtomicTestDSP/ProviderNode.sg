@@ -1,0 +1,456 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+namespace Microsoft.Application.DSP
+#endif
+{
+    // Although there currently are none, there might need to be access control
+    // checks at Bind time.  Certainly, the Bind target can do an access check,
+    // but the Bind intermediary, here, might also make a check.  See the discussion
+    // below.
+
+    public class ProviderNode : Node
+    {
+        public TRef<ServiceProviderContract.Imp:Start>! ServiceEndpoint;
+        private bool isDead;
+
+        public ProviderNode([Claims] ServiceProviderContract.Imp! imp, string! name, Node! parent)
+            requires imp.InState(ServiceProviderContract.Start.Value);
+        {
+            ServiceEndpoint = new TRef<ServiceProviderContract.Imp:Start>(imp);
+            isDead = false;
+            base(NodeType.ServiceProvider, name, parent);
+        }
+
+        public ServiceProviderContract.Imp:Start! GetServiceEndpoint() {
+                      return this.ServiceEndpoint.Acquire();
+        }
+
+        /// <returns>
+        /// null on success, the service argument if it failed.
+        /// </returns>
+        public override ServiceContract.Exp Bind(StringBuilder! p,
+                                                 Principal pr,
+                                                 out bool success,
+                                                 out bool linkFound,
+                                                 out ErrorCode error,
+                                                 out bool reparse,
+                                                 out string link,
+                                                 [Claims]
+                                                 ServiceContract.Exp! service)
+        {
+            Kernel.Waypoint(3100);
+
+            reparse = false;
+            link = null;
+            success = false;
+            linkFound = false;
+
+            if (p.Length != 0) {
+                if ((p.Length == 1) && (p[0] == '/')) {
+                    // pass thru if  it is just the delimiter character.
+                }
+                else {
+                    // we have hit a non-leaf service provider
+                    // send back a reparse message
+                    error = ErrorCode.NotFound;
+                    reparse = true;
+                    link = p.ToString();
+                    return service;
+                }
+            }
+
+            // There continues to be an inconsistency here with access control.
+            // We might do the access control here on Bind, in which case we know
+            // the caller.  However, if we require the access control operation
+            // to be done on the other side of the Connect operation, then that
+            // code doesn't see the original invoker and moreover there is no
+            // appropriate AccessDenied failure on Connect.
+
+            // It seems a little weird to put access controls on the provider
+            // node, since such node are transient, but that is perhaps what we
+            // should do.
+
+            // If we decide to do ACL checks here, figure out how to get the
+            // permissions from the service endpoint!! No access check here until we do.
+
+            //
+            //if (!CheckNodeAccess(???, pr, service)) {
+            //  DebugStub.WriteLine("No access to bind");
+            //  error = ErrorCode.AccessDenied;
+            //  return service;
+            //}
+            //
+
+            lock (this) {
+                Kernel.Waypoint(3101);
+                if (isDead) {
+                    success = false;
+                    error = ErrorCode.NotFound;
+                    return service;
+                }
+
+                ServiceProviderContract.Imp ep = this.ServiceEndpoint.Acquire();
+                assert ep.InState(ServiceProviderContract.Start.Value);
+                Tracing.Log(Tracing.Debug, "Connecting to Service Provider");
+                try {
+                    ep.SendConnect(service);
+                    switch receive {
+                        case ep.AckConnect():
+                            success = true;
+                            error = ErrorCode.NoError;
+                            return null;
+                        case ep.NackConnect(rejectedEP):
+                            Tracing.Log(Tracing.Debug,"nak connect ");
+                            // REVIEW: what should be returned here?
+                            error = ErrorCode.ContractNotSupported;
+                            return rejectedEP;
+                        case ep.ChannelClosed():
+                            Tracing.Log(Tracing.Debug,"channel closed");
+                            // make this a zombie node
+                            isDead = true;
+                            error = ErrorCode.ChannelClosed;
+                            success = false;
+                            return null;
+                        case unsatisfiable:
+                            Tracing.Log(Tracing.Debug,"Unsatisfiable!!");
+                            error = ErrorCode.Unsatisfiable;
+                            success = false;
+                            return null;
+                    }
+                }
+                finally {
+                    this.ServiceEndpoint.Release(ep);
+                }
+                Kernel.Waypoint(3102);
+            } // lock on node
+        }
+
+        /// <returns>
+        /// null on success, the sp argument if it failed.
+        /// </returns>
+        public override ServiceProviderContract.Imp Register(StringBuilder! p,
+                                      Principal pr,
+                                      [Claims]ServiceProviderContract.Imp! sp,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            if (p.Length != 0) {
+                if ((p.Length == 1) && (p[0] == '/')) {
+                    // pass thru if  it is just the delimiter character.
+                }
+                else {
+                    // we have hit a non-leaf service provider
+                    // send back a reparse message
+                    error = ErrorCode.Unknown;
+                    reparse = true;
+                    linkFound = false;
+                    link = p.ToString();
+                    return sp;
+                }
+            }
+
+            // cannot register over an existing provider
+            reparse = false;
+            linkFound = false;
+            link = null;
+            error = ErrorCode.NotSupported;
+            return sp;
+        }
+
+        /// <returns>
+        /// The endpoint on success, null, if it fails.
+        /// </returns>
+        public override ServiceProviderContract.Imp:Start  Deregister(StringBuilder! p,
+                                                               Principal pr,
+                                                               DirectoryServiceContract.Exp! ep,
+                                                               out bool linkFound,
+                                                               out ErrorCode error,
+                                                               out bool reparse,
+                                                               out string link
+                                                               )
+
+        {
+            link  = null;
+            linkFound = false;
+            reparse = false;
+
+            if (p.Length != 0) {
+                if ((p.Length == 1) && (p[0] == '/')) {
+                    // pass thru if  it is just the delimiter character.
+                }
+                else {
+                    // we have hit a non-leaf service provider
+                    // send back a reparse message
+                    error = ErrorCode.Unknown;
+                    reparse = true;
+                    linkFound = false;
+                    link = p.ToString();
+                    return null;
+                }
+            }
+
+            // Add the following access check on Deregister pursuant on the
+            // discussion about access controls on providers above.
+            //
+            //if (!CheckNodeAccess(DirPermissions.AccessModeDeregister, pr, ep)) {
+            //  error = ErrorCode.AccessDenied;
+            //  return null;
+            //}
+            //
+
+            // we are being removed
+            error = ErrorCode.NoError;
+            return this.ServiceEndpoint.Acquire();
+        }
+
+
+        /// <returns>
+        /// if true returns length and node type, otherwise error
+        /// </returns>
+        public override bool GetAttributes(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link,
+                                        out long length,
+                                        out NodeType nodeType
+                                        )
+        {
+
+            if (p.Length != 0) {
+                if ((p.Length == 1) && (p[0] == '/')) {
+                    // pass thru if  it is just the delimiter character.
+                }
+                else {
+                    // we have hit a non-leaf service provider
+                    // send back a reparse message
+                    error = ErrorCode.Unknown;
+                    reparse = true;
+                    linkFound = false;
+                    length = 0;
+                    link = p.ToString();
+                    nodeType = NodeType.ServiceProvider;
+                    return false;
+                }
+            }
+
+            linkFound = false;
+            reparse = false;
+            link = p.ToString();
+            nodeType = NodeType.ServiceProvider;
+            length = 0;
+            error = ErrorCode.Unknown;
+            return true;
+        }
+
+
+        /// <returns>
+        /// null on success, the imp argument if it failed.
+        /// </returns>
+        public override NotifyContract.Imp Notify(StringBuilder! p,
+                                                  Principal pr,
+                                                  string! pattern,
+                                                  bool sendExisting,
+                                                  out bool linkFound,
+                                                  out ErrorCode error,
+                                                  out bool reparse,
+                                                  out string link,
+                                                  [Claims] NotifyContract.Imp! notifyImp)
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            if (p.Length != 0) {
+                if ((p.Length == 1) && (p[0] == '/')) {
+                    // pass thru if  it is just the delimiter character.
+                }
+                else {
+                    // we have hit a non-leaf service provider
+                    // send back a reparse message
+                    error = ErrorCode.Unknown;
+                    reparse = true;
+                    linkFound = false;
+                    link = p.ToString();
+                    return notifyImp;
+                }
+            }
+            return notifyImp;
+        }
+
+        public override FileContract.Imp CreateAndBindFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+
+            return null;
+        }
+
+        private bool CheckForTraverse (StringBuilder! p,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.Unknown;
+            reparse = false;
+            link = null;
+
+            if (p.Length != 0) {
+                if ((p.Length == 1) && (p[0] == '/')) {
+                    // pass thru if it is just the delimiter character.
+                }
+                else {
+                    // we have hit a non-leaf service provider
+                    // send back a reparse message
+                    error = ErrorCode.NoError;
+                    reparse = true;
+                    linkFound = false;
+                    link = p.ToString();
+                    if (p[0] == '/') link = link.Substring(1);
+                    return false;
+                }
+            }
+            return false;
+
+        }
+
+        public override bool CreateDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool CreateFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool CreateLink(StringBuilder! p,
+                                        Principal pr,
+                                        string! value,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+        public override bool DeleteDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+        public override bool DeleteFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+        public override bool DeleteLink(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool GetLinkValue(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+
+
+        public override bool QueryACL(StringBuilder! p,
+                                      Principal pr,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link,
+                                      out Acl acl
+                                      )
+        {
+            acl = new Acl();
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+
+        public override bool StoreACL(StringBuilder! p,
+                                      Principal pr,
+                                      Acl acl,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            return CheckForTraverse(p, out linkFound, out error, out reparse, out link);
+        }
+    }
+}

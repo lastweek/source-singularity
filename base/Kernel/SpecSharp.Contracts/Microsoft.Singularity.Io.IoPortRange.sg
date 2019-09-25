@@ -1,0 +1,18 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Io
+{
+    public sealed class IoPortRange
+    {
+        public IoPortRange! RangeAtOffset(ushort offset, ushort bytes,
+                                          bool readable, bool writable);
+
+        public IoPort! PortAtOffset(ushort offset, ushort bytes, Access access);
+
+        public IoPort! PortAtOffset(ushort offset, ushort bytes, bool readable, bool writable);
+    }
+}

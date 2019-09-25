@@ -1,0 +1,640 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Windows XP-like TaskList program.
+//
+using System;
+using System.Collections;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="TaskTimes:  Displays snapshot of cpu times for all processes",
+                     DefaultAction=true)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<ProcessContract.Imp:Start> processRef;
+
+        [BoolParameter( "f", Default=false , HelpMessage="run forever")]
+        internal bool doForever;
+
+        [BoolParameter( "s", Default=false , HelpMessage="Summary Mode")]
+        internal bool doSummary;
+
+        [BoolParameter( "v", Default=false , HelpMessage="Verbose output")]
+        internal bool doVerbose;
+
+        [BoolParameter( "q", Default=false , HelpMessage="Quiet Mode (debug output only)")]
+        internal bool doQuiet;
+
+        [LongParameter( "r", Default=1, HelpMessage="Repeat every n seconds")]
+        internal long monitorSeconds;
+
+        [LongParameter( "i", Default=1, HelpMessage="Perform n iterations")]
+        internal long iterationCount;
+
+        [LongParameter( "w", Default=0, HelpMessage="warmup time in seconds")]
+        internal long warmupSeconds;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return TaskTimes.AppMain(this);
+        }
+    }
+
+    public class TaskTimes
+    {
+        public class ProcessData
+        {
+            public int id;
+            public string name;
+            public long memBytes;
+            public long peakMemBytes;
+            public long commMemBlocks;
+            public long commMemBytes;
+            public long handlePages;
+            public int[] tids; 
+            public long totalTime;
+            public long deadThreadTime;
+            public long deadThreadCount;
+            public int gcCount; 
+            public long gcTotalTime; 
+            public long gcTotalBytes; 
+           
+            public ProcessData() {
+                tids = null; 
+            }
+        }
+
+        public class ChannelData
+        {
+            public int ChannelId;
+            public int ImpProcessId;
+            public int ExpProcessId;
+            public int MessagesDeliveredToImp;
+            public int MessagesDeliveredToExp;
+        }
+
+        public static int []! GetProcessIDs(ProcessContract.Imp:ReadyState! imp)
+        {
+            int [] ids = null;
+            int[]! in ExHeap xids;
+            imp.SendGetProcessIDs();
+            imp.RecvProcessIDs(out xids);
+            // REVIEW: The kernel process is being returned twice so we're
+            // skipping one of the entries if the process ID matches.
+            int startIndex = 0;
+            if (xids[0] == xids[1])
+                startIndex++;
+            ids = new int[xids.Length - startIndex];
+            for (int i = startIndex; i < xids.Length; i++) {
+                ids[i - startIndex] = xids[i];
+            }
+            delete xids;
+            return ids;
+        }
+
+        public static int [] GetProcessThreadIDs(ProcessContract.Imp:ReadyState! imp, int procID)
+        {
+            imp.SendGetProcessThreadIDs(procID);
+            int [] retVal = null; 
+            
+            switch receive {
+                case imp.NotFound() :
+                    break;
+
+                case imp.ProcessThreadIDs(int[]! in ExHeap tids) :
+                    retVal = new int[tids.Length];
+                    for (int i = 0; i < tids.Length; i++) {
+                        retVal[i] = tids[i]; 
+                    } 
+                    delete tids;
+                    break;
+
+                case imp.ChannelClosed() :
+                    throw new Exception("GetProcessThreadIDs: imp channel closed");
+            }
+            return retVal; 
+        } 
+
+
+        public static void GetProcessInfo(ProcessContract.Imp:ReadyState! imp, 
+                            ProcessData[]! processData
+                            )
+        {
+            for (int i = 0; i < processData.Length; i++) {
+                ProcessData! pd = (!)processData[i];
+                imp.SendGetProcessTimes(pd.id);
+                imp.RecvProcessTimes(out pd.totalTime, out pd.deadThreadTime, out pd.deadThreadCount);
+                imp.SendGetProcessGcStats(pd.id);
+                imp.RecvProcessGcStats(out pd.gcCount, out pd.gcTotalTime, out pd.gcTotalBytes);
+            }
+        } 
+
+        public static string []! GetProcessNames(ProcessContract.Imp:ReadyState! imp, int []! ids)
+        {
+            string [] names = new string[ids.Length];
+            for (int i = 0; i < ids.Length; i++) {
+                imp.SendGetProcessName(ids[i]);
+
+                switch receive {
+                    case imp.NotFound() :
+                        break;
+
+                    case imp.ProcessName(char[]! in ExHeap procName) :
+                        names[i] = Bitter.ToString(procName);
+                        delete procName;
+                        break;
+
+                    case imp.ChannelClosed() :
+                        throw new Exception("GetProcessNames: imp channel closed");
+                }
+            }
+            return names;
+        }
+
+        public static void GetMemoryUsage(MemoryContract.Imp:ReadyState! imp, ProcessData[]! processData)
+        {
+            for (int i = 0; i < processData.Length; i++) {
+                ProcessData! pd = (!)processData[i];
+                imp.SendGetProcessUsedMemory(pd.id);
+                imp.RecvMemory(out pd.memBytes);
+
+                imp.SendGetProcessPeakMemory(pd.id);
+                imp.RecvMemory(out pd.peakMemBytes);
+
+                imp.SendProcessUsedCommunicationHeap(pd.id);
+                imp.RecvBlocksAndTotal(out pd.commMemBlocks, out pd.commMemBytes);
+
+                imp.SendGetProcessHandlePages(pd.id);
+                imp.RecvPages(out pd.handlePages);
+            }
+        }
+
+        public static ProcessData[]! GetProcessData(ProcessContract.Imp:ReadyState! imp)
+        {
+            int [] ids = GetProcessIDs(imp);
+            string [] names = GetProcessNames(imp, ids);
+            
+
+            ProcessData [] processData= new ProcessData[ids.Length];
+            for (int i = 0; i < ids.Length; i++) {
+                ProcessData! pd = new ProcessData();
+                pd.id = ids[i];
+                pd.name = names[i];
+                pd.tids = GetProcessThreadIDs(imp, ids[i]); 
+                processData[i] = pd;
+            }
+            
+            GetProcessInfo(imp, processData); 
+
+            return processData;
+        }
+
+
+        public static bool ParseNumber(string! arg,
+                                       string! name,
+                                       out uint value)
+        {
+            // arg should look like "[-/][A-z]:[0-9]"
+            if (arg.Length >= 4) {
+                try {
+                    value = UInt32.Parse(arg.Substring(3));
+                    return true;
+                }
+                catch (FormatException) {
+                }
+                catch (OverflowException) {
+                }
+            }
+            Console.WriteLine("Could not parse {0}", name);
+            value = 0;
+            return false;
+        }
+
+        public static void PrintUsage()
+        {
+            Console.WriteLine();
+            Console.WriteLine("TaskTimes [options]");
+            Console.WriteLine();
+            Console.WriteLine("Options:");
+            Console.WriteLine("    /?      Displays this help/usage.");
+            Console.WriteLine("    /d      Output to debugger.");
+            Console.WriteLine("    /f      iterate forever");
+            Console.WriteLine("    /i:<n>  iterate <n> times.");
+            Console.WriteLine("    /q      Quiet mode (no console)");
+            Console.WriteLine("    /r:<n>  run (monitor) for <n> seconds.");
+            Console.WriteLine("    /s      summary mode)");
+        }
+
+        /// <summary>
+        /// Use this method to write output to both the screen and the debugger if toDebugger is true.
+        /// </summary>
+        public static void WriteLine(bool toDebugger, bool toDisplay, string format, params object[] args) {
+            string s = String.Format(format, args);
+            if (toDisplay) Console.WriteLine(s);
+            if (toDebugger) DebugStub.WriteLine(s);
+        } 
+
+        public static void WriteLine(bool toDebugger, bool toDisplay) {
+            if (toDisplay) Console.WriteLine();
+            if (toDebugger) DebugStub.WriteLine();
+        } 
+
+
+        public static void Write(bool toDebugger, bool toDisplay, string format, params object[] args) {
+            string s = String.Format(format, args);
+            if (toDisplay) Console.Write(s);
+            if (toDebugger) DebugStub.Write(s);
+        } 
+
+    [CLSCompliant(false)]
+    public struct PerfEvtSel
+    {
+        // Bits and Flags
+        public const uint CNT_MASK  = 0xff000000;
+        public const uint INV       = 0x00800000;
+        public const uint EN        = 0x00400000;
+        public const uint INT       = 0x00100000;
+        public const uint PC        = 0x00080000;
+        public const uint E         = 0x00040000;
+        public const uint OS        = 0x00020000;
+        public const uint USR       = 0x00010000;
+        public const uint UNIT_MASK = 0x0000ff00;
+        public const uint SELECTOR  = 0x000000ff;
+
+        // Common setting: Count all, but don't interrupt,
+        public const uint COUNT     = (EN | PC | OS | USR);
+        // public const uint COUNT     = (EN | PC | E | OS | USR);
+
+        // Selector values.
+        public const uint DCacheRefillFromL2OrSys           = 0x42; // Speculative
+        public const uint DCacheRefillFromSystem            = 0x43; // Speculative
+        public const uint DtlbL1MissL2Hit                   = 0x45; // Speculative
+        public const uint DtlbL1MissL2Miss                  = 0x46; // Speculative
+        public const uint CyclesNotHalted                   = 0x76; // No E
+        public const uint RequestsToL2Cache                 = 0x7d;
+        public const uint L2CacheMiss                       = 0x7e;
+        public const uint ItlbL1MissL2Hit                   = 0x84;
+        public const uint ItlbL1MissL2Miss                  = 0x85;
+        public const uint RetiredInstructions               = 0xc0; // No E
+        public const uint RetiredBranchInstructions         = 0xc2; // No E
+        public const uint RetiredBranchesMispredicted       = 0xc3; // No E
+        public const uint RetiredBranchesTaken              = 0xc4; // No E
+        public const uint CyclesInterruptsMasked            = 0xcd; // No E
+        public const uint CyclesInterruptsBlocked           = 0xce; // No E
+
+        public ulong value; // Required so Bartok doesn't die.
+
+        public static string ToString(ulong value)
+        {
+            switch (value & 0xff) {
+                case PerfEvtSel.DCacheRefillFromL2OrSys:    return "DCache_Refill_L2";
+                case PerfEvtSel.DCacheRefillFromSystem:     return "DCache_Refill_Sys";
+                case PerfEvtSel.DtlbL1MissL2Hit:            return "DTLB_L2_Hit";
+                case PerfEvtSel.DtlbL1MissL2Miss:           return "DTBL_L2_Miss";
+                case PerfEvtSel.CyclesNotHalted:            return "CyclesNotHalted";
+                case PerfEvtSel.RequestsToL2Cache:
+                    if ((value & 0x400) != 0) {
+                        return "TLB_L2_Requests";
+                    }
+                    return "Req_L2_Cache";
+                case PerfEvtSel.L2CacheMiss:
+                    if ((value & 0x400) != 0) {
+                        return "TLB_L2_Miss";
+                    }
+                    return "L2_Cache_Miss";
+                case PerfEvtSel.ItlbL1MissL2Hit:            return "ITLB_L2_Hit";
+                case PerfEvtSel.ItlbL1MissL2Miss:           return "ITLB_L2_Miss";
+                case PerfEvtSel.RetiredInstructions:        return "Retired_Inst.";
+                case PerfEvtSel.RetiredBranchInstructions:  return "Branches";
+                case PerfEvtSel.RetiredBranchesMispredicted:return "Br_Mispredicted";
+                case PerfEvtSel.RetiredBranchesTaken:       return "Br_Taken";
+                case PerfEvtSel.CyclesInterruptsMasked:     return "Ints_Masked (cyc)";
+                case PerfEvtSel.CyclesInterruptsBlocked:    return "Ints_Blocked (cyc)";
+                default:
+                    return String.Format("{0:x16}", value);
+            }
+        }
+    }
+		
+		private static void InitializeCounters ()
+		{
+            Reset(0, PerfEvtSel.COUNT | PerfEvtSel.CyclesNotHalted);
+            Reset(1, PerfEvtSel.COUNT | PerfEvtSel.RetiredInstructions);
+            Reset(2, PerfEvtSel.COUNT | PerfEvtSel.CyclesInterruptsMasked);
+            Reset(3, PerfEvtSel.COUNT | PerfEvtSel.RequestsToL2Cache | 0x400);
+            DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+		}
+
+        internal static bool IsAmd()
+        {
+            uint eax;
+            uint ebx;
+            uint ecx;
+            uint edx;
+            Processor.ReadCpuid(0, out eax, out ebx, out ecx, out edx);
+            return (ebx == 0x68747541 && ecx == 0x444d4163 && edx == 0x69746e65);
+        }
+
+		internal static void ReportCounters(bool dumpTable, bool toDisplay)
+        {
+            // Read the AMD and Singularity performance counters.
+            ulong b0 = 0;
+            ulong t0 = 0;
+            ulong e0 = 0;
+            ulong e1 = 0;
+            ulong e2 = 0;
+            ulong e3 = 0;
+            ulong p0 = 0;
+            ulong p1 = 0;
+            ulong p2 = 0;
+            //ulong p3 = 0;
+            ulong z0 = 0;
+            ulong z1 = 0;
+            ulong z2 = 0;
+            ulong z3 = 0;
+            ulong z4 = 0;
+            ulong z5 = 0;
+            ulong z6 = 0;
+            if (IsAmd()) {
+                b0 = DebugStub.ReadPerfCounter(7);
+                t0 = Processor.GetCycleCount();
+                e0 = Processor.ReadMsr(0xc0010000);
+                e1 = Processor.ReadMsr(0xc0010001);
+                e2 = Processor.ReadMsr(0xc0010002);
+                e3 = Processor.ReadMsr(0xc0010003);
+                p0 = Processor.ReadPmc(0);
+                p1 = Processor.ReadPmc(1);
+                p2 = Processor.ReadPmc(2);
+                //	p3 = Processor.ReadPmc(3);
+            }
+            else {
+                b0 = DebugStub.ReadPerfCounter(7);
+                t0 = Processor.GetCycleCount();
+            }
+            z0 = DebugStub.ReadPerfCounter(0);
+            z1 = DebugStub.ReadPerfCounter(1);
+            z2 = DebugStub.ReadPerfCounter(2);
+            z3 = DebugStub.ReadPerfCounter(3);
+            z4 = DebugStub.ReadPerfCounter(4);
+            z5 = DebugStub.ReadPerfCounter(5);
+            z6 = DebugStub.ReadPerfCounter(6);
+
+            t0 = t0 - b0;
+            WriteLine(false, false, "\nevt: {0,16} {1,16} {2,16} {3,16} {4,16}\n",
+                    "Cycles",
+                    PerfEvtSel.ToString(e0),
+                    PerfEvtSel.ToString(e1),
+                    PerfEvtSel.ToString(e2),
+                    PerfEvtSel.ToString(e3));
+			// t0= cycles 
+			// p0= cycles not halted
+			// p1= cycles retired 
+			// p2= cycles interrupt not masked 
+            WriteLine(dumpTable,toDisplay,
+                    "       cycles={0,16}\n"+
+                    "    notHalted={1,16}(%{2:f2})\n"+
+                    "      retired={3,16}(%{4:f2})\n"+
+                    "   int masked={5,16}(%{6:f2})\n"+
+                    "cycles halted={7,16}(%{8:f2})",
+                    t0, 
+                    p0, 
+                    (double) (p0) / (double) (t0),
+                    p1, 
+                    (double) (p1) / (double) (t0),
+                    p2,
+                    (double) (p2) / (double) (t0),
+                    (t0-p0),
+                    (double) (t0-p0) / (double) (t0)
+            );
+            
+            WriteLine(false,false, "pfc: {0,16} {1,16} {2,16} {3,16} {4,16} {5,16} {6,16} {7,16}\n",
+                    z0 + z1 + z2 + z3 + z4 + z5 + z6,
+                    z0, z1, z2, z3, z4, z5, z6);
+            if (!IsAmd()) {
+                WriteLine(dumpTable,toDisplay, "Intel processor, PMC values will be zero.\n");
+            }
+        }
+
+
+        internal static void Reset(uint pmc, ulong value)
+        {
+            if (IsAmd()) {
+                // Clear the event selector.
+                Processor.WriteMsr(0xc0010000 + pmc, 0);
+                // Clear the performance counter.
+                Processor.WriteMsr(0xc0010004 + pmc, 0);
+                // Enable the event selector.
+                Processor.WriteMsr(0xc0010000 + pmc, value);
+            }
+        }
+
+		internal static void ResetPerfCounters()
+		{
+            DebugStub.WritePerfCounter(0, 0);
+            DebugStub.WritePerfCounter(1, 0);
+            DebugStub.WritePerfCounter(2, 0);
+            DebugStub.WritePerfCounter(3, 0);
+            DebugStub.WritePerfCounter(4, 0);
+            DebugStub.WritePerfCounter(5, 0);
+            DebugStub.WritePerfCounter(6, 0);
+            DebugStub.WritePerfCounter(7, 0);
+
+            if (IsAmd()) {
+                for (uint pmc = 0; pmc < 4; pmc++) {
+                    Processor.WriteMsr(0xc0010004 + pmc, 0);
+                }
+            }
+            DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+		}
+        internal static int AppMain(Parameters! config)
+        {
+            ProcessData [] processData;
+            ProcessData [] processData2;
+
+            // Set the default options
+            bool dumpTable = false; 
+            int monitorSeconds = (int) config.monitorSeconds;
+            bool toDisplay = !config.doQuiet; 
+            
+            bool summaryMode = config.doSummary; 
+            bool doForever = config.doForever; 
+            bool doVerbose = config.doVerbose; 
+            int iterationCount = (int) config.iterationCount;
+            int warmupSeconds = (int) config.warmupSeconds;
+            string pattern = "###,##0.00"; 
+            string pattern2 = "###,###,##0.00"; 
+            string percentPattern = "#0.00";
+
+
+            ProcessContract.Imp imp = ((!)config.processRef).Acquire(); 
+            imp.RecvReady();
+			
+			// set up performance counters to get  halted/retired instructions etc. 
+			if (doVerbose) InitializeCounters(); 
+			
+            Thread.Sleep(warmupSeconds * 1000); 
+            do
+            {
+                TimeSpan startTime = ProcessService.GetUpTime();
+                long startIrqCount = ProcessService.GetKernelInterruptCount();
+                long startSwitchCount = ProcessService.GetContextSwitchCount();
+
+                // Retrieve the process  data
+                try {
+                    processData = GetProcessData(imp);
+                }
+                catch (Exception ex) {
+                    Console.WriteLine("Error retrieving process data.");
+                    Console.WriteLine(ex.ToString());
+                    return 1;
+                }
+                
+                if (doVerbose) ResetPerfCounters(); 
+
+                Thread.Sleep(monitorSeconds * 1000); 
+                
+                // Retrieve the process  data
+                try {
+                    processData2 = GetProcessData(imp);
+                }
+                catch (Exception ex) {
+                    Console.WriteLine("Error retrieving process data.");
+                    Console.WriteLine(ex.ToString());
+                    return 1;
+                }
+                TimeSpan endTime =  ProcessService.GetUpTime(); 
+                
+               double actualSpan =  (double) ((endTime - startTime).TotalMilliseconds); 
+               if (!summaryMode) {
+                    WriteLine (dumpTable,toDisplay, "TaskTimes: now:{0}, span={1}ms  int={2}, swi={3}",
+                        endTime.Ticks, 
+                        actualSpan,
+                        ProcessService.GetKernelInterruptCount() - startIrqCount,
+                        ProcessService.GetContextSwitchCount() - startSwitchCount); 
+               }
+                // Prep for display
+                Hashtable processName = new Hashtable(processData.Length);
+                for (int i = 0; i < processData.Length; i++) {
+                    ProcessData pd = processData[i];
+                    if (pd == null) continue;
+                    processName.Add(pd.id, pd);
+                }
+
+                // Display the results
+                if (!summaryMode) {
+                Console.WriteLine();
+                    WriteLine(dumpTable, toDisplay,  "PID Task Name           deltaTotal    deltaGC %total  %GC  GCs GcBytes(K)      total(ms)     dead(ms) dead thd");
+                    WriteLine(dumpTable, toDisplay, "=== =================== ========== ========== ===== ===== ==== ========== ============== ============== ====");
+                }
+                double totalPercent = 0; 
+                //long  durationMs =  monitorSeconds*1000;
+                double  durationMs =  actualSpan;
+                double deltaGcTime; 
+                double percentGc; 
+                double totalTime; 
+                double deadTime; 
+                double deltaTotal;
+                double deltaDead;
+                int deltaGcCount; 
+                long deltaGcBytes;
+                
+                for (int i = 0; i < processData2.Length; i++) {
+                    ProcessData pd2 = processData2[i];
+                    if (pd2 == null) continue;
+
+                    totalTime = (double)pd2.totalTime / DateTime.TicksPerMillisecond; 
+                    deadTime  = (double)pd2.deadThreadTime / DateTime.TicksPerMillisecond; 
+                    
+                    double percent = 0; 
+                    ProcessData p = (ProcessData) processName[pd2.id]; 
+                    if (p == null) {
+                        // this process is not in the 1st snapshot
+                        deltaGcBytes = pd2.gcTotalBytes; 
+                        deltaGcCount = pd2.gcCount; 
+                        deltaGcTime =  deltaGcCount == 0 ? 0 :
+                            (double) pd2.gcTotalTime /DateTime.TicksPerMillisecond; 
+                        percent = durationMs == 0 ? 0 : (double) (totalTime / durationMs)  * 100 ; 
+                        deltaTotal = totalTime; 
+                        //deltaDead = deadTime; 
+                    } 
+                    else {
+                        if (p.name != pd2.name) DebugStub.Break(); 
+                        deltaTotal = (double)((pd2.totalTime - p.totalTime) /DateTime.TicksPerMillisecond); 
+                        //deltaDead  = (double)((pd2.deadThreadTime - p.deadThreadTime) / (TimeSpan.TicksPerSecond/1000)); 
+                        percent =  durationMs == 0 ?  0 : (double) (deltaTotal / durationMs)  * 100; 
+                        deltaGcCount = pd2.gcCount - p.gcCount; 
+                        deltaGcTime = deltaGcCount == 0 ? 0 :
+                            (double)(pd2.gcTotalTime - p.gcTotalTime) /DateTime.TicksPerMillisecond; 
+                        deltaGcBytes = pd2.gcTotalBytes - p.gcTotalBytes;
+
+                    }
+                    // percent of overall time spent in the GC in this process 
+                    //percentGc =  durationMs == 0  ? 0 : (deltaGcTime / durationMs) * 100; 
+                    
+                    //percent of time of this process spent in GC 
+                    percentGc =  deltaTotal == 0  ? 0 : (deltaGcTime / deltaTotal) * 100; 
+                    if (summaryMode) {
+                        Write(dumpTable, toDisplay, " {0}:{1}% ",pd2.name,percent.ToString(percentPattern)); 
+                    } 
+                    else {
+                        WriteLine(dumpTable, toDisplay, "{0,3} {1,-19} {2,10} {3,10} {4,5} {5,5} {6,4} {7,10} {8,14} {9,14} {10,4}", 
+                                            pd2.id,  
+                                            pd2.name, 
+                                            deltaTotal.ToString(pattern), 
+                                            deltaGcTime.ToString(pattern),
+                                            percent.ToString(percentPattern), 
+                                            percentGc.ToString(percentPattern),
+                                            deltaGcCount,
+                                            deltaGcBytes / 1024,  
+                                            totalTime.ToString(pattern2),
+                                            deadTime.ToString(pattern2),
+                                            pd2.deadThreadCount
+                                            ) ;
+                    }
+                    totalPercent += percent; 
+                }
+                
+                if (!summaryMode) { 
+                    WriteLine(dumpTable, toDisplay, "                                              ======");
+                    WriteLine(dumpTable, toDisplay,"                                               {0,5} accounted for",totalPercent.ToString("00.00")); 
+                }
+                else {
+                    WriteLine(dumpTable,toDisplay,";"); 
+                }
+                
+                if (doVerbose) ReportCounters(dumpTable, toDisplay);
+                
+            } while (--iterationCount > 0 || doForever);
+            delete imp; 
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,28 @@
+//This contract is used to pass root endpoints from the SIP directory service
+//into the kernel, which then either uses them or passes them via the abi
+//to another SIP.
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Directory
+{
+    public contract DirectoryServiceFeederContract : ServiceContract {
+        out  message InitializationComplete();
+
+        in   message GetNewDirectoryChannel();
+        out  message AckNewChannel(DirectoryServiceContract.Imp:Start! imp);
+        out  message NakNewChannel(ErrorCode error);
+
+        override state Start: one {
+            InitializationComplete! -> Ready;
+        }
+
+        state Ready: one {
+            GetNewDirectoryChannel? -> (AckNewChannel!
+                                        or NakNewChannel!) -> Ready;
+        }
+    }
+}

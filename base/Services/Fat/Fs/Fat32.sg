@@ -1,0 +1,744 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Fat32.sg
+//
+//  NB Operations that modify the FAT table should be locked internally and
+//  should not expose any partial results.  Read operations do not require
+//  locks.
+//
+//  TODO: Mirror mode vs specific fat table mode.
+//        Catch exceptions when mirroring fat, switch to fallback, and
+//        have FatVolume update it in the BPB.
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+using System;
+using System.Diagnostics;
+
+//#define DEBUG_FAT32
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal sealed class Fat32 : Fat
+    {
+        Fat32Internal fatInternal;
+
+        internal Fat32(BlockCache! theBlockCache,
+                       BpbSummary! theBpbSummary)
+        {
+            fatInternal = new Fat32Internal(theBlockCache, theBpbSummary);
+        }
+
+        internal override bool AllocateChain(int hintClusterArea,
+                                             int targetLength,
+                                             out int allocStart,
+                                             out int allocLength)
+        {
+            return fatInternal.AllocateChain(hintClusterArea, targetLength,
+                                       out allocStart, out allocLength);
+        }
+
+        internal override void FreeChain(int startCluster)
+        {
+            fatInternal.FreeChain(startCluster);
+        }
+
+        internal override bool GrowChain(BlockIndex! index,
+                                         int         requestedExtensionLength,
+                                         out int     actualExtensionLength)
+        {
+            return fatInternal.GrowChain(index, requestedExtensionLength,
+                                         out actualExtensionLength);
+        }
+
+        internal override void TruncateChain(BlockIndex! index,
+                                             int         lengthInClusters)
+        {
+            fatInternal.TruncateChain(index, lengthInClusters);
+        }
+
+        internal override void PopulateIndex(BlockIndex! index,
+                                             int         firstCluster)
+        {
+            fatInternal.PopulateIndex(index, firstCluster);
+        }
+
+        internal override bool CleanShutdown
+        {
+            get { return fatInternal.CleanShutdown; }
+            set { fatInternal.CleanShutdown = value; }
+        }
+
+        internal override bool HardError
+        {
+            get { return fatInternal.HardError; }
+            set { fatInternal.HardError = value; }
+        }
+
+        internal int FirstFreeCluster
+        {
+            get { return fatInternal.FirstFreeCluster; }
+        }
+
+        internal int FreeClusters
+        {
+            get { return fatInternal.FreeClusters; }
+        }
+
+        internal override int TotalClusters
+        {
+            get { return fatInternal.TotalClusters; }
+        }
+
+        internal override int EndOfChain
+        {
+            get { return fatInternal.EndOfChain; }
+        }
+
+        internal override int BadCluster
+        {
+            get { return fatInternal.BadCluster; }
+        }
+
+        internal void UpdateFsInfo32()
+        {
+            fatInternal.UpdateFsInfo32();
+        }
+
+        // --------------------------------------------------------------------
+        // Internal representation of FAT32 structure
+
+        private sealed class Fat32Internal
+        {
+            private  const int CleanShutdownMask = 0x08000000;
+            private  const int HardErrorMask     = 0x04000000;
+            internal const int UnallocatedMarker = 0x00000000;
+            private  const int EndOfChainMarker  = 0x0fffffff;
+            private  const int EndOfChainMinimum = 0x0ffffff8;
+            private  const int BadClusterMarker  = 0x0ffffff7;
+            internal const int MaxClusters       = 0x0ffffff7;
+            private  const int ValueMask         = 0x0fffffff;
+            internal const int ReservedClusters  = 2;
+            private  const int EntryBytes        = 4;
+
+            private BlockCache! blockCache;
+            private BpbSummary! bpbSummary;
+            private uint        preferredFat;
+            private Bitmap!     bitmap;
+
+            [ Microsoft.Contracts.NotDelayed ]
+            internal Fat32Internal(BlockCache! theBlockCache,
+                                   BpbSummary! theBpbSummary)
+                requires theBpbSummary.Version       == FatVersion.Fat32;
+                requires theBpbSummary.SectorsPerFat >= 1;
+                requires theBpbSummary.NumberOfFats  >= 1;
+                requires theBpbSummary.ClusterCount  >= 1;
+            {
+                this.blockCache   = theBlockCache;
+                this.bpbSummary   = theBpbSummary;
+                this.preferredFat = 0;
+                this.bitmap       =
+                    new Bitmap((int)theBpbSummary.ClusterCount +
+                               ReservedClusters);
+                base();
+                InitializeBitmap(this.preferredFat);
+            }
+
+            internal bool CleanShutdown
+            {
+                get {
+                    int next;
+                    GetNext(1, out next);
+                    return (next & CleanShutdownMask) == CleanShutdownMask;
+                }
+                set {
+                    int next, repl;
+                    GetNext(1, out next);
+                    if (value) {
+                        repl = next | CleanShutdownMask;
+                    }
+                    else {
+                        repl = next & ~CleanShutdownMask;
+                    }
+                    if (repl != next) {
+                        SetNext(1, repl);
+                    }
+                }
+            }
+
+            internal bool HardError
+            {
+                get {
+                    int next;
+                    GetNext(1, out next);
+                    return (next & HardErrorMask) == HardErrorMask;
+                }
+                set {
+                    int next, repl;
+                    GetNext(1, out next);
+                    if (value) {
+                        repl = next | HardErrorMask;
+                    }
+                    else {
+                        repl = next & ~HardErrorMask;
+                    }
+                    if (repl != next) {
+                        SetNext(1, repl);
+                    }
+                }
+            }
+
+            internal int FirstFreeCluster
+            {
+                get { return this.bitmap.GetFirstClearBitFrom(0); }
+            }
+
+            internal int FreeClusters
+            {
+                get { return this.bitmap.FreeCount; }
+            }
+
+            internal int TotalClusters
+            {
+                get {
+                    return (int)bpbSummary.ClusterCount + ReservedClusters;
+                }
+            }
+
+            internal int EndOfChain
+            {
+                get { return EndOfChainMarker; }
+            }
+
+            internal int BadCluster
+            {
+                get { return BadClusterMarker; }
+            }
+
+            private int GetSector(uint fat, int cluster)
+            {
+                int byteOffset = EntryBytes * cluster;
+                return ((int)bpbSummary.FirstFatSector +
+                        (int)(fat * bpbSummary.SectorsPerFat) +
+                        byteOffset / (int)bpbSummary.BytesPerSector);
+            }
+
+            private int GetEntriesPerSector()
+            {
+                return (int)bpbSummary.BytesPerSector / EntryBytes;
+            }
+
+            private void ValidateClusterAssignment(int cluster,
+                                                   int oldValue,
+                                                   int newValue)
+            {
+                // Check reserved bits are untouched.
+                assert (oldValue & ~ValueMask) == (newValue & ~ValueMask);
+
+                oldValue &= ValueMask;
+                newValue &= ValueMask;
+
+                if (cluster < ReservedClusters) {
+                    if (cluster == 1) {
+                        const int ignoreMask = (CleanShutdownMask |
+                                                HardErrorMask);
+                        assert(((int)oldValue & ~ignoreMask) ==
+                               ((int)newValue & ~ignoreMask));
+                    }
+                    return;
+                }
+
+                if (oldValue >= EndOfChainMinimum &&
+                    oldValue < EndOfChainMarker) {
+                    oldValue = EndOfChainMarker;
+                }
+
+                assert (oldValue < TotalClusters ||
+                        oldValue == BadCluster ||
+                        oldValue == EndOfChainMarker);
+
+                assert (newValue < TotalClusters ||
+                        newValue == BadCluster ||
+                        newValue == EndOfChainMarker);
+            }
+
+            [Conditional("DEBUG_FAT32")]
+            private void DumpFat(string! title)
+            {
+                DebugStub.Print("{0}\n", __arglist(title));
+                for (int i = ReservedClusters; i < TotalClusters; i++) {
+                    int next;
+                    GetNextInFat(0, i, out next);
+                    if (next != 0) {
+                        DebugStub.Print("Fat[{0:x8}] = {1:x8}\n",
+                                        __arglist(i, next));
+                    }
+
+                    for (uint fat = 1; fat < bpbSummary.NumberOfFats; fat++) {
+                        int onext;
+                        GetNextInFat(fat, i, out onext);
+                        assert onext == next;
+                    }
+                }
+            }
+
+            private void InitializeBitmap(uint fat)
+            {
+                int startSector = GetSector(fat, 0);
+                int endSector   = startSector + (int)bpbSummary.SectorsPerFat;
+                int clustersPerSector = GetEntriesPerSector();
+
+                int cluster = 0;
+                for (int sector = startSector; sector != endSector; sector++) {
+                    byte[]! in ExHeap buffer =
+                        blockCache.BeginQuickBlockOperation((uint)sector);
+                    int n = Math.Min(clustersPerSector, TotalClusters - cluster);
+
+                    for (int i = 0; i < n; i++, cluster++) {
+                        ref int raw = ref buffer [i * EntryBytes];
+                        int v = ByteOrder.LittleEndianToHost(raw) & ValueMask;
+                        if (v != UnallocatedMarker) {
+                            int aStart, aLength;
+                            bitmap.Allocate(cluster, 1,
+                                            out aStart, out aLength);
+                            assert aStart  == (int)cluster;
+                            assert aLength == 1;
+                        }
+                    }
+                    blockCache.EndQuickBlockOperation((uint)sector, buffer, false);
+                }
+
+                // First two cluster entries are reserved.  They
+                // should be set, but we check just in case since
+                // they are never valid.
+                for (int i = 0; i < ReservedClusters; i++) {
+                    if (bitmap.GetFirstSetBitFrom(i) != i) {
+                        int aStart, aLength;
+                        bitmap.Allocate(i, 1, out aStart, out aLength);
+                        assert aStart  == i;
+                        assert aLength == 1;
+                    }
+                }
+
+                DumpFat("Initial Fat");
+            }
+
+            // ----------------------------------------------------------------
+            // Chain growth and creation related methods
+
+            internal bool GrowChain(BlockIndex! index,
+                                    int         clustersToAdd,
+                                    out int     clustersAdded)
+                requires index.Count > 0;
+                requires clustersToAdd > 0;
+            {
+                if (clustersToAdd > Bitmap.MaxAllocationLength) {
+                    clustersToAdd = Bitmap.MaxAllocationLength;
+                }
+
+                lock (this) {
+                    int tail;
+                    if (index.Lookup(index.Count - 1, out tail) == false) {
+                        assert false;
+                    }
+
+                    int newTailStart;
+                    if (LockedAllocateChain(tail, clustersToAdd, index,
+                                            out newTailStart, out clustersAdded)) {
+                        SetNext(tail, newTailStart);
+                        return true;
+                    }
+                    return false;
+                }
+            }
+
+            internal bool AllocateChain(int hintStart,
+                                        int length,
+                                        out int allocStart,
+                                        out int allocLength)
+                requires hintStart >= 0;
+                requires length > 0;
+            {
+                if (length > Bitmap.MaxAllocationLength) {
+                    length = Bitmap.MaxAllocationLength;
+                }
+
+                lock (this) {
+                    return LockedAllocateChain(hintStart,
+                                               length, null,
+                                               out allocStart,
+                                               out allocLength);
+                }
+            }
+
+            private bool LockedAllocateChain(int        tail,
+                                             int        clustersToAdd,
+                                             BlockIndex index,
+                                             out int    chainHead,
+                                             out int    chainLength)
+            {
+                chainHead  = tail;
+                chainLength = 0;
+                int chainTail = tail;
+                int request = Math.Min(Bitmap.MaxAllocationLength,
+                                       clustersToAdd);
+
+                while (request != 0) {
+                    int allocStart, allocLength;
+                    if (bitmap.Allocate(chainTail, request,
+                                        out allocStart, out allocLength)) {
+                        LockedWriteChain(allocStart, allocLength);
+                        if (index != null) {
+                            index.Append(allocStart, allocLength);
+                        }
+
+                        if (chainLength == 0) {
+                            // First successful allocation - record chain head
+                            chainHead = allocStart;
+                        }
+                        else {
+                            // Subsequent allocation - link into chain
+                            SetNext(chainTail, allocStart);
+                        }
+
+                        chainTail = allocStart + allocLength - 1;
+                        chainLength += allocLength;
+                        request = Math.Min(Bitmap.MaxAllocationLength,
+                                           clustersToAdd - chainLength);
+                    }
+                    else {
+                        request /= 2;
+                    }
+                }
+                return chainLength > 0;
+            }
+
+            private void LockedWriteChain(int chainStart,
+                                          int chainLength)
+            {
+                for (uint i = 0; i < bpbSummary.NumberOfFats; i++) {
+                    LockedWriteChainInFat(i, chainStart, chainLength);
+                }
+            }
+
+            private void LockedWriteChainInFat(uint fat,
+                                               int  chainStart,
+                                               int  chainLength)
+                requires chainStart >= ReservedClusters;
+                requires chainStart < this.TotalClusters;
+                requires chainStart + chainLength < this.TotalClusters;
+                requires chainLength != 0;
+            {
+                int entriesPerSector = GetEntriesPerSector();
+                int lastMarker       = EndOfChainMarker;
+                int entryStart       = chainStart % entriesPerSector;
+
+                if (entryStart + chainLength > entriesPerSector) {
+                    int skip = entriesPerSector - entryStart;
+                    LockedWriteChainInFat(fat,
+                                          chainStart + skip,
+                                          chainLength - skip);
+                    chainLength = skip;
+                    lastMarker  = chainStart + skip;
+                    DebugStub.Assert((lastMarker % entriesPerSector) == 0);
+                }
+
+                int sector = GetSector(fat, chainStart);
+
+                byte[]! in ExHeap blockData =
+                    blockCache.BeginQuickBlockOperation((uint)sector);
+
+                int oldCluster, newCluster;
+                for (int i = 0; i < chainLength - 1; i++) {
+                    int offset = EntryBytes * (entryStart + i);
+                    ref int rawCluster = ref blockData[offset];
+                    oldCluster = ByteOrder.LittleEndianToHost(rawCluster);
+                    newCluster =
+                        (oldCluster & ~ValueMask) | (chainStart + i + 1);
+                    ValidateClusterAssignment(chainStart + i,
+                                              oldCluster, newCluster);
+                    rawCluster = ByteOrder.HostToLittleEndian(newCluster);
+                }
+
+                int entryEnd = entryStart + chainLength - 1;
+                ref int theCluster = ref blockData[EntryBytes * (int)entryEnd];
+                oldCluster = ByteOrder.LittleEndianToHost(theCluster);
+                newCluster = (oldCluster & ~ValueMask) | lastMarker;
+                ValidateClusterAssignment(chainStart + chainLength - 1,
+                                          oldCluster, newCluster);
+                theCluster = ByteOrder.HostToLittleEndian(newCluster);
+
+                blockCache.EndQuickBlockOperation((uint)sector,
+                                                  blockData, true);
+            }
+
+            // ----------------------------------------------------------------
+            // Chain truncation and deletion related methods
+
+            internal void TruncateChain(BlockIndex! index,
+                                        int clusterLength)
+                requires clusterLength >= 0 && clusterLength < index.Count;
+            {
+                DumpFat("Pre-chain truncate");
+                if (clusterLength == index.Count) {
+                    return;
+                }
+
+                int zap;
+                if (index.Lookup(clusterLength, out zap) == false) {
+                    assert false;
+                }
+                FreeChain(zap);
+                index.TruncateToLength(clusterLength);
+
+                if (clusterLength > 0) {
+                    int newTail;
+                    bool s = index.Lookup(clusterLength - 1, out newTail);
+                    assert s;
+                    lock (this) {
+                        SetNext(newTail, EndOfChainMarker);
+                    }
+                }
+                DumpFat("Post truncate");
+            }
+
+            internal void FreeChain(int startCluster)
+                requires (startCluster >= ReservedClusters
+                          && startCluster < MaxClusters);
+            {
+                lock (this) {
+                    LockedFreeChain(startCluster);
+                }
+            }
+
+            private void LockedFreeChain(int startCluster)
+                requires (startCluster >= ReservedClusters &&
+                          startCluster < MaxClusters);
+            {
+                bool updateBitmap = true;
+                for (uint i = 0; i < bpbSummary.NumberOfFats; i++) {
+                    LockedFreeChainInFat(i, startCluster, updateBitmap);
+                    updateBitmap = false;
+                }
+            }
+
+            private void LockedFreeChainInFat(uint fat,
+                                              int  cluster,
+                                              bool updateBitmap)
+                requires cluster >= ReservedClusters && cluster < MaxClusters;
+            {
+                int sector           = GetSector(fat, cluster);
+                int entriesPerSector = GetEntriesPerSector();
+
+                byte []! in ExHeap blockData =
+                    blockCache.BeginQuickBlockOperation((uint)sector);
+
+                for (;;) {
+                    int byteOffset     =
+                        EntryBytes * (cluster % entriesPerSector);
+                    ref int rawCluster = ref blockData [byteOffset];
+                    int oldValue = ByteOrder.LittleEndianToHost(rawCluster);
+                    int newValue = oldValue & ~ValueMask;
+
+                    ValidateClusterAssignment(cluster, oldValue, newValue);
+                    rawCluster = ByteOrder.HostToLittleEndian(newValue);
+
+                    if (updateBitmap) {
+                        bitmap.Free(cluster & ValueMask, 1);
+                    }
+
+                    cluster = oldValue & ValueMask;
+
+                    if (cluster >= MaxClusters) {
+                        break;
+                    }
+
+                    int nextSector = GetSector(fat, cluster);
+                    if (nextSector != sector) {
+                        blockCache.EndQuickBlockOperation((uint)sector,
+                                                          blockData,
+                                                          true);
+                        sector = nextSector;
+                        blockData =
+                            blockCache.BeginQuickBlockOperation((uint)sector);
+                    }
+                }
+                blockCache.EndQuickBlockOperation((uint)sector, blockData,
+                                                  true);
+            }
+
+            // ----------------------------------------------------------------
+            // Populate
+
+            private void PopulateIndexFromFat(uint fat,
+                                              BlockIndex! index,
+                                              int firstCluster)
+                requires index.Count == 0;
+                requires firstCluster >= ReservedClusters;
+            {
+                int cluster          = firstCluster;
+                int sector           = GetSector(fat, cluster);
+                int entriesPerSector = GetEntriesPerSector();
+
+                byte []! in ExHeap blockData =
+                    blockCache.BeginQuickBlockOperation((uint)sector);
+
+                for (;;) {
+                    index.Append(cluster);
+
+                    int byteOffset = EntryBytes * (cluster % entriesPerSector);
+                    ref int rawCluster = ref blockData [byteOffset];
+                    // TODO: Check cluster is not bad
+                    cluster =
+                        ByteOrder.HostToLittleEndian(rawCluster & ValueMask);
+                    if (cluster < ReservedClusters || cluster >= MaxClusters) {
+                        break;
+                    }
+
+                    int nextSector = GetSector(fat, cluster);
+                    if (nextSector != sector) {
+                        blockCache.EndQuickBlockOperation((uint)sector,
+                                                          blockData,
+                                                          false);
+                        sector = nextSector;
+                        blockData =
+                            blockCache.BeginQuickBlockOperation((uint)sector);
+                    }
+
+                }
+                blockCache.EndQuickBlockOperation((uint)sector, blockData,
+                                                  false);
+            }
+
+            internal void PopulateIndex(BlockIndex! index,
+                                        int firstCluster)
+                requires firstCluster >= Fat32Internal.ReservedClusters;
+                requires index.Count == 0;
+            {
+                PopulateIndexFromFat(this.preferredFat, index, firstCluster);
+            }
+
+            // ----------------------------------------------------------------
+            // Single link traversal and modification methods
+
+            private bool GetNext(int cluster, out int next)
+            {
+                assert cluster < TotalClusters;
+
+                for (uint i = 0; i < bpbSummary.NumberOfFats; i++) {
+                    try {
+                        GetNextInFat(preferredFat, cluster, out next);
+                        return true;
+                    }
+                    catch (Exception e) {
+                        DebugStub.WriteLine("Caught {0}", __arglist(e.ToString()));
+                    }
+                    preferredFat =
+                        (preferredFat + 1) % bpbSummary.NumberOfFats;
+                }
+
+                assert false;
+                next = 0;
+                return false;
+                // XXX: Fatal error could not read Fat entry
+            }
+
+            private void GetNextInFat(uint fat, int cluster, out int next)
+            {
+                int sector     = GetSector(fat, cluster);
+                int byteOffset =
+                    EntryBytes * (cluster % GetEntriesPerSector());
+
+                byte[]! in ExHeap blockData =
+                    blockCache.BeginQuickBlockOperation((uint)sector);
+
+                ref int rawCluster = ref blockData[byteOffset];
+                next = ByteOrder.LittleEndianToHost(rawCluster) & ValueMask;
+
+                blockCache.EndQuickBlockOperation((uint)sector, blockData,
+                                                  false);
+
+                // Fix the out value so even
+                // non-MS formatted filesystems appear to show the
+                // same EOC marker.  NB First two clusters are not used
+                // and their next pointers may have special purposes.
+                if (cluster >= ReservedClusters && next >= EndOfChainMinimum) {
+                    next = EndOfChainMarker;
+                }
+            }
+
+            private void SetNext(int cluster, int next)
+            {
+                assert cluster < TotalClusters;
+                assert ((next < TotalClusters) ||
+                        (next >= BadClusterMarker &&
+                         next <= EndOfChainMarker) ||
+                        cluster < ReservedClusters);
+
+                for (uint i = 0; i < bpbSummary.NumberOfFats; i++) {
+                    SetNextInFat(i, cluster, next);
+                }
+            }
+
+            private void SetNextInFat(uint fat, int cluster, int next)
+                requires ((next & ~Fat32Internal.ValueMask) == 0 ||
+                          cluster < ReservedClusters) ;
+            {
+                int sector     = GetSector(fat, cluster);
+                int byteOffset = EntryBytes * (cluster % GetEntriesPerSector());
+
+                byte[]! in ExHeap blockData =
+                    blockCache.BeginQuickBlockOperation((uint)sector);
+
+                ref int rawCluster = ref blockData[byteOffset];
+                if (cluster >= ReservedClusters) {
+                    int oldCluster = ByteOrder.LittleEndianToHost(rawCluster);
+                    int newCluster = (oldCluster & ~ValueMask) | (next & ValueMask);
+                    ValidateClusterAssignment(cluster, oldCluster, newCluster);
+                    rawCluster = ByteOrder.HostToLittleEndian(newCluster);
+                }
+                else {
+                    // First two cluster entries do not have reserved bit
+                    // semantics since they status indicators rather than
+                    // cluster pointers.
+                    rawCluster = ByteOrder.HostToLittleEndian(next);
+                }
+
+                blockCache.EndQuickBlockOperation((uint)sector, blockData,
+                                                  true);
+            }
+
+            internal void UpdateFsInfo32()
+            {
+                uint freeClusters;
+                uint firstFreeCluster;
+
+                lock (this) {
+                    freeClusters     = (uint) this.FreeClusters;
+                    firstFreeCluster = (uint) this.FirstFreeCluster;
+                }
+
+                uint sectorId = (uint)bpbSummary.FsInfoSector;
+                BlockCache ncCache = FatVolume.NonClusterCache;
+                byte []! in ExHeap sector =
+                    ncCache.BeginQuickBlockOperation(sectorId);
+
+                ref FsInfo32 fs32 = ref sector[0];
+
+                assert fs32.ValidSignatures();
+
+                fs32.Initialize(freeClusters, firstFreeCluster);
+
+                assert fs32.ValidSignatures();
+
+                ncCache.EndQuickBlockOperation(sectorId, sector, true);
+            }
+        } // class Fat32Internal
+    } // class Fat32
+}

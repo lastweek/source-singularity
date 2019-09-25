@@ -1,0 +1,28 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>tree</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <NoNullCheck>true</NoNullCheck>
+    <APP_CODEGEN>/codegen:/AtomicSupport=true /codegen:/TryAllSupport=true /codegen:/TryAllSupportLoadStoreOpt=true /codegen:/TryAllSupportSsaNullCheck=true /codegen:/TryAllSupportOptimizePass=true /codegen:/TryAllDecomposeOpt=true /codegen:/IrArrayLoadStoreOpt=false</APP_CODEGEN>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="tree.cs"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+</Project>

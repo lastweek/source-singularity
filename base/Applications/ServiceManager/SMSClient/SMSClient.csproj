@@ -1,0 +1,25 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>sc</AssemblyName>
+    <ProjectGuid>{58EC3CA9-F47D-4122-9F6D-BCF0C3225D1C}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="SMSClient.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\ServiceManager.Contracts\ServiceManager.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DebugUtils\DebugUtils.csproj"/>
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

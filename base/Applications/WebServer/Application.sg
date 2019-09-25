@@ -1,0 +1,265 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//     This file holds the Singularity-specific web application dispatcher
+//     logic that knows how to invoke web applications under Singularity.
+//
+
+using System;
+using System.Collections;
+using System.Web;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+
+namespace Microsoft.Singularity.WebServer
+{
+    /// <summary>
+    /// WEB Application class with static lookup/create method and request processor.
+    /// </summary>
+    internal sealed class Application
+    {
+        /// <summary>
+        /// Name to Application Cache, including failed-to-start appliccations.
+        /// </summary>
+        private static Hashtable applications = new Hashtable();
+
+        /// <summary>
+        /// Map an Request to an Application Name.
+        /// </summary>
+        /// <remarks>
+        /// Currently, this method simply takes the FilePath after the leading slash.
+        /// <para>
+        /// Eventually this should be based on manifests and
+        /// the mapping configuration of the WebServer which
+        /// are passed to the WebServer at startup.
+        /// </para>
+        /// </remarks>
+        private static string ApplicationNameFromRequest(Request! request)
+        {
+            return request.GetFilePath().Substring(1);
+        }
+        
+        /// <summary>
+        /// Return an Application or null given a Request.
+        /// </summary>
+        /// <param name="request">
+        /// Request, used here to determine particular Application.
+        /// </param>
+        /// <returns>
+        /// Application (normally) or null (if Application not found or failed to start).
+        /// </returns>
+        /// <remarks>
+        /// Keeps a cache of Applications (including non-starters).
+        /// </remarks>
+        public static Application FindOrCreateApplication(Request! request)
+        {
+            string applicationName = Application.ApplicationNameFromRequest(request);
+            
+            Application application = (Application)applications[applicationName];
+
+            if (application == null) {
+                // Assure no races during insertion of applications into the hashtable.
+                lock (applications) {
+                    // Retrieve again under lock in case another
+                    // thread just added the same application.
+                    application = (Application)applications[applicationName];
+                    if (application == null) {
+                        // Create and record the application in the set of applications
+                        // and then try to start it.  This avoids repeated create/start
+                        // attempts on every client request when Start() fails.
+                        application = new Application(applicationName);
+                        applications[applicationName] = application;
+                        application.Start();
+                    }
+                }
+            }
+
+            // return only sucessfully started applications (see above).
+            return (application.started) ? application : null;
+        }
+
+        private TRef<WebAppContract.Imp:ProcessingState> wrapAppConn;
+        private string! name;
+        private bool    started;
+
+        // statistics
+        private ulong totalServed = 0ul;
+        private ulong totalTime = 0ul;
+
+        private Application(string! name)
+        {
+            this.name = name;
+            this.started = false;
+            base();
+        }
+
+        /// <summary>
+        /// Process given a Request.
+        /// </summary>
+        /// <param name="request">
+        /// Request, used here to determine particular Application. 
+        /// Passed to the application for further analysis.
+        /// </param>
+        public void Process(Request! request)
+        {
+            ulong startTime = Processor.CycleCount;
+
+            // Make a local request object
+            IHttpRequest localRequest = new LocalHttpRequest(request);
+
+            HttpRequestContract.Imp! reqConnImp;
+            HttpRequestContract.Exp! reqConnExp;
+            HttpRequestContract.NewChannel(out reqConnImp, out reqConnExp);
+
+            WebAppContract.Imp appConn = wrapAppConn.Acquire();
+
+            try {
+                // Start processing this request
+                appConn.SendProcess(reqConnImp);
+                appConn.RecvOK();
+            }
+            finally {
+                wrapAppConn.Release(appConn);
+            }
+
+            // Start servicing the request contract
+            RequestExporter.ServiceRequestChannel(localRequest, reqConnExp);
+
+            // Clean up
+            delete reqConnExp;
+
+            request.CloseConnection();
+
+            totalServed++;
+            totalTime += Processor.CycleCount - startTime;
+        }
+
+        private void Start()
+        {
+            WebAppContract.Imp! appConnImp;
+            WebAppContract.Exp! appConnExp;
+            WebAppContract.NewChannel(out appConnImp, out appConnExp);
+
+            try {
+                string[] processArguments = new string[] {name};
+                Process child = new Process(processArguments, (Endpoint * in ExHeap) appConnExp);
+                child.Start();
+                appConnImp.RecvWebAppReady();
+                wrapAppConn = new TRef<WebAppContract.Imp:ProcessingState>(appConnImp);
+                started = true;
+            }
+            catch (Exception) {
+                // TODO: The exception story of Singularity needs work.
+                // Since the member 'started' is initialized to 'false'
+                // do nothing here.  Eventually log the failure w/ ETS.
+            }
+        }
+
+        // TODO: Why is this subclass here when it only contains a single
+        // static method?  Should it be merged with the Application class?
+        internal class RequestExporter
+        {
+            public static void ServiceRequestChannel(IHttpRequest!            request,
+                                                     HttpRequestContract.Exp! conn)
+            {
+                bool done = false;
+
+                while (!done) {
+                    switch receive {
+                        case conn.GetUriPath() :
+                            conn.SendUriPath(Bitter.FromString2(request.GetUriPath()));
+                            break;
+
+                        case conn.GetQueryString() :
+                            conn.SendQueryString(Bitter.FromString(request.GetQueryString()));
+                            break;
+
+                        case conn.GetVerb() :
+                            conn.SendVerb(Bitter.FromString(request.GetVerb()));
+                            break;
+
+                        case conn.GetHeader(char[]! in ExHeap headerChars) :
+                            string headerName = Bitter.ToString(headerChars);
+                            delete headerChars;
+                            string headerVal = request.GetHeader(headerName);
+                            if (headerVal != null) {
+                                conn.SendHeaderValue(Bitter.FromString(headerVal));
+                            }
+                            else {
+                                conn.SendHeaderValue(null);
+                            }
+                            break;
+
+                        case conn.GetBody() :
+                            byte[] bodyData = request.GetBodyData();
+
+                            if (bodyData != null) {
+                                conn.SendBodyData(Bitter.FromByteArray(bodyData));
+                            }
+                            else {
+                                conn.SendBodyData(null);
+                            }
+                            break;
+
+                        case conn.GetRemoteAddress() :
+                            conn.SendRemoteAddress(Bitter.FromString(request.GetRemoteAddress()));
+                            break;
+
+                        case conn.SendStatus(int code, char[]! in ExHeap descChars) :
+                        {
+                            string description = Bitter.ToString(descChars);
+                            delete descChars;
+                            request.SendStatus(code, description);
+                            conn.SendOK();
+                        }
+                        break;
+
+                        case conn.SendHeader(char[]! in ExHeap nameChars,
+                                             char[]! in ExHeap valChars) :
+                        {
+                            string name = Bitter.ToString(nameChars);
+                            delete nameChars;
+
+                            string value = Bitter.ToString(valChars);
+                            delete valChars;
+
+                            request.SendHeader(name, value);
+                            conn.SendOK();
+                        }
+                        break;
+
+                        case conn.SendBodyData(byte[]! in ExHeap dataBytes) :
+                        {
+                            request.SendBodyData(dataBytes);
+                            conn.SendOK();
+                        }
+                        break;
+
+                        case conn.Done() :
+                            request.Done();
+                            done = true;
+                            break;
+
+                        case conn.ChannelClosed() :
+                            // This is unexpected
+                            DebugStub.Break();
+                            done = true;
+                            break;
+
+                        case unsatisfiable :
+                            // This is even more unexpected
+                            DebugStub.Break();
+                            done = true;
+                            break;
+                    }
+                }
+            }
+        }
+    }
+}

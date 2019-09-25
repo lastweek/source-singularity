@@ -1,0 +1,55 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity telnet daemon.
+//
+
+namespace Microsoft.Singularity.Telnetd
+{
+    using System;
+    using System.Net;
+    using System.Net.Sockets;
+    using System.Text;
+    using System.Threading;
+
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Io;
+
+    internal sealed class Listener
+    {
+        private int port;
+        private bool shutdownInProgress;
+        private Socket socket;
+        
+        public Listener(int port)
+        {
+            this.port = port;
+        }
+        
+        public void Start()
+        {
+            try {
+                socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                socket.Bind(new IPEndPoint(IPAddress.Any, port));
+                socket.Listen((int)SocketOptionName.MaxConnections);
+            }
+            catch (SocketException) {
+                Console.WriteLine("SocketException during Listen");
+            }
+        }
+        
+        public Socket Accept()
+        {
+            try {
+                return socket.Accept();
+            }
+            catch (SocketException) {
+                Console.WriteLine("SocketException during Accept.");
+                return null;
+            }
+        }
+    }
+}

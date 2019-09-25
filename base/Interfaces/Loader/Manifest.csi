@@ -1,0 +1,27 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Loader
+{
+    public class Manifest
+    {
+        public Manifest(string name, string path);
+
+        public byte[] Serialize();
+        public int SetEndpoints(Process process, string action);
+        public string Name { get; }
+        public string Path { get; }
+        public bool GetParameterCounts(string action,
+                                       out int boolCount, 
+                                       out int longCount, 
+                                       out int stringCount, 
+                                       out int stringArrayCount); 
+    }
+}

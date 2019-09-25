@@ -1,0 +1,25 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for the ChildPong process
+//
+
+using System;
+using Microsoft.Singularity.Extending;
+
+namespace Microsoft.Singularity.PingPong.Contracts
+{
+    public contract PongContract : ExtensionContract
+    {
+        in message Ping(int data);
+        out message Pong(int data);
+
+        out message PongReady();
+
+        override state Start : PongReady! -> ReadyState;
+        state ReadyState : Ping? -> Pong! -> ReadyState;
+    }
+}

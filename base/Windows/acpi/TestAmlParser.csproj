@@ -1,0 +1,42 @@
+﻿<!--
+###############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|Apic64' ">
+    <DefineConstants>LITTLE_ENDIAN</DefineConstants>
+  </PropertyGroup>
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>TestAmlParser</AssemblyName>
+    <KernelAcpiPath>..\..\Kernel\Singularity.Hal.Acpi</KernelAcpiPath>
+    <ProjectGuid>{84659D69-9398-40D8-B510-49F50057BBA1}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AcpiNamespace.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AcpiObject.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AmlParser.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AmlParserNodeVisitor.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AmlLoader.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AmlInterpreter.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\AmlStackIR.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\ReservedObjects.cs" />
+    <Compile Include="$(KernelAcpiPath)\AmlInterpreter\ResourceDataType.cs" />
+    <Compile Include="TestAmlParser.cs" />
+    <CsUnionFile Include="$(KernelAcpiPath)\AmlInterpreter\AmlParser.csunion">
+      <Namespace>Microsoft.Singularity.Hal.Acpi.AmlParserUnions</Namespace>
+    </CsUnionFile>
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+</Project>

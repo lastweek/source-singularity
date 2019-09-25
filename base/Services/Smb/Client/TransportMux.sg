@@ -1,0 +1,2479 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/Client/TransportMux.sg
+//
+//  Note:
+//
+//      This file contains the implementation of the SMB Client Transport 
+//      Multiplexer.  The mux runs on a single thread, and its purpose is to
+//      manage access to the TCP/IP connection to the SMB server.
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Security;
+using NetStack.Contracts;
+using Smb.Protocol;
+using Smb.PublicChannels;
+using Smb.PrivateChannels;
+using Smb.Shared;
+
+namespace Smb.Client
+{
+    class TransportMux : ITracked
+    {
+        /// <summary>
+        /// This method creates a new TransportMux instance.
+        /// </summary>
+        public static void Run(
+            [Claims]ServiceProviderContract.Exp! namespace_provider,
+            [Claims]SmbClientControllerContract.Exp! controller,
+            [Claims]SmbMuxNotifier.Imp! notifier,
+            string! serverName,
+            string! resourceName)
+        {
+            TransportMux mux = new TransportMux(
+                namespace_provider,
+                controller,
+                notifier,
+                serverName,
+                resourceName);
+
+            try {
+                mux.ThreadMain();
+            }
+            finally {
+                mux.Dispose();
+            }
+        }
+
+        TransportMux(
+            [Claims]ServiceProviderContract.Exp! namespace_provider,
+            [Claims]SmbClientControllerContract.Exp! controller,
+            [Claims]SmbMuxNotifier.Imp! notifier,
+            string! serverName,
+            string! resourceName)
+        {
+            _ServerHostName = serverName;
+            _ServerResourceName = resourceName;
+
+            _notifier = notifier;
+            _notifier_can_send = true;
+
+            _namespace_provider = namespace_provider;
+
+            _controller = controller;
+
+            _recvBuffer = new byte[400];
+            _recvDataLength = 0;
+        }
+
+        readonly SmbMuxNotifier.Imp! _notifier;
+
+        static bool _dump_received_messages;
+        static bool _dump_sent_messages;
+
+        // These come from the command-line when the service was started.
+        readonly string! _ServerHostName;
+        readonly string! _ServerResourceName;
+
+        // Once we have connected, negotiated, and connected to the tree, this tuple contains
+        // the values we should use.  MuxId will always be zero.
+        MuxTuple _treeTuple;
+
+        // I don't like this flag.
+        // If set, it means a protocol violation occurred, and so we need to tear down the connection.
+        // I want a cleaner way to do this.
+        bool _connection_failed;
+
+        // key: MuxTuple
+        // value: Transactor
+        readonly Hashtable/*<MuxTuple, Transactor!>*/! _transactors = new Hashtable();
+
+        /// <summary>
+        /// This endpoint map contains transactor endpoints that are in the "Ready" state.
+        /// We listen for the Request message in this state, meaning a transactor client
+        /// (which is anything that can issue SMB transactions, such as a DirectoryServiceContract
+        /// worker thread or a FileContract worker thread) wants to start a request.
+        /// </summary>
+        EMap<SmbTransactor.Exp:Ready, Transactor!>! _readyTransactors =
+            new EMap<SmbTransactor.Exp:Ready, Transactor!>();
+
+        /// <summary>
+        /// The TCP connection to the SMB server.  In the Disconnected state, this field is null.
+        /// In all other states (except possibly during state transitions), this field is non-null.
+        /// </summary>
+        TcpConnectionContract.Imp _connection;
+
+        // This endpoint is connected to SmbClientManager.  This thread receives control
+        // requests on the endpoint.
+        readonly SmbClientControllerContract.Exp! _controller;
+
+        // This endpoint represents our registration of the SMB namespace with the global
+        // Singularity directory service.  This is how we receive filesystem requests.
+        readonly ServiceProviderContract.Exp! _namespace_provider;
+
+        // The set of clients that have opened our published service control channel.
+        // This allows clients to send control requests to the SMB client.
+        ESet<SmbClientControlContract.Exp:Ready>! _control_clients = new ESet<SmbClientControlContract.Exp:Ready>();
+
+        // The last known status (snapshot) of the connection.
+        ClientStatusSnapshot _mux_status;
+
+        // Sequence number, identifies version of _mux_state
+        long _mux_status_version;
+
+        // Sequence number, identifies the last version of _mux_state we have sent to main thread
+        long _notifier_mux_status_version;
+
+        // If true, then _notifier is in a state that allows us to send a message.
+        bool _notifier_can_send;
+
+        // If true, SmbClientManager has requested that this process stop.
+        bool _service_stopping;
+
+        int _MaxSmbRequestLength = 1024;
+
+        // The credentials that we actually selected and used during authentication.
+        // This is set during SessionSetupAndConnectBasic.
+        string _SelectedCredentialsName;
+
+
+        // This value is returned from the server to the client in response to the NEGOTIATE message.
+        string _ReceivedServerDomainNameFromNegotiate;
+        string _ReceivedServerMachineName;
+
+        // These values are received from the server in response to the SESSION SETUP message.
+        string _ReceivedServerOperatingSystem;
+        string _ReceivedServerPrimaryDomainName;
+
+
+        // This could just as well be called the DisconnectedStateLoop.
+        void ThreadMain()
+        {
+            expose(this)
+            {
+                _service_stopping = false;
+
+                // bool want_connect = false;
+                bool want_connect = true;
+
+                try {
+                    SetMuxStatusDisconnected(SmbReasonDisconnected.Idle);
+
+                    for (;;) {
+                        if (want_connect) {
+                            want_connect = false;
+                            goto start_connect;
+                        }
+
+                        //
+                        // At this point, we are in the Disconnected state.
+                        // New transactors can be created.
+                        //
+
+                    disconnected_state:
+                        Disconnect();
+                        _connection_failed = false;
+
+                        for (;;) {
+                            if (_service_stopping) {
+                                DebugLine("TransportMux - main thread exiting");
+                                return;
+                            }
+
+
+                            switch receive {
+                                case _notifier.Ack():
+                                    AckNotifier();
+                                    break;
+
+                                case _controller.ChannelClosed():
+                                    DebugLine("Controller channel has closed!!");
+                                    goto thread_quit;
+
+                                case _controller.Bind(ServiceContract.Exp:Start! exp):
+                                    ControllerBind(exp);
+                                    break;
+
+                                case _controller.Stop():
+                                    DebugLine("Received Stop request on controller channel");
+                                    _service_stopping = true;
+                                    Disconnect();
+                                    return;
+
+                                case _namespace_provider.Connect(ServiceContract.Exp:Start! exp):
+                                    // A client wants to connect to the mount point namespace provider.
+                                    // We're not connected to the server right now.  If the namespace client
+                                    // is a valid client (a supported contract), then we'll try to connect
+                                    // to the SMB server in response to this request.  If not, we don't
+                                    // accept the client, and we don't attempt to connect to the SMB server.
+
+                                    if (NamespaceConnect(_namespace_provider, exp)) {
+                                        DebugLine("Namespace client is now connected.");
+                                        goto start_connect;
+                                    }
+                                    else {
+                                        DebugLine("Namespace client could not be connected.");
+                                    }
+                                    break;
+
+                            }
+                        }
+
+                        //
+                        // At this point, we want to connect to the remote peer.
+                        // Ask the Connector helper class to start connecting for us.
+                        //
+
+                    start_connect:
+
+                        if (ConnectAndNegotiate()) {
+                            goto connected_state;
+                        }
+                        else {
+                            goto disconnected_state;
+                        }
+
+
+
+                    connected_state:
+                        ConnectedReceiveLoop();
+                    }
+
+
+                thread_quit:
+                        Disconnect();
+
+                }
+                catch (Exception ex) {
+                    DebugLine("Exception reached top of thread frame in multiplexer thread!");
+                    Util.ShowExceptionDebug(ex, "TransportMultiplexer failed");
+                }
+            }
+        }
+
+        void ControllerBind([Claims]ServiceContract.Exp:Start! exp)
+        {
+            expose (this)
+            {
+                SmbClientControlContract.Exp typed_exp = exp as SmbClientControlContract.Exp;
+                if (typed_exp != null) {
+                    if (TraceSwitches.ShowControlMessages) {
+                        DebugLine("CONTROL: A control client has connected");
+                    }
+                    typed_exp.SendSuccess();
+                    _control_clients.Add(typed_exp);
+                    _controller.SendOk();
+                }
+                else {
+                    if (TraceSwitches.ShowControlMessages) {
+                        DebugLine("CONTROL: A control client connected, but offered an unsupported contract type.");
+                    }
+                    _controller.SendRequestFailed(SmbErrorCode.InternalError, null);
+                    delete exp;
+                }
+            }
+        }
+
+        bool NamespaceConnect(ServiceProviderContract.Exp! provider, [Claims]ServiceContract.Exp:Start! exp)
+        {
+            DirectoryServiceContract.Exp dir_exp = exp as DirectoryServiceContract.Exp;
+            if (dir_exp != null) {
+
+                if (TraceSwitches.ShowDirectoryMessages) {
+                    DebugLine("CONTROL: A namespace client has connected");
+                }
+
+                SmbTransactor.Imp transactor = CreateTransactor();
+                if (transactor == null) {
+                    DebugLine("Failed to bind namespace client because we failed to create a transactor.");
+                    provider.SendNackConnect(exp);
+                    return false;
+                }
+
+                DirectoryClient.StartServiceThread(transactor, dir_exp, "/");
+                provider.SendAckConnect();
+                return true;
+            }
+            else {
+                DebugLine("CONTROL: A namespace client connected, but offered an unsupported contract.");
+                provider.SendNackConnect(exp);
+                return false;
+            }
+        }
+
+        void Disconnect()
+        {
+            expose (this)
+            {
+                DebugLine("--- ENTERING DISCONNECTED STATE ---");
+
+                // Reject all transactors.
+                foreach (Transactor! tran in _transactors.Values) {
+                    tran.Dispose();
+                }
+                _transactors.Clear();
+
+                _readyTransactors.Dispose();
+                _readyTransactors = new EMap<SmbTransactor.Exp:Ready, Transactor!>();
+
+                if (_connection != null) {
+                    delete _connection;
+                    _connection = null;
+                }
+
+                _SelectedCredentialsName = null;
+                _ReceivedServerOperatingSystem = null;
+                _ReceivedServerDomainNameFromNegotiate = null;
+                _ReceivedServerPrimaryDomainName = null;
+                _ReceivedServerMachineName = null;
+
+            }
+        }
+
+        void ConnectedReceiveLoop()
+        {
+            expose(this)
+            {
+                DebugLine("--- ENTERING CONNECTED STATE ---");
+
+                assert _connection != null;
+
+                // The TCP channel is now connected.  However, we still have a lot of work to do before we can
+                // communicate with the server.  We need to send a SETUP message, and we need to authenticate.
+                // We do this on another thread.
+
+                _connectionCanSend = true;
+
+                for (;;) {
+                    assert _connection != null;
+
+                    if (_connectionCanSend) {
+                        SendQueuedTransactions();
+                    }
+
+                    if (_connection_failed) {
+                        DebugLine("_connect_failed is set -- going to disconnect state.");
+                        goto disconnect;
+                    }
+
+                    switch receive {
+                        case _namespace_provider.Connect(ServiceContract.Exp:Start! exp):
+                            // A client wants to connect to the mount point namespace provider.
+                            // We're in the connected state, so this is easy.
+                            NamespaceConnect(_namespace_provider, exp);
+                            break;
+
+                        case _notifier.Ack():
+                            AckNotifier();
+                            break;
+
+                        case _controller.Bind(ServiceContract.Exp:Start! exp):
+                            ControllerBind(exp);
+                            break;
+
+                        case _controller.Stop():
+                            DebugLine("Received Stop request on controller channel");
+                            _service_stopping = true;
+                            Disconnect();
+                            return;
+                            break;
+
+                        case transactor.Request(byte[]! in ExHeap request) in _readyTransactors ~> tran:
+                            StartRequest(transactor, tran, request);
+                            break;
+
+                        case transactor.ChannelClosed() in _readyTransactors ~> tran:
+                            // A transactor has disconnected.
+                            delete transactor;
+                            DeleteTransactorState(tran);
+                            break;
+
+                        case transactor.AddTransactor() in _readyTransactors ~> tran:
+                            SmbTransactor.Imp new_transactor = CreateTransactor();
+                            if (new_transactor != null) {
+                                transactor.SendAckAddTransactor(new_transactor);
+                            }
+                            else {
+                                transactor.SendNakAddTransactor();
+                            }
+                            _readyTransactors.Add(transactor, tran);
+                            break;
+
+                        case _connection.NoData():
+                            // This is not an error.  It just means that the read poll did not return any data.
+                            // Because this is part of a polling cycle, we don't bother printing any debug spew.
+                            assert !_connectionCanSend;
+                            _connectionCanSend = true;
+                            // DebugLine("connection.NoData: no data available from TCP");
+                            break;
+
+                        case _connection.NoMoreData():
+                            assert !_connectionCanSend;
+                            _connectionCanSend = true;
+                            DebugLine("connection.NoMoreData: peer has closed our receive path");
+                            SetMuxStatusDisconnected(SmbReasonDisconnected.TransportFailure);
+                            goto disconnect;
+
+                        case _connection.CantSend():
+                            assert !_connectionCanSend;
+                            _connectionCanSend = true;
+                            DebugLine("connection.CantSend: peer has closed our transmit path");
+                            SetMuxStatusDisconnected(SmbReasonDisconnected.TransportFailure);
+                            goto disconnect;
+
+                        case _connection.Data(byte[]! in ExHeap data):
+                            assert !_connectionCanSend;
+                            _connectionCanSend = true;
+                            // DebugLine("connection.Data: length = " + data.Length);
+                            ProcessReceivedData(data, data.Length);
+                            break;
+
+                        case _connection.DataIsAvailable(bool available):
+                            assert !_connectionCanSend;
+                            _connectionCanSend = true;
+                            // DebugLine("connection.DataIsAvailable(" + available + ")");
+                            break;
+
+                        case _connection.OK():
+                            // from write result
+                            // DebugLine("connection.OK()");
+                            _connectionCanSend = true;
+                            break;
+
+                    }
+                }
+
+
+            disconnect:
+                assert _connection != null;
+                delete _connection;
+                _connection = null;
+            }
+        }
+
+        void SetMuxStatus(ClientStatusSnapshot! status)
+        {
+            if (TraceSwitches.ShowMuxStatusChanges)
+                DebugLine("SetMuxState: conn state = " + SmbDebug.EnumToString(status.ConnectionStatus));
+
+            _mux_status = status;
+            ++_mux_status_version;
+
+            SendToNotifier();
+        }
+
+        void SetMuxStatus(SmbClientConnectionStatus connectionStatus)
+        {
+            ClientStatusSnapshot status = new ClientStatusSnapshot();
+            status.ConnectionStatus = connectionStatus;
+            status.ReasonDisconnected = SmbReasonDisconnected.Invalid;
+            status.ServerMachineName = null;
+            status.ServerDomainName = null;
+            status.ServerOperatingSystem = null;
+            SetMuxStatus(status);
+        }
+
+        void SetMuxStatusConnected()
+        {
+            ClientStatusSnapshot status = new ClientStatusSnapshot();
+            status.ConnectionStatus = SmbClientConnectionStatus.Connected;
+            status.ReasonDisconnected = SmbReasonDisconnected.Invalid;
+            status.ServerMachineName = _ReceivedServerMachineName;
+            status.ServerDomainName = _ReceivedServerPrimaryDomainName;
+            status.ServerOperatingSystem = _ReceivedServerOperatingSystem;
+            status.ActiveCredentialsName = _SelectedCredentialsName;
+            SetMuxStatus(status);
+        }
+
+        void SetMuxStatusDisconnected(SmbReasonDisconnected reason)
+        {
+            ClientStatusSnapshot status = new ClientStatusSnapshot();
+            status.ConnectionStatus = SmbClientConnectionStatus.Disconnected;
+            status.ReasonDisconnected = reason;
+            status.ServerMachineName = null;
+            status.ServerDomainName = null;
+            status.ServerOperatingSystem = null;
+            status.ActiveCredentialsName = null;
+            SetMuxStatus(status);
+        }
+
+        void SetMuxStatusDisconnected(SmbReasonDisconnected reason, Exception! ex)
+        {
+            ClientStatusSnapshot status = new ClientStatusSnapshot();
+            status.ConnectionStatus = SmbClientConnectionStatus.Disconnected;
+            status.ReasonDisconnected = reason;
+            status.ServerMachineName = null;
+            status.ServerDomainName = null;
+            status.ServerOperatingSystem = null;
+            SetMuxStatus(status);
+
+            // -XXX- Currently, we don't do anything with the exception.
+            // -XXX- Would be good to log it, report it, etc.
+            DebugLine("Mux status -> Disconnected");
+            Util.ShowExceptionDebug(ex);
+        }
+
+
+
+        // This method checks to see if we can (and should) send any notification messages
+        // to the notifier channel.  The "main" thread holds the exp end of the notifier
+        // channel, and this thread (the mux) sends notifications to the main thread.
+        void SendToNotifier()
+        {
+            expose (this) {
+                if (!_notifier_can_send) {
+                    // The _notifier endpoint is busy.
+                    if (TraceSwitches.ShowNotifierMessages)
+                        DebugLine("SendToNotifier - notifier is busy, can't send right now");
+                    return;
+                }
+
+                if (_notifier_mux_status_version < _mux_status_version) {
+                    if (TraceSwitches.ShowNotifierMessages)
+                        DebugLine("Sending StatusChanged to notifier");
+
+                    assert _mux_status != null;
+                    _notifier.SendStatusChanged(_mux_status.ToExchange());
+                    _notifier_can_send = false;
+                    _notifier_mux_status_version = _mux_status_version;
+                    return;
+                }
+            }
+        }
+
+        void AckNotifier()
+        {
+            if (TraceSwitches.ShowNotifierMessages) {
+                DebugLine("Received Ack from notifier channel");
+            }
+
+            assert !_notifier_can_send;
+            _notifier_can_send = true;
+            SendToNotifier();
+        }
+
+
+        byte[]! _recvBuffer = new byte[0x800];
+        int _recvDataLength = 0;
+
+        const int SmbFramingHeaderLength = 4; // length is in bytes
+
+        void ProcessReceivedData(
+            [Claims]byte[]! in ExHeap buffer,
+            int bufferLength)
+            requires bufferLength >= 0;
+            requires bufferLength <= buffer.Length;
+        {
+
+            // Check to see whether the fragment buffer contains any data.
+            // If it does, then we have already received part of an SMB message, but not all of it.
+            // Assemble the full message before continuing.
+            //
+            // If _recvBuffer contains any data (_recvDataLength > 0), then that existing
+            // partial message has its start aligned with _recvBuffer.  So we never have to
+            // deal with finding the start of a message.
+
+            if (_recvDataLength != 0) {
+                int concatLength = bufferLength + _recvDataLength;
+
+                if (TraceSwitches.ShowSmbReassembly) {
+                    DebugLine("concatenating fragment: previous fragment length = 0x{0:x} recv'd data length = 0x{1:x} total length = 0x{2:x}",
+                        _recvDataLength, bufferLength, concatLength);
+                }
+
+                byte[]! in ExHeap concatBuffer = new[ExHeap] byte[concatLength];
+                Bitter.FromByteArray(concatBuffer, 0, _recvDataLength, _recvBuffer, 0);
+                Bitter.Copy(concatBuffer, _recvDataLength, bufferLength, buffer, 0);
+                delete buffer;
+                buffer = concatBuffer;
+                bufferLength = concatLength;
+                _recvDataLength = 0;
+            }
+
+            // scan from 0 to bufferLength within buffer
+            int parseOffset = 0;
+            for (;;) {
+                assert parseOffset <= bufferLength;
+                int remaining = bufferLength - parseOffset;
+
+                if (remaining == 0) {
+                    if (TraceSwitches.ShowSmbReassembly)
+                        DebugLine("no more data in receive buffer");
+                    _receiveBufferPool.Recycle(buffer);
+                    return;
+                }
+
+                bool too_short;
+                int nextMessageOffset;
+
+                int smbLength;
+                if (SmbFramingHeaderLength < 4) {
+                    if (TraceSwitches.ShowSmbReassembly)
+                        DebugLine("too little data to parse -- storing in fragment buffer");
+                    too_short = true;
+                    smbLength = -1;
+                    nextMessageOffset = -1;
+                }
+                else {
+                    smbLength = (buffer[parseOffset + 1] << 16)
+                        + (buffer[parseOffset + 2] << 8)
+                        + (buffer[parseOffset + 3]);
+
+                    nextMessageOffset = parseOffset + SmbFramingHeaderLength + smbLength;
+                    if (nextMessageOffset > bufferLength) {
+                        // not enough data for a complete message
+                        too_short = true;
+                    }
+                    else {
+                        too_short = false;
+                    }
+                }
+
+                if (too_short) {
+                    if (remaining > _recvBuffer.Length) {
+                        _recvBuffer = new byte[remaining + 0x100];
+                    }
+
+                    if (TraceSwitches.ShowSmbReassembly)
+                        DebugLine("too little data to parse -- storing 0x{0:x} bytes in fragment buffer", remaining);
+
+                    Bitter.ToByteArray(buffer, parseOffset, remaining, _recvBuffer, 0);
+                    _recvDataLength = remaining;
+                    _receiveBufferPool.Recycle(buffer);
+                    return;
+                }
+
+                try {
+                    ProcessReceivedMessage(buffer, parseOffset, smbLength + SmbFramingHeaderLength);
+                }
+                catch (Exception ex) {
+                    Util.ShowExceptionDebug(ex, "Error occurred while parsing received SMB message.");
+                }
+
+                assert nextMessageOffset <= buffer.Length;
+                assert nextMessageOffset > parseOffset;
+
+                if (nextMessageOffset == bufferLength) {
+                    // DebugLine("SMB message ended on TCP message boundary (this is the easy case)");
+                    _receiveBufferPool.Recycle(buffer);
+                    return;
+                }
+
+                parseOffset = nextMessageOffset;
+            }
+        }
+
+        void Transactor_EnterReceiveState(
+            /*[Claims]*/ Transactor! tran,
+            TransactorState tstate)
+            requires tstate == TransactorState.WaitingReceiveResponse
+                || tstate == TransactorState.WaitingReceivePrimaryTransactionResponse
+                || tstate == TransactorState.WaitingReceiveSecondaryTransactionResponse;
+        {
+            tran.State = tstate;
+        }
+
+        ///
+        //<summary>
+        //  <para>
+        //      This method processes a single SMB message that has been received from the SMB server.
+        //      The caller of this method (ProcessReceivedData) has already located the SMB message
+        //      within a (potentially) larger buffer, and has verified the 'SMB' 0xFF signature.
+        //  </para>
+        //  <para>
+        //      The purpose of this method is to match up a received SMB message to our internal state
+        //      for that request (a Transactor), and to advance the state of that transactor. Depending
+        //      on the kind of request, the request will either be completed immediately (within the
+        //      scope of this method call), or will require further processing.
+        //  </para>
+        //</summary>
+        //<param name="buffer">
+        //  The buffer containing this SMB message, and potentially other SMB messages.
+        //  This method does not claim ownership of the buffer, so we must copy any data
+        //  out of the buffer.  Zero-copy is desirable, but is for future study.
+        //</param>
+        //<param name="offset">
+        //  The index of the first byte of the SMB message within 'buffer'.  The message begins with the
+        //  SMB "framing" header (4 bytes).
+        //</param>
+        //<param name="length">
+        //  The length of the SMB message within the buffer.  This value is NOT the same as the decoded
+        //  length value stored in the first four bytes (the framing header).
+        //</param>
+        //
+
+        void ProcessReceivedMessage(byte[]! in ExHeap buffer, int offset, int length)
+        {
+            if (TraceSwitches.ShowSmbMessageDetails) {
+                DebugLine("------------------ RECEIVED SMB MESSAGE --------------------------");
+                SmbDebug.DumpMessage(buffer, offset, length);
+            }
+
+            if (length < SmbProtocol.SmbHeaderSize) {
+                DebugLine("WARNING! Protocol violation: Received an SMB header indicates a message that is too small to be meaningful, length = ", length);
+                DebugLine("The message will be ignored, and the connection will otherwise not be affected.");
+                return;
+            }
+
+            ref SmbHeader header = ref buffer[offset];
+
+            if (!(header.Signature0 == 0xff
+                && header.Signature1 == (byte)'S'
+                && header.Signature2 == (byte)'M'
+                && header.Signature3 == (byte)'B'))
+            {
+                DebugLine("ERROR! Protocol violation: Received an SMB message with an invalid SMB signature.");
+                DebugLine("This usually means the client and server have gotten out of sync on message boundaries.");
+                DebugLine("The connection will be terminated.");
+                _connection_failed = true;
+                return;
+            }
+
+            if (TraceSwitches.ShowSmbMessageOneLineSummaries) {
+                string! cmdname = SmbDebug.GetSmbMessageSummary(buffer, offset);
+                if (header.IsError) {
+                    DebugLine("Received <-- " + cmdname + "  ERROR: " + header.GetErrorText());
+                }
+                else {
+                    DebugLine("Received <-- " + cmdname);
+                }
+            }
+
+            //
+            // Find the transactor that sent this request by its mux tuple.
+            // In most circumstances, the mux tuple of a response will match exactly the mux tuple of the request.
+            // However, for some requests, only part of the tuple will match.  This is really annoying.
+            //
+
+            Transactor tran = FindMatchingTransactor(ref header);
+            if (tran == null) {
+                // FindMatchingTransactor has already complained enough.
+                return;
+            }
+
+            Transactor_ProcessReceivedMessage(tran, buffer, offset, length);
+
+        }
+
+        void Transactor_ProcessReceivedMessage(
+            [Claims]Transactor! tran,
+            byte[]! in ExHeap buffer, int offset, int length)
+        {
+            Transactor.TrackedData tracked = tran.AcquireData();
+            try {
+
+                ref SmbHeader header = ref buffer[offset];
+
+                switch (tran.State) {
+                    case TransactorState.Ready:
+                        DebugLine(tran, "Received SMB message, but this transactor is idle!");
+                        DebugLine(tran, "Ignoring message.");
+                        break;
+
+                    case TransactorState.WaitingSendRequest:
+                    case TransactorState.WaitingSendPrimaryTransactionRequest:
+                    case TransactorState.WaitingSendSecondaryTransactionRequest:
+                        DebugLine(tran, "Received SMB message, but this transactor is not expecting a message yet!");
+                        DebugLine(tran, "The transactor is in a 'send' state, not a receive state.");
+                        DebugLine(tran, "I'll probably regret this later, but the message will be ignored.");
+                        break;
+
+                    case TransactorState.WaitingReceiveResponse:
+                    {
+                        // We have received the response for a "simple" SMB request/response exchange.
+                        // Next, route the received message to the holder of the import endpoint of the
+                        // transactor, and mark our transactor state as "ready".
+                        // DebugLine("Received SMB message matching simple SMB request.");
+                        SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                        Transactor_SendResponse_Copy(tran, exp, buffer, offset, length);
+                        Transactor_EnterReadyState(exp, tran);
+                        break;
+                    }
+
+                    case TransactorState.WaitingReceiveInterimTransactionResponse:
+                    {
+                        // This transactor is performing a SMB_TRANSACTION2 request. The primary transaction
+                        // request has been sent, and now we have received the interim server response.  If this
+                        // response is an error, then the transaction fails immediately.  If this response is a
+                        // "go ahead" code, then we have permission from the server to send the rest of the
+                        // transaction's request fragments (the "secondary transaction requests").
+
+                        if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                            DebugLine(tran, "Received interim server response");
+
+                        if (header.IsError) {
+                            if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                DebugLine(tran, "    Server indicates ERROR -- transaction fails immediately.");
+
+                            SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                            Transactor_SendResponse_Copy(tran, exp, buffer, offset, length);
+                            Transactor_EnterReadyState(exp, tran);
+                        }
+                        else {
+                            if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                DebugLine(tran, "    Server says go ahead with request fragments");
+
+                            Transactor_EnqueueForSend(tran, TransactorState.WaitingSendSecondaryTransactionRequest);
+                        }
+                        break;
+                    }
+
+                    case TransactorState.WaitingReceivePrimaryTransactionResponse:
+                    {
+                        // We've received the primary response to a SMB_TRANSACTION2 exchange.
+                        // This response may have further responses (fragments), or may be the only response.
+                        if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                            DebugLine(tran, "Received Primary Transaction Response");
+
+                        if (header.IsError) {
+                            if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                DebugLine(tran, "    Response indicates ERROR");
+                            // DebugStub.Break();
+
+                            //
+                            // We're receiving SMB TRANSACTION2 respones from XP that don't match anything rational,
+                            // when the transaction fails.  So for now, we treat any primary transaction response
+                            // that has an error code in the SMB header as the only fragment that we will receive.
+                            //
+                            SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                            Transactor_SendResponse_Copy(tran, exp, buffer, offset, length);
+                            Transactor_EnterReadyState(exp, tran);
+                            break;
+                        }
+
+                        if (length < sizeof(SmbTransaction2Response)) {
+                            // This message is too small to be a valid transaction response.
+                            // It may be an error response from an older SMB server.
+                            if (TraceSwitches.ShowTransactionFragmentationReassembly) {
+                                DebugLine(tran, "    Response is too short to be a valid TRANSACTION2 response!");
+                                DebugLine(tran, "    Completing request immediately.");
+                            }
+                            SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                            Transactor_SendResponse_Copy(tran, exp, buffer, offset, length);
+                            Transactor_EnterReadyState(exp, tran);
+                        }
+                        else {
+                            ref SmbTransaction2Response response = ref buffer[offset];
+
+                            int totalParameterCount = ByteOrder.LeToHost(response.Transaction.TotalParameterCount);
+                            int totalDataCount = ByteOrder.LeToHost(response.Transaction.TotalDataCount);
+                            int parameterOffset = ByteOrder.LeToHost(response.Transaction.ParameterOffset);
+                            int dataOffset = ByteOrder.LeToHost(response.Transaction.DataOffset);
+                            int parameterCount = ByteOrder.LeToHost(response.Transaction.ParameterCount);
+                            int dataCount = ByteOrder.LeToHost(response.Transaction.DataCount);
+
+                            if (totalParameterCount > parameterCount || totalDataCount > dataCount) {
+                                if (TraceSwitches.ShowTransactionFragmentationReassembly) {
+                                    DebugLine(tran, "    Response indicates server will fragment transaction response.");
+                                    DebugLine(tran, "        Parameters: {0}/{1}    Data: {2}/{3}",
+                                        parameterCount, totalParameterCount, dataCount, totalDataCount);
+                                }
+
+                                // Compute the length of a buffer that will contain the entire, assembled
+                                // response message.
+                                // int assembledResponseLength = Util.Align4(sizeof(SmbTransaction2Response)) + totalParameterCount + totalDataCount;
+                                int hypotheticalParameterEnd = SmbHeader.FramingHeaderLength + parameterOffset + totalParameterCount;
+                                int hypotheticalDataEnd = SmbHeader.FramingHeaderLength + dataOffset + totalDataCount;
+                                int hypotheticalMessageLength = Util.Align4(Math.Max(hypotheticalParameterEnd, hypotheticalDataEnd));
+                                int assembledResponseLength = hypotheticalMessageLength;
+
+                                if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                    DebugLine(tran, "      Reassembly buffer length: " + assembledResponseLength);
+
+                                if (assembledResponseLength < length) {
+                                    // Uhhhhh, this doesn't make any sense!
+                                    DebugLine(tran, "*** Internal error!  Reassembly buffer is shorter than the first packet buffer?!");
+                                    DebugStub.Break();
+                                    SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                                    Transactor_SendRequestFailed(tran, exp, SmbTransactionError.InternalError);
+                                    Transactor_EnterReadyState(exp, tran);
+                                    break;
+                                }
+
+                                // Allocate the buffer used to reassemble the entire transaction response.
+
+                                byte[]! in ExHeap reassemblyBuffer = new[ExHeap] byte[assembledResponseLength];
+                                Bitter.Copy(reassemblyBuffer, 0, length, buffer, offset);
+
+                                #if INCREDIBLY_NOISY
+                                if (TraceSwitches.ShowTransactionFragmentationReassemblyVerbose) {
+                                    DebugLine(tran, "Contents of primary transaction response:");
+                                    Util.DumpBuffer(buffer, offset, length);
+                                    DebugLine(tran, "Contents of parameter fragment portion:");
+                                    Util.DumpBuffer(buffer, offset + SmbHeader.FramingHeaderLength + parameterOffset, parameterCount);
+                                    DebugLine(tran, "Contents of data fragment portion:");
+                                    Util.DumpBuffer(buffer, offset + SmbHeader.FramingHeaderLength + dataOffset, dataCount);
+                                }
+                                #endif
+
+                                // Set up the transactor state for reassembly.
+                                expose(tracked) {
+                                    delete tracked.ResponseReassemblyBuffer;
+                                    tracked.ResponseReassemblyBuffer = reassemblyBuffer;
+                                }
+
+                                tracked.Transaction_ReceivedParameterBytes = parameterCount;
+                                tracked.Transaction_ReceivedDataBytes = dataCount;
+                                tracked.Transaction_ReceivedFragmentCount = 1;
+                                tracked.Transaction_DataOffset = SmbHeader.FramingHeaderLength + dataOffset;
+                                tracked.Transaction_ParameterOffset = SmbHeader.FramingHeaderLength + parameterOffset;
+
+                                if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                    DebugLine(tran, "    Waiting for more fragments");
+
+                                Transactor_EnterReceiveState(tran, TransactorState.WaitingReceiveSecondaryTransactionResponse);
+                                // DebugStub.Break();
+
+                            }
+                            else {
+                                if (TraceSwitches.ShowTransactionFragmentationReassembly) {
+                                    DebugLine(tran, "    Response indicates no fragmentation necessary");
+                                    DebugLine(tran, "    Completing request immediately.");
+                                }
+
+                                SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                                Transactor_SendResponse_Copy(tran, exp, buffer, offset, length);
+                                Transactor_EnterReadyState(exp, tran);
+                            }
+                        }
+                        break;
+                    }
+
+                    case TransactorState.WaitingReceiveSecondaryTransactionResponse:
+                    {
+                        if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                            DebugLine(tran, "Received Secondary Transaction Response");
+
+                        // Is this the last one?  Are we done yet?
+
+                        ref SmbTransaction2Response response = ref buffer[offset];
+                        int totalParameterCount = ByteOrder.LeToHost(response.Transaction.TotalParameterCount);
+                        int totalDataCount = ByteOrder.LeToHost(response.Transaction.TotalDataCount);
+                        int parameterCount = ByteOrder.LeToHost(response.Transaction.ParameterCount);
+                        int dataCount = ByteOrder.LeToHost(response.Transaction.DataCount);
+                        int parameterDisplacement = ByteOrder.LeToHost(response.Transaction.ParameterDisplacement);
+                        int dataDisplacement = ByteOrder.LeToHost(response.Transaction.DataDisplacement);
+                        int parameterOffset = ByteOrder.LeToHost(response.Transaction.ParameterOffset);
+                        int dataOffset = ByteOrder.LeToHost(response.Transaction.DataOffset);
+
+                        if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                            DebugLine(tran, "Reassembling fragment #" + tracked.Transaction_ReceivedFragmentCount);
+                        // DebugStub.Break();
+
+                        tracked.Transaction_ReceivedFragmentCount++;
+
+                        expose (tracked)
+                        {
+                            assert tracked.ResponseReassemblyBuffer != null;
+
+                            // -XXX- Need to validate the offsets/lengths/etc.
+                            // -XXX- Bitter.Copy will validate them, but will throw exceptions.
+
+                            // DebugStub.Break();
+
+                            if (parameterCount != 0) {
+                                if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                    DebugLine(tran, "        Reassembled {0}/{1} parameter bytes at offset {2}", parameterCount, totalParameterCount, parameterDisplacement);
+
+                                Bitter.Copy(
+                                    tracked.ResponseReassemblyBuffer,
+                                    tracked.Transaction_ParameterOffset + parameterDisplacement,
+                                    parameterCount,
+                                    buffer,
+                                    offset + SmbHeader.FramingHeaderLength + parameterOffset);
+
+                                if (TraceSwitches.ShowTransactionFragmentationReassemblyVerbose) {
+                                    DebugLine(tran, "Contents of parameter fragment portion:");
+                                    Util.DumpBuffer(buffer, offset + SmbHeader.FramingHeaderLength + parameterOffset, parameterCount);
+                                }
+
+                                tracked.Transaction_ReceivedParameterBytes += parameterCount;
+                            }
+
+                            if (dataCount != 0) {
+                                if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                    DebugLine(tran, "        Reassembled {0}/{1} data bytes at offset {2}", dataCount, totalDataCount, dataDisplacement);
+
+                                Bitter.Copy(
+                                    tracked.ResponseReassemblyBuffer,
+                                    tracked.Transaction_DataOffset + dataDisplacement,
+                                    dataCount,
+                                    buffer,
+                                    offset + SmbHeader.FramingHeaderLength + dataOffset);
+
+                                if (TraceSwitches.ShowTransactionFragmentationReassemblyVerbose) {
+                                    DebugLine(tran, "Contents of data fragment portion:");
+                                    Util.DumpBuffer(buffer, offset + SmbHeader.FramingHeaderLength + dataOffset, dataCount);
+                                }
+
+                                tracked.Transaction_ReceivedDataBytes += dataCount;
+                            }
+                        }
+
+                        bool last = false;
+
+                        if (parameterCount == 0 && dataCount == 0) {
+                            // Ummmm, the server is crazy.
+                            DebugLine(tran, "*** Received transaction fragment with both ParameterCount == 0 and DataCount == 0!");
+                            DebugLine(tran, "*** I think this is a protocol violation.  Completing the transaction.");
+                            last = true;
+                        }
+
+                        if (tracked.Transaction_ReceivedParameterBytes >= totalParameterCount
+                            && tracked.Transaction_ReceivedDataBytes >= totalDataCount)
+                        {
+                            if (TraceSwitches.ShowTransactionFragmentationReassembly) {
+                                DebugLine(tran, "We have apparently received all of the transaction response fragments.");
+                            }
+                            if (TraceSwitches.ShowTransactionFragmentationReassemblyVerbose) {
+                                DebugLine(tran, "Reassembled transaction response:");
+                                expose (tracked) { Util.DumpBuffer(tracked.ResponseReassemblyBuffer); }
+                            }
+                            // DebugStub.Break();
+                            last = true;
+                        }
+
+                        if (last) {
+                            if (TraceSwitches.ShowTransactionFragmentationReassembly)
+                                DebugLine(tran, "    Last fragment!");
+
+                            byte[] in ExHeap! reassembledResponseBuffer = (!)tracked.ExtractResponseReassemblyBuffer();
+                            SmbTransactor.Exp! exp = (!)tracked.AcquireEndpoint();
+                            Transactor_SendResponse_ClaimsBuffer(tran, exp, reassembledResponseBuffer);
+                            Transactor_EnterReadyState(exp, tran);
+                        }
+                        else {
+                            Transactor_EnterReceiveState(tran, TransactorState.WaitingReceiveSecondaryTransactionResponse);
+                        }
+                        break;
+                    }
+
+                    default:
+                        DebugLine(tran, "INTERNAL ERROR -- TRANSACTOR IS IN UNRECOGNIZED STATE!");
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            finally {
+                tran.ReleaseData(tracked);
+            }
+        }
+
+        void Transactor_SendResponse_ClaimsBuffer(Transactor! tran, SmbTransactor.Exp! exp, [Claims]byte[]! in ExHeap response)
+        {
+            exp.SendResponse(response);
+        }
+
+        void Transactor_SendRequestFailed(Transactor! tran, SmbTransactor.Exp! exp, SmbTransactionError error)
+        {
+            DebugLine(tran, "Sending RequestFailed: " + error.ToString());
+            exp.SendRequestFailed(error);
+        }
+
+        void Transactor_SendResponse_Copy(Transactor! tran, SmbTransactor.Exp! exp, byte[]! in ExHeap buffer, int offset, int length)
+        {
+            byte[]! in ExHeap response = new[ExHeap] byte[length];
+            Bitter.Copy(response, 0, length, buffer, offset);
+            Transactor_SendResponse_ClaimsBuffer(tran, exp, response);
+        }
+
+        void DumpTransactorTable()
+        {
+            DebugLine("Contents of _transactors:");
+            foreach (DictionaryEntry entry in _transactors) {
+                MuxTuple tuple = (MuxTuple)entry.Key;
+                Transactor! tran = (!)(Transactor)entry.Value;
+
+                if (tuple != tran.Tuple) {
+                    DebugLine("!!! Transactor key mismatch!  Key={0} tran.Tuple={1}", tuple.ToString(), tran.Tuple.ToString());
+                    DebugStub.Break();
+                }
+
+                DebugLine("    " + tran.ToString());
+            }
+        }
+
+        Transactor FindMatchingTransactor(ref SmbHeader header)
+        {
+            MuxTuple tuple = MuxTuple.FromSmbHeader(header);
+            object boxed_tuple = (object)tuple;
+
+            Transactor tran = (Transactor)_transactors[boxed_tuple];
+            if (tran != null) {
+                return tran;
+            }
+
+#if DEBUG
+            DebugLine("!!! Received SMB message, but the mux tuple does not match any active transactor! tuple=" + MuxTuple.FromSmb(ref header).ToString());
+            DumpTransactorTable();
+            DebugStub.Break();
+
+            // for dbg only
+
+            DebugLine("tuple hash code: 0x{0:x8}", tuple.GetHashCode());
+
+            DebugLine("Key search:");
+            foreach (object! key in _transactors.Keys) {
+                bool is_equal_1 = key.Equals(boxed_tuple);
+                bool is_equal_2 = boxed_tuple.Equals(key);
+                assert is_equal_1 == is_equal_2;
+                DebugLine("    key: hash code 0x{0:x8} tuple {1} equal? {2} {3}", key.GetHashCode(), key.ToString(),
+                    Util.YesNoString(is_equal_1),
+                    Util.YesNoString(is_equal_2));
+            }
+#endif
+
+            return null;
+        }
+
+
+        const int SmbMessageMinimumLength = 0x1a;
+            // 0: 4-byte signature: 0xff 'S' 'M' 'B'
+            // 4: 1-byte command, 3-byte status
+            // 8: 1-byte status, 1-byte flags, 2-byte FLAGS2
+            // c: 8-byte "EXTRA"
+            // 12: tid
+            // 14: pid
+            // 16: uid
+            // 18: mid
+            // 1a: -- end --
+
+        const int NativeSmbPort = 445;
+
+        // if true, then we can send a message on the TCP connection channel.
+        // if false, then we can only wait for a response.
+        bool _connectionCanSend;
+
+        const int ReceiveBufferSize = 0x400;
+
+        // contains _TRef<byte[] in ExHeap>, each of which contains a buffer
+        // all of the slots within [0,_freeReceiveBufferCount) are non-null, and contain a valid
+        // (acquirable) byte[] buffer.
+        //
+        // the slots from _freeReceiveBuffers[_freeReceiveBufferCount] to _freeReceiveBuffers[length - 1]
+        // are either null, or have been acquired.
+        readonly BufferPool! _receiveBufferPool = new BufferPool(0x40, 0x400);
+
+        // Because TcpConnectionContract is half-duplex, we have to poll.
+        const int PollTimeoutMs = 100;
+
+        void SendQueuedTransactions()
+            // requires _connection != null;
+        {
+
+            // if we cannot send on the connection, then this method can't do anything.
+            expose(this) {
+                if (_connection == null)
+                    return;
+            }
+
+            if (!_connectionCanSend)
+                return;
+
+            while (_connectionCanSend && _queuedTransactors.Count != 0) {
+                Transactor! tran = (!)(Transactor)_queuedTransactors.Dequeue();
+                assert tran.InQueue;
+                tran.InQueue = false;
+                Transactor_SendData(tran);
+            }
+
+            if (_connectionCanSend) {
+                //
+                // Issue a read (receive).  Because the TcpConnectionContract is half-duplex, we have to use polling
+                // with timeouts to multiplex send/receive path.  Yick.
+                //
+                bool wait = true;
+
+                // if (_queuedTransactors.Count != 0)
+                //  wait = false;
+
+                expose (this) {
+                    if (wait) {
+                        // blocking read
+                        // DebugLine("issuing blocking read (SendPollRead)");
+                        _connection.SendPollRead(PollTimeoutMs);
+                    }
+                    else {
+                        // non-blocking read
+                        // DebugLine("issuing nonblocking read (SendRead)");
+                        _connection.SendRead();
+                    }
+                }
+                _connectionCanSend = false;
+            }
+        }
+
+        void Transactor_SendData(Transactor! tran)
+            requires _connectionCanSend;
+        {
+            Transactor.TrackedData tracked = tran.AcquireData();
+
+            switch (tran.State) {
+                case TransactorState.WaitingSendRequest:
+                {
+                    // It's a "simple" request.  Just send the request body.
+                    // Ownership of the buffer moves from the transactor client, to the mux, to TCP/IP.
+                    byte[]! in ExHeap request;
+                    expose (tracked) {
+                        assert tracked.RequestBuffer != null;
+                        request = tracked.RequestBuffer;
+                        tracked.RequestBuffer = null;
+                    }
+
+                    if (TraceSwitches.ShowSmbMessageDetails) {
+                        DebugLine(tran, "sending request to TCP/IP, length = " + request.Length);
+                        SmbDebug.DumpMessage(request, 0, request.Length);
+                    }
+                    if (TraceSwitches.ShowSmbMessageOneLineSummaries) {
+                        DebugLine(tran, "Sending --> " + SmbDebug.GetSmbMessageSummary(request, 0));
+                    }
+
+                    SendData(request);
+                    Transactor_EnterReceiveState(tran, TransactorState.WaitingReceiveResponse);
+                    break;
+                }
+
+                case TransactorState.WaitingSendPrimaryTransactionRequest:
+                {
+                    // It's a "transaction" style request.  Next, we need to determine whether the
+                    // entire transaction request can fit inside a single SMB message.  If so, the
+                    // next step is to wait for the transaction response.  If not, then the next
+                    // step is to wait for the "interim server response".
+
+                    expose (tracked) {
+                        assert tracked.RequestBuffer != null;
+                        if (tracked.RequestBuffer.Length <= _MaxSmbRequestLength) {
+                            // The transaction request is small enough to fit in a single SMB request.
+                            byte[]! in ExHeap request = tracked.RequestBuffer;
+                            tracked.RequestBuffer = null;
+
+                            SendData(request);
+                            Transactor_EnterReceiveState(tran, TransactorState.WaitingReceivePrimaryTransactionResponse);
+
+                        }
+                        else {
+                            // Need to segment the request.
+                            // int primaryRequestLength = _MaxSmbRequestLength;
+                            DebugLine("Transaction segmentation NYI");
+                            DebugStub.Break();
+
+
+                        }
+                    }
+                    break;
+                }
+
+                case TransactorState.WaitingSendSecondaryTransactionRequest:
+                    DebugLine("Transaction segmentation not yet implemented");
+                    DebugStub.Break();
+                    break;
+            }
+
+            tran.ReleaseData(tracked);
+        }
+
+        void SendData([Claims]byte[]! in ExHeap buffer)
+        {
+            expose(this)
+            {
+                assert _connectionCanSend;
+                assert _connection != null;
+
+                _connection.SendWrite(buffer);
+                // Since we have sent a message on the TCP/IP channel, we cannot send any more
+                // messages until we receive a message.
+                _connectionCanSend = false;
+            }
+        }
+
+        // Contains Transactor.
+        // All instances in this list are in the state "Active", and are waiting to be transmitted.
+        readonly Queue!/*<Transactor!>*/ _queuedTransactors = new Queue();
+
+        void Transactor_EnqueueForSend(
+            Transactor! tran,
+            TransactorState tstate)
+            requires tstate == TransactorState.WaitingSendRequest
+                || tstate == TransactorState.WaitingSendPrimaryTransactionRequest
+                || tstate == TransactorState.WaitingSendSecondaryTransactionRequest;
+            requires !tran.InQueue;
+        {
+            if (!(tstate == TransactorState.WaitingSendRequest
+                || tstate == TransactorState.WaitingSendPrimaryTransactionRequest
+                || tstate == TransactorState.WaitingSendSecondaryTransactionRequest)) {
+                DebugLine(tran, "ILLEGAL STATE FOR ENQUEUING A TRANSACTOR FOR SEND!");
+                DebugStub.Break();
+                throw new Exception("Illegal state for enqueuing a transactor for send!");
+            }
+
+            assert !tran.InQueue;
+            tran.InQueue = true;
+
+            tran.State = tstate;
+            _queuedTransactors.Enqueue(tran);
+        }
+
+        // Examines the request to start a transaction, validates some parameters and information about the request.
+        // Moves a request from the idle to the queued state.
+        void StartRequest(
+            [Claims]SmbTransactor.Exp:WaitingRequestResponse! tran_exp,
+            [Claims]Transactor! tran,
+            [Claims]byte[]! in ExHeap request)
+            requires tran.State == TransactorState.Ready;
+        {
+            int length = request.Length;
+
+            if (length < sizeof(SmbHeader)) { // SmbProtocol.SmbHeaderSize) {
+                DebugLine("SMB message is too small to be valid.");
+                goto validation_failed;
+            }
+
+            ref SmbHeader header = ref request[0];
+
+            int smbLength = length - 4;
+            header.FrameLength0 = 0;
+            header.FrameLength1 = (byte)((smbLength >> 16) & 0xff);
+            header.FrameLength2 = (byte)((smbLength >> 8) & 0xff);
+            header.FrameLength3 = (byte)(smbLength & 0xff);
+
+            //
+            // Fill in the mux tuple.
+            // The transactor client doesn't need to do this.
+            //
+            header.TreeId = (ushort)tran.Tuple.TreeId;
+            header.ProcessId = (ushort)tran.Tuple.ProcessId;
+            header.UserId = (ushort)tran.Tuple.UserId;
+            header.MuxId = (ushort)tran.Tuple.MuxId;
+
+            header.Signature0 = 0xff;
+            header.Signature1 = (byte)'S';
+            header.Signature2 = (byte)'M';
+            header.Signature3 = (byte)'B';
+
+            header.Flags1 = (byte)tran._smbFlag1;
+            header.Flags2 = (ushort)tran._smbFlag2;
+
+            // DebugLine(tran, "idle -> queued, request length = " + length.ToString());
+
+            tran.Command = (SmbCommand)header.Command;
+
+            Transactor.TrackedData tracked = tran.AcquireData();
+
+            TransactorState nextstate;
+
+            if (tran.Command == SmbCommand.Transaction2) {
+                // SMB defines the SMB_TRANSACTION2 command, which has a more complex message pattern
+                // than the simple request/response pattern that most commands use.  SMB allows for
+                // fragmentation of SMB_TRANSACTION2 requests and responses.
+
+                // DebugLine("Starting SMB_TRANSACTION2 request");
+                tracked.TransactionRequestFragmentByteIndex = -1;
+                nextstate = TransactorState.WaitingSendPrimaryTransactionRequest;
+            }
+            else {
+                tracked.TransactionRequestFragmentByteIndex = -1;
+                nextstate = TransactorState.WaitingSendRequest;
+            }
+
+            expose (tracked) {
+                // Transfer ownership of the SmbTransactor.Exp endpoint to the Transactor instance.
+                delete tracked.Exp;
+                tracked.Exp = tran_exp;
+
+                // Transfer ownership of the request buffer from the caller to the Transactor instance.
+                delete tracked.RequestBuffer;
+                tracked.RequestBuffer = request;
+                tracked.RequestLength = length;
+            }
+
+            tran.ReleaseData(tracked);
+
+            // Queue this transactor for access to the send path of the socket.
+            Transactor_EnqueueForSend(tran, nextstate);
+            return;
+
+        validation_failed:
+            DebugLine(tran, "Rejecting request -- parameter validation failed");
+            DebugStub.Break();
+            tran_exp.SendRequestFailed(SmbTransactionError.InvalidParameters);
+            delete request;
+
+            Transactor_EnterReadyState(tran_exp, tran);
+            return;
+        }
+
+        void Transactor_EnterReadyState([Claims]SmbTransactor.Exp! exp, Transactor! tran)
+        {
+            expose(this)
+            {
+                // assert tran.Exp == null;
+                tran.State = TransactorState.Ready;
+                _readyTransactors.Add(exp, tran);
+            }
+        }
+
+        void DeleteTransactorState(Transactor! tran)
+        {
+            // DebugLine(tran, "deleting transactor");
+            object boxed_tuple = (object)tran.Tuple;
+            _transactors.Remove(boxed_tuple);
+
+            // -XXX- Need to scan the send queue!
+
+            tran.Dispose();
+            // DebugLine(tran, "deleted transactor");
+        }
+
+        int _nextMuxId;
+
+        int AllocateMuxId()
+        {
+            int firstMuxId = _nextMuxId;
+
+            for (;;) {
+                int muxId = _nextMuxId;
+                _nextMuxId++;
+                if (_nextMuxId > 0xff)
+                    _nextMuxId = 1;
+
+                MuxTuple tuple = this._treeTuple;
+                tuple.MuxId = muxId;
+
+                object boxed_tuple = tuple;
+                if (_transactors[boxed_tuple] == null) {
+                    // DebugLine("Allocated mux ID: " + muxId);
+                    return muxId;
+                }
+
+                if (_nextMuxId == firstMuxId) {
+                    DebugLine("No mux IDs are available.");
+                    return -1;
+                }
+            }
+        }
+
+        // This method runs on the mux thread, and it handles the SmbTransportMux.AddTransactor message.
+        // This message is sent by other threads to this thread, in order to request that the mux create
+        // a new transactor.  A transactor is anything that can send requests to the mux, and then wait
+        // for responses (a transaction).
+        //
+        // This method checks the hashtable of transactors to see if there are any tuple collisions
+
+        SmbTransactor.Imp CreateTransactor()
+        {
+            SmbTransactor.Imp! transactor_imp;
+            SmbTransactor.Exp! transactor_exp;
+            SmbTransactor.NewChannel(out transactor_imp, out transactor_exp);
+            if (CreateTransactor(transactor_exp)) {
+                return transactor_imp;
+            }
+            else {
+                delete transactor_imp;
+                return null;
+            }
+        }
+
+        bool CreateTransactor([Claims]SmbTransactor.Exp! transactor_exp)
+        {
+            expose (this)
+            {
+                int muxId = AllocateMuxId();
+                if (muxId == -1) {
+                    DebugLine("Failed to create transactor -- no mux IDs are available.");
+                    delete transactor_exp;
+                    return false;
+                }
+
+                MuxTuple tuple = _treeTuple;
+                tuple.MuxId = muxId;
+
+                object boxed_tuple = (object)tuple;
+                if (_transactors[boxed_tuple] != null) {
+                    DebugLine("Internal error - mux tuple is in use, even though we called AllocateMuxId!");
+                    delete transactor_exp;
+                    return false;
+                }
+
+                Transactor tran = new Transactor(tuple);
+
+                tran._smbFlag1 = (SmbFlag1)0;
+
+                tran._smbFlag2 = SmbFlag2.KnowsLongNames
+                    | SmbFlag2.AllPathsAreLongNames
+                    | SmbFlag2.UsingNtStatus
+                    | SmbFlag2.UnicodeStrings;
+
+                _transactors[boxed_tuple] = tran;
+
+                Transactor_EnterReadyState(transactor_exp, tran);
+
+                if (TraceSwitches.ShowTransactorMessages)
+                    DebugLine(tran, "Transactor created");
+
+                return true;
+            }
+        }
+
+        void DebugLine(string! msg)
+        {
+            SmbDebug.WriteLine("MUX: " + msg);
+        }
+
+        void DebugLine(string! format, params object[] args)
+        {
+            DebugLine(String.Format(format, args));
+        }
+
+        void DebugLine(Transactor! tran, string msg)
+        {
+            SmbDebug.WriteLine(tran.DebugPrefix + msg);
+        }
+
+        void DebugLine(Transactor! tran, string format, params object[] args)
+        {
+            DebugLine(tran, String.Format(format, args));
+        }
+
+        const string OSName = "MSR Singularity";
+        const string LanManName = "smbclient";
+
+
+
+        SmbFlag1 _flags1;
+        SmbFlag2 _flags2;
+
+        int _treeId;
+        int _processId;
+        int _muxId;
+        int _userId;
+
+        TcpConnectionContract.Imp:ReadyState! CreateTcpConnection()
+        {
+            //
+            // We invoke this synchronously, so we trust the TCP/IP stack not to delay us for an inordinate time.
+            //
+
+            TcpConnectionContract.Imp:ReadyState! connection = NetUtil.CreateTcpConnection();
+
+            return connection;
+        }
+
+        //
+        //This method handles connecting to an SMB server and negotiating for access to the file service.
+        //It handles name resolution, connecting the transport layer (TCP/IP), authentication, and connecting
+        //to the SMB file service.  Once this method returns (successfully), the SMB connection is ready
+        //for general use by transactor clients.
+//
+        //This method (any any methods it calls) do need to pay attention to certain messages from the
+        //SmbClientManager process.  Currently, there are several important call paths (such as WaitResponse)
+        //which do NOT receive any messages from the control client.  This needs to be fixed.
+        //
+        bool ConnectAndNegotiate()
+        {
+            expose(this)
+            {
+                DebugLine("--- CONNECTING TO SERVER ---");
+
+                SetMuxStatus(SmbClientConnectionStatus.TransportConnecting);
+
+                if (_connection != null) {
+                    delete _connection;
+                    _connection = null;
+                }
+
+                //
+                // -XXX- I *really* want a better solution than this.  I don't want to block this thread
+                // -XXX- while waiting for TCP/IP to connect.
+                //
+
+                try {
+                    TcpConnectionContract.Imp:Connected! connection = NetUtil.ConnectAny(_ServerHostName, NativeSmbPort);
+                    delete _connection;
+                    _connection = connection;
+                    _connectionCanSend = true;
+                }
+                catch (Exception ex) {
+                    DebugLine("Failed to connect to server.");
+                    Util.ShowExceptionDebug(ex);
+                    SetMuxStatusDisconnected(SmbReasonDisconnected.TransportConnectFailed);
+                    return false;
+                }
+
+
+                _flags1 =
+                      SmbFlag1.CaseInsensitive
+                    | SmbFlag1.CanonicalizedPaths;
+
+                _flags2 =
+                      SmbFlag2.KnowsLongNames
+                    | SmbFlag2.KnowsExtendedAttributes
+                    | SmbFlag2.AllPathsAreLongNames
+                    // | SmbFlag2.AwareOfExtendedSecurity
+                    | SmbFlag2.UsingNtStatus
+                    | SmbFlag2.UnicodeStrings;
+
+                _treeId = 1;
+                _processId = 0xffef;
+                _userId = 0;
+                _muxId = 0;
+
+                SetMuxStatus(SmbClientConnectionStatus.Negotiating);
+
+                try {
+                    Negotiate();
+                }
+                catch (Exception ex) {
+                    SetMuxStatusDisconnected(SmbReasonDisconnected.NegotiationFailed, ex);
+                    Disconnect();
+                    return false;
+                }
+
+                SetMuxStatus(SmbClientConnectionStatus.Authenticating);
+
+                try {
+                    SessionSetupAndConnectBasic();
+                }
+                catch (Exception ex) {
+                    SetMuxStatusDisconnected(SmbReasonDisconnected.AuthenticationFailed, ex);
+                    Disconnect();
+                    return false;
+                }
+
+                try {
+                    TreeConnect();
+                }
+                catch (Exception ex) {
+                    SetMuxStatusDisconnected(SmbReasonDisconnected.ResourceConnectFailed, ex);
+                    Disconnect();
+                    return false;
+                }
+
+                DebugLine("Negotiation completed successfully");
+
+                SetMuxStatusConnected();
+
+                SmbMuxTuple tree;
+                tree.ProcessId = _processId;
+                tree.UserId = _userId;
+                tree.MuxId = _muxId;
+                tree.TreeId = _treeId;
+                _treeTuple = tree;
+
+                return true;
+            }
+        }
+
+        void TreeConnect()
+        {
+            ByteWriter data = new ByteWriter();
+            string! unc = Program.UncPath;
+            // yes, SMB mixes ASCII and UNICODE!  yes, it drives me crazy!
+            // "password", really just alignment padding
+            data.WriteZero(1);
+            WriteSmbStringUnicode(data, unc, true);
+            // "?????" means "any type of service"
+            WriteSmbStringAscii(data, "?????", true);
+
+
+            int messageLength = sizeof(SmbTreeConnectAndX) + data.Length;
+            byte[]! in ExHeap request_encoded = new[ExHeap] byte[messageLength];
+            try {
+                ref SmbTreeConnectAndX request = ref request_encoded[0];
+                request = new SmbTreeConnectAndX();
+                PrepareHeader(ref request.Header, SmbCommand.TreeConnectAndX, 4);
+                request.AndXCommand = 0xff; // no AndX
+                request.AndXOffset = 0;
+                request.AndXReserved = 0;
+                request.ByteCount = (ushort)data.Length;
+                request.PasswordLength = 1;
+
+                data.CopyTo(request_encoded, sizeof(SmbTreeConnectAndX));
+            }
+            catch {
+                delete request_encoded;
+                throw;
+            }
+
+            if (TraceSwitches.ShowNegotiation)
+                DebugLine("Sending TreeConnectAndX");
+
+            byte[]! in ExHeap response_encoded = ExecuteSynchronousCommand(request_encoded);
+            try {
+
+                ref SmbHeader response = ref response_encoded[0];
+                if (response.IsError) {
+                    DebugLine("Received TREE CONNECT response - FAILURE");
+                    DebugLine("Error: " + response.GetErrorText());
+                    throw new Exception("Tree connect FAILED: " + response.GetErrorText());
+                }
+
+                if (TraceSwitches.ShowNegotiation)
+                    DebugLine("Received TREE CONNECT response - successful");
+
+                // I don't like this.  We receive a different mux tuple from the server in response
+                // to TreeConnectAndX (the tree ID is different; it has been assigned by the server).
+                // So for now, we just change our tree ID.  This means that the SMB client is restricted
+                // to servicing a single tree connection.  I want this to change in the future, so that
+                // a single SMB client connection can carry requests for multiple different tree connections.
+                // This may be a dream, maybe even a bad one, but I want readers to be aware of this issue.
+                this._treeId = response.TreeId;
+
+            }
+            finally {
+                delete response_encoded;
+            }
+        }
+
+        void PrepareHeader(ref SmbHeader header, SmbCommand command, int parameterCount)
+            requires parameterCount >= 0;
+            requires parameterCount < 256;
+        {
+            header.SetSignature();
+            header.Command = (byte)command;
+            header.ParameterCount = (byte)parameterCount;
+            header.TreeId = (ushort)_treeId;
+            header.UserId = (ushort)_userId;
+            header.ProcessId = (ushort)_processId;
+            header.MuxId = (ushort)_muxId;
+            header.Flags1 = (byte)_flags1;
+            header.Flags2 = (ushort)_flags2;
+        }
+
+        // This method waits to receive one SMB message from the server.
+        // This is for use ONLY during initial negotation.
+        byte[]! in ExHeap WaitResponse()
+            // requires _connection != null;
+        {
+            expose(this)
+            {
+                assert _connection != null;
+                for (;;) {
+
+                    if (_connectionCanSend) {
+                        // Yes, we "poll" with a time-out.
+                        // I don't like this, but it's our only option until we have full duplex channels,
+                        // or a 2-channel TCP implementation.
+                        _connection.SendPollRead(100);
+                        _connectionCanSend = false;
+                    }
+
+                    switch receive {
+                        case _connection.Data(byte[]! in ExHeap data):
+                            assert !_connectionCanSend;
+                            _connectionCanSend = true;
+                            // DebugLine("Received data on socket: length = " + data.Length);
+                            byte[] in ExHeap response = ProcessReceivedData(data);
+                            if (response != null)
+                                return response;
+                            break;
+
+                        case _connection.ChannelClosed():
+                            throw new Exception("The TCP channel closed before receiving a message.");
+
+                        case _connection.ConnectionClosed():
+                            throw new Exception("The TCP connection closed before receiving a message.");
+
+                        case _connection.NoData():
+                            // We get one of these for EVERY polled read.
+                            // Which is quite noisy.
+                            // DebugLine("no data from socket");
+                            _connectionCanSend = true;
+                            break;
+
+                        case _notifier.Ack():
+                            AckNotifier();
+                            break;
+
+                        // -XXX- Should add more handlers here, to pay attention to control messages.
+                    }
+                }
+            }
+        }
+
+        byte[] in ExHeap ProcessReceivedData([Claims]byte[]! in ExHeap buffer)
+        {
+            // Check to see whether the fragment buffer contains any data.
+            // If it does, then we have already received part of an SMB message, but not all of it.
+            // Assemble the full message before continuing.
+
+            if (_recvDataLength != 0) {
+                // Already have some data.
+                // Concatenate the existing data and the newly-received data, and attempt to parse.
+                // This is inefficient.
+
+                int concatLength = buffer.Length + _recvDataLength;
+
+                DebugLine("concatenating fragment: previous fragment length = 0x{0:x} recv'd data length = 0x{1:x} total length = 0x{2:x}",
+                    _recvDataLength, buffer.Length, concatLength);
+
+                byte[]! in ExHeap concatBuffer = new[ExHeap] byte[concatLength];
+                // Bitter.Copy(concatBuffer, 0, _recvDataLength, _recvBuffer, 0);
+                Bitter.FromByteArray(concatBuffer, 0, _recvDataLength, _recvBuffer, 0);
+                Bitter.Copy(concatBuffer, _recvDataLength, buffer.Length, buffer, 0);
+
+                _recvDataLength = 0;
+                delete buffer;
+                buffer = concatBuffer;
+            }
+
+            //
+            // Have we received enough data to parse a complete message?
+            //
+
+            if (buffer.Length >= sizeof(SmbHeader)) {
+                ref SmbHeader header = ref buffer[0];
+                int messageLength = header.TotalMessageLength;
+
+                int remaining = buffer.Length - messageLength;
+
+                if (remaining > 0) {
+
+                    DebugLine("Buffer received from TCP contains SMB message (plus " + remaining + " bytes)");
+
+                    byte[]! in ExHeap response = new[ExHeap] byte[messageLength];
+                    Bitter.Copy(response, 0, messageLength, buffer, 0);
+
+                    // Store the remaining data in the fragment buffer.
+                    AppendReceiveBuffer(buffer, messageLength, remaining);
+                    delete buffer;
+
+                    ValidateSmbMessage(response);
+                    return response;
+
+                }
+                else if (remaining == 0) {
+                    // Exact fit.
+                    // This will probably be common.
+                    // DebugLine("Buffer received from TCP contains exactly one SMB message (easy case).");
+                    ValidateSmbMessage(buffer);
+                    return buffer;
+                }
+                else {
+                    // Not enough data for a complete message.
+                    // Store it in the fragment buffer.
+                    DebugLine("Buffer received from TCP does not contain the entire SMB message (need " + (-remaining) + " bytes).");
+                    AppendReceiveBuffer(buffer, 0, buffer.Length);
+                    delete buffer;
+                    return null;
+                }
+            }
+            else {
+                // Not enough data for a complete message.
+                // Store it in the fragment buffer.
+                DebugLine("Buffer received from TCP does not contain the entire SMB message (header is incomplete).");
+                AppendReceiveBuffer(buffer, 0, buffer.Length);
+                delete buffer;
+                return null;
+            }
+        }
+
+        //
+        //This method copies data from a buffer to the end of the "fragment buffer" in the response context.
+        //
+        void AppendReceiveBuffer(
+            byte[]! in ExHeap appendData,
+            int appendOffset,
+            int length)
+            requires length >= 0;
+            requires appendOffset >= 0;
+            requires appendOffset <= appendData.Length;
+        {
+            if (length == 0)
+                return;
+
+            int finalLength = _recvDataLength + length;
+            if (finalLength > _recvBuffer.Length) {
+                int newLength = finalLength * 3 / 2 + 0x20;
+                DebugLine("Growing receive buffer from " + _recvBuffer.Length + " to " + newLength + " bytes");
+                byte[] newRecvBuffer = new byte[newLength];
+                Buffer.BlockCopy(_recvBuffer, 0, newRecvBuffer, 0, _recvDataLength);
+                // delete _recvBuffer;
+                _recvBuffer = newRecvBuffer;
+            }
+
+            assert _recvDataLength <= _recvBuffer.Length;
+            assert finalLength <= _recvBuffer.Length;
+
+            Bitter.ToByteArray(appendData, appendOffset, length, _recvBuffer, _recvDataLength);
+            _recvDataLength = finalLength;
+        }
+
+        void ValidateSmbMessage(byte[]! in ExHeap buffer)
+        {
+            if (buffer.Length < sizeof(SmbHeader))
+                throw new Exception("The message is too short to be a valid SMB message.");
+
+            ref SmbHeader header = ref buffer[0];
+            int messageLength = header.TotalMessageLength;
+
+            if (!header.IsSignatureValid()) {
+                DebugLine("ERROR! Protocol violation: Received an SMB message with an invalid SMB signature.");
+                DebugLine("This usually means the client and server have gotten out of sync on message boundaries.");
+                DebugLine("The connection will be terminated.");
+                throw new Exception("The message does not have a valid SMB signature.");
+            }
+
+            if (buffer.Length < messageLength)
+                throw new Exception("The message is too short to contain the message whose length is specified in the message header.");
+        }
+
+        #if false
+        void NegotiateUsingExtendedSecurity()
+        {
+            //
+            // Build the NTLM challenge and send it encapsulated within a SessionSetupAndTreeConnect request.
+            //
+            byte[]! hello = _supplicant.GetNegotiate();
+            DebugLine("Sending NTLM 'hello' blob:");
+            Util.DumpBuffer(hello);
+            SendSessionSetupAndConnect(transactor, hello);
+
+            //
+            // Next, we wait for the response to the SessionSetupAndTreeConnect.
+            // It should contain the NTLM challenge.
+            //
+            DebugLine("Waiting for NTLM challenge...");
+            byte[]! security_challenge;
+            WaitSessionSetupResponse(transactor, out security_challenge);
+            DebugLine("Received NTLM challenge:");
+            Util.DumpBuffer(security_challenge);
+
+            DebugStub.Break();
+
+            //
+            // Have the security context generate the response and send it in another SessionSetupAndX request.
+            //
+            byte[]! security_response = _supplicant.GetResponse(security_challenge);
+            DebugLine("Sending this NTLM response:");
+            Util.DumpBuffer(security_response);
+            SendSessionSetupAndConnect(transactor, security_response);
+
+            //
+            // Now wait for the final response.
+            //
+            byte[]! security_message_ignored;
+            WaitSessionSetupResponse(transactor, out security_message_ignored);
+            DebugLine("Final security response received.");
+        }
+        #endif
+
+
+        //
+//
+        //This method sends the SMB NEGOTIATE message to the server, and waits for the response.
+        //If the message cannot be sent, or the response received indicates an error, then this
+        //method will throw an exception.
+//
+        //
+        void Negotiate()
+        {
+            string![] dialects = { SmbDialect.NTLM012 };
+
+            ByteWriter! data = new ByteWriter();
+            foreach (string! dialect in dialects) {
+                data.Write(2);
+                byte[]! dialectbytes = Encoding.ASCII.GetBytes(dialect);
+                data.Write(dialectbytes);
+                data.Write(0);
+            }
+
+            SmbNegotiateRequest request = new SmbNegotiateRequest();
+            PrepareHeader(ref request.Header, SmbCommand.Negotiate, 0);
+            request.ByteCount = (ushort)data.Length;
+
+            byte[]! in ExHeap encoded_request = new[ExHeap] byte[sizeof(SmbNegotiateRequest) + data.Length];
+            ref SmbNegotiateRequest ref_request = ref encoded_request[0];
+            ref_request = request;
+
+            data.CopyTo(encoded_request, sizeof(SmbNegotiateRequest));
+
+            DebugLine("Sending NEGOTIATE request");
+
+            byte[]! in ExHeap response_encoded = ExecuteSynchronousCommand(encoded_request);
+
+            try {
+
+
+                ref SmbHeader header = ref response_encoded[0];
+                if (header.IsError) {
+                    DebugLine("Received NEGOTIATE RESPONSE - server indicates FAILURE");
+                    DebugLine("Error: " + header.GetErrorText());
+                    throw new Exception("SMB server rejected NEGOTIATE: " + header.GetErrorText());
+                }
+
+                if (TraceSwitches.ShowNegotiation) {
+                    DebugLine("Received NEGOTIATE RESPONSE - successful");
+                }
+
+                if (header.ParameterCount != 17) {
+                    DebugLine("NEGOTIATE response contains the wrong number of parameter words!  Cannot use!");
+                    throw new Exception("NEGOTIATE response contains the wrong number of parameter words");
+                }
+
+                ref SmbNegotiateResponse17 response = ref response_encoded[0];
+                //DebugLine("EncryptionKeyLength = " + response.EncryptionKeyLength.ToString());
+
+                byte[]! response_data = new byte[response.ByteCount];
+                Bitter.ToByteArray(response_encoded, sizeof(SmbNegotiateResponse17), response.ByteCount, response_data, 0);
+                ByteReader! response_data_reader = new ByteReader(response_data);
+
+                byte[]! key = response_data_reader.ReadBytes(response.EncryptionKeyLength);
+                this._serverLmChallenge = key;
+
+                string! serverDomainName = ReadStringUnicode(response_data_reader);
+                string! serverHostName = ReadStringUnicode(response_data_reader);
+
+                // DebugLine("Server Domain Name = " + serverDomainName);
+                // DebugLine("Server Host Name = " + serverHostName);
+
+                _ReceivedServerDomainNameFromNegotiate = serverDomainName;
+                _ReceivedServerMachineName = serverHostName;
+
+            }
+            finally {
+                delete response_encoded;
+            }
+        }
+
+        static string! ReadStringUnicode(ByteReader! reader)
+        {
+            StringBuilder buffer = new StringBuilder();
+
+            for (;;) {
+                byte low = reader.ReadByte();
+                byte high = reader.ReadByte();
+                if (low == 0 && high == 0)
+                    return buffer.ToString();
+
+                char c = (char)(low + (((ushort)high) << 8));
+                buffer.Append(c);
+            }
+        }
+
+
+
+        // This field contains the LanMan (LM) challenge, received from the server.
+        // We use this value to compute the challenge response, which is what the client
+        // uses to prove knowledge of the user's password without revealing the password
+        // in the clear.
+        byte[] _serverLmChallenge;
+
+    #if false
+        void SendSessionSetupAndConnect(SmbTransactor.Imp! transactor, byte[]! security_blob)
+            requires security_blob.Length <= ushort.MaxValue;
+        {
+            // build header
+            // don't bother with setting tuple in header, mux will set that for us
+            SmbSessionSetupAndXRequest13 request = new SmbSessionSetupAndXRequest13();
+            request.Header.Command = (byte)SmbCommand.SessionSetupAndX;
+            request.Header.Flags1 = (byte)_flags1;
+            request.Header.Flags2 = (ushort)_flags2;
+
+            // build parameters block
+            request.Header.ParameterCount = 13;
+            request.AndXCommand = 0xff;
+            request.AndXPadding = 0;
+            request.AndXOffset = 0;
+            request.MaxBufferSize = 2048;
+            request.MaxMpxCount = 10;
+            request.VcNumber = 1;
+            request.SessionKey = 0;
+            request.CaseInsensitivePasswordLength = (ushort)lm_response.Length;
+            request.CaseSensitivePasswordLength = (ushort)nt_response.Length;
+            request.Reserved = 0;
+
+            SmbCapability capabilities =
+                SmbCapability.Unicode
+                | SmbCapability.LargeFiles
+                | SmbCapability.NtSmbs
+                | SmbCapability.NtFind
+                | SmbCapability.NtStatus
+                | SmbCapability.Level2Oplocks;
+            request.Capabilities = (uint)capabilities;
+
+            // build message data
+            ByteWriter data = new ByteWriter();
+            data.Write(security_blob);
+            WriteSmbUnicodeString(data, SmbClientParameters.Username, true);
+            WriteSmbUnicodeString(data, SmbClientParameters.DomainName, true);
+            WriteSmbUnicodeString(data, OSName);
+            WriteSmbUnicodeString(data, LanManName);
+            int data_length = data.Length;
+
+            request.ByteCount = (ushort)data.Length;
+
+            int total_length = sizeof(SmbSessionSetupAndXRequest13)
+                + data_length; // security_blob.Length;
+
+            byte[]! in ExHeap msg = new[ExHeap] byte[total_length];
+
+            try {
+                ref SmbSessionSetupAndXRequest13 request_ref = ref msg[0];
+                // store values into the ex buffer
+                request_ref = request;
+
+                data.CopyTo(msg, sizeof(SmbSessionSetupAndXRequest13));
+
+                DebugLine("Sending SessionSetupAndX message:");
+            }
+            catch {
+                delete msg;
+                throw;
+            }
+
+            transactor.SendRequest(msg, msg.Length);
+        }
+        #endif
+
+        byte[]! GetResponse(NtlmSupplicantContract.Imp! ntlm_supplicant, NtlmResponseType type, byte[]! challenge)
+        {
+            byte[]! in ExHeap exchallenge = Bitter.FromByteArray(challenge);
+            ntlm_supplicant.SendGetResponse(exchallenge, type);
+
+            switch receive {
+                case ntlm_supplicant.Response(exresponse):
+                    byte[]! response = Bitter.ToByteArray(exresponse);
+                    delete exresponse;
+                    return response;
+
+                case ntlm_supplicant.RequestFailed(error):
+                    throw new CredentialsManagerException("NTLM supplicant failed to return response.", error);
+            }
+        }
+
+        // This method contacts the Credentials Manager service.
+        // Therefore, it CAN block indefinitely, depending on behavior outside of this process.
+        // Should review this.
+        void GetChallengeResponses(
+            out string! username,
+            out string! domain,
+            out byte[]! nt_response,
+            out byte[]! lm_response)
+        {
+            // We have already received the NTLM challenge (a simple 8-byte nonce) from the SMB
+            // server in the response to the NEGOTIATE message.
+
+            byte[] challenge = _serverLmChallenge;
+            if (challenge == null)
+                throw new Exception("The server LM challenge is null.  Failed to sample challenge from negotiation response.");
+
+            NtlmSupplicantContract.Imp! ntlm_supplicant;
+            NtlmSupplicantContract.Exp! ntlm_supplicant_exp;
+            NtlmSupplicantContract.NewChannel(out ntlm_supplicant, out ntlm_supplicant_exp);
+
+            string! credentialsName;
+            string! tag;
+
+            try {
+                try {
+
+                    string creds = Program.CredentialsName;
+                    if (creds == null || creds.Length == 0) {
+                        // The user did not provide any explicit credentials to use for this SMB client.
+                        // All the Credentials Manager to select the credentials to use.
+
+                        if (TraceSwitches.ShowAuthenticationMessages) {
+                            DebugLine("No explicitly-selected credentials provided.  Using Credentials Manager to select credentials...");
+                            DebugLine("Creating NTLM supplicant...");
+                        }
+
+                        //
+                        // -XXX- NOTE! We received two values from the server in the response to the NEGOTIATE message.
+                        // -XXX- We should be careful with those values; since they came from the network, they could
+                        // -XXX- contain any garbage, potentially evil.  We pass these to the CM service.  So either
+                        // -XXX- the SMB client process and/or the CM service should perform some extreme skepticism
+                        // -XXX- on these values.
+                        //
+
+                        CredentialsManager.CreateSupplicantForProtocol(
+                            "smb",
+                            (!)_ReceivedServerMachineName,                  // _ServerHostName,
+                            AuthenticationProtocolNames.Ntlm,
+                            (!)_ReceivedServerDomainNameFromNegotiate,
+                            ntlm_supplicant_exp,
+                            out credentialsName,
+                            out tag);
+
+                        if (TraceSwitches.ShowAuthenticationMessages)
+                            DebugLine("Created NTLM supplicant, selected credentials: " + credentialsName);
+
+                    }
+                    else {
+                        // The user provided explicit credentials for this SMB client.
+                        // Use the Credentials Manager to create a supplicant, but don't use it
+                        // to select the credentials to use.
+
+                        if (TraceSwitches.ShowAuthenticationMessages)
+                            DebugLine("Explicit credentials: " + Program.CredentialsName);
+
+                        credentialsName = Program.CredentialsName;
+                        tag = Program.CredentialsTag;
+
+                        CredentialsManager.CreateSupplicant(
+                            AuthenticationProtocolNames.Ntlm,
+                            credentialsName,
+                            tag,
+                            ntlm_supplicant_exp);
+
+                        if (TraceSwitches.ShowAuthenticationMessages)
+                            DebugLine("Supplicant successfully created.");
+                    }
+
+                    ntlm_supplicant.RecvSuccess();
+
+                    _SelectedCredentialsName = credentialsName;
+
+                }
+                catch (Exception ex) {
+                    throw new Exception("Negotiation failed, because an authentication supplicant could not be created.", ex);
+                }
+
+                int separator = credentialsName.IndexOf('\\');
+                if (separator != -1) {
+                    username = credentialsName.Substring(separator + 1);
+                    domain = credentialsName.Substring(0, separator);
+                }
+                else {
+                    username = credentialsName;
+                    domain = ".";
+                }
+
+                lm_response = GetResponse(ntlm_supplicant, NtlmResponseType.LanMan, challenge);
+                nt_response = GetResponse(ntlm_supplicant, NtlmResponseType.WindowsNt, challenge);
+
+            }
+            finally {
+                delete ntlm_supplicant;
+            }
+        }
+
+        void SessionSetupAndConnectBasic()
+        {
+            // DebugLine("Using basic NTLM negotiation (not NTLMSSP)");
+
+            byte[]! lm_response;
+            byte[]! nt_response;
+            string! username;
+            string! domain;
+            GetChallengeResponses(
+                out username,
+                out domain,
+                out nt_response,
+                out lm_response);
+
+            // build header
+            // don't bother with setting tuple in header, mux will set that for us
+            SmbSessionSetupAndXRequest13 request = new SmbSessionSetupAndXRequest13();
+            PrepareHeader(ref request.Header, SmbCommand.SessionSetupAndX, 13);
+
+            // build parameters block
+            request.AndXCommand = 0xff;
+            request.AndXPadding = 0;
+            request.AndXOffset = 0;
+            request.MaxBufferSize = 2048;
+            request.MaxMpxCount = 10;
+            request.VcNumber = 1;
+            request.SessionKey = 0;
+            request.CaseInsensitivePasswordLength = (ushort)lm_response.Length;
+            request.CaseSensitivePasswordLength = (ushort)nt_response.Length;
+            request.Reserved = 0;
+
+            SmbCapability capabilities =
+                SmbCapability.Unicode
+                | SmbCapability.LargeFiles
+                | SmbCapability.NtSmbs
+                | SmbCapability.NtFind
+                | SmbCapability.NtStatus
+                | SmbCapability.Level2Oplocks;
+            request.Capabilities = (uint)capabilities;
+
+            // build message data
+            ByteWriter data = new ByteWriter();
+            // data.Write(security_blob);
+            data.Write(lm_response);
+            data.Write(nt_response);
+            data.Write((byte)0);            // alignment padding
+            WriteSmbStringUnicode(data, username, true);
+            WriteSmbStringUnicode(data, domain, true);
+            WriteSmbStringUnicode(data, OSName, true);
+            WriteSmbStringUnicode(data, LanManName, true);
+            int data_length = data.Length;
+
+            //DebugLine("data block:");
+            //Util.DumpBuffer(data.ToArray());
+
+            request.ByteCount = (ushort)data.Length;
+
+            int total_length = sizeof(SmbSessionSetupAndXRequest13)
+                + data_length; // security_blob.Length;
+
+            request.Header.TotalMessageLength = total_length;
+
+            byte[]! in ExHeap request_encoded = new[ExHeap] byte[total_length];
+
+            try {
+                ref SmbSessionSetupAndXRequest13 request_ref = ref request_encoded[0];
+                // store values into the ex buffer
+                request_ref = request;
+
+                data.CopyTo(request_encoded, sizeof(SmbSessionSetupAndXRequest13));
+            }
+            catch {
+                delete request_encoded;
+                throw;
+            }
+
+            if (TraceSwitches.ShowNegotiationVerbose)
+                DebugLine("Sending SESSION SETUP");
+
+            byte[]! in ExHeap response_encoded = ExecuteSynchronousCommand(request_encoded);
+            try {
+
+                ref SmbHeader responseHeader = ref response_encoded[0];
+                if (responseHeader.IsError) {
+                    // The usual reason is that authentication failed (bogus credentials).
+                    // DebugStub.Break();
+                    DebugLine("Received SESSION SETUP response message, and server indicates FAILURE.");
+                    DebugLine("Error: " + responseHeader.GetErrorText());
+                    throw new Exception("The SessionSetupAndTreeConnect message failed.  The server rejected the request with an error: " + responseHeader.GetErrorText());
+                }
+
+                if (TraceSwitches.ShowNegotiation)
+                    DebugLine("Received SESSION SETUP response (successful)");
+
+                // ref SmbSessionSetupResponse response = ref response_encoded[0];
+                ExByteReader reader = new ExByteReader(0, response_encoded.Length);
+                reader.Skip(sizeof(SmbSessionSetupAndXResponse) + 1); // +1 for alignment
+                string! nativeOs = reader.ReadStringUnicode(response_encoded);
+                string! nativeLanMan = reader.ReadStringUnicode(response_encoded);
+                string! primaryDomain = reader.ReadStringUnicode(response_encoded);
+
+                _ReceivedServerOperatingSystem = nativeOs;
+                _ReceivedServerPrimaryDomainName = primaryDomain;
+
+                // The response contains a DIFFERENT user ID (in the mux tuple) than the request.
+                // This is how we learn the user ID, so that we can send it in future requests.
+                _userId = responseHeader.UserId;
+
+                if (TraceSwitches.ShowNegotiationVerbose) {
+                    DebugLine("    Native OS:         " + nativeOs);
+                    DebugLine("    Native Lan Man:    " + nativeLanMan);
+                    DebugLine("    Primary Domain:    " + primaryDomain);
+                    DebugLine("    UserID = 0x{0:x4}", responseHeader.UserId);
+                }
+
+            }
+            finally {
+                delete response_encoded;
+            }
+        }
+
+        static void WriteSmbStringUnicode(ByteWriter! writer, string! text, bool terminate)
+        {
+            // writer.Write((byte)SmbEncodingFormat.String);
+            // writer.Write((byte)0);
+
+            for (int i = 0; i < text.Length; i++) {
+                char c = text[i];
+                writer.Write((byte)(c & 0xff));
+                writer.Write((byte)(c >> 8));
+            }
+
+            if (terminate) {
+                writer.Write((byte)0);
+                writer.Write((byte)0);
+            }
+        }
+
+        static void WriteSmbStringAscii(ByteWriter! writer, string! text, bool terminate)
+        {
+            // writer.Write((byte)SmbEncodingFormat.String);
+
+            for (int i = 0; i < text.Length; i++) {
+                char c = text[i];
+                writer.Write((byte)(c & 0xff));
+            }
+
+            if (terminate) {
+                writer.Write((byte)0);
+            }
+        }
+
+        byte[]! in ExHeap ExecuteSynchronousCommand([Claims]byte[]! in ExHeap request)
+        {
+            SendSmbMessage(request);
+
+            return WaitResponse();
+        }
+
+        void SendSmbMessage([Claims]byte[]! in ExHeap request)
+            // requires _connection != null;
+        {
+            if (request.Length < sizeof(SmbHeader))
+                throw new Exception("Message is too short to be a valid SMB message.");
+
+            ref SmbHeader header = ref request[0];
+            header.SetSignature();
+            header.TotalMessageLength = request.Length;
+
+            SendDataSynchronous(request);
+        }
+
+        void SendDataSynchronous([Claims]byte[]! in ExHeap data)
+            // requires _connection != null;
+        {
+            expose(this)
+            {
+                assert _connection != null;
+                _connection.SendWrite(data);
+                switch receive {
+                    case _connection.OK():
+                        break;
+
+                    case _connection.ChannelClosed():
+                        throw new Exception("TCP channel closed");
+
+                    case _connection.ConnectionClosed():
+                        throw new Exception("TCP connection closed");
+                }
+            }
+        }
+
+        enum SmbEncodingFormat
+        {
+            DataBlock = 1,
+            Dialect = 2,                // null terminated string, always 8-bit encoding, never unicode
+            Pathname = 3,               // null terminated string
+            String = 4,                 // null terminated string
+        }
+
+        void ITracked.Release() {}
+        void ITracked.Acquire() {}
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+
+        public void Dispose()
+        {
+            _readyTransactors.Dispose();
+            delete _namespace_provider;
+            delete _connection;
+            delete _notifier;
+            _control_clients.Dispose();
+            delete _controller;
+        }
+    }
+
+}

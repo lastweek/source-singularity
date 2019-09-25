@@ -1,0 +1,63 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\System.IO\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <AssemblyName>System.IO</AssemblyName>
+    <OutputType>Library</OutputType>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <ProjectGuid>{78AF7F34-48EE-42F0-8DDD-66C0C98183B9}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="Native.cs" />
+    <Compile Include="BinaryReader.cs" />
+    <Compile Include="BinaryWriter.cs" />
+    <Compile Include="BufferedStream.cs" />
+    <Compile Include="Directory.cs" />
+    <Compile Include="DirectoryInfo.cs" />
+    <Compile Include="DirectoryNotFoundException.cs" />
+    <Compile Include="EndOfStreamException.cs" />
+    <Compile Include="File.cs" />
+    <Compile Include="FileAccess.cs" />
+    <Compile Include="FileAttributes.cs" />
+    <Compile Include="FileInfo.cs" />
+    <Compile Include="FileLoadException.cs" />
+    <Compile Include="FileMode.cs" />
+    <Compile Include="FileNotFoundException.cs" />
+    <Compile Include="FileShare.cs" />
+    <Compile Include="FileStream.cs" />
+    <Compile Include="FileSystemInfo.cs" />
+    <Compile Include="IOException.cs" />
+    <Compile Include="MemoryStream.cs" />
+    <Compile Include="Path.cs" />
+    <Compile Include="PathTooLongException.cs" />
+    <Compile Include="SeekOrigin.cs" />
+    <Compile Include="Stream.cs" />
+    <Compile Include="StreamReader.cs" />
+    <Compile Include="StreamWriter.cs" />
+    <Compile Include="StringReader.cs" />
+    <Compile Include="StringWriter.cs" />
+    <Compile Include="TextReader.cs" />
+    <Compile Include="TextWriter.cs" />
+    <Compile Include="__DebugOutputTextWriter.cs" />
+    <Compile Include="__Error.cs" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

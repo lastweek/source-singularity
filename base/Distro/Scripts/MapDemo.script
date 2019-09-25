@@ -1,0 +1,20 @@
+echo 'ipconfig @dhcp /dev/nic0 start'
+ipconfig '@dhcp' '/dev/nic0' 'start'
+echo 'ipconfig @show'
+ipconfig '@show'
+echo 'starting map-point with proxy 157.54.118.18'
+mappoint '157.54.118.18' &
+echo 'starting SeattleTraffic'
+seattletraffic &
+echo 'starting cassini web application shell'
+cassini '-app=MapDemoWebApp' &
+
+sleep 5
+echo ' '
+echo ' '
+echo 'From your desktop go to http://<URL from ipconfig @show>/'
+echo 'You should see'
+echo '         Caffeinate me'
+echo 'Im At work at Microsoft Research'
+echo 'or Napping on the couch in Seattle'
+

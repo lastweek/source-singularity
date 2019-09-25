@@ -1,0 +1,246 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+//   This is the top level unit/iotest driver that sends and receives I/O
+//   on the IoTest device drivers contract.
+//
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications 
+{
+    [ConsoleCategory(HelpMessage="IoTest Application for IoTest driver", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        //[StringParameter( "device", Mandatory=true, Position=0 , HelpMessage="Device name for test (usually /dev/iotest0)")]
+        [StringParameter( "device", Default="/dev/iotest0", Position=0 , HelpMessage="Device name for test (usually /dev/iotest0)")]
+        internal string deviceName;
+
+        [LongParameter( "size", Default=4096, HelpMessage="Size for each I/O Transaction")]
+        internal long chunksize;
+
+        [LongParameter( "count", Default=50000, HelpMessage="Repetition count.")]
+        internal long count;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return IoTest.AppMain(this);
+        }
+    }
+
+    public class IoTest
+    {
+        public static IoTestContract.Imp:Ready OpenDevice(String! devname)
+        {
+            IoTestContract.Exp! exp;
+            IoTestContract.Imp! imp;
+            IoTestContract.NewChannel(out imp, out exp);
+            DirectoryServiceContract.Imp ns;
+
+            // get NS endpoint
+            ns = DirectoryService.NewClientEndpoint();
+            bool success = false;
+            ErrorCode error; 
+            success = SdsUtils.Bind(devname, ns, exp, out error);
+            if (!success) {
+                Console.WriteLine("Bind of {0} failed\n", devname);
+                delete imp;
+                delete ns;
+                return null;
+            }
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    Console.WriteLine("{0} does not support IoTestDevice", devname);
+                    delete imp;
+                    delete ns;
+                    return null;
+                case imp.ChannelClosed():
+                    Console.WriteLine("IoTestDevice channel to {0} closed unexpectedly", devname);
+                    delete imp;
+                    delete ns;
+                    return null;
+            }
+
+            delete ns;
+            return imp;
+        }
+
+        private static void  DisplayPerf(long ticksDelta, long ticksPerSecond, long iters, long chunkSize)
+        {
+            long numBytes = iters * chunkSize;
+            long opsPerSec = ticksDelta == 0 ? long.MaxValue : iters * ticksPerSecond / ticksDelta;
+            long bytesPerSec  = ticksDelta == 0 ? long.MaxValue : numBytes * ticksPerSecond / ticksDelta;
+            long mbPerSec = bytesPerSec / (1024*1024);
+            long elapsedSeconds = ticksDelta / ticksPerSecond;
+
+            Console.WriteLine("Ops/s: {0}  MB/s: {1}  Bytes/Sec {2} Elapsed: {3}",
+                              opsPerSec, mbPerSec, bytesPerSec, elapsedSeconds);
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            long chunkSize = config.chunksize; 
+            long iters = config.count;
+
+            IoTestContract.Imp imp;
+            string! devName = (!)config.deviceName;
+
+            imp = OpenDevice(devName);
+            if (null == imp) {
+                return 1;
+            }
+
+            DateTime startDateTime = ProcessService.GetUtcTime();
+            long startIrqCount = ProcessService.GetKernelInterruptCount();
+            long startSwitchCount = ProcessService.GetContextSwitchCount();
+            long startKernelGcCount = ProcessService.GetKernelGcCount();
+            int  startGcCount;
+            long startGcMillis;
+            long startGcBytes;
+            GC.PerformanceCounters(out startGcCount,
+                                   out startGcMillis,
+                                   out startGcBytes);
+
+            // Allocate an exchange heap buffer for write
+            byte[] in ExHeap writeBuffer = new [ExHeap] byte [chunkSize];
+
+            // Set a known pattern for comparison on readback
+            for (int i = 0; i < writeBuffer.Length; i++) {
+                writeBuffer[i] = (byte)i;
+            }
+
+            // Allocate an exchange heap buffer for read
+            byte[] in ExHeap readBuffer = new [ExHeap] byte [chunkSize];
+
+            // Clear the read buffer
+            for (int i = 0; i < readBuffer.Length; i++) {
+                readBuffer[i] = 0;
+            }
+
+            for (long count = 0; count < iters; count++) {
+                ulong lengthWritten;
+                ulong lengthRead;
+
+                // Declare a reference to an output buffer from the exchange heap
+                byte[]! in ExHeap outWriteBuffer;
+                byte[]! in ExHeap outReadBuffer;
+
+                // First do a write, we lose ownership of buffer
+                imp.SendWrite(writeBuffer, 0, (ulong)chunkSize);
+
+                // Receive the write ack, we receive ownership of outBuffer
+                imp.RecvAckWrite(out outWriteBuffer, out lengthWritten); // Fix writeOut, not needed???
+
+                // What happens if the real response is RecvNakWrite()?
+                // (an exception occurs)
+
+                if (lengthWritten != (ulong)chunkSize) {
+                    Console.WriteLine("Error: lengthWritten {0} does not match request size {1}",
+                                      lengthWritten, chunkSize);
+                }
+
+                // Compare the pattern
+                for (int i = 0; i < outWriteBuffer.Length; i++) {
+                    if (outWriteBuffer[i] != (byte)i) {
+                        Console.WriteLine("Error: returned buffer pattern mismatch on Write! index={0}, value={1}, sb={2}",
+                                          i, outWriteBuffer[i], (byte)i);
+                    }
+                }
+
+                writeBuffer = outWriteBuffer;
+
+                // Clear the read buffer
+                for (int i = 0; i < readBuffer.Length; i++) {
+                    readBuffer[i] = 0;
+                }
+
+                // Send the Read
+                imp.SendRead(readBuffer, 0, (ulong)chunkSize);
+
+                // Receive the Ack for the read
+                imp.RecvAckRead(out outReadBuffer, out lengthRead);
+
+                // What happens if the real response is RecvNakRead()?
+                // (an exception occurs)
+
+                if (lengthRead != (ulong)chunkSize) {
+                   Console.WriteLine("Error: lengthRead {0} does not match request size {1}",
+                                      lengthRead, chunkSize);
+                }
+
+                // Compare the pattern
+                for (int i = 0; i < outReadBuffer.Length; i++) {
+                    if (outReadBuffer[i] != (byte)i) {
+                        Console.WriteLine("Error: returned buffer pattern mismatch on Read! index={0}, value={1}, sb={2}",
+                                          i, outReadBuffer[i], (byte)i);
+                    }
+                }
+
+                readBuffer = outReadBuffer;
+            }
+
+            int  endGcCount;
+            long endGcMillis;
+            long endGcBytes;
+            long endCycleCount;
+
+            DateTime endDateTime = ProcessService.GetUtcTime();
+
+            GC.PerformanceCounters(out endGcCount,
+                                   out endGcMillis,
+                                   out endGcBytes);
+
+            long ticksDelta = endDateTime.Ticks - startDateTime.Ticks;
+
+            double elapsedSeconds;
+
+            DisplayPerf(ticksDelta, DateTime.TicksPerSecond, iters, chunkSize);
+
+            Console.WriteLine("[AppGC :- cnt {0} bytes {1} Kern: ints {2} swi {3} gcs {4}]",
+            endGcCount - startGcCount,
+            endGcBytes - startGcBytes,
+            ProcessService.GetKernelInterruptCount() - startIrqCount,
+            ProcessService.GetContextSwitchCount() - startSwitchCount,
+            ProcessService.GetKernelGcCount() - startKernelGcCount);
+
+            // Rundown exchange heap buffers
+            delete readBuffer;
+            delete writeBuffer;
+
+            // Rundown endpoints
+            delete imp;
+
+            return 0;
+        }
+    }
+}

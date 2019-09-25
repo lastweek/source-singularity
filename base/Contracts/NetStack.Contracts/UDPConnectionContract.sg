@@ -1,0 +1,126 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for UDP channels
+//
+//          UDP is ugly because of WriteTo and arbitrarily timed binds.
+//
+
+using Microsoft.Singularity.Channels;
+using System;
+
+namespace NetStack.Contracts
+{
+    public contract UdpConnectionContract
+    {
+        // Requests
+        in message BindLocalEndPoint(uint srcIP, ushort srcPort);
+        in message ConnectWithAnyLocalEndPoint(uint dstIP, ushort dstPort);
+        in message Connect(uint srcIP, ushort srcPort, uint dstIP, ushort dstPort);
+        in message Write(byte[]! in ExHeap data);
+        in message WriteTo(uint dstIP, ushort dstPort, byte[]! in ExHeap data);
+        in message Read();                  // Read one packet
+        in message PollRead(int timeoutMillis);
+        in message PollSelectRead(int timeoutMillis);
+        in message PollSelectWrite(int timeoutMillis);
+        in message Close();
+
+        in message GetLocalAddress();
+        in message GetLocalPort();
+        in message GetRemoteAddress();
+        in message GetRemotePort();
+
+        // Responses
+        out message OK();
+        out message InvalidEndPoint(uint ip, ushort port);
+        out message DataTooLarge();
+        out message NoData(); // There was nothing to read
+        out message Data(uint srcAddr, ushort srcPort, byte[]! in ExHeap data);
+        out message IPAddress(uint ip);
+        out message Port(ushort port);
+        out message PollSelectResult(bool success);
+
+        //
+        // Initial state. We use an initial "Ready" message to confirm
+        // that the endpoint is connected before it receives any
+        // requests.
+        //
+        out message Ready();
+        state Start : Ready! -> ReadyState;
+
+        state ReadyState : one
+        {
+            WriteTo? -> (OK! or InvalidEndPoint! or DataTooLarge!) -> Start;
+
+            PollSelectRead?  -> PollSelectResult! -> Connected;
+            PollSelectWrite? -> PollSelectResult! -> Connected;
+
+            Connect? -> ConnectResult;
+            ConnectWithAnyLocalEndPoint? -> ConnectResult;
+            BindLocalEndPoint? -> BindResult;
+            Close? -> Closed;
+        }
+
+        //
+        // State following WriteTo with unbound session
+        //
+        state ConnectResult : one
+        {
+            OK! -> Connected;
+            InvalidEndPoint! -> Start;
+        }
+
+        state BindResult : one
+        {
+            OK! -> LocallyBound;
+            InvalidEndPoint! -> Start;
+        }
+
+        state ConnectFromLocallyBoundResult : one
+        {
+            OK! -> Connected;
+            InvalidEndPoint! -> LocallyBound;
+        }
+
+        state Connected : one
+        {
+            Write? -> (OK! or DataTooLarge!) -> Connected;
+            WriteTo? -> (OK! or InvalidEndPoint! or DataTooLarge!) -> Connected;
+            Read? -> Data! -> Connected;
+            PollRead? -> (Data! or NoData!) -> Connected;
+
+            PollSelectRead?  -> PollSelectResult! -> Connected;
+            PollSelectWrite? -> PollSelectResult! -> Connected;
+
+            Close? -> Closed;
+
+            GetLocalAddress?  -> IPAddress! -> Connected;
+            GetLocalPort?     -> Port!      -> Connected;
+            GetRemoteAddress? -> IPAddress! -> Connected;
+            GetRemotePort?    -> Port!      -> Connected;
+        }
+
+        state LocallyBound : one
+        {
+            WriteTo? -> (OK! or InvalidEndPoint! or DataTooLarge!) -> LocallyBound;
+            Connect? -> ConnectFromLocallyBoundResult;
+            Read? -> Data! -> LocallyBound;
+            PollRead? -> (Data! or NoData!) -> LocallyBound;
+
+            PollSelectRead?  -> PollSelectResult! -> LocallyBound;
+            PollSelectWrite? -> PollSelectResult! -> LocallyBound;
+
+            Close? -> Closed;
+
+            GetLocalAddress?  -> IPAddress! -> LocallyBound;
+            GetLocalPort?     -> Port!      -> LocallyBound;
+            GetRemoteAddress? -> IPAddress! -> LocallyBound;
+            GetRemotePort?    -> Port!      -> LocallyBound;
+        }
+
+        state Closed : {} // Nothing is acceptable here
+    }
+}

@@ -1,0 +1,22 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System
+{
+
+    // The ArgumentException is thrown when an argument
+    // is null when it shouldn't be.
+    //
+    //| <include file='doc\ArgumentNullException.uex' path='docs/doc[@for="ArgumentNullException"]/*' />
+    public class ArgumentNullException : ArgumentException
+    {
+        public ArgumentNullException();
+        public ArgumentNullException(String paramName);
+        public ArgumentNullException(String paramName, String message);
+    }
+}

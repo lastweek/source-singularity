@@ -1,0 +1,350 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PathUtils.sg
+//
+//  Note:
+//
+//       Character vector utilities.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.SingSharp;
+
+using System;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    public class PathUtils
+    {
+        public const char Separator = '/';
+
+        /// <summary> Remove duplicate and trailing separators
+        /// from character vector representing a path. A leading
+        /// separator is preserved. </summary>
+        public static char[]! in ExHeap
+        CleanSeparators([Claims] char[]! in ExHeap path)
+        {
+            int src = 0;
+            int dst = 0;
+            while (src < path.Length) {
+                bool skip = (path[src] == Separator);
+                path[dst++] = path[src++];
+                if (skip) {
+                    while (src < path.Length && path[src] == Separator) {
+                        src++;
+                    }
+                }
+            }
+
+            if (dst > 1 && path[dst - 1] == Separator) {
+                // Chop trailing separator if not root separator
+                dst--;
+            }
+            if (dst != src) {
+                Bitter.Truncate(ref path, dst);
+            }
+            return path;
+        }
+
+        private static char[]! in ExHeap
+        DropTrailingSeparator([Claims] char[]! in ExHeap path)
+        {
+            if (path.Length > 1 && path[path.Length - 1] == Separator) {
+                Bitter.Truncate(ref path, path.Length - 1);
+            }
+            return path;
+        }
+
+        private static int
+        GetLastSeparator(char[]! in ExHeap path)
+        {
+            int i = path.Length - 1;
+            while (i >= 0 && path[i] != Separator) {
+                i--;
+            }
+            return i;
+        }
+
+        private static int
+        GetNextSeparator(char[]! in ExHeap path, int start)
+        {
+            while (start < path.Length) {
+                if (path[start] == Separator) {
+                    return start;
+                }
+                start++;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Splits path into top most path component and remainder.
+        ///
+        ///   path         top       remainder
+        /// ---------- ------------------------
+        /// "/a/b/c"       "/"          "a/b/c"
+        /// "a/b/c"        "a"          "b/c"
+        /// "/a"           "/"          "a"
+        /// "a"            "a"          null
+        /// "/"            "/"          null
+        /// "//"           "/"          null
+        /// "///a/b//"     "/"          "a/b"
+        /// </summary>
+        public static void
+        SplitPathTopDown([Claims] char[]! in ExHeap path,
+                         out char[] in ExHeap       top,
+                         out char[] in ExHeap       remainder)
+            requires path.Length >= 1;
+        {
+            path = CleanSeparators(path);
+            if (path[0] == Separator) {
+                if (path.Length == 1) {
+                    top       = path;
+                    remainder = null;
+                }
+                else {
+                    remainder = Bitter.SplitOff(ref path, 1);
+                    top       = path;
+                    if (remainder.Length == 0) {
+                        delete remainder;
+                        remainder = null;
+                    }
+                }
+            }
+            else {
+                int nextSep = GetNextSeparator(path, 0);
+                if (nextSep < 0) {
+                    top       = path;
+                    remainder = null;
+                }
+                else {
+                    // nextSep must be less than path.Length as
+                    // CleanSeparators removes trailing
+                    // separators.
+                    assert ((path.Length >= 3) &&
+                            (nextSep < path.Length - 1));
+                    remainder = Bitter.SplitOff(ref path, nextSep + 1);
+                    top       = DropTrailingSeparator(path);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Split path into directory name and base name components.
+        ///
+        /// "/a/b/c" -> "/a/b"  "c"
+        /// "/a"     -> "/"     "a"
+        /// "a//"    -> null    "a"
+        /// "a"      -> null    "a"
+        /// "/"      -> "/"     null
+        /// </summary>
+        public static void
+        SplitPathBottomUp([Claims] char[]! in ExHeap path,
+                          out char[] in ExHeap dirname,
+                          out char[] in ExHeap basename)
+        {
+            path = CleanSeparators(path);
+
+            int lastSep = GetLastSeparator(path);
+            if (lastSep >= 0) {
+                basename = Bitter.SplitOff(ref path, lastSep + 1);
+                if (basename.Length == 0) {
+                    delete basename;
+                    basename = null;
+                }
+                dirname  = DropTrailingSeparator(path);
+            }
+            else {
+                dirname  = null;
+                basename = path;
+            }
+        }
+
+        private static char[]! in ExHeap
+        TrimInternal(
+            [Claims] char[]! in ExHeap vector,
+            bool                       trimStart,
+            bool                       trimEnd
+            )
+        {
+            int lower = 0;
+            int upper = vector.Length - 1;
+
+            if (trimEnd) {
+                while (upper > 0 && Char.IsWhiteSpace(vector[upper])) {
+                    upper--;
+                }
+            }
+
+            if (trimStart) {
+                while (lower <= upper && Char.IsWhiteSpace(vector[lower])) {
+                    lower++;
+                }
+            }
+
+            int newLength = upper - lower + 1;
+            if (newLength != vector.Length) {
+                Bitter.Copy(vector, 0, newLength, vector, lower);
+                Bitter.Truncate(ref vector, newLength);
+            }
+            return vector;
+        }
+
+        private static char[]! in ExHeap
+        TrimInternal(
+            [Claims] char[]! in ExHeap vector,
+            char []!                   trimChars,
+            bool                       trimStart,
+            bool                       trimEnd
+            )
+        {
+            int lower = 0;
+            int upper = vector.Length - 1;
+
+            if (trimEnd) {
+                while (upper > 0 &&
+                       Array.IndexOf(trimChars, vector[upper]) >= 0) {
+                    upper--;
+                }
+            }
+
+            if (trimStart) {
+                while (lower <= upper &&
+                       Array.IndexOf(trimChars, vector[lower]) >= 0) {
+                    lower++;
+                }
+            }
+
+            int newLength = upper - lower + 1;
+            if (newLength != vector.Length) {
+                Bitter.Copy(vector, 0, newLength, vector, lower);
+                Bitter.Truncate(ref vector, newLength);
+            }
+            return vector;
+        }
+
+        public static char[]! in ExHeap
+        Trim([Claims] char[]! in ExHeap vector)
+        {
+            return TrimInternal(vector, true, true);
+        }
+
+        public static char[]! in ExHeap
+        TrimStart([Claims] char[]! in ExHeap vector)
+        {
+            return TrimInternal(vector, true, false);
+        }
+
+        public static char[]! in ExHeap
+        TrimEnd([Claims] char[]! in ExHeap vector)
+        {
+            return TrimInternal(vector, false, true);
+        }
+
+        public static char[]! in ExHeap
+        Trim([Claims] char[]! in ExHeap vector, char[]! trimChars)
+        {
+            return TrimInternal(vector, trimChars, true, true);
+        }
+
+        public static char[]! in ExHeap
+        TrimStart([Claims] char[]! in ExHeap vector, char[]! trimChars)
+        {
+            return TrimInternal(vector, trimChars, true, false);
+        }
+
+        public static char[]! in ExHeap
+        TrimEnd([Claims] char[]! in ExHeap vector, char[]! trimChars)
+        {
+            return TrimInternal(vector, trimChars, false, true);
+        }
+
+        // --------------------------------------------------------------------
+        // Self-test routines
+
+        private static bool CompareChars(string expected,
+                                         [Claims] char[] in ExHeap received)
+        {
+            string other = null;
+            if (received != null) {
+                other = Bitter.ToString2(received);
+                delete received;
+            }
+            DebugStub.Assert(expected == other);
+            return (expected == other);
+        }
+
+        private static void TestSplitPathBottomUp()
+        {
+            string [][] tests = new string [][] {
+                new string [] { "/",            "/",    null },
+                new string [] { "/abra/cadabra", "/abra", "cadabra" },
+                new string [] { "/the///cat//sat/on//the/mat",
+                                "/the/cat/sat/on/the",
+                                "mat" },
+                new string [] { "/a",           "/",    "a" },
+                new string [] { "a//",          null,   "a" },
+                new string [] { "a",            null,   "a" },
+                new string [] { "////",         "/",    null },
+                new string [] { "////a",        "/",    "a" },
+                new string [] { "////a/b///",   "/a",    "b" },
+            };
+
+            for (int i = 0; i < tests.Length; i++) {
+                string[]! values = (!)tests[i];
+                DebugStub.Print("Testing {0}\n",
+                                __arglist((!)values[0]));
+                string! spath = (!)(values[0]);
+                char[]! in ExHeap path = Bitter.FromString2(spath);
+                char [] in ExHeap dirname;
+                char [] in ExHeap basename;
+                PathUtils.SplitPathBottomUp(path, out dirname, out basename);
+
+                DebugStub.Assert(CompareChars(values[1], dirname));
+                DebugStub.Assert(CompareChars(values[2], basename));
+            }
+        }
+
+        private static void TestSplitPathTopDown()
+        {
+            string [][] tests = new string [][] {
+                new string [] { "/abra/cadabra", "/", "abra/cadabra" },
+                new string [] { "abra/cadabra", "abra", "cadabra" },
+                new string [] { "/the///cat//sat/on//the/mat",
+                                "/", "the/cat/sat/on/the/mat" },
+                new string [] { "the///cat//sat/on//the/mat",
+                                "the", "cat/sat/on/the/mat" },
+                new string [] { "/a",           "/",    "a" },
+                new string [] { "a",            "a",    null },
+                new string [] { "/",            "/",    null },
+                new string [] { "////",         "/",    null },
+                new string [] { "////a/b///",   "/",    "a/b" },
+            };
+
+            for (int i = 0; i < tests.Length; i++) {
+                string[]! values = (!)tests[i];
+                DebugStub.Print("Testing {0}\n",
+                                __arglist((!)values[0]));
+                string! spath = (!)(values[0]);
+                char[]! in ExHeap path = Bitter.FromString2(spath);
+                char [] in ExHeap top;
+                char [] in ExHeap remainder;
+                PathUtils.SplitPathTopDown(path, out top, out remainder);
+
+                DebugStub.Assert(CompareChars(values[1], top));
+                DebugStub.Assert(CompareChars(values[2], remainder));
+            }
+        }
+
+        internal static void SelfTest()
+        {
+            TestSplitPathTopDown();
+            TestSplitPathBottomUp();
+        }
+    }
+}

@@ -1,0 +1,66 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   The Hello World web application
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Text;
+using System.Web;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.WebApps
+{
+    [Category("WebApp")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<WebAppContract.Exp:Start> webAppRef;
+
+        reflective private Parameters();
+    }
+
+    public class HelloWebApp : IWebApp
+    {
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-type", "text/html");
+            request.SendHeader("charset", "utf-8");
+            string html = "<html><head>Placeholder</head><body><h1>Hello, World</h1></body></html>";
+            request.SendBodyData(Encoding.ASCII.GetBytes(html));
+            request.Done();
+        }
+
+        // ======================================================
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        internal static int AppMain(Parameters! config)
+        {
+            WebAppContract.Exp conn = ((!)config.webAppRef).Acquire(); 
+            if (conn == null) {
+                // Wrong contract type!
+                return -1;
+            }
+
+            conn.SendWebAppReady();
+            HelloWebApp webApp = new HelloWebApp();
+            Driver.ServiceChannel(webApp, conn);
+            delete conn;
+            return 0; 
+        }
+    }
+}

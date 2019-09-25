@@ -1,0 +1,345 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace System
+{
+
+    public class String
+    {
+
+        public char this [int index]
+        {
+          get
+			requires 0 <= index && index < this.Length otherwise IndexOutOfRangeException;
+        }
+
+        public int Length
+        {
+            [Microsoft.Contracts.StateIndependent] get
+			ensures result >= 0;
+        }
+
+        public CharEnumerator GetEnumerator ();
+
+        public TypeCode GetTypeCode ();
+
+        public static String IsInterned (String! str)
+            requires str != null otherwise ArgumentNullException;
+            ensures result != null ==> result.Length == str.Length;
+
+        public static String Intern (String! str)
+            requires str != null otherwise ArgumentNullException;
+            ensures result.Length == str.Length;
+
+        public static String! Concat (String[]! values)
+            requires values != null otherwise ArgumentNullException;
+            //ensures result.Length == Sum({ String s in values; s.Length });
+
+        public static String! Concat (String str0, String str1, String str2, String str3)
+			ensures result.Length == 
+				(str0 == null ? 0 : str0.Length) +
+				(str1 == null ? 0 : str1.Length) +
+				(str2 == null ? 0 : str2.Length) +
+				(str3 == null ? 0 : str3.Length);
+
+        public static String! Concat (String str0, String str1, String str2)
+			ensures result.Length == 
+				(str0 == null ? 0 : str0.Length) +
+				(str1 == null ? 0 : str1.Length) +
+				(str2 == null ? 0 : str2.Length);
+
+        public static String! Concat (String str0, String str1)
+			ensures result.Length == 
+				(str0 == null ? 0 : str0.Length) +
+				(str1 == null ? 0 : str1.Length);
+
+        public static String! Concat (object[]! args)
+            requires args != null otherwise ArgumentNullException;
+
+        public static String! Concat (object arg0, object arg1, object arg2, object arg3);
+
+        public static String! Concat (object arg0, object arg1, object arg2);
+
+        public static String! Concat (object arg0, object arg1);
+
+        public static String! Concat (object arg0);
+
+        public static String Copy (String! str)
+            requires str != null otherwise ArgumentNullException;
+
+        public static String! Format (String format, object[] args);
+
+        public static String! Format (String format, object arg0, object arg1, object arg2);
+
+        public static String! Format (String format, object arg0, object arg1);
+
+        public static String! Format (String format, object arg0);
+
+        public String! Remove (int index, int count)
+			requires 0 <= index otherwise ArgumentOutOfRangeException;
+			requires index + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures result.Length == this.Length - count;
+
+        public String! Replace (String! oldValue, String newValue)
+			requires oldValue != null otherwise ArgumentNullException;
+			requires oldValue.Length > 0 otherwise ArgumentException;
+
+        public String! Replace (char oldChar, char newChar);
+
+        public String! Insert (int startIndex, String! value)
+			requires value != null otherwise ArgumentNullException;
+			requires 0 <= startIndex otherwise ArgumentOutOfRangeException;
+			requires startIndex < this.Length otherwise ArgumentOutOfRangeException;
+			ensures result.Length == this.Length + value.Length;
+
+        public String! Trim ();
+
+        public String! ToUpper (System.Globalization.CultureInfo! culture)
+            requires culture != null otherwise ArgumentNullException;
+            ensures result.Length == this.Length; // Are there languages for which this isn't true?!?
+
+        public String! ToUpper ()
+            ensures result.Length == this.Length;
+
+        public String! ToLower (System.Globalization.CultureInfo! culture)
+            requires culture != null otherwise ArgumentNullException;
+            ensures result.Length == this.Length;
+
+        public String! ToLower ()
+            ensures result.Length == this.Length;
+
+        public bool StartsWith (String! value)
+            requires value != null otherwise ArgumentNullException;
+
+        public String! PadRight (int totalWidth, char paddingChar)
+			requires totalWidth >= 0 otherwise ArgumentException;
+			ensures result.Length == totalWidth;
+
+        public String! PadRight (int totalWidth)
+			requires totalWidth >= 0 otherwise ArgumentException;
+			ensures result.Length == totalWidth;
+
+        public String! PadLeft (int totalWidth, char paddingChar)
+			requires totalWidth >= 0 otherwise ArgumentException;
+			ensures result.Length == totalWidth;
+
+        public String! PadLeft (int totalWidth)
+			requires totalWidth >= 0 otherwise ArgumentException;
+			ensures result.Length == totalWidth;
+
+        public int LastIndexOf (String! value, int startIndex, int count)
+			requires value != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOf (String! value, int startIndex)
+			requires value != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOf (String! value)
+			requires value != null otherwise ArgumentNullException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOfAny (char[]! anyOf, int startIndex, int count)
+			requires anyOf != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOfAny (char[]! anyOf, int startIndex)
+			requires anyOf != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOfAny (char[]! anyOf)
+			requires anyOf != null otherwise ArgumentNullException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOf (char arg0, int startIndex, int count)
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOf (char value, int startIndex)
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int LastIndexOf (char value)
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOf (String! value, int startIndex, int count)
+			requires value != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOf (String! value, int startIndex)
+			requires value != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOf (String! value)
+			requires value != null otherwise ArgumentNullException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOfAny (char[]! anyOf, int startIndex, int count)
+			requires anyOf != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOfAny (char[]! anyOf, int startIndex)
+			requires anyOf != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOfAny (char[]! anyOf)
+			requires anyOf != null otherwise ArgumentNullException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOf (char arg0, int startIndex, int count)
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex + count <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOf (char value, int startIndex)
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+			requires startIndex <= Length otherwise ArgumentOutOfRangeException;
+			ensures -1 <= result && result < this.Length;
+
+        public int IndexOf (char value)
+			ensures -1 <= result && result < this.Length;
+
+        public bool EndsWith (String! value)
+            requires value != null otherwise ArgumentNullException;
+
+        public static int CompareOrdinal (String strA, int indexA, String strB, int indexB, int length);
+
+        public static int CompareOrdinal (String strA, String strB);
+
+        public int CompareTo (String strB);
+
+        public int CompareTo (object value);
+
+        public static int Compare (String strA, int indexA, String strB, int indexB, int length, bool ignoreCase, System.Globalization.CultureInfo! culture)
+            requires culture != null otherwise ArgumentNullException;
+
+        public static int Compare (String strA, int indexA, String strB, int indexB, int length, bool ignoreCase);
+
+        public static int Compare (String strA, int indexA, String strB, int indexB, int length);
+
+        public static int Compare (String strA, String strB, bool ignoreCase, System.Globalization.CultureInfo! culture)
+            requires culture != null otherwise ArgumentNullException;
+
+        public static int Compare (String strA, String strB, bool ignoreCase);
+
+        public static int Compare (String strA, String strB);
+
+        public String (char c, int count)
+			ensures this.Length == count;
+
+        public String (char[] array) // maybe null
+			ensures array == null ==> this.Length == 0;
+			ensures array != null ==> this.Length == array.Length;
+
+        public String (char[]! value, int startIndex, int count)
+			requires value != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex + count <= value.Length otherwise ArgumentOutOfRangeException;
+            ensures this.Length == count;
+
+// These should all be pointer arguments
+//
+//      public String (ref SByte arg0, int arg1, int arg2, System.Text.Encoding arg3);
+//
+//      public String (ref SByte arg0, int arg1, int arg2);
+//
+//      public String (ref SByte arg0);
+//
+//      public String (ref char arg0, int arg1, int arg2);
+//
+//      public String (ref char arg0);
+// 
+
+        public String! TrimEnd (params char[] trimChars); // maybe null
+
+        public String! TrimStart (params char[] trimChars); // maybe null
+
+        public String! Trim (params char[] trimChars); // maybe null
+
+        public String! Substring (int startIndex, int length)
+			requires 0 <= startIndex otherwise ArgumentOutOfRangeException;
+			requires 0 <= length otherwise ArgumentOutOfRangeException;
+			requires startIndex + length < this.Length otherwise ArgumentOutOfRangeException;
+			ensures result.Length == length;
+
+        public String! Substring (int startIndex)
+			requires 0 <= startIndex otherwise ArgumentOutOfRangeException;
+			requires startIndex < this.Length otherwise ArgumentOutOfRangeException;
+			ensures result.Length == this.Length - startIndex;
+
+        public String[]! Split (char[] arg0, int arg1);
+			//ensures Forall {int i in (0:result.Length); result[i] != null};
+
+        public String[]! Split (char[] separator);
+			//ensures Forall {int i in (0:result.Length); result[i] != null};
+
+        public char[]! ToCharArray (int startIndex, int length)
+            requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex <= this.Length otherwise ArgumentOutOfRangeException;
+            requires startIndex + length <= this.Length otherwise ArgumentOutOfRangeException;
+            requires length >= 0 otherwise ArgumentOutOfRangeException;
+
+        public char[]! ToCharArray ();
+
+        public void CopyTo (int sourceIndex, char[]! destination, int destinationIndex, int count)
+            requires destination != null otherwise ArgumentNullException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires sourceIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count <= (this.Length - sourceIndex) otherwise ArgumentOutOfRangeException;
+            requires destinationIndex <= (destination.Length - count) otherwise ArgumentOutOfRangeException;
+            requires destinationIndex >= 0 otherwise ArgumentOutOfRangeException;
+
+        public static bool operator != (String a, String b);
+
+        public static bool operator == (String a, String b);
+
+        public static bool Equals (String a, String b);
+
+        public bool Equals (String arg0);
+
+        public static String Join (String separator, String[]! value, int startIndex, int count)
+            requires value != null otherwise ArgumentNullException;
+			requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex + count <= value.Length otherwise ArgumentOutOfRangeException;
+
+        public static String Join (String separator, String[]! value)
+            requires value != null otherwise ArgumentNullException;
+
+        public static String! StringCTOR(char[]! value, int startIndex,
+                                         int length);
+
+
+        public static readonly String! Empty;
+    }
+}

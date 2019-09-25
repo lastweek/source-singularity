@@ -1,0 +1,31 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//============================================================
+//
+// Class:  AttributeUsageAttribute
+//
+// Purpose: The class denotes how to specify the usage of an attribute
+//
+//===========================================================  
+namespace System
+{
+
+    // By default, attributes are inherited and multiple attributes are not allowed   
+    //| <include file='doc\AttributeUsageAttribute.uex' path='docs/doc[@for="AttributeUsageAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Class, Inherited = true)]
+    public sealed class AttributeUsageAttribute : Attribute
+    {
+       //Constructors
+        //| <include file='doc\AttributeUsageAttribute.uex' path='docs/doc[@for="AttributeUsageAttribute.AttributeUsageAttribute"]/*' />
+        public AttributeUsageAttribute(AttributeTargets validOn);
+
+        //| <include file='doc\AttributeUsageAttribute.uex' path='docs/doc[@for="AttributeUsageAttribute.AllowMultiple"]/*' />
+        public bool AllowMultiple { set; }
+
+        //| <include file='doc\AttributeUsageAttribute.uex' path='docs/doc[@for="AttributeUsageAttribute.Inherited"]/*' />
+        public bool Inherited { set; }
+    }
+}

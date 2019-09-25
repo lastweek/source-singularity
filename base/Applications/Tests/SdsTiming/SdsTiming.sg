@@ -1,0 +1,428 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+
+namespace Microsoft.Singularity.Applications
+{
+    public contract Dummy : ServiceContract
+    {
+        out message Garbage();
+
+        override state Start: one
+        {
+            Garbage! -> End;
+        }
+        state End: one {}
+    }
+
+    public class DirectoryServiceTests
+    {
+        private const int ITERATIONS = 10000;
+
+        public int passCount;
+        public int failCount;
+        private bool nakLoaded;
+        private bool dspLoaded;
+
+
+        public DirectoryServiceTests (bool nakLoaded, bool dspLoaded)
+        {
+            failCount = 0;
+            passCount = 0;
+            this.nakLoaded = nakLoaded;
+            this.dspLoaded= dspLoaded;
+        }
+
+        public void CheckError( string! verb, string path, ErrorCode expected, ErrorCode actual, bool ok)
+        {   if (ok){
+                //Console.WriteLine("{0} on {1} was successful.", verb, path);
+            }
+            if (expected != actual) {
+                failCount++;
+                Console.WriteLine("FAIL: {0} on {1}. expected={2}, actual={3}. ok={4}",
+                    verb,
+                    path,
+                    SdsUtils.ErrorCodeToString(expected),
+                    SdsUtils.ErrorCodeToString(actual),
+                    ok ? "true" : "false"
+                    );
+                //DebugStub.Break();
+            }
+            else {
+                passCount++;
+                if (false) {
+                    Console.WriteLine("PASS: {0} on {1} ({2}) ok={3}.",
+                        verb,
+                        path,
+                        SdsUtils.ErrorCodeToString(expected),
+                        ok ? "true" : "false"
+                        );
+                }
+            }
+        }
+
+        public void CheckError( string! verb, string path, NodeType expected, NodeType actual, bool ok)
+        {   if (ok){
+                //Console.WriteLine("{0} on {1} was successful.", verb, path);
+            }
+            if (expected != actual) {
+                failCount++;
+                Console.WriteLine("FAIL: {0} on {1}. expected={2}, actual={3}. ok={4}",
+                    verb,
+                    path,
+                    SdsUtils.NodeTypeToString(expected),
+                    SdsUtils.NodeTypeToString(actual),
+                    ok ? "true" : "false"
+                    );
+            }
+            else {
+                passCount++;
+                Console.WriteLine("PASS: {0} on {1} ({2}) ok={3}.",
+                    verb,
+                    path,
+                    SdsUtils.NodeTypeToString(expected),
+                    ok ? "true" : "false"
+                    );
+            }
+        }
+
+        public bool DoCreateDirectory(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.CreateDirectory(path, ds, out errorOut);
+            CheckError("CreateDirectory", path, expected, errorOut, ok);
+            return ok;
+        }
+
+        public void DoDeleteDirectory(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.DeleteDirectory(path, ds, out errorOut);
+            CheckError("DeleteDirectory", path, expected, errorOut, ok);
+        }
+
+        public void DoCreateLink(DirectoryServiceContract.Imp! ds, string! path, string! value, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.CreateLink(path, value, ds, out errorOut);
+            CheckError("CreateLink", path, expected, errorOut, ok);
+        }
+
+        public void DoGetLink(DirectoryServiceContract.Imp! ds, string! path, string expectedValue, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            string linkValue;
+            bool ok = SdsUtils.GetLinkValue(path, ds, out linkValue, out errorOut);
+            CheckError("GetLinkValue", path, expected, errorOut, ok);
+            if (ok) {
+                if (expectedValue != linkValue) {
+                    Console.WriteLine("    expected({0}) got({1})", expectedValue, linkValue);
+                }
+            }
+        }
+
+        public bool DoBind(DirectoryServiceContract.Imp! ds, string! path,
+                           [Claims]ServiceContract.Exp! exp, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            string linkValue;
+            bool ok = SdsUtils.Bind(path, ds, exp, out errorOut);
+            CheckError("Bind", path, expected, errorOut, ok);
+            return ok;
+        }
+
+        //simulate FileOpen in FsUtils
+        public bool  DoBind(string! path,
+                           [Claims]ServiceContract.Exp! exp, ErrorCode expected)
+        {
+
+            DirectoryServiceContract.Imp! ds = DirectoryService.NewClientEndpoint();
+            ErrorCode errorOut;
+            string linkValue;
+            bool ok = SdsUtils.Bind(path, ds, exp, out errorOut);
+            CheckError("Bind", path, expected, errorOut, ok);
+            delete ds;
+            return ok;
+        }
+
+        public void DoDeleteLink(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.DeleteLink(path, ds, out errorOut);
+            CheckError("DeleteLink", path, expected, errorOut, ok);
+        }
+
+        public void DoRegister(DirectoryServiceContract.Imp! ds,
+                               string! path,
+                               [Claims] ServiceProviderContract.Imp! service,
+                               ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Register(path, ds, service, out errorOut);
+            CheckError("Register", path, expected, errorOut, ok);
+        }
+
+        public void DoDeregister(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            ServiceProviderContract.Imp:Start  service;
+
+            bool ok = SdsUtils.Deregister(path, ds, out service, out errorOut);
+            CheckError("Deregister", path, expected, errorOut, ok);
+            delete service;
+        }
+
+        public void DoGetAttributes(DirectoryServiceContract.Imp! ds,
+                                    string! path,
+                                    ErrorCode expected,
+                                    NodeType expectedNodeType)
+        {
+            ErrorCode errorOut;
+            NodeType nodeType;
+            FileAttributesRecord attributes;
+
+            bool ok = SdsUtils.GetAttributes(path, ds, out attributes, out errorOut);
+            nodeType = attributes.Type;
+
+            CheckError("GetAttributes", path, expectedNodeType, nodeType, ok);
+            CheckError("GetAttributes", path, expected, errorOut, ok);
+        }
+
+         public void BindTimeTests(DirectoryServiceContract.Imp! ds)
+         {
+            // try to bind to the various node types within the root dsp
+
+            FileContract.Imp! fc;
+            FileContract.Exp! fs;
+
+            ServiceProviderContract.Imp! sc;
+            ServiceProviderContract.Exp! ss;
+
+            DirectoryServiceContract.Imp! imp;
+            DirectoryServiceContract.Exp! exp;
+
+            DirectoryServiceContract.Imp! dspImp;
+            DirectoryServiceContract.Exp! dspExp;
+
+            DirectoryServiceContract.Imp! dspDirImp;
+            DirectoryServiceContract.Exp! dspDirExp;
+
+            Dummy.Imp! dC;
+            Dummy.Exp! dS;
+
+            TimeSpan start;
+            TimeSpan end;
+            TimeSpan elapsed;
+
+            DebugStub.WriteLine("\nstart get DirectoryService endpoint");
+            start = ProcessService.GetUpTime();
+            for (int i = 0; i < ITERATIONS; i++) {
+                DirectoryServiceContract.Imp! d = DirectoryService.NewClientEndpoint();
+                delete d;
+            }
+            end = ProcessService.GetUpTime();
+            elapsed = end - start;
+            Console.WriteLine("\nBind DirectoryService.newEndpoint count={0} time={1}",
+                ITERATIONS, elapsed);
+
+            ///
+
+            DebugStub.WriteLine("\nstart bind to /init/testpe/testpe");
+            start = ProcessService.GetUpTime();
+            for (int i = 0; i < ITERATIONS; i++) {
+                FileContract.NewChannel(out fc, out fs);
+                DoBind(ds,"/init/testpe/testpe",fs,ErrorCode.NoError);
+                delete fc;
+            }
+            end = ProcessService.GetUpTime();
+            elapsed = end - start;
+            Console.WriteLine("\nBind /init/testpe/testpe count={0} time={1}",
+                ITERATIONS, elapsed);
+
+            ///
+            if (dspLoaded) {
+                DebugStub.WriteLine("\nstart bind to /dsp");
+                start = ProcessService.GetUpTime();
+                for (int i = 0; i < ITERATIONS; i++) {
+                    DirectoryServiceContract.NewChannel(out dspImp, out dspExp);
+                    DoBind(ds,"/dsp",dspExp,ErrorCode.NoError);
+                    delete dspImp;
+                }
+                end = ProcessService.GetUpTime();
+                elapsed = end - start;
+                Console.WriteLine("\nBind /dsp count={0} time={1}",
+                    ITERATIONS, elapsed);
+
+                /// create sub directory and bind to it
+
+                DirectoryServiceContract.NewChannel(out dspImp, out dspExp);
+                bool haveDsp = DoBind(ds,"/dsp",dspExp,ErrorCode.NoError);
+                bool haveDir = DoCreateDirectory(ds, "/dsp/bindtime", ErrorCode.NoError);
+                if (haveDir && haveDsp) {
+                    DebugStub.WriteLine("\nstart bind to /dsp/bindtime");
+                    start = ProcessService.GetUpTime();
+                    for (int i = 0; i < ITERATIONS; i++) {
+                        DirectoryServiceContract.NewChannel(out dspDirImp, out dspDirExp);
+                        DoBind(ds,"/dsp/bindtime",dspDirExp,ErrorCode.NoError);
+                        delete dspDirImp;
+                    }
+                    end = ProcessService.GetUpTime();
+                    elapsed = end - start;
+                    Console.WriteLine("\nBind /dsp/bindtime via root count={0} time={1}",
+                        ITERATIONS, elapsed);
+
+                    /// now from the mount point
+
+                    DebugStub.WriteLine("\nstart bind to /dsp/bindtime via mountpoint");
+                    dspImp.RecvSuccess();
+                    start = ProcessService.GetUpTime();
+                    for (int i = 0; i < ITERATIONS; i++) {
+                        DirectoryServiceContract.NewChannel(out dspDirImp, out dspDirExp);
+                        DoBind(dspImp,"/bindtime",dspDirExp,ErrorCode.NoError);
+                        delete dspDirImp;
+                    }
+                    end = ProcessService.GetUpTime();
+                    elapsed = end - start;
+                    Console.WriteLine("\nBind /dsp/bindtime via mountpoint count={0} time={1}",
+                        ITERATIONS, elapsed);
+
+               }
+               delete dspImp;
+            }
+
+            DebugStub.WriteLine("start bind to /init/testpe/testpe with NoAllocateAttribute ds");
+            TimeSpan s2 = ProcessService.GetUpTime();
+            for (int i = 0; i < ITERATIONS; i++) {
+                FileContract.NewChannel(out fc, out fs);
+                DoBind("/init/testpe/testpe",fs,ErrorCode.NoError);
+                delete fc;
+            }
+            TimeSpan e2 = ProcessService.GetUpTime();
+            TimeSpan elapsed2 = e2 -s2;
+            Console.WriteLine("Bind testpe count={0} time={1}",
+                ITERATIONS, elapsed2);
+
+            DebugStub.WriteLine("start directory  to /init/testpe");
+            TimeSpan s3 = ProcessService.GetUpTime();
+            for (int i = 0; i < ITERATIONS; i++) {
+                DirectoryServiceContract.NewChannel(out imp, out exp);
+                DoBind("/init/testpe",exp,ErrorCode.NoError);
+                delete imp;
+            }
+
+            TimeSpan e3 = ProcessService.GetUpTime();
+            TimeSpan elapsed3 = e3 -s3;
+            Console.WriteLine("Bind dir count={0} time={1}",
+                ITERATIONS, elapsed3);
+        }
+
+    }
+
+    public class DirectoryMain
+    {
+        private static Process LoadProcess(string[]! arguments)
+        {
+            try {
+                Process  process = new Process(arguments);
+                if (process == null) {
+                    Console.WriteLine("Unable to create process {0}",arguments[0]);
+                    return null;
+                }
+                else {
+                    process.Start();
+                    return process;
+                }
+            }
+            catch (ProcessCreateException) {
+                    Console.WriteLine("Unable to create process {0}",arguments[0]);
+            }
+            return null;
+        }
+
+        public static int Main(string[]! args)
+        {
+            Process dsp = null;
+            ErrorCode errorOut;
+
+            string dspName = "TestDSP";
+            string dspMountPoint = "/dsp";
+
+            DirectoryServiceContract.Imp! ds = DirectoryService.NewClientEndpoint();
+
+            // see if the test DSP is loaded by attempting to bind to it
+            // if not present load it
+
+            bool ok;
+            bool nakLoaded = false;
+            DirectoryServiceContract.Imp! dspImp;
+            DirectoryServiceContract.Exp! dspExp;
+            DirectoryServiceContract.NewChannel(out dspImp, out dspExp);
+
+            ok = SdsUtils.Bind(dspMountPoint, ds, dspExp, out errorOut);
+            delete dspImp;
+
+            bool dspLoaded = false;
+            if (!ok) {
+                Console.WriteLine("Bind to {0} Failed. reason:{1} Will attempt to load {2}",
+                                  dspMountPoint,
+                                  SdsUtils.ErrorCodeToString(errorOut),
+                                  dspName
+                                  );
+                string [] arguments2 = new string[2];
+                arguments2[0] = dspName;
+                arguments2[1] = dspMountPoint;
+                dsp = LoadProcess(arguments2);
+                if (dsp == null) {
+                    Console.WriteLine("unable to load {0}",dspName);
+                    dspLoaded = false;
+                }
+            }
+            else dspLoaded = true;
+
+            DirectoryServiceTests t = new DirectoryServiceTests(nakLoaded ,dspLoaded);
+
+            try {
+
+                t.BindTimeTests(ds);
+                Console.WriteLine(" pass={0}, fail={1}", t.passCount, t.failCount);
+
+
+                //Thread.Sleep(TimeSpan.FromMilliseconds(1000));
+
+                if (dsp != null) {
+                    t.DoDeregister(ds,dspMountPoint, ErrorCode.NoError);
+                }
+
+                delete ds;
+
+                //Thread.Sleep(TimeSpan.FromMilliseconds(1000));
+
+
+                if (dsp != null) {
+                    dsp.Join();
+                }
+            }
+            finally {
+            }
+            return 0;
+        }
+
+        private static void Usage(string name)
+        {
+            Console.WriteLine("{0} <filename> creates a directory.",name);
+        }
+    } // class Test
+}

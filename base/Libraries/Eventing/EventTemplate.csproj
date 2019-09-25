@@ -1,0 +1,35 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>EventTemplate</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Language>Sing#</Language>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="EventTemplate.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Eventing.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Transform\Transform.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

@@ -1,0 +1,15 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+
+    public class InvalidCastException : SystemException {
+        public InvalidCastException();
+        public InvalidCastException(String message);
+        public InvalidCastException(String message, Exception innerException);
+    }
+}

@@ -1,0 +1,60 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IoSystem.csi
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.Memory;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Io
+{
+    public interface IDevice
+    {
+        void Initialize();
+        void Finalize();
+    }
+
+    public delegate IDevice IoDeviceCreate(IoConfig config, String instanceName);
+
+    public class IoSystem
+    {
+        public static void Initialize(XmlNode config);
+        new public static void Finalize();
+
+        public static bool RegisterKernelDriver(Type type,
+                                                IoDeviceCreate creator);
+
+        public static bool AddDevicesToTree(SortedList found, string busLocation, bool associate);
+
+        // device management
+        public static void RegisterDrivers();
+        public static void ActivateDrivers();
+        // hal only device management:
+        public static IoConfig YieldResources(string signature, Type type);
+        // debug only method:
+        public static void Dump(bool detailed);
+
+        // initialize other subsystems:
+        public static void InitializeDirectoryService();
+        public static void InitializeVolumeManager();
+        public static void InitializeServiceManager(XmlNode config);
+
+        public static IoMemory FindFileImage(string command);
+        public static IoMemory FindFileImage(string command, SharedHeap.Allocation* ep);
+    }
+} // namespace Microsoft.Singularity.Io

@@ -1,0 +1,21 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+    // Base interface for all collections, defining enumerators, size, and
+    // synchronization methods.
+    public interface ICollection : IEnumerable
+    {
+        void CopyTo(Array array, int index);
+
+        int Count { get; }
+        Object SyncRoot { get; }
+        bool IsSynchronized { get; }
+    }
+}

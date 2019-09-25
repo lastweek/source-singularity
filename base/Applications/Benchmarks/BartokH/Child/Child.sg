@@ -1,0 +1,393 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Compiler Phase
+//
+
+//#define NONONNULLTYPECHECK  // required on Singularity, no affect on other Windows.
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+using Bartok.Contracts;
+using Bartok.Analysis.Lir;
+using Bartok.Convert;
+using Bartok.Datatype;
+using Bartok.CfgUtil;
+using Bartok.Lir;
+using Bartok.Opt.Lir;
+using Bartok.Utility;
+using Bartok.DebugInfo;
+using Bartok.Regalloc;
+using Bartok.Marshal;
+
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Bartok.Child
+{
+    [Category("WebApp")]
+    internal class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<ExtensionContract.Exp:Start> sendRef;
+
+        [BoolParameter("where", Default=false,
+                       HelpMessage="Show what space we are running in")]
+        internal bool doWhere;
+
+        reflective private Parameters();
+
+        internal int AppMain() {
+            return BartokP.AppMain(this);
+        }
+    }
+
+    public class BartokP
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            //            DebugStub.WriteLine("Child::GC Verify enabled");
+            //            AppRuntime.EnableGCVerify = true;
+            //AppRuntime.EnableGCAccounting = true;
+            //DebugStub.WriteLine("Child: Enabled GC Accounting");
+            //DebugStub.WriteLine("Child: Began execution!");
+
+            if (config.doWhere) {
+                DebugStub.WriteLine("BartokP running!");
+            }
+
+            ExtensionContract.Exp ep = config.sendRef.Acquire();
+
+            CompilerPhaseContract.Exp cp = ep as CompilerPhaseContract.Exp;
+
+            if (cp != null) {
+                DoPhase(cp);
+                delete cp;
+                return 0;
+            }
+
+            // Wrong contract type!
+            delete ep;
+            return 1;
+        }
+
+        private static void ReadOpen(CheapState! cs, byte[]! in ExHeap bytes)
+        {
+            uint regionSize;
+            uint region;
+            regionSize = (uint)bytes.Length;
+            unsafe {
+                byte *pdst = &bytes[0];
+                region = (uint)pdst;
+                cs.ReadOpen(region, regionSize);
+            }
+        }
+
+        private static void ReadClose(CheapState! cs)
+        {
+#if false
+            if (cs.oig != null) {
+                DebugStub.WriteLine("--- Stub .Read Close {0,8} bytes {1,5} objects",
+                                    __arglist(cs.read, cs.loadCount));
+            }
+#endif
+            cs.ReadClose();
+        }
+
+        private static void WriteOpen(CheapState! cs, byte[]! in ExHeap bytes)
+        {
+            uint regionSize;
+            uint region;
+            regionSize = (uint)bytes.Length;
+            unsafe {
+                byte *pdst = &bytes[0];
+                region = (uint)pdst;
+                cs.WriteOpen(region, regionSize);
+            }
+        }
+
+        private static void WriteClose(CheapState! cs)
+        {
+#if false
+            if (cs.oig != null) {
+                DebugStub.WriteLine("--- Stub .WriteClose {0,8} bytes {1,5} objects",
+                                    __arglist(cs.used, cs.oig.m_currentCount));
+            }
+#endif
+            cs.WriteClose();
+        }
+
+        private static void DoPhase(CompilerPhaseContract.Exp! cp)
+        {
+            GraphColoringReal gcr;
+            CheapState! cs = new CheapState(0, false);
+
+            CheapMarshal.InitTypes();
+
+            // Track statics before they can be replicated in a method call.
+            RegisterX86.TrackAsGlobal(cs);
+            OpCodesX86.TrackAsGlobal(cs);
+
+            cp.SendReadyToInit();
+            bool halt = false;
+#if USE_SWITCH_RECEIVE
+            switch receive
+            {
+                case cp.InitPhaseReq(byte[]! in ExHeap buffer):
+                    RegDesc regs;
+                    CallConv conv;
+                    AbstractTarget target;
+                    GlobalLayoutData globalLayoutData;
+                    int pageSize;
+                    int stackThreshhold;
+                    bool isNoisy;
+                    CSRT runtime;
+                    StageControlProxy controls;
+
+                    beg = Processor.GetCycleCount();
+                    ReadOpen(cs, buffer);
+                    RegDesc.CheapRead(cs, out regs);
+                    CallConv.CheapRead(cs, out conv);
+                    AbstractTarget.CheapRead(cs, out target);
+                    GlobalLayoutData.CheapRead(cs, out globalLayoutData);
+                    cs.Read(out pageSize);
+                    cs.Read(out stackThreshhold);
+                    cs.Read(out isNoisy);
+                    CSRT.CheapRead(cs, out runtime);
+                    StageControlProxy.CheapRead(cs, out controls);
+                    ReadClose(cs);
+
+                    DebugStub.AddToPerfCounter(1, Processor.GetCycleCount() - beg);
+
+                    CSRT.runtime = runtime;
+                    if (controls != null) {
+                        controls.SetValues();
+                    }
+
+                    if (globalLayoutData != null) {
+                        RepInfo.LayoutInfoFactory = globalLayoutData.LayoutInfoFactory;
+                        RepInfo.SetX86Layout();
+                    }
+
+                    target.TrackAsGlobal(cs);
+                    regs.TrackAsGlobal(cs);
+                    conv.TrackAsGlobal(cs);
+                    runtime.TrackAsGlobal(cs);
+                    cs.DumpGlobal("chld");
+
+#if false
+                    DebugStub.WriteLine("-------- GraphColoring::Stub Init -----");
+#endif
+
+                    gcr = new GraphColoringReal(regs,
+                                                conv,
+                                                target,
+                                                globalLayoutData,
+                                                pageSize,
+                                                stackThreshhold,
+                                                isNoisy);
+
+                    beg = Processor.GetCycleCount();
+                    WriteOpen(cs, buffer);
+                    WriteClose(cs);
+                    DebugStub.AddToPerfCounter(2, Processor.GetCycleCount() - beg);
+                    cp.SendInitPhaseRsp(buffer);
+                    break;
+                case cp.ChannelClosed():
+                    Console.WriteLine("Compiler channel closed unexpectedly before init.");
+                    return;
+            }
+#else
+            byte[]! in ExHeap buffer;
+            cp.RecvInitPhaseReq(out buffer);
+
+            RegDesc regs;
+            CallConv conv;
+            AbstractTarget target;
+            GlobalLayoutData globalLayoutData;
+            int pageSize;
+            int stackThreshhold;
+            bool isNoisy;
+            CSRT runtime;
+            StageControlProxy controls;
+
+            ulong beg = Processor.GetCycleCount();
+            ReadOpen(cs, buffer);
+            RegDesc.CheapRead(cs, out regs);
+            CallConv.CheapRead(cs, out conv);
+            AbstractTarget.CheapRead(cs, out target);
+            GlobalLayoutData.CheapRead(cs, out globalLayoutData);
+            cs.Read(out pageSize);
+            cs.Read(out stackThreshhold);
+            cs.Read(out isNoisy);
+            CSRT.CheapRead(cs, out runtime);
+            StageControlProxy.CheapRead(cs, out controls);
+            ReadClose(cs);
+
+            DebugStub.AddToPerfCounter(1, Processor.GetCycleCount() - beg);
+
+            CSRT.runtime = runtime;
+            if (controls != null) {
+                controls.SetValues();
+            }
+
+            if (globalLayoutData != null) {
+                RepInfo.LayoutInfoFactory = globalLayoutData.LayoutInfoFactory;
+                RepInfo.SetX86Layout();
+            }
+
+            //            DebugStub.WriteLine(":: Chld Targ Globals");
+            ((!)target).TrackAsGlobal(cs);
+            //            DebugStub.WriteLine(":: Chld Regs Globals");
+            ((!)regs).TrackAsGlobal(cs);
+            //            DebugStub.WriteLine(":: Chld Conv Globals");
+            ((!)conv).TrackAsGlobal(cs);
+            //            DebugStub.WriteLine(":: Chld CSRT Globals");
+            ((!)runtime).TrackAsGlobal(cs);
+
+            // cs.DumpGlobal("chld");
+
+#if false
+            DebugStub.WriteLine("-------- GraphColoring::Stub Init -----");
+#endif
+
+            gcr = new GraphColoringReal(regs,
+                                        conv,
+                                        target,
+                                        globalLayoutData,
+                                        pageSize,
+                                        stackThreshhold,
+                                        isNoisy);
+
+            beg = Processor.GetCycleCount();
+            WriteOpen(cs, buffer);
+            WriteClose(cs);
+            DebugStub.AddToPerfCounter(2, Processor.GetCycleCount() - beg);
+            cp.SendInitPhaseRsp(buffer);
+#endif
+
+            while (!halt) {
+#if USE_SWITCH_RECEIVE
+                switch receive
+                {
+                    case cp.GetPhaseNameReq():
+                        char[]! in ExHeap name = (!)Bitter.FromString(gcr.PhaseName);
+                        cp.SendGetPhaseNameRsp(name);
+                        break;
+
+                    case cp.ProcessFunctionReq(byte[]! in ExHeap buffer):
+                        FunctionDef f;
+                        ChooseRepResult r;
+
+                        beg = Processor.GetCycleCount();
+                        ReadOpen(cs, buffer);
+                        FunctionDef.CheapRead(cs, out f);
+                        ChooseRepResult.CheapRead(cs, out r);
+                        ReadClose(cs);
+                        DebugStub.AddToPerfCounter(1, Processor.GetCycleCount() - beg);
+
+                        gcr.Go(f, r);
+
+                        beg = Processor.GetCycleCount();
+                        WriteOpen(cs, buffer);
+                        if (f != null) {
+                            OperandArray.CheapWrite(cs, f.actualArgs);
+                            LirBasicBlock.CheapWrite(cs, f.prolog);
+                            LirBasicBlock.CheapWrite(cs, f.epilog);
+                            LirBasicBlock.CheapWrite(cs, f.unwind);
+                            cs.Write(f.omitFramePointer);
+                            cs.Write(f.spillSlotCount);
+                            Operand.CheapWrite(cs, f.stackSlotMap);
+                            SequencedCfg.CheapWrite(cs, f.code);
+                            OperandArray.CheapWrite(cs, f.pinned);
+                            OperandArray.CheapWrite(cs, f.formals);
+                            Operand.CheapWrite(cs, f.ret);
+                        }
+                        WriteClose(cs);
+                        DebugStub.AddToPerfCounter(2, Processor.GetCycleCount() - beg);
+                        cp.SendProcessFunctionRsp(buffer);
+                        break;
+
+                    case cp.TermPhaseReq():
+                        gcr.Term();
+                        cp.SendTermPhaseRsp();
+                        halt = true;
+                        break;
+
+                    case cp.ChannelClosed():
+                        halt = true;
+                        Console.WriteLine("Compiler channel closed unexpectedly.");
+                        break;
+                }
+#else
+                int which;
+
+                cp.RecvRequest(out which, out buffer);
+                if (which == (int)RequestKind.ProcessFunction) {
+                    FunctionDef f;
+                    ChooseRepResult r;
+
+                    beg = Processor.GetCycleCount();
+                    ReadOpen(cs, buffer);
+                    FunctionDef.CheapRead(cs, out f);
+                    ChooseRepResult.CheapRead(cs, out r);
+                    ReadClose(cs);
+                    DebugStub.AddToPerfCounter(1, Processor.GetCycleCount() - beg);
+
+#if DEBUG_FUNCTION_CALLS
+                    DebugStub.WriteLine();
+                    DebugStub.WriteLine("*** {0} ***", __arglist(((!)f).name.ToString()));
+#endif
+                    gcr.Go(f, r);
+
+                    beg = Processor.GetCycleCount();
+                    WriteOpen(cs, buffer);
+                    if (f != null) {
+                        OperandArray.CheapWrite(cs, f.actualArgs);
+                        LirBasicBlock.CheapWrite(cs, f.prolog);
+                        LirBasicBlock.CheapWrite(cs, f.epilog);
+                        LirBasicBlock.CheapWrite(cs, f.unwind);
+                        cs.Write(f.omitFramePointer);
+                        cs.Write(f.spillSlotCount);
+                        Operand.CheapWrite(cs, f.stackSlotMap);
+                        SequencedCfg.CheapWrite(cs, f.code);
+                        OperandArray.CheapWrite(cs, f.pinned);
+                        OperandArray.CheapWrite(cs, f.formals);
+                        Operand.CheapWrite(cs, f.ret);
+                    }
+                    WriteClose(cs);
+                    DebugStub.AddToPerfCounter(2, Processor.GetCycleCount() - beg);
+#if DEBUG_FUNCTION_CALLS
+                    DebugStub.WriteLine("--- {0} ---", __arglist(((!)f).name.ToString()));
+                    DebugStub.WriteLine();
+#endif
+                }
+                else if (which == (int)RequestKind.Terminate) {
+                    gcr.Term();
+                    halt = true;
+                }
+                else {
+                    DebugStub.WriteLine("Unknown request: {0}", __arglist(which));
+                }
+                cp.SendResponse(buffer);
+#endif
+            }
+        }
+    }
+}

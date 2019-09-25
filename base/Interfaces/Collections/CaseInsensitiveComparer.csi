@@ -1,0 +1,21 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Globalization;
+
+namespace System.Collections
+{
+    public class CaseInsensitiveComparer : IComparer {
+        public static readonly CaseInsensitiveComparer Default;
+
+        public CaseInsensitiveComparer();
+
+        public static CaseInsensitiveComparer DefaultInvariant { get; }
+
+        public int Compare(Object a, Object b);
+    }
+}

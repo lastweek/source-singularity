@@ -1,0 +1,179 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PacketFragment.sg
+//
+
+namespace Microsoft.Singularity.Io.Net
+{
+    using System;
+    using System.Runtime.InteropServices;
+    using Microsoft.Contracts;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Channels;
+
+    public rep struct PacketFragment : ITracked
+    {
+        byte [] in ExHeap data;
+        int  start;  // start position of live data in fragment
+        int  length; // end position of live data in fragment
+
+        public void Set(byte[]! buffer, int bufferStart, int bufferBytes)
+            requires bufferStart + bufferBytes <= buffer.Length;
+            requires bufferStart >= 0;
+            requires bufferBytes > 0;
+        {
+            expose (this) {
+                if (this.data == null || this.data.Length < bufferBytes) {
+                    delete this.data;
+                    this.data = new [ExHeap] byte [bufferBytes];
+                }
+                this.start  = 0;
+                this.length = bufferBytes;
+                Bitter.FromByteArray(this.data, 0, bufferBytes,
+                                     buffer, bufferStart);
+            }
+        }
+
+        public void Set([Claims] byte[]! in ExHeap buffer,
+                        int bufferStart,
+                        int bufferLength)
+            requires bufferStart + bufferLength <= buffer.Length;
+            requires bufferStart >= 0;
+            requires bufferLength >= 0;
+        {
+            expose (this) {
+                if (this.data != null) {
+                    delete this.data;
+                }
+                this.data   = buffer;
+                this.start  = bufferStart;
+                this.length = bufferLength;
+            }
+        }
+
+        public void Set(IoMemory! region, UIntPtr offset, UIntPtr length)
+        {
+            expose (this) {
+                this.start  = 0;
+                this.length = (int)length.ToUInt32();
+                assert this.length <= this.Capacity;
+                Bitter.FromIoMemory(this.data, this.start, this.length,
+                                    region, (int)offset.ToUInt32());
+            }
+        }
+
+        public int Length
+        {
+            get { expose (this) { return this.length; } }
+            set {
+                expose (this) {
+                    assert value <= this.Capacity;
+                    this.length = value;
+                }
+            }
+        }
+
+        //        [Pure]
+        public int Capacity
+        {
+            get {
+                expose (this) {
+                    return this.data == null ? 0 : this.data.Length;
+                }
+            }
+        }
+
+        //        [Pure]
+        internal int Start
+        {
+            get { expose (this) { return this.start; } }
+        }
+
+        //        [Pure]
+        public bool HasData
+        {
+            get { expose (this) { return this.data != null; } }
+        }
+
+        public void TrimHead(int bytesToTrim)
+            requires bytesToTrim <= this.Length;
+            ensures Length == old(Length) - bytesToTrim;
+            ensures this.Start == old(this.Start) + bytesToTrim;
+        {
+            expose (this) {
+                this.start  += bytesToTrim;
+                this.length -= bytesToTrim;
+            }
+        }
+
+        public void TrimTail(int bytesToTrim)
+            requires bytesToTrim <= this.Length;
+            ensures Length == old(Length) - bytesToTrim;
+        {
+            expose (this) {
+                this.length -= bytesToTrim;
+            }
+        }
+
+        public void Untrim()
+        {
+            expose (this) {
+                this.start = 0;
+                this.length = this.Capacity;
+            }
+        }
+
+        [Pure]
+        public void GetFragmentRange(out UIntPtr virtualAddr,
+                                     out int lengthBytes)
+        {
+            expose (this) {
+                if (this.data != null) {
+                    virtualAddr = Bitter.ToAddress(this.data, this.start);
+                    lengthBytes = this.length;
+                }
+                else {
+                    virtualAddr = UIntPtr.Zero;
+                    lengthBytes = 0;
+                }
+            }
+        }
+
+        public int Copy(byte[]! destination, int offset)
+            requires offset >= 0 && offset < destination.Length;
+            requires destination.Length - offset >= this.Length;
+        {
+            expose (this) {
+                if (this.data != null) {
+                    Bitter.ToByteArray(this.data, this.start, this.length,
+                                       destination, offset);
+                    return this.length;
+                }
+                else {
+                    return 0;
+                }
+            }
+        }
+
+        public void Append(byte value)
+            requires this.Start + this.Length < this.Capacity;
+        {
+            expose (this) {
+                assert this.data != null;
+                this.data[this.start + this.length] = value;
+                this.length++;
+            }
+        }
+
+        public void Dispose()
+        {
+            delete this.data;
+            this.data = null;
+        }
+    }
+}

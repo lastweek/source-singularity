@@ -1,0 +1,100 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Directory
+{
+
+    public class DirAclCoreSupport : IAclCoreSupport
+    {
+        private UTF8Encoding! encoder = new UTF8Encoding();
+        private TRef<DirectoryServiceContract.Imp:Ready> cachedRootNS = null;
+
+        public string GetGroupContents(string! path)
+        {
+            // read the file size
+            if (cachedRootNS == null)
+                cachedRootNS = new TRef<DirectoryServiceContract.Imp:Ready>(
+                                        DirectoryService.NewClientEndpoint());
+            DirectoryServiceContract.Imp:Ready! ns = cachedRootNS.Acquire();
+            byte[] result =  ReadFromFile(path, ns);
+            cachedRootNS.Release(ns);
+            if (result == null)
+                return null;
+            string! subexpression = (!)encoder.GetString(result);
+            return subexpression;
+        }
+
+        private byte[] ReadFromFile(string!path, DirectoryServiceContract.Imp:Ready! ns)
+        {
+            ErrorCode errCode;
+            byte[] result;
+            long size = 0;
+            int readSize = 4096;
+            NodeType nodeType;
+
+            try {
+                bool temp = SdsUtils.GetAttributes(path, ns, out size, out nodeType, out errCode);
+                if (!temp)
+                    // element does not exist or an error has occurred
+                    throw new Exception("Cannot get attributes - " + SdsUtils.ErrorCodeToString(errCode));
+                result = new byte[size];
+                byte[] in ExHeap buf = new[ExHeap] byte[readSize];
+                if (result == null || buf == null)
+                    throw new Exception("Cannot allocate memory");
+                FileContract.Imp! fileImp;
+                FileContract.Exp! fileExp;
+                FileContract.NewChannel(out fileImp, out fileExp);
+                bool bindOk = SdsUtils.Bind(path, ns, fileExp, out errCode);
+                if (!bindOk) {
+                    delete fileImp;
+                    throw new Exception("Can't read group - " + SdsUtils.ErrorCodeToString(errCode));
+                }
+                fileImp.RecvSuccess();
+
+                long readOffset = 0;
+                while (true) {
+                    fileImp.SendRead(buf, 0, readOffset, readSize);
+                    switch receive {
+                        case fileImp.AckRead(localbuf,  bytesRead,  error) :
+                            // move the memory
+                            Bitter.ToByteArray(localbuf, 0, (int)bytesRead, result, (int)readOffset);
+                            if (bytesRead == readSize) {
+                                // see if there is more
+                                readOffset += bytesRead;
+                                buf = localbuf;
+                                continue;
+                            }
+                            delete localbuf;
+                            break;
+                        case fileImp.ChannelClosed() :
+                            break;
+                        case unsatisfiable :
+                            break;
+                    }
+                    break;
+                }
+                delete fileImp;
+            }
+            catch (Exception e) {
+                DebugStub.Print("An exception occurred while reading group definition: {0}\n",
+                                __arglist(path));
+                DebugStub.Print("Message: {0}\n", __arglist(e.Message));
+                return null;
+            }
+            return result;
+        }
+    }
+}

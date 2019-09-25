@@ -1,0 +1,247 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Process diagnostic module
+//
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Directory;
+using System;
+
+namespace Microsoft.Singularity.Diagnostics
+{
+    public class ProcessModule
+    {
+        private void Run()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(ProcessContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the Process Diagnostic module.\n");
+                        delete nsExp;
+                        if (rejectedEP != null) {
+                            delete rejectedEP;
+                        }
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<ProcessContract.Exp:ReadyState> epSet = new ESet<ProcessContract.Exp:ReadyState>();
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people top give us ProcessContract.Exp instances
+                            ProcessContract.Exp newDiagEp = newEp as ProcessContract.Exp;
+
+                            if (newDiagEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newDiagEp.SendReady();
+                                epSet.Add(newDiagEp);
+                            }
+                        }
+                        break;
+
+                    // ------------------------------- Requests on existing connections
+                    //
+                    // Don't forget that we're selecting ProcessContract endpoints
+                    // from the epSet endpoint-set. In each case that we
+                    // receive a message from one of those endpoints, we
+                    // need to remember to put the endpoint back into epSet
+                    // if we want to keep listening to it.
+                    //
+                    case ep.GetProcessIDs() in epSet :
+                        {
+                            Process[] processTable = Process.processTable;
+                            int[] scratch = new int[processTable.Length];
+                            int numProcs = 0;
+
+                            // Snapshot the process IDs. Don't worry too much
+                            // about the table changing while we're looking at
+                            // it, since there's no guarantee that the
+                            // list we provide corresponds to a table state
+                            // that actually existed at some point in time.
+                            for (int i = 0; i < processTable.Length; ++i) {
+                                Process proc = processTable[i];
+
+                                if (proc != null) {
+                                    scratch[i] = proc.ProcessId;
+                                    ++numProcs;
+                                }
+                                else {
+                                    scratch[i] = -1;
+                                }
+                            }
+
+                            // Compact the table
+                            int* opt(ExHeap[]) retval = new[ExHeap] int[numProcs];
+                            int curProcess = 0;
+
+                            for (int i = 0; i < scratch.Length; ++i) {
+                                if (scratch[i] != -1) {
+                                    retval[curProcess] = scratch[i];
+                                    ++curProcess;
+                                }
+                            }
+
+                            ep.SendProcessIDs(retval);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetProcessThreadIDs(int procID) in epSet :
+                        {
+                            Process proc = Process.GetProcessByID(procID);
+
+                            if (proc == null) {
+                                ep.SendNotFound();
+                            }
+                            else {
+                                int [] tids = proc.GetThreadIDs(); 
+                                if (tids != null && tids.Length > 0) { 
+                                    int* opt(ExHeap[]) retval = new[ExHeap] int[tids.Length];
+                                    for (int i = 0; i < tids.Length; ++i) {
+                                        retval[i] = tids[i]; 
+                                    }
+                                    ep.SendProcessThreadIDs(retval);
+                                }
+                                else ep.SendNotFound();
+                                //else DebugStub.Break(); 
+                            }
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetProcessTimes(int procID) in epSet :
+                        {
+                            Process proc = Process.GetProcessByID(procID);
+
+                            if (proc == null) {
+                                ep.SendNotFound();
+                            }
+                            else {
+                                long deadThreadTime  = proc.DeadThreadTime; 
+                                long deadThreadCount = proc.DeadThreadCount; 
+                                long threadTimes     = proc.GetThreadTimes(); 
+                                long totalTime       = threadTimes + deadThreadTime;  
+                                
+                                ep.SendProcessTimes(totalTime,deadThreadTime,deadThreadCount);
+                                //DebugStub.WriteLine("proc={0}, totalTime={1}",__arglist(procID,totalTime));
+                            }
+                            epSet.Add(ep);
+                        }
+                        break;
+                        
+                    case ep.GetProcessGcStats(int procID) in epSet :
+                        {
+                            Process proc = Process.GetProcessByID(procID);
+
+                            if (proc == null) {
+                                ep.SendNotFound();
+                            }
+                            else {
+                                int count;
+                                TimeSpan time; 
+                                long bytes; 
+                                proc.GetGcPerformanceCounters(out count, out time, out bytes); 
+                                ep.SendProcessGcStats(count, time.Ticks, bytes);
+                                //DebugStub.WriteLine("proc={0}, totalTime={1}",__arglist(procID,totalTime));
+                            }
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetProcessName(int procID) in epSet :
+                        {
+                            Process proc = Process.GetProcessByID(procID);
+
+                            if (proc == null) {
+                                ep.SendNotFound();
+                            }
+                            else {
+                                ep.SendProcessName(Bitter.FromString2((!)proc.GetProcessName()));
+                            }
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetParentID(int procID) in epSet :
+                        {
+                            Process proc = Process.GetProcessByID(procID);
+
+                            Process parent = (proc == null) ? null : proc.Parent;
+                            if (parent == null) {
+                                ep.SendNotFound();
+                            }
+                            else {
+                                ep.SendParentID(parent.ProcessId);
+                            }
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        {
+                            delete ep;
+                        }
+                        break;
+
+                    case epSet.Empty() && nsExp.ChannelClosed() :
+                        {
+                            // Exit this thread
+                            delete nsExp;
+                            epSet.Dispose();
+                            return;
+                        }
+                        break;
+                }
+            }
+        }
+
+        internal static void Initialize()
+        {
+            ProcessModule module = new ProcessModule();
+            Thread thread = Thread.CreateThread(Thread.CurrentProcess,
+                                                new ThreadStart(module.Run));
+
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+    }
+}

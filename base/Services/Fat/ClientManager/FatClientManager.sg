@@ -1,0 +1,420 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Fat/ClientManager/FatClientManager.sg
+//
+//  Note:
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Services.Fat.Contracts;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.ServiceManager;
+
+using System;
+using System.Collections;
+using System.IO;
+using System.Text;
+using FileSystem.Utils;
+
+namespace Microsoft.Singularity.Services.Fat.ClientManager
+{
+    [Category("Service")]
+    internal class ServiceParameters
+    {
+        [CustomEndpoint]
+        public readonly TRef<ServiceProcessContract.Exp:Starting> ControlEndpointRef;
+        
+        [CustomEndpoint]
+        public readonly TRef<ServiceEventContract.Imp:Ready> EventEndpointRef;
+        
+        reflective private ServiceParameters();
+    }
+
+    public class ClientManager
+    {
+        internal static readonly char PathSeparator = Path.DirectorySeparatorChar;
+
+        private static ArrayList! mounts = new ArrayList();
+
+        internal class Client
+        {
+            TRef<FatClientContract.Imp:Running>! tref;
+            string! diskPath;
+            string! mountPath;
+            bool    readOnly;
+            uint    cacheMB;
+
+            internal Client(
+                [Claims] FatClientContract.Imp! imp,
+                string! diskPath,
+                string! mountPath,
+                bool    readOnly,
+                uint    cacheMB
+                )
+            {
+                this.tref = new TRef<FatClientContract.Imp:Running>(imp);
+                this.diskPath  = diskPath;
+                this.mountPath = mountPath;
+                this.readOnly  = readOnly;
+                this.cacheMB   = cacheMB;
+            }
+
+            internal FatClientContract.Imp! Acquire()
+            {
+                return tref.Acquire();
+            }
+
+            internal void Release([Claims] FatClientContract.Imp! imp)
+            {
+                tref.Release(imp);
+            }
+
+            internal string! DiskPath  { get { return this.diskPath;  } }
+            internal string! MountPath { get { return this.mountPath; } }
+        }
+
+        internal static void
+        AddClient(Client newClient)
+        {
+            mounts.Add(newClient);
+        }
+
+        internal static Client GetClientByMountPath(string! path)
+            requires (path.Length > 0 &&
+                      path[path.Length - 1] != Path.DirectorySeparatorChar);
+        {
+            for (int i = 0; i < mounts.Count; i++) {
+                Client! cs = (Client!)mounts[i];
+                if (String.Compare(cs.MountPath, path, true) == 0) {
+                    return cs;
+                }
+            }
+            return null;
+        }
+
+        internal static Client GetClientByDiskPath(string! path)
+            requires (path.Length > 0 &&
+                      path[path.Length - 1] != Path.DirectorySeparatorChar);
+        {
+            for (int i = 0; i < mounts.Count; i++) {
+                Client! cs = (Client!)mounts[i];
+                if (String.Compare(cs.DiskPath, path, true) == 0) {
+                    return cs;
+                }
+            }
+            return null;
+        }
+
+        internal static void DeleteClient(Client! closedClient)
+        {
+            mounts.Remove(closedClient);
+        }
+
+        internal static bool ClientIsClosed(Client! client)
+        {
+            FatClientContract.Imp:Running! clientImp = client.Acquire();
+            bool closed = false;
+
+            switch receive {
+                case clientImp.ChannelClosed():
+                    closed = true;
+                    break;
+                case timeout:
+                    break;
+            }
+
+            client.Release(clientImp);
+            return closed;
+        }
+
+        private static void
+        DoMount(FatControlContract.Exp:Ready! controller,
+                [Claims]
+                FatMountSettings*! in ExHeap  fms)
+        {
+            string! diskPath  = PathUtils.ToPath(fms->DiskPath);
+            string! mountPath = PathUtils.ToPath(fms->MountPath);
+            bool    readOnly  = fms->ReadOnly;
+            uint    cacheMB   = fms->CacheMB;
+
+            Client client = GetClientByDiskPath(diskPath);
+            if (client != null) {
+                if (!ClientIsClosed(client)) {
+                    // Already using disk path
+                    controller.SendFail(FatContractErrorCode.DiskUnavailable);
+                    delete fms;
+                    return;
+                }
+                else {
+                    DeleteClient(client);
+                    client = null;
+                }
+            }
+
+            client = GetClientByMountPath(mountPath);
+            if (client != null) {
+                if (!ClientIsClosed(client)) {
+                    // Already using mount path
+                    controller.SendFail(FatContractErrorCode.PathUnavailable);
+                    delete fms;
+                    return;
+                }
+                else {
+                    DeleteClient(client);
+                    client = null;
+                }
+            }
+
+            FatClientContract.Imp! clientImp;
+            FatClientContract.Exp! clientExp;
+            FatClientContract.NewChannel(out clientImp, out clientExp);
+
+            string [] args = { "fatfs" };
+            Process process = new Process(args);
+            process.SetStartupEndpoint(0, clientExp);
+            process.Start();
+
+            clientImp.SendMount(fms);
+            switch receive {
+                case clientImp.Success():
+                    AddClient(
+                        new Client(clientImp, diskPath, mountPath,
+                                   readOnly, cacheMB)
+                        );
+                    controller.SendSuccess();
+                    break;
+
+                case clientImp.ChannelClosed():
+                    controller.SendSuccess();
+                    delete clientImp;
+                    break;
+
+                case clientImp.Fail(reason):
+                    controller.SendFail(reason);
+                    delete clientImp;
+                    break;
+            }
+        }
+
+        private static void
+        DoUnmount(
+            FatControlContract.Exp:Ready! controller,
+            [Claims] char[]! in ExHeap    mountPath,
+            bool                          force
+            )
+        {
+            string path = PathUtils.ToPath(Bitter.ToString2(mountPath));
+            delete mountPath;
+
+            Client client = GetClientByMountPath(path);
+            if (client == null) {
+                controller.SendFail(FatContractErrorCode.NotMounted);
+                return;
+            }
+            else if (ClientIsClosed(client)) {
+                controller.SendSuccess();
+                return;
+            }
+
+            FatClientContract.Imp! clientImp = client.Acquire();
+            clientImp.SendUnmount(force);
+            switch receive {
+                case clientImp.Success():
+                    controller.SendSuccess();
+                    client.Release(clientImp);
+                    DeleteClient(client);
+                    break;
+                case clientImp.Fail(reason):
+                    controller.SendFail(reason);
+                    client.Release(clientImp);
+                    break;
+                case clientImp.ChannelClosed():
+                    controller.SendFail(FatContractErrorCode.InternalError);
+                    client.Release(clientImp);
+                    DeleteClient(client);
+                    break;
+            }
+        }
+
+        private static void
+        DoGetPreferredFormatSettings(
+            FatControlContract.Exp:Ready! controller,
+            [Claims] char[]! in ExHeap diskPath
+            )
+        {
+            string! cleanPath = PathUtils.ToPath(Bitter.ToString2(diskPath));
+            delete diskPath;
+
+            FatClientContract.Imp! clientImp;
+            FatClientContract.Exp! clientExp;
+            FatClientContract.NewChannel(out clientImp, out clientExp);
+
+            string [] args = { "fatfs" };
+            Process process = new Process(args);
+            process.SetStartupEndpoint(0, clientExp);
+            process.Start();
+
+            clientImp.SendGetPreferredFormatSettings(
+                Bitter.FromString2(cleanPath)
+                );
+            try {
+                switch receive {
+                    case clientImp.PreferredFormatSettings(settings):
+                        controller.SendPreferredFormatSettings(settings);
+                        break;
+                    case clientImp.Fail(error):
+                        controller.SendFail(error);
+                        break;
+                    case clientImp.ChannelClosed():
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            finally {
+                delete clientImp;
+            }
+        }
+
+        private static void
+        DoFormat(
+            FatControlContract.Exp:Ready! controller,
+            [Claims] char[]! in ExHeap diskPath,
+            [Claims] char[]! in ExHeap volumeLabel,
+            [Claims] FatFormatSettings*! in ExHeap settings
+            )
+        {
+            string! cleanPath = PathUtils.ToPath(Bitter.ToString2(diskPath));
+            delete diskPath;
+
+            FatClientContract.Imp! clientImp;
+            FatClientContract.Exp! clientExp;
+            FatClientContract.NewChannel(out clientImp, out clientExp);
+
+            string [] args = { "fatfs" };
+            Process process = new Process(args);
+            process.SetStartupEndpoint(0, clientExp);
+            process.Start();
+
+            clientImp.SendFormat(Bitter.FromString2(cleanPath),
+                                 volumeLabel,
+                                 settings);
+            try {
+                switch receive {
+                    case clientImp.Success():
+                        controller.SendSuccess();
+                        break;
+                    case clientImp.Fail(error):
+                        controller.SendFail(error);
+                        break;
+                    case clientImp.ChannelClosed():
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            finally {
+                delete clientImp;
+            }
+        }
+
+        private static void Shutdown()
+        {
+        }
+
+        private static void ServiceClients(ServiceProcessContract.Exp! svcontrol)
+        {
+            ESet<FatControlContract.Exp:Ready> controllers =
+                new ESet<FatControlContract.Exp:Ready>();
+
+            svcontrol.SendStartSucceeded();
+            
+            bool run = true;
+            while (run) {
+                switch receive {
+                    case svcontrol.Connect(expath, candidate):
+                        if (expath != null) {
+                            // This service does not use subpaths.  Reject request.
+                            delete expath;
+                            delete candidate;
+                            svcontrol.SendNakConnect(ErrorCode.NotFound, null);
+                            break;
+                        }
+                        
+                        FatControlContract.Exp controller =
+                            candidate as FatControlContract.Exp;
+                        if (controller != null) {
+                            controller.SendSuccess();
+                            controllers.Add(controller);
+                            svcontrol.SendAckConnect();
+                        }
+                        else {
+                            delete candidate;
+                            svcontrol.SendNakConnect(ErrorCode.ContractNotSupported, null);
+                        }
+                        break;
+                        
+                    case svcontrol.Stop():
+                        DebugStub.WriteLine("FAT: Received 'Stop' request from Service Manager.");
+                        run = false;
+                        svcontrol.SendAckStop();
+                        break;
+                        
+                    case svcontrol.Knock():
+                        DebugStub.WriteLine("FAT: Received 'Knock' request from Service Manager.");
+                        svcontrol.SendAlive();
+                        break;
+
+                    case svcontrol.ChannelClosed():
+                        run = false;
+                        break;
+
+                    case controller.Mount(settings) in controllers:
+                        DoMount(controller, settings);
+                        controllers.Add(controller);
+                        break;
+
+                    case controller.Unmount(mountPath, force) in controllers:
+                        DoUnmount(controller, mountPath, force);
+                        controllers.Add(controller);
+                        break;
+
+                    case controller.GetPreferredFormatSettings(diskPath) in controllers:
+                        DoGetPreferredFormatSettings(controller, diskPath);
+                        controllers.Add(controller);
+                        break;
+
+                    case controller.Format(diskPath, volumeLabel, fms) in controllers:
+                        DoFormat(controller, diskPath, volumeLabel, fms);
+                        controllers.Add(controller);
+                        break;
+
+                    case controller.ChannelClosed() in controllers:
+                        delete controller;
+                        break;
+                }
+            }
+            Shutdown();
+            controllers.Dispose();
+        }
+
+        internal static int AppMain(ServiceParameters! parameters)
+        {
+            if (parameters.ControlEndpointRef == null)
+                throw new Exception("The parent process did not provide a ServiceProcessContract channel.");
+                
+            ServiceProcessContract.Exp! svcontrol = parameters.ControlEndpointRef.Acquire();
+            try {
+                ServiceClients(svcontrol);            
+                return 0;
+            }
+            finally {
+                delete svcontrol;
+            }
+        }            
+    }
+}

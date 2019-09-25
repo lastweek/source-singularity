@@ -1,0 +1,55 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatControlContract.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Contracts
+{
+    /// <summary> The contract between the fatcontrol command
+    /// line program and the FAT client manager
+    /// service. </summary>
+    public contract FatControlContract : ServiceContract
+    {
+        in message Mount(FatMountSettings*! in ExHeap fms);
+        out message Success();
+        out message Fail(FatContractErrorCode why);
+
+        in message Unmount(char[]! in ExHeap mountPath, bool force);
+
+        in message GetPreferredFormatSettings(
+            char []! in ExHeap diskName
+            );
+        out message PreferredFormatSettings(FatFormatSettings*! in ExHeap fms);
+
+        in message Format(
+            char []! in ExHeap diskName,
+            char []! in ExHeap volumeName,
+            FatFormatSettings*! in ExHeap fms
+            );
+        out message InvalidFormatSettings();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            Mount? -> (Success! or Fail!) -> Ready;
+            Unmount? -> (Success! or Fail!) -> Ready;
+            GetPreferredFormatSettings? -> (PreferredFormatSettings! or Fail!) -> Ready;
+            Format? -> (Success! or Fail!) -> Ready;
+        }
+
+        public const string ManagerControlPath = "/service/services/FatService";
+    }
+}

@@ -1,0 +1,338 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//     This file holds the Singularity-specific web app dispatcher that knows
+//     how to invoke web apps under Singularity.
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Diagnostics;
+using System.Threading;
+using System.Web;
+
+namespace Microsoft.VisualStudio.WebHost
+{
+    internal class Dispatcher
+    {
+        // Parameters for load balancing.
+        private static TRef<WebAppContract.Imp:ProcessingState> m_AppConnBalance;
+        private static long m_loadTimeout; // If longer than this then, offload more requests.
+        private static int m_loadBase = 0; // # of requests to offload before handling one locally.
+        private static int m_loadCount = 0; // # of requests currently offloaded.
+        private static int m_maxLoadBase = 5;
+
+        // When m_loadBase > 0 then we count it page request with m_loadCount.
+        // If m_loadCount != m_loadBase, we use the balancing WebApp.
+        // When m_loadCount >= m_loadBase, we use the child WebApp and reset
+        // m_loadCount to 0.
+        // We increment m_loadBase (to a max of m_maxLoadBase) whenever
+        // the time servicing a request (on the child WebApp) exceeds
+        // m_loadTimeout.
+
+        // Standard parameters
+        private static TRef<WebAppContract.Imp:ProcessingState> m_AppConn;
+        private static bool m_quitUrl;
+        private static bool m_verbose;
+        private static string[] m_childArgs;
+
+        private static ulong m_TotalRemoteTime = 0;
+        private static ulong m_TotalRemoteHits = 0;
+
+        private const string QUIT_URI = "quit";
+
+        public static void DispatchRequest(Request! request)
+        {
+            string uriPath = request.GetUriPath();
+            if (m_quitUrl && uriPath.Length >= QUIT_URI.Length &&
+                uriPath.Substring(uriPath.Length - QUIT_URI.Length) == QUIT_URI)
+            {
+                request.CloseConnection();
+                ProcessService.Stop(0);
+            }
+
+            // Make the appropriate request object
+            IHttpRequest localRequest = new LocalHttpRequest(request);
+
+            // Call out-of-proc (usual case)
+            HttpRequestContract.Imp! reqConnImp;
+            HttpRequestContract.Exp! reqConnExp;
+            HttpRequestContract.NewChannel(out reqConnImp, out reqConnExp);
+
+            // [!!!] We should decide here which connection to use.
+            // [!!!] So we probably need some idea of load.
+            bool useBalance = false;
+
+            if (m_AppConnBalance != null) {
+#if true
+                int count = Interlocked.Increment(ref m_loadCount);
+                //Console.WriteLine("- count={0}, base={1}.", count, m_loadBase);
+                if (m_loadBase > 0) {
+                    if (count >= m_loadBase) {
+                        //Console.WriteLine("+ count={0}, base={1}.", count, m_loadBase);
+                        m_loadCount = 0;
+                        useBalance = false;
+                    }
+                    else {
+                        useBalance = true;
+                    }
+                }
+#endif
+#if false
+                if (useBalance) {
+                    Console.WriteLine("--- Using balance connection.");
+                }
+#endif
+            }
+
+            ulong started = Processor.CycleCount;
+            DateTime beg = new DateTime();
+
+            if (useBalance) {
+                WebAppContract.Imp balConn = m_AppConnBalance.Acquire();
+                try {
+                    // Start processing this request
+                    balConn.SendProcess(reqConnImp);
+
+                    switch receive {
+                        case balConn.OK():
+                            break;
+
+                        case balConn.ChannelClosed():
+                            Console.WriteLine("Balance child died, no restart.");
+                            break;
+                    }
+                }
+                finally {
+                    m_AppConnBalance.Release(balConn);
+                }
+            }
+            else {
+                WebAppContract.Imp appConn = m_AppConn.Acquire();
+
+                try {
+                    // Start processing this request
+
+                    appConn.SendProcess(reqConnImp);
+
+                    switch receive {
+                        case appConn.OK():
+                            break;
+
+                        case appConn.ChannelClosed():
+                            Console.WriteLine("Child died, attempting to restart.");
+                            delete appConn;
+                            appConn = StartChild();
+                            break;
+                    }
+                }
+                finally {
+                    m_AppConn.Release(appConn);
+                }
+            }
+
+            // Start servicing the request contract
+            RequestExporter.ServiceRequestChannel(localRequest, reqConnExp);
+
+            // Clean up
+            delete reqConnExp;
+
+            DateTime end = DateTime.UtcNow;
+            TimeSpan span = end - beg;
+
+            Console.WriteLine("- {0,8} ms : vs {1}", span.Milliseconds, m_loadTimeout);
+            if (!useBalance) {
+                if (span.Milliseconds > m_loadTimeout && m_loadBase < m_maxLoadBase) {
+                    Interlocked.Increment(ref m_loadBase);
+                    Console.WriteLine("- Incremented m_loadBase to {0}", m_loadBase);
+                }
+            }
+
+            ulong elapsed = Processor.CycleCount - started;
+            if (m_verbose) {
+                Console.WriteLine("served \"" + request.GetUriPath() + "\" in " + elapsed + " cycles");
+            }
+
+            ++m_TotalRemoteHits;
+
+            if (m_TotalRemoteHits > 1) {
+                m_TotalRemoteTime += elapsed;
+                //Console.WriteLine("Average remote time: " + m_TotalRemoteTime / (m_TotalRemoteHits - 1));
+            }
+            else {
+                //Console.WriteLine("First remote hit (cold cache)");
+            }
+
+            request.CloseConnection();
+        }
+
+        public static WebAppContract.Imp:ProcessingState StartChild()
+        {
+            // Start up the webapp so it's ready to respond to requests
+            WebAppContract.Imp! appConnImp;
+            WebAppContract.Exp! appConnExp;
+            WebAppContract.NewChannel(out appConnImp, out appConnExp);
+
+            // REVIEW. should really inspect the manifest and determine what
+            // endpoints are needed by the child process.  For example, specweb99
+            // now needs both the WebAppContract and a directory service contract
+            Process child = new Process(m_childArgs, (Endpoint * in ExHeap)appConnExp);
+            child.Start();
+            appConnImp.RecvWebAppReady();
+
+            return appConnImp;
+        }
+
+        public static bool Initialize(string!  appName,
+                                      string[] appArgs,
+                                      bool     verbose,
+                                      bool     quitUrl)
+        {
+            m_quitUrl = quitUrl;
+            m_verbose  = verbose;
+
+            // Start up the webapp so it's ready to respond to requests
+            string[] args;
+
+            if (appArgs != null) {
+                args = new string[1 + appArgs.Length];
+                args[0] = appName;
+
+                for (int i = 0; i < appArgs.Length; ++i) {
+                    args[i + 1] = appArgs[i];
+                }
+            }
+            else {
+                args = new string[1];
+                args[0] = appName;
+            }
+            m_childArgs = args;
+
+            WebAppContract.Imp! appConnImp = StartChild();
+            if (appConnImp == null) {
+                throw new Exception(String.Format("Could not create process {0}",args[0]));
+            }
+
+            m_AppConn = new TRef<WebAppContract.Imp:ProcessingState>(appConnImp);
+
+            return true;
+        }
+
+        public static bool BalanceConnection([Claims] WebAppContract.Imp:ProcessingState appImp,
+                                             long loadTimeout)
+        {
+            m_loadTimeout = loadTimeout;
+            Console.WriteLine(" - {0} ms is loadTimeout", m_loadTimeout);
+            m_AppConnBalance = new TRef<WebAppContract.Imp:ProcessingState>(appImp);
+            return true;
+        }
+
+        internal class RequestExporter
+        {
+            public static void ServiceRequestChannel(IHttpRequest! request,
+                                                     HttpRequestContract.Exp:Start
+                                                     opt(HttpRequestContract.Completed)! conn)
+            {
+                bool done = false;
+
+                while (!done) {
+                    switch receive {
+                        case conn.GetUriPath() :
+                            conn.SendUriPath(Bitter.FromString2(request.GetUriPath()));
+                            break;
+
+                        case conn.GetQueryString() :
+                            conn.SendQueryString(Bitter.FromString(request.GetQueryString()));
+                            break;
+
+                        case conn.GetVerb() :
+                            conn.SendVerb(Bitter.FromString2(request.GetVerb()));
+                            break;
+
+                        case conn.GetHeader(char[]! in ExHeap headerChars) :
+                            string headerName = Bitter.ToString(headerChars);
+                            delete headerChars;
+                            string headerVal = request.GetHeader(headerName);
+                            if (headerVal != null) {
+                                conn.SendHeaderValue(Bitter.FromString(headerVal));
+                            }
+                            else {
+                                conn.SendHeaderValue(null);
+                            }
+                            break;
+
+                        case conn.GetBody() :
+                            byte[] bodyData = request.GetBodyData();
+
+                            if (bodyData != null) {
+                                conn.SendBodyData(Bitter.FromByteArray(bodyData));
+                            }
+                            else {
+                                conn.SendBodyData(null);
+                            }
+                            break;
+
+                        case conn.GetRemoteAddress() :
+                            conn.SendRemoteAddress(Bitter.FromString(request.GetRemoteAddress()));
+                            break;
+
+                        case conn.SendStatus(int code, char[]! in ExHeap descChars) :
+                        {
+                            string description = Bitter.ToString(descChars);
+                            delete descChars;
+                            request.SendStatus(code, description);
+                            conn.SendOK();
+                        }
+                        break;
+
+                        case conn.SendHeader(char[]! in ExHeap nameChars, char[]! in ExHeap valChars) :
+                        {
+                            string name = Bitter.ToString(nameChars);
+                            delete nameChars;
+
+                            string value = Bitter.ToString(valChars);
+                            delete valChars;
+
+                            request.SendHeader(name, value);
+                            conn.SendOK();
+                        }
+                        break;
+
+                        case conn.SendBodyData(byte[]! in ExHeap dataBytes) :
+                        {
+                            request.SendBodyData(dataBytes);
+                            conn.SendOK();
+                        }
+                        break;
+
+                        case conn.Done() :
+                            request.Done();
+                            done = true;
+                            break;
+
+                        case conn.ChannelClosed() :
+                            request.Done();
+                            done = true;
+                            break;
+
+                        case unsatisfiable :
+                            // This is even more unexpected
+                            DebugStub.Break();
+                            done = true;
+                            break;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,48 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>UnitTest</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="TestTransform.sg" />
+    <Compile Include="TestLog.cs" />
+    <Compile Include="ModuleTestJig.sg" />
+    <Compile Include="Assert.cs" />
+    <Compile Include="FailedAssertionException.cs" />
+    <Compile Include="TestAppAttribute.cs" />
+    <Compile Include="UnitTest.cs" />
+    <Compile Include="WatchDogTimer.cs" />
+    <Compile Include="TestMethodAttribute.cs" />
+    <Compile Include="TestClassAttribute.cs" />
+    <Compile Include="TestInitializeAttribute.cs" />
+    <Compile Include="TestCleanupAttribute.cs" />
+    <Compile Include="ClassInitializeAttribute.cs" />
+    <Compile Include="ClassCleanupAttribute.cs" />
+    <Compile Include="AssemblyInitializeAttribute.cs" />
+    <Compile Include="AssemblyCleanupAttribute.cs" />
+    <Compile Include="ExceptionExpectedAttribute.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Test.Contracts\app.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

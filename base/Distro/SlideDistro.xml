@@ -1,0 +1,85 @@
+<distribution name="LegacyPC">
+
+ <driverRegistryConfig>
+  <ordering>
+   <provides signature="/pci/06/01/10de/0050" name="NvPciLpc" />
+   <follows  signature="/pci/02/00" name="NvPciLpc" />
+   <follows  signature="/pci/01/01/10de" name="NvPciLpc" />
+  </ordering>
+ </driverRegistryConfig>
+
+ <namingConventions>
+  <name contract="Microsoft.Singularity.Directory.DirectoryServiceContract" nsName="/" />
+
+  <name contract="Microsoft.Singularity.Io.DiskDeviceContract" nsName="/dev/disk" allowMultiple="True"  />
+  <name contract="Microsoft.Singularity.Io.Net.NicDeviceContract" nsName="/dev/nic" allowMultiple="True" />
+  <name contract="Microsoft.Singularity.Io.VolumeManagerContract" nsName="/dev/volmgr" />
+  <name contract="Microsoft.Singularity.Io.KeyboardDeviceContract" nsName="/dev/keyboard" />
+  <name contract="HalConsole" nsName="/dev/conout" />
+  <name contract="Microsoft.Singularity.Io.SoundDeviceContract" nsName="/dev/audio" />
+  <name contract="Microsoft.Singularity.Io.VideoDeviceContract" nsName="/dev/video" />
+  <name contract="Microsoft.Singularity.Io.ConsoleDeviceContract" nsName="/dev/video-text" />
+
+  <name contract="Microsoft.Singularity.Diagnostics.Contracts.ChannelContract" nsName="/status/channel" />
+  <name contract="Microsoft.Singularity.Diagnostics.Contracts.MemoryContract" nsName="/status/memory" />
+  <name contract="Microsoft.Singularity.Diagnostics.Contracts.ProcessContract" nsName="/status/process" />
+
+  <name contract="Microsoft.Singularity.Hypercall.Contracts.HypercallServiceContract" nsName="/service/hypercall" />
+  <name contract="Microsoft.Singularity.Services.InstallerServiceContract" nsName="/service/installer" />
+  <name contract="NetStack.Contracts.IPContract" nsName="/service/ip" />
+  <name contract="NetStack.Contracts.UdpContract" nsName="/service/udp" />
+  <name contract="NetStack.Contracts.TcpContract" nsName="/service/tcp" />
+  <name contract="NetStack.Contracts.DNSContract" nsName="/service/dns" />
+  <name contract="NetStack.Contracts.RoutingContract" nsName="/service/routing" />
+ </namingConventions>
+
+ <initConfig>
+   <groups>
+     <group path="/groups/path" description="!(.!)*" />
+     <group path="/groups/userrole" description="login@!" />
+     <group path="/groups/anyperm" description="@!" />
+     <group path="/groups/app" description="{path}|{userrole}" />
+     <group path="/groups/anyall" description="{app}(+{app})*{anyperm}" />
+   </groups>
+   <authpolicy>
+     <subexpr name="$login" expansion="{$trusted-auth-privilege}" />
+     <subexpr name="$user" expansion="{$trusted-auth-privilege}@!" />
+     <subexpr name="$app" expansion="!|{$user}" />
+     <subexpr name="$any" expansion="{$app}(+!)*" />
+     <subexpr name="$anyuser" expansion="{$user}(+!)*" />
+     <subexpr name="$anyuserall" expansion="{$anyuser}@!" />
+     <subexpr name="$dsregister" expansion="(({$any}+)*{$register-privilege})@register" />
+     <subexpr name="$dsanyr" expansion="{$any}@read" />
+     <subexpr name="$dsanyrw" expansion="{$any}@(read|write|notify)" />
+     <subexpr name="$dsanysetacl" expansion="{$any}@(setacl)" />
+     <subexpr name="$anyall" expansion="{$any}@!" />
+     <subexpr name="$grp5" expansion="(tom|bob|ted|andrew|dan)" />
+     <subexpr name="$grp10" expansion="({$grp5}|{$grp5a})" />
+     <subexpr name="$grp20" expansion="({$grp10}|{$grp10a})" />
+     <subexpr name="$grp5a" expansion="(jeff|john|mike|fred|mort)" />
+     <subexpr name="$grp10a" expansion="(amir|linda|amy|scott|doug|chandu|roy|ulfar|muthu|aydan)" />
+     <authority name="$truncate-history-privilege" acl="singularity.microsoft.com" />
+     <authority name="$trusted-auth-privilege" acl="singularity.microsoft.com" />
+     <authority name="$register-privilege" acl="singularity.microsoft.com" />
+     <authority name="$test-privilege" acl="singularity.microsoft.com" />
+   </authpolicy>
+   <acls>
+     <acl path="/" this="{$dsanyrw}|{$dsregister}" />
+     <acl path="/acltest" this="{$dsanyrw}" inherited="{$dsanyrw}|{$dsanysetacl}"/>
+   </acls>
+ </initConfig>
+
+ <processConfig>
+    <policy separateAddressSpace="True" />
+    <processSet name="Orphangroup" kernelDomain="false" set="benchchild" />
+ </processConfig>
+
+ <bootScript>
+  <folders>
+   <folder name="Singularity\Binaries" />
+   <folder name="Singularity\Files" />
+   <folder name="Singularity\Scripts" />
+  </folders>
+ </bootScript>
+
+</distribution>

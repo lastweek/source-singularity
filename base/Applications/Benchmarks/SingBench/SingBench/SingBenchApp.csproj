@@ -1,0 +1,31 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>singbench</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Child.sg" />
+    <Compile Include="Parameters.sg" />
+    <Compile Include="PerfSnap.sg" />
+    <Compile Include="SingBench.sg" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Diagnostics.Contracts\Diagnostics.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="..\Contracts\SingBench.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

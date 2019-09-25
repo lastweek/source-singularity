@@ -1,0 +1,77 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using System;
+using System.Collections;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Hal.Acpi
+{
+    public class AcpiTables
+    {
+        public static void Parse();
+        public static AcpiDevice[] LoadDevices();
+    }
+
+    public class AcpiDevice
+    {
+        public string DeviceId { get; }
+        public ResourceDescriptor[] ResourceDescriptors { get; }
+    }
+
+    public enum ConsumerProducer
+    {
+        ProducesAndConsumes = 0,
+        Consumes = 1
+    }
+
+    public abstract class ResourceDescriptor
+    {
+    }
+
+    public class AddressSpaceDescriptor : ResourceDescriptor
+    {
+        public ulong Minimum { get; }
+        public ulong Maximum { get; }
+        public ulong Length { get; }
+        public ConsumerProducer ConsumerProducer { get; }
+    }
+
+    public class MemoryRangeDescriptor : AddressSpaceDescriptor
+    {
+        public bool Writable { get; }
+    }
+
+    public class IoRangeDescriptor : AddressSpaceDescriptor
+    {
+    }
+
+    public class IrqDescriptor : ResourceDescriptor
+    {
+        public int[] InterruptNumbers { get; }
+    }
+
+    public class DmaDescriptor : ResourceDescriptor
+    {
+        public int[] DmaChannelNumbers { get; }
+    }
+
+    public class GenericRegisterDescriptor : ResourceDescriptor
+    {
+    }
+
+    public class VendorDefinedDescriptor : ResourceDescriptor
+    {
+    }
+}

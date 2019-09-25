@@ -1,0 +1,39 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>IoSystem</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="ConsoleOutput.sg" />
+    <Compile Include="IBusDevice.cs" />
+    <Compile Include="IDevice.cs" />
+    <Compile Include="IoIrq.cs" />
+    <Compile Include="IoSystem.sg" />
+    <Compile Include="ResourceTracker.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Hal\Hal.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.Kernel.csproj" />
+    <ProjectReference Include="..\SpecSharp.Contracts\Kernel.Contracts.csproj" />
+    <ProjectReference Include="..\Singularity.Loader\Loader.csproj" />
+    <ProjectReference Include="..\Singularity.Directory\Directory.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+</Project>

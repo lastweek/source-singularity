@@ -1,0 +1,19 @@
+[Filter]
+Lines=17
+Line1=0,6,0
+Line2=1,97,1,3,4,BOOKMARK,COMMENT,GENERIC,MESSAGE,Protocol == BOOKMARK or COMMENT or GENERIC or MESSAGE
+Line3=1,5,0
+Line4=2,6,2
+Line5=3,97,6,3,1,ARP_RARP,Protocol == ARP_RARP
+Line6=3,97,6,3,1,ISAKMP,Protocol == ISAKMP
+Line7=3,97,6,3,1,DHCP,Protocol == DHCP
+Line8=3,97,6,1,UDP,:Source Port,0,13,2,4011,UDP:Source Port == 4011
+Line9=3,97,6,1,UDP,:Destination Port,0,13,2,4011,UDP:Destination Port == 4011
+Line10=3,97,6,1,UDP,:Source Port,0,13,2,69,UDP:Source Port == 69
+Line11=3,97,6,1,UDP,:Destination Port,0,13,2,69,UDP:Destination Port == 69
+Line12=3,97,6,1,UDP,:Source Port,0,13,2,67,UDP:Source Port == 67
+Line13=3,97,6,1,UDP,:Destination Port,0,13,2,67,UDP:Destination Port == 67
+Line14=3,97,6,1,UDP,:Source Port,0,13,2,8197,UDP:Source Port == 8197
+Line15=3,97,6,1,UDP,:Destination Port,0,13,2,8197,UDP:Destination Port == 8197
+Line16=3,97,2,1,TCP,:Destination Port,0,13,2,8192,TCP:Destination Port == 8192
+Line17=2,97,0,2,27,30,27,ANY <--> ANY

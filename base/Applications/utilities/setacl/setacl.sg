@@ -1,0 +1,129 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using FileSystem.Utils;
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Security.SDS;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Set an acl", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "Options", Mandatory=true, Position=0,
+                          HelpMessage="Options argument (/N /D /C /CN /CD).")]
+        internal string options;
+
+        [StringParameter( "PathName", Mandatory=true, Position=1, HelpMessage="PathName argument.")]
+        internal string pathName;
+
+
+        [StringParameter( "Pattern", Mandatory=false, Position=2, HelpMessage="Pattern argument.")]
+        internal string pattern;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return FsSetAcl.AppMain(this);
+        }
+    }
+
+    public class FsSetAcl
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            if (config.options == "/H") {
+                Console.WriteLine("Usage: setacl option path [pattern]");
+                Console.WriteLine("Possible options are (\"old\" is old acl entry:");
+                Console.WriteLine("   /C  - set acl to <null, null>");
+                Console.WriteLine("   /N  - set acl to <arg, old.Descendant>");
+                Console.WriteLine("   /D  - set acl to <old.Node, arg>");
+                Console.WriteLine("   /CN - set acl to <pattern, old.Descendant>");
+                Console.WriteLine("   /CD - set acl to <old.Node, null>");
+                return 0;
+            }
+            if ((config.options == "/D" || config.options == "/N") && config.pattern == null) {
+                Console.WriteLine("Expected pattern argument.");
+                return 1;
+            }
+
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+
+            ds.RecvSuccess();
+
+            try {
+                ErrorCode errorOut;
+                Acl acl;
+                bool ok = SdsUtilsAcl.QueryACL((!)config.pathName, false, ds, out acl, out errorOut);
+                if (!ok) {
+                    Console.WriteLine("setacl failed. reason({0})",SdsUtils.ErrorCodeToString(errorOut));
+                    return 1;
+                }
+
+                Acl newacl;
+                if (config.options == "/C") {
+                    newacl = new Acl(null, null);
+                }
+                else if (config.options == "/N") {
+                    newacl = new Acl(config.pattern, acl.Descendant);
+                }
+                else if (config.options == "/D") {
+                    newacl = new Acl(acl.Node, config.pattern);
+                }
+                else if (config.options == "/CN") {
+                    newacl = new Acl(null, acl.Descendant);
+                }
+                else if (config.options == "/CD") {
+                    newacl = new Acl(acl.Node, null);
+                }
+                else {
+                    Console.WriteLine("Unrecognized option.");
+                    return 1;
+                }
+
+                ok = SdsUtilsAcl.StoreACL(config.pathName, newacl, ds, out errorOut);
+                if (ok) Console.WriteLine("Acl for "+config.pathName+" was set.");
+                else Console.WriteLine("setacl failed. reason({0})",SdsUtils.ErrorCodeToString(errorOut));
+
+                return ok ? 0 : 1;
+            }
+            finally {
+                delete ds;
+            }
+        }
+
+    } // class Test
+}

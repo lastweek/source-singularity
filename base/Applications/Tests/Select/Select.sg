@@ -1,0 +1,467 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+
+using System;
+using System.Threading;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [BoolParameter( "set", Default=false, HelpMessage="Run set test.")]
+        internal bool doSetTest;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Select.AppMain(this);
+        }
+    }
+    
+    public class Select
+    {
+        private contract SelectTest {
+            in message A();
+            in message B();
+            in message C();
+            out message Ack();
+
+            state Start: one {
+                A? -> Ack! -> Start;
+                B? -> Ack! -> Start;
+                C? -> Ack! -> Start;
+            }
+        }
+
+        private static TRef<SelectTest.Imp:Start>[] impEndpoints;
+
+
+        public static void SelectThread()
+        {
+            SelectTest.Imp[] channel = new SelectTest.Imp [3];
+            for (int i = 0; i < 3; i++) {
+                channel[i] = impEndpoints[i].Acquire();
+            }
+
+            channel[2].SendA();
+            channel[2].RecvAck();
+
+            channel[2].SendA();
+            channel[2].RecvAck();
+
+            channel[2].SendA();
+            channel[2].RecvAck();
+
+            channel[1].SendC();
+            channel[0].SendB();
+            channel[1].RecvAck();
+            channel[0].RecvAck();
+
+            channel[0].SendA();
+            channel[1].SendC();
+            channel[0].RecvAck();
+            channel[1].RecvAck();
+
+            channel[1].SendC();
+            channel[0].SendA();
+
+            channel[0].RecvAck();
+            channel[1].RecvAck();
+
+            channel[0].SendB();
+            channel[1].SendA();
+            channel[2].SendC();
+
+            delete channel[0];
+            delete channel[1];
+            delete channel[2];
+        }
+
+        //[ShellCommand("selectb", "Run select test")]
+        public static int DoSelect()
+        {
+            SelectTest.Exp[] expEndpoints = new SelectTest.Exp [3];
+            impEndpoints = new TRef<SelectTest.Imp:Start> [3];
+
+            for (int i = 0; i < 3; i++) {
+                SelectTest.Imp! imp;
+                SelectTest.Exp! exp;
+                SelectTest.NewChannel(out imp, out exp);
+                expEndpoints[i] = exp;
+                impEndpoints[i] = new TRef<SelectTest.Imp:Start>(imp);
+            }
+
+            Thread t1 = new Thread(new ThreadStart(SelectThread));
+            t1.Start();
+
+            SelectTest.Exp a = expEndpoints[0];
+            SelectTest.Exp b = expEndpoints[1];
+            SelectTest.Exp c = expEndpoints[2];
+
+            bool failed = false;
+            ActuallySelect(a, b, c, 0, ref failed);
+            ActuallySelect(a, b, c, 0, ref failed);
+            ActuallySelect(a, b, c, 0, ref failed);
+            ActuallySelect(a, b, c, 1, ref failed);
+            ActuallySelect(a, b, c, 2, ref failed);
+            ActuallySelect(a, b, c, 2, ref failed);
+            ActuallySelect(a, b, c, -1, ref failed);
+
+            if (failed) {
+                Console.WriteLine("[1] Done (FAILED).");
+                return 1;
+            }
+            else {
+                Console.WriteLine("[1] Done (Success).");
+                return 0;
+            }
+        }
+
+        private static void ActuallySelect(SelectTest.Exp a,
+                                           SelectTest.Exp b,
+                                           SelectTest.Exp c,
+                                           int expect,
+                                           ref bool failed)
+        {
+            int got;
+            switch receive {
+                case c.RecvA():
+                    c.SendAck();
+                    got = 0;
+                    break;
+
+                case a.RecvB() && b.RecvC():
+                    a.SendAck();
+                    b.SendAck();
+                    got = 1;
+                    break;
+
+                case a.RecvA() && b.RecvC():
+                    a.SendAck();
+                    b.SendAck();
+                    got = 2;
+                    break;
+
+                case unsatisfiable:
+                    got = -1;
+                    break;
+            }
+
+            Console.WriteLine("[1] expected {0}, got {1}", expect, got);
+            if (expect != got) {
+                failed = true;
+            }
+        }
+
+        private static void ActuallySelect(ESet<SelectTest.Exp:Start> eset,
+                                           int expect,
+                                           ref bool failed)
+        {
+            int got;
+            switch receive {
+                case a.RecvA() in eset:
+                    got = 0;
+                    a.SendAck();
+                    eset.Add(a);
+                    break;
+
+                case b.RecvB() in eset:
+                    got = 1;
+                    b.SendAck();
+                    eset.Add(b);
+                    break;
+
+                case c.RecvC() in eset:
+                    got = 2;
+                    c.SendAck();
+                    eset.Add(c);
+                    break;
+
+                case unsatisfiable:
+                    got = -1;
+                    break;
+            }
+
+            Console.WriteLine("[1] expected {0}, got {1}", expect, got);
+            if (expect != got) {
+                failed = true;
+            }
+        }
+
+        public static int DoSelectSet()
+        {
+            SelectTest.Exp[] expEndpoints = new SelectTest.Exp [3];
+            impEndpoints = new TRef<SelectTest.Imp:Start> [3];
+
+            for (int i = 0; i < 3; i++) {
+                SelectTest.Imp! imp;
+                SelectTest.Exp! exp;
+                SelectTest.NewChannel(out imp, out exp);
+                expEndpoints[i] = exp;
+                impEndpoints[i] = new TRef<SelectTest.Imp:Start>(imp);
+            }
+
+            Thread t1 = new Thread(new ThreadStart(SelectThread));
+            t1.Start();
+
+            SelectTest.Exp a = expEndpoints[0];
+            SelectTest.Exp b = expEndpoints[1];
+            SelectTest.Exp c = expEndpoints[2];
+
+            ESet<SelectTest.Exp:Start> eset = new ESet<SelectTest.Exp:Start>();
+            eset.Add(a);
+            eset.Add(b);
+            eset.Add(c);
+
+            bool failed = false;
+            ActuallySelect(eset, 0, ref failed);
+            ActuallySelect(eset, 0, ref failed);
+            ActuallySelect(eset, 0, ref failed);
+            ActuallySelect(eset, 1, ref failed);
+            ActuallySelect(eset, 2, ref failed);
+            ActuallySelect(eset, 0, ref failed);
+            ActuallySelect(eset, 2, ref failed);
+            ActuallySelect(eset, 0, ref failed);
+            ActuallySelect(eset, 2, ref failed);
+            ActuallySelect(eset, 0, ref failed);
+            ActuallySelect(eset, 1, ref failed);
+            ActuallySelect(eset, 2, ref failed);
+            ActuallySelect(eset, -1, ref failed);
+
+            if (failed) {
+                Console.WriteLine("[1] Done (FAILED).");
+                return 1;
+            }
+            else {
+                Console.WriteLine("[1] Done (Success).");
+                return 0;
+            }
+        }
+
+        //
+        ////[ShellCommand("select", "Run select test")]
+        //public static int DoSelect()
+        //{
+        //  SelectTest.Exp[] expEndpoints = new SelectTest.Exp [3];
+        //  impEndpoints = new TRef<SelectTest.Imp:Start> [3];
+//
+        //  for (int i = 0; i < 3; i++) {
+        //      SelectTest.Imp! imp;
+        //      SelectTest.Exp! exp;
+        //      SelectTest.NewChannel(out imp, out exp);
+        //      expEndpoints[i] = exp;
+        //      impEndpoints[i] = new TRef<SelectTest.Imp:Start>(imp);
+        //  }
+//
+        //  Thread t1 = new Thread(new ThreadStart(SelectThread));
+        //  t1.Start();
+//
+        //  int[][] patterns = new int[3][];
+        //  patterns[0] = new int [] { 0, 0, SelectTest.Tags.A };
+        //  patterns[1] = new int [] { SelectTest.Tags.B, SelectTest.Tags.C, 0 };
+        //  patterns[2] = new int [] { SelectTest.Tags.A, SelectTest.Tags.C, 0 };
+//
+        //  ISelectable[] selects = new ISelectable[3];
+        //  for (int i = 0; i < 3; i++) {
+        //      selects[i] = expEndpoints[i];
+        //  }
+//
+        //  object setMatch;
+        //  int i1 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i1);
+//
+        //  expEndpoints[2].RecvA();
+        //  expEndpoints[2].SendAck();
+//
+        //  int i2 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i2);
+//
+        //  expEndpoints[2].RecvA();
+        //  expEndpoints[2].SendAck();
+//
+        //  int i3 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i3);
+//
+        //  expEndpoints[2].RecvA();
+        //  expEndpoints[2].SendAck();
+//
+        //  int i4 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 1.)", i4);
+//
+        //  expEndpoints[0].RecvB();
+        //  expEndpoints[1].RecvC();
+        //  expEndpoints[0].SendAck();
+        //  expEndpoints[1].SendAck();
+//
+        //  int i5 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 2.)", i5);
+//
+        //  expEndpoints[0].RecvA();
+        //  expEndpoints[1].RecvC();
+        //  expEndpoints[0].SendAck();
+        //  expEndpoints[1].SendAck();
+//
+        //  int i6 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 2.)", i6);
+//
+        //  expEndpoints[0].RecvA();
+        //  expEndpoints[1].RecvC();
+        //  expEndpoints[0].SendAck();
+        //  expEndpoints[1].SendAck();
+//
+        //  int i7 = Endpoint.Select(patterns, selects, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected -1.)", i7);
+//
+        //  Console.WriteLine("[1] Done.");
+        //  return 0;
+        //}
+//
+//
+        ////[ShellCommand("selectset", "Run select set test")]
+        //public static int DoSelectSet()
+        //{
+        //  SelectTest.Exp[] expEndpoints = new SelectTest.Exp [3];
+        //  impEndpoints = new TRef<SelectTest.Imp:Start> [3];
+//
+        //  for (int i = 0; i < 3; i++) {
+        //      SelectTest.Imp! imp;
+        //      SelectTest.Exp! exp;
+        //      SelectTest.NewChannel(out imp, out exp);
+        //      expEndpoints[i] = exp;
+        //      impEndpoints[i] = new TRef<SelectTest.Imp:Start>(imp);
+        //  }
+//
+        //  Thread t1 = new Thread(new ThreadStart(SelectThread));
+        //  t1.Start();
+//
+        //  int[][] patterns = new int[3][];
+        //  patterns[0] = new int [] { SelectTest.Tags.A };
+        //  patterns[1] = new int [] { SelectTest.Tags.B };
+        //  patterns[2] = new int [] { SelectTest.Tags.C };
+//
+        //  ESet<SelectTest.Exp:Start> eset = new ESet<SelectTest.Exp:Start>();
+        //  eset.Add(expEndpoints[0]);
+        //  eset.Add(expEndpoints[1]);
+        //  eset.Add(expEndpoints[2]);
+//
+        //  ISelectable[] selectEPs = new ISelectable[1]{eset};
+//
+        //  object setMatch;
+        //  int i1 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i1);
+//
+        //  SetRecvA(setMatch, eset);
+//
+        //  int i2 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i2);
+//
+        //  SetRecvA(setMatch, eset);
+//
+        //  int i3 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i3);
+//
+        //  SetRecvA(setMatch, eset);
+//
+        //  int i4 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 1.)", i4);
+//
+        //  SetRecvB(setMatch, eset);
+//
+        //  int i5 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 2.)", i5);
+//
+        //  SetRecvC(setMatch, eset);
+//
+        //  int i6 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}!  (Expected 0.)", i6);
+//
+        //  SetRecvA(setMatch, eset);
+//
+        //  int i7 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected 2.)", i7);
+//
+        //  SetRecvC(setMatch, eset);
+//
+        //  int i8 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected 0.)", i8);
+//
+        //  SetRecvA(setMatch, eset);
+//
+        //  int i9 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected 2.)", i9);
+//
+        //  SetRecvC(setMatch, eset);
+//
+        //  int i10 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected 0.)", i10);
+//
+        //  SetRecvA(setMatch, eset);
+//
+        //  int i11 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected 1.)", i11);
+//
+        //  SetRecvB(setMatch, eset);
+//
+        //  int i12 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected 2.)", i12);
+//
+        //  SetRecvC(setMatch, eset);
+//
+        //  int i13 = Endpoint.Select(patterns, selectEPs, out setMatch);
+        //  Console.WriteLine("[1] Got {0}! (Expected -1.)", i13);
+//
+        //  Console.WriteLine("[1] Done.");
+        //  return 0;
+        //}
+//
+        //private static void SetRecvA(object match, ESet<SelectTest.Exp:Start> eset) {
+        //  SelectTest.Exp exp = eset.Extract(match);
+        //  exp.RecvA();
+        //  exp.SendAck();
+        //  eset.Add(exp);
+        //}
+//
+        //private static void SetRecvB(object match, ESet<SelectTest.Exp:Start> eset) {
+        //  SelectTest.Exp exp = eset.Extract(match);
+        //  exp.RecvB();
+        //  exp.SendAck();
+        //  eset.Add(exp);
+        //}
+//
+        //private static void SetRecvC(object match, ESet<SelectTest.Exp:Start> eset) {
+        //  SelectTest.Exp exp = eset.Extract(match);
+        //  exp.RecvC();
+        //  exp.SendAck();
+        //  eset.Add(exp);
+        //}
+        //
+
+        internal static int AppMain(Parameters! config)
+        {
+            const int ARGS_START = 1;
+
+            if (config.doSetTest) return DoSelectSet();
+            return DoSelect();
+        }
+    }
+}

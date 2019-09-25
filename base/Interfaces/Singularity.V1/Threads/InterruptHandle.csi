@@ -1,0 +1,48 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   InterruptHandle.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Threads
+{
+    public struct InterruptHandle // : public WaitHandle
+    {
+
+        public readonly UIntPtr id; // could be moved to WaitHandle
+
+        [NoHeapAllocation]
+        public static bool Create(byte irq,
+                                  out InterruptHandle handle);
+
+        [NoHeapAllocation]
+        public static bool Dispose(InterruptHandle handle);
+
+        [NoHeapAllocation]
+        public static bool Wait(InterruptHandle handle);
+
+        [NoHeapAllocation]
+        public static void Pulse(InterruptHandle handle);
+
+        [NoHeapAllocation]
+        public static bool Ack(InterruptHandle handle);
+
+        [NoHeapAllocation]
+        public static bool DisableInterrupts();
+
+        [NoHeapAllocation]
+        public static void RestoreInterrupts(bool enabled);
+
+        // Use this method for assertions only!
+        [NoHeapAllocation]
+        public static bool InterruptsDisabled();
+    }
+}

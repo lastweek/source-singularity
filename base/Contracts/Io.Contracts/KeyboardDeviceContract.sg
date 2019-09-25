@@ -1,0 +1,122 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   KeyboardDeviceContract.sg - Contract between apps and keyboards.
+//
+
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract KeyboardDeviceContract : DeviceContract {
+        in message GetKey();
+        in message PollKey();
+
+        out message AckKey(uint key);
+        out message NakKey();
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one {
+            GetKey? -> Waiting;
+            PollKey? -> (AckKey! or NakKey!) -> Ready;
+        }
+
+        state Waiting: one {
+            AckKey! -> Ready;
+            NakKey! -> Ready;
+        }
+    }
+}
+
+namespace Microsoft.Singularity.Io.Keyboard
+{
+    [Flags]
+    [CLSCompliant(false)]
+    public enum Qualifiers {
+        KEY_MOUSE           = 0x40000000,
+        KEY_UP              = 0x20000000,
+        KEY_DOWN            = 0x10000000,
+
+        KEY_MODIFIERS       = 0x0f000000,
+        KEY_SHIFT           = 0x08000000,
+        KEY_CTRL            = 0x04000000,
+        KEY_ALT             = 0x02000000,
+        KEY_WINDOWS         = 0x01000000,
+
+        KEY_EXTENDED        = 0x00800000,
+        KEY_SHIFTED         = 0x00020000,
+        KEY_NUMPAD          = 0x00010000,
+        KEY_ALT_CODE        = 0x0000ff00,
+        KEY_BASE_CODE       = 0x000000ff,
+
+        MOUSE_ALIVE         = 0x00000008,
+        MOUSE_BUTTON_0      = 0x00000001,
+        MOUSE_BUTTON_1      = 0x00000002,
+        MOUSE_BUTTON_2      = 0x00000004,
+        MOUSE_BUTTON_ALL    = 0x00000007,
+    }
+
+    public enum Keys {
+        ESCAPE      = 0x1b,
+
+        PAGE_UP     = 0x80,
+        PAGE_DOWN   = 0x81,
+
+        UP_ARROW    = 0x82,
+        DOWN_ARROW  = 0x83,
+        LEFT_ARROW  = 0x84,
+        RIGHT_ARROW = 0x85,
+
+        HOME        = 0x86,
+        END         = 0x87,
+
+        INSERT      = 0x88,
+        DELETE      = 0x89,
+
+        CAPS_LOCK   = 0x90,
+        LEFT_SHIFT  = 0x91,
+        RIGHT_SHIFT = 0x92,
+        LEFT_CTRL   = 0x93,
+        RIGHT_CTRL  = 0x94,
+        LEFT_ALT    = 0x95,
+        RIGHT_ALT   = 0x96,
+        LEFT_WINDOWS = 0x97,
+        RIGHT_WINDOWS = 0x98,
+
+        MENU        = 0x99,
+
+        PRINT_SCRN  = 0x9a,
+        SCROLL_LOCK = 0x9b,
+        NUM_LOCK    = 0x9c,
+        BREAK       = 0x9d,
+        SYS_REQ     = 0x9e,
+
+        F1          = 0xa1,
+        F2          = 0xa2,
+        F3          = 0xa3,
+        F4          = 0xa4,
+        F5          = 0xa5,
+        F6          = 0xa6,
+        F7          = 0xa7,
+        F8          = 0xa8,
+        F9          = 0xa9,
+        F10         = 0xaa,
+        F11         = 0xab,
+        F12         = 0xac,
+    }
+
+}
+

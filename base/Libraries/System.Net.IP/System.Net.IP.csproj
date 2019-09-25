@@ -1,0 +1,47 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Services\System.Net.IP\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>System.Net.IP</AssemblyName>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="IPv4.cs" />
+    <Compile Include="IPv4HostEntry.cs" />
+    <Compile Include="IPv4Network.cs" />
+    <Compile Include="IPv6.cs" />
+    <Compile Include="IPv6HostEntry.cs" />
+    <Compile Include="IPv6Network.cs" />
+  </ItemGroup>
+
+  <!--
+# IPAddressUtils.cs
+# TestIPv4.cs
+# TestIPv4Network.cs
+# TestIPv6.cs
+# TestIPv6Network.cs
+#
+-->
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>
+
+

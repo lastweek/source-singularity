@@ -1,0 +1,269 @@
+%{
+
+open Ast;;
+open Parse_util;;
+open Microsoft.FSharp.Math;;
+
+%}
+
+%start start
+%type <Ast.decl list> start
+
+%token <string> UID
+%token <string> LID
+%token <string> DUID
+%token <string> DLID
+%token <string> QUID
+%token <string> QLID
+%token <bigint> LITINT
+%token <bool> LITBOOL
+%token IF RETURN VAR LBRACE RBRACE SEMI COLON LPAREN RPAREN LBRACKET RBRACKET
+%token LT GT EQ BANG COMMA LE GE EQEQ NE PLUS MINUS STAR SLASH PERCENT AMPAMP BARBAR COLONEQ INT BOOL
+%token TYPE CONST FUNCTION RETURNS AXIOM PROCEDURE IMPLEMENTATION REQUIRES ENSURES
+%token MODIFIES INVARIANT ASSERT HAVOC GOTO CALL CCALL RET IRET GO FORALL EXISTS OLD COLONCOLON EQEQGT LTEQEQGT
+%token EAX EBX ECX EDX ESI EDI EBP ESP
+
+%token EOF
+
+/* Precedence declarations. */
+
+%left LTEQEQGT
+%right EQEQGT
+%left AMPAMP BARBAR
+%left LT GT LE GE EQEQ NE
+%left PLUS MINUS
+%left STAR SLASH PERCENT
+%right BANG
+%left LPAREN RPAREN LBRACKET RBRACKET
+
+%%
+
+start: Decls EOF { $1 }
+
+ID
+  : LID { $1 }
+  | UID { $1 }
+
+Type
+  : INT { () }
+  | BOOL { () }
+  | LBRACKET Type RBRACKET Type { }
+  | AnyId { () }
+
+Reg
+  : EAX { Eax }
+  | EBX { Ebx }
+  | ECX { Ecx }
+  | EDX { Edx }
+  | ESI { Esi }
+  | EDI { Edi }
+  | EBP { Ebp }
+  | ESP { Esp }
+
+Const
+  : LITINT { assrt ($1 < (BigInt.Parse "4294967296")); assrt ($1 >= BigInt.Zero); $1.ToString() }
+  | QUID { $1 }
+
+Operand
+  : Reg { OReg $1 }
+  | UID { OVar (true, $1) }
+  | LID { OVar (false, $1) }
+DestOperand
+  : Operand { $1 }
+SrcOperand
+  : Operand { $1 }
+  | QLID { OVar (true, $1) }
+  | Const { OConst $1 }
+  | Reg PLUS Const { OOffset ($1, $3) }
+  | Reg PLUS Reg { OIndex ($1, "1", $3, "0") }
+  | Reg PLUS Const STAR Reg { OIndex ($1, $3, $5, "0") }
+  | Reg PLUS Const STAR Reg PLUS Const { OIndex ($1, $3, $5, $7) }
+  | LPAREN Exp RPAREN { OExp }
+
+Cmp
+  : EQEQ { Eq }
+  | NE { Ne }
+  | LT { Lt }
+  | GT { Gt }
+  | LE { Le }
+  | GE { Ge }
+
+Triggers
+  : { [] }
+  | LBRACE Exps RBRACE Triggers { $2 @ $4 }
+
+Exp
+  : LPAREN Exp RPAREN { $2 }
+  | Exp LTEQEQGT Exp { EOp [$1; $3] }
+  | Exp EQEQGT Exp { EOp [$1; $3] }
+  | Exp AMPAMP Exp { EOp [$1; $3] }
+  | Exp BARBAR Exp { EOp [$1; $3] }
+  | Exp EQEQ Exp { EOp [$1; $3] }
+  | Exp NE Exp { EOp [$1; $3] }
+  | Exp LT Exp { EOp [$1; $3] }
+  | Exp GT Exp { EOp [$1; $3] }
+  | Exp LE Exp { EOp [$1; $3] }
+  | Exp GE Exp { EOp [$1; $3] }
+  | Exp PLUS Exp { EOp [$1; $3] }
+  | Exp MINUS Exp { EOp [$1; $3] }
+  | Exp STAR Exp { EOp [$1; $3] }
+  | Exp SLASH Exp { EOp [$1; $3] }
+  | Exp PERCENT Exp { EOp [$1; $3] }
+  | LPAREN MINUS Exp RPAREN { EOp [$3] }
+  | BANG Exp { EOp [$2] }
+  | LPAREN FORALL Formals COLONCOLON Triggers Exp RPAREN { EQuant ($3, $6::$5) }
+  | LPAREN EXISTS Formals COLONCOLON Triggers Exp RPAREN { EQuant ($3, $6::$5) }
+  | Exp LBRACKET Exps RBRACKET { EOp ($1::$3) }
+  | Exp LBRACKET Exps COLONEQ Exp RBRACKET { EOp ($1::$5::$3) }
+  | LITINT { EConst $1 }
+  | LITBOOL { EOp [] }
+  | OLD LPAREN Exp RPAREN { EOp [$3] }
+  | AnyId LPAREN Exps RPAREN { EApply ($1, $3) }
+  | AnyId { EApply ($1, []) }
+  | Reg { EReg $1 }
+Exps
+  : { [] }
+  | Exp { [$1] }
+  | Exp COMMA Exps { $1::$3 }
+DLids
+  : { [] }
+  | DLID { [$1] }
+  | DLID COMMA DLids { $1::$3 }
+SrcOperands
+  : { [] }
+  | SrcOperand { [$1] }
+  | SrcOperand COMMA SrcOperands { $1::$3 }
+DestOperands
+  : { [] }
+  | DestOperand { [$1] }
+  | DestOperand COMMA DestOperands { $1::$3 }
+AnyId
+  : ID { $1 }
+  | DUID { $1 }
+  | DLID { $1 }
+  | QUID { $1 }
+  | QLID { $1 }
+AnyVar
+  : AnyId { () }
+  | Reg { () }
+AnyVars
+  : { () }
+  | AnyVar { () }
+  | AnyVar COMMA AnyVars { () }
+
+DLidsEqOpt: { () } | DLids COLONEQ { () }
+
+HavocEip
+  : HAVOC DUID SEMI { assrt ($2 = "$Eip"); () }
+  | CALL GO LPAREN RPAREN SEMI { () }
+
+Stmt
+  : ID COLON { SLabel $1 }
+  | HavocEip GOTO ID SEMI { SGoto $3 }
+  | HavocEip IF LPAREN SrcOperand Cmp SrcOperand RPAREN LBRACE GOTO ID SEMI RBRACE { SIf ($5, $4, $6, $10) }
+  | ASSERT Exp SEMI { SNone }
+  | DLID COLONEQ Exp SEMI { SNone }
+  | DLID LBRACKET Exp RBRACKET COLONEQ Exp SEMI { SNone }
+  | DLID LBRACKET Exp COMMA Exp RBRACKET COLONEQ Exp SEMI { SNone }
+  | CALL LID LPAREN Exps RPAREN SEMI { SInline $2 }
+  | CALL DLids COLONEQ LID LPAREN Exps RPAREN SEMI { SInline $4 }
+  | CALL CCALL LPAREN RPAREN SEMI CALL DLidsEqOpt UID LPAREN Exps RPAREN SEMI { SCall $8 }
+  | CALL                                       UID LPAREN SrcOperands RPAREN SEMI { SIns ($2, [], $4) }
+  | CALL DestOperand                   COLONEQ UID LPAREN SrcOperands RPAREN SEMI { SIns ($4, [$2], $6) }
+  | CALL DestOperand COMMA DestOperand COLONEQ UID LPAREN SrcOperands RPAREN SEMI { SIns ($6, [$2; $4], $8) }
+
+Return
+  : CALL RET  LPAREN OLD LPAREN DUID RPAREN RPAREN SEMI RETURN SEMI { assrt ($6 = "$RET"); SReturn }
+  | CALL IRET LPAREN OLD LPAREN DUID RPAREN RPAREN SEMI RETURN SEMI { assrt ($6 = "$RET"); SIReturn }
+
+ProcStmt
+  : Stmt { $1 }
+  | Return { $1 }
+InlineStmt
+  : Stmt { $1 }
+
+ProcBlock
+  : HavocEip GOTO ID SEMI { [SGoto $3] }
+  | Return { [$1] }
+  | ProcStmt ProcBlock { $1::$2 }
+
+ProcDecls
+  : { [] }
+  | VAR LID COLON INT SEMI ProcDecls { $2::$6 }
+  | VAR DLID COLON Type SEMI ProcDecls { $6 }
+
+InlineBlock
+  : { [] }
+  | InlineStmt InlineBlock { $1::$2 }
+
+Formal
+  : AnyId COLON Type { $1 }
+Formals
+  : { [] }
+  | Formal { [$1] }
+  | Formal COMMA Formals { $1::$3 }
+
+ProcFormal
+  : DLID COLON Type { ($1, $3) }
+ProcFormals
+  : { [] }
+  | ProcFormal { [$1] }
+  | ProcFormal COMMA ProcFormals { $1::$3 }
+
+Spec
+  : REQUIRES Exp SEMI { () }
+  | ENSURES Exp SEMI { () }
+  | MODIFIES AnyVars SEMI { () }
+  | RETURNS LPAREN ProcFormals RPAREN { () }
+Specs
+  : { [] }
+  | Spec Specs { $1::$2 }
+
+AnyIdExp: AnyId { $1 } | LPAREN AnyIdExp RPAREN { $2 }
+AnyIds
+  : { [] }
+  | AnyIdExp { [$1] }
+  | AnyIdExp COMMA AnyIds { $1::$3 }
+AnyIdLists
+  : { [] }
+  | LPAREN AnyIds RPAREN AnyIdLists { $2 @ $4 }
+  | LBRACKET AnyIds RBRACKET AnyIdLists { $2 @ $4 }
+FunAttr
+  : { () }
+  | LBRACE COLON ID LITBOOL RBRACE { assrt ($3 = "expand"); () }
+ProcOrImpl: PROCEDURE { true } | IMPLEMENTATION { false }
+FunRet
+  : Type { () }
+  | AnyId COLON Type { () }
+SpecialProcDecl: CCALL { () } | RET { () } | IRET { () } | GO { () }
+Decl
+  : TYPE AnyId SEMI { [] }
+  | VAR DLID COLON Type SEMI { [] }
+  | VAR DUID COLON Type SEMI { [] }
+  | VAR UID COLON INT SEMI { [DVar $2] }
+  | ProcOrImpl SpecialProcDecl LPAREN ProcFormals RPAREN Specs SEMI Specs
+    { assrt $1; [] }
+  | ProcOrImpl LID LPAREN ProcFormals RPAREN Specs SEMI Specs
+    { assrt $1; [] }
+  | ProcOrImpl UID LPAREN ProcFormals RPAREN Specs SEMI Specs
+    { assrt $1; [] }
+  | ProcOrImpl LID LPAREN ProcFormals RPAREN Specs LBRACE ProcDecls InlineBlock RBRACE
+    { [DInline ($2, $8, $9)] }
+  | ProcOrImpl UID LPAREN ProcFormals RPAREN Specs LBRACE ProcDecls ProcBlock RBRACE
+    { [DProc ($2, $8, $9)] }
+  | CONST AnyId COLON Type SEMI
+    { [DFunDecl $2] }
+  | FUNCTION FunAttr AnyId LPAREN Formals RPAREN RETURNS LPAREN FunRet RPAREN LBRACE Exp RBRACE
+    { [DFunDecl $3; DFunDef ($3, $5, $12)] }
+  | FUNCTION FunAttr AnyId LPAREN Formals RPAREN RETURNS LPAREN FunRet RPAREN SEMI
+    { [DFunDecl $3] }
+  | AXIOM AnyId EQEQ Exp SEMI
+    { [DFunDef ($2, [], $4)] }
+  | AXIOM LPAREN FORALL Formals COLONCOLON Triggers AnyId AnyIdLists EQEQ Exp RPAREN SEMI
+    { assrt ($4 = $8); [DFunDef ($7, $4, $10)] }
+
+Decls
+  : { [] }
+  | Decl Decls { $1 @ $2 }
+
+

@@ -1,0 +1,73 @@
+procedure main()
+	local s, L, all, last
+
+	all := []
+	while s := read() do {
+		L := separate(s)
+		if *L >= 3 then {
+			put(all, L)
+			L[1] := integer("16r" || L[1])
+			/last | last < L[1] | runerr(500, "input not sorted")
+			last := L[1]
+		}
+	}
+	write("// DO NOT EDIT --- Automatically Generated File")
+	write("//")
+	write("public class UnicodeHelp {")
+	s := decision(all, "isZs", set(["Zs"]))
+	write(s)
+	s := decision(all, "isLetterCharacter", set(["Lu", "Ll", "Lt", "Lm", "Lo", "Nl"]))
+	write(s)
+	s := decision(all, "isIdentifierPartCharacter", set([
+				"Lu", "Ll", "Lt", "Lm", "Lo", "Nl",
+				"Nd",
+				"Pc",
+				"Mn", "Mc",
+				"Cf"
+				]))
+	write(s)
+	write("} // class UnicodeHelp")
+end
+
+procedure decision(vals, name, sets)
+	local T, i, start, last, s
+
+	s := ""
+	s ||:= "\tpublic static bool " || name || "(char ch) {\n"
+	s ||:= "\t\t// Unicode class(es):"
+	every s ||:= " " || !sets 
+	s ||:= "\n"
+	every i := !vals & member(sets, i[3]) do {
+		if i[1] == \last+1 then {
+			last := i[1]
+		} else {
+			if \last then {
+				s ||:= test(start, last)
+			}
+			start := last := i[1]
+		}
+	}
+	if \last then {
+		s ||:= test(start, last)
+	}
+	s ||:= "\t\treturn false;\n"
+	s ||:= "\t}"
+	return s
+end
+
+procedure test(lower, upper)
+	if lower = upper then {
+		return "\t\tif (ch == " || lower || ") return true;\n"
+	}
+	return "\t\tif (ch >= " || lower || " && ch <= " || upper || ") return true;\n"
+end
+
+procedure separate(s)
+	local L
+	L := []
+	s ? {
+		while put(L, tab(upto(';'))) & move(1)
+		# intentionally ignore everything past last ';'
+	}
+	return L
+end

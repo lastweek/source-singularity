@@ -1,0 +1,67 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>Singularity.V1.App</AssemblyName>
+    <OutputType>Library</OutputType>
+    <WarningLevel>2</WarningLevel>
+    <NoStdLib>true</NoStdLib>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Language>C#</Language>
+    <OutputPath>$(LIBSDIR)</OutputPath>
+    <SingV1SrcDir>$(SINGULARITY_ROOT)\Libraries\Singularity.V1</SingV1SrcDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Platform)'=='CE_PC'">
+    <DefineConstants Condition="'$(DefineConstants)'!=''">$(DefineConstants);</DefineConstants>
+    <DefineConstants>$(DefineConstants)CE_PC</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Corlib\Corlib.csproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(SingV1SrcDir)\Processes\ProcessHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Security\PrincipalHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\DeliveryHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\ChannelService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\DebugService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\DeviceService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\PciPortHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\PageTableService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\PlatformService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\ProcessService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\SharedHeapService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\StackService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\MemoryInfoService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Services\DiagnosisService.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Stress\StressDirect.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\AutoResetEventHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\ContainerHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\InterruptHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\ManualResetEventHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\MutexHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\SyncHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\ThreadHandle.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Threads\ThreadState.cs"/>
+    <Compile Include="$(SingV1SrcDir)\Types\SystemType.cs"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\SingSharp.targets"/>
+
+</Project>

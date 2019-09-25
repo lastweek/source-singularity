@@ -1,0 +1,49 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+namespace Microsoft.Application.DSP
+#endif
+{
+    using System;
+
+    /// <summary>
+    /// This class contains state accumulated during the resolution
+    /// of a namespace path.
+    /// </summary>
+    public class ResolutionState
+    {
+        /// <summary>
+        /// what we have resolved so far (modulo the current namespace provider)
+        /// </summary>
+        private string resolved;
+
+        public ResolutionState()
+        {
+            resolved = "/";
+        }
+
+        public void UpdateResolved(string! current)
+        {
+            if (current.StartsWith("/") || resolved.EndsWith("/")) {
+                resolved = resolved + current;
+            }
+            else {
+                resolved = resolved + "/" + current;
+            }
+        }
+
+        public string! Resolved
+        {
+            get
+            {
+                return (!)resolved;
+            }
+        }
+    }
+}

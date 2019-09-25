@@ -1,0 +1,30 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>NetworkCommands</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="NetworkCommands.cs" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net\System.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>

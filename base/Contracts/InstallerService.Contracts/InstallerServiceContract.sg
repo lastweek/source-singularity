@@ -1,0 +1,65 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File: Contracts\InstallerService.Contracts\InstallerContract.sg
+//
+//  Note:
+//
+using System;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.ServiceManager;
+
+namespace Microsoft.Singularity.Services
+{
+    public enum InstallerCode : uint
+    {
+        NoError                 = 0,
+        NotFound                = 1,
+        AlreadyExists           = 2,
+        ManifestNotFound        = 3,
+        MissingAssemblies       = 4,
+        NoAssembliesInManifest  = 5,
+        CouldNotOpenDirectory   = 6,
+        EmptyDirectory          = 7,
+        UnableToCreatePackage   = 8,
+        LowMemory               = 9,
+        CannotWriteManifest     = 10,
+        UnsignedAssembly        = 11,
+        Unknown                 = 99,
+    }
+
+    contract InstallerServiceContract : ServiceContract
+    {
+        public const string ModuleName = "/service/installer";
+
+        out message Success();
+
+        in message Add(char[]! in ExHeap path);
+        out message AckAdd();
+        out message NakAdd(InstallerCode errorCode);
+
+        in message Delete(char[]! in ExHeap path);
+        out message AckDelete();
+        out message NakDelete(InstallerCode errorCode);
+
+        override state Start : one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            Add? -> (AckAdd!
+                           or NakAdd!
+                          ) -> Ready;
+
+            Delete? -> (AckDelete!
+                           or NakDelete!
+                          ) -> Ready;
+
+        }
+    }
+}

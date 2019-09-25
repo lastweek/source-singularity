@@ -1,0 +1,75 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services
+{
+    contract BenchmarkContract : ServiceContract
+    {
+        public const string ModuleName = "/service/rbench";
+        public const string ModuleNameProxy = "/service/rbenchproxy";
+
+        out message Success();
+
+        in message GetCycleCount();
+        out message CycleCount(ulong cycle);
+
+        in message Null();
+        out message AckNull();
+
+        in message One(int arg);
+        out message AckOne(int arg);
+
+        in message Two(int arg1, int arg2);
+        out message AckTwo(int arg1, int arg2);
+
+        in message Three(int arg1, int arg2, int arg3);
+        out message AckThree(int arg1, int arg2, int arg3);
+
+        in message Four(int arg1, int arg2, int arg3, int arg4);
+        out message AckFour(int arg1, int arg2, int arg3, int arg4);
+
+        in message Five(int arg1, int arg2, int arg3, int arg4, int arg5);
+        out message AckFive(int arg1, int arg2, int arg3, int arg4, int arg5);
+
+        in message Six(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6);
+        out message AckSix(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6);
+
+        in message Seven(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7);
+        out message AckSeven(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7);
+
+        in message Eight(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8);
+        out message AckEight(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8);
+
+        in message Nine(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8, int arg9);
+        out message AckNine(int arg1, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8, int arg9);
+
+        in message EndOfBenchmark();
+        out message AckEnd();
+
+        override state Start : one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            GetCycleCount? -> CycleCount! -> Ready;
+            Null? -> AckNull! -> Ready;
+            One? -> AckOne! -> Ready;
+            Two? -> AckTwo! -> Ready;
+            Three? -> AckThree! -> Ready;
+            Four? -> AckFour! -> Ready;
+            Five? -> AckFive! -> Ready;
+            Six? -> AckSix! -> Ready;
+            Seven? -> AckSeven! -> Ready;
+            Eight? -> AckEight! -> Ready;
+            Nine? -> AckNine! -> Ready;
+            EndOfBenchmark? -> AckEnd!;
+        }
+    }
+}

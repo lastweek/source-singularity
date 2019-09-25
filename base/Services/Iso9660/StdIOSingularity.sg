@@ -1,0 +1,160 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StdIOSingularity.sg
+//
+//  Note:   Lowest level disk interface from Iso9660 to Singularity
+//
+
+using System;
+using System.Collections;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Drivers;
+using Microsoft.Singularity.Directory;
+namespace Iso9660
+{
+
+    public class Stdio {
+
+        public class RawDevice
+        {
+            public string name;
+            public static long numSectors;
+            public int sectorSize;
+            private IntPtr fd;
+            private ulong fdOff = 0;
+            private static bool doDebugBreak = false;
+
+            private static TRef <DiskDeviceContract.Imp:Start> diskTRef;
+
+            public static void  SetDebug()
+            {
+                //doDebugBreak = true;
+            }
+            // returns size of disk
+            public static long LoadDisk(string devName)
+            {
+                // get NS endpoint
+                DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+                DiskDeviceContract.Imp! clientEp;
+                DiskDeviceContract.Exp! serverEp;
+                DiskDeviceContract.NewChannel(out clientEp, out serverEp);
+
+                bool success = false;
+                ErrorCode errorOut; 
+                bool ok = SdsUtils.Bind(devName, ns, serverEp, out errorOut);
+                if (!ok) {
+                    success = false; 
+                } 
+                else {
+                    success = true; 
+                }
+
+                delete ns;
+
+                if (!success) {
+                    delete clientEp;
+                    DebugStub.WriteLine("Iso9660: no disk! reason: {0}",
+                                       __arglist(SdsUtils.ErrorCodeToString(errorOut)));
+                    return -1;
+                }
+                switch receive {
+                    case clientEp.Success():
+                        break;
+                    case unsatisfiable:
+                        throw new Exception("Didn't Disk.RecvSuccess");
+                        break;
+                }
+
+                // Channel is now Connected.  get sector count.
+
+                Tracing.Log(Tracing.Debug,"LoadDisk: channel connected\n");
+                ulong nSectors;
+                ulong nStart;
+                int error;
+
+                clientEp.SendGetSectorCount();
+                clientEp.RecvAckGetSectorCount(out nSectors);
+                numSectors = (long)nSectors;
+
+                diskTRef = new TRef<DiskDeviceContract.Imp:Start> (clientEp);
+                //Console.WriteLine("LoadDisk: sectors ={0}, start={1}",numSectors,sectorStart);
+                DebugStub.WriteLine("LoadDisk: sectors = "+numSectors);
+                return (long)numSectors * 2048;
+
+            }
+
+            public RawDevice() {
+                sectorSize = 2048;
+            }
+
+            public void Open(string name) {
+                Open(name, (long)0);
+            }
+
+            public void Open(string name, long off) {
+                fdOff = (ulong)off;
+                system.Assert(fdOff == 0);
+            }
+
+            private static int ChannelRead(ByteContainer data, ulong offset, ulong length, ulong sectorId)
+            {
+                DiskDeviceContract.Imp ep = diskTRef.Acquire();
+                bool success = false;
+
+                Tracing.Log(Tracing.Debug,"start read");
+                if (doDebugBreak) DebugStub.Break();
+                ep.SendRead(data.GetVector(),offset,length,sectorId);
+                switch receive {
+                        case ep.AckRead(dataTemp):
+                            data.PutVector(dataTemp);
+                            success = true;
+                            break;
+                        case ep.NakRead():
+                            throw new Exception("Iso9660: ChannelRead failed");
+                            break;
+                        case ep.ChannelClosed():
+                            throw new Exception("Iso9660: ChannelRead channel closed");
+                            break;
+                }
+                Tracing.Log(Tracing.Debug,"end read");
+                diskTRef.Release(ep);
+                if (success)
+                    return (int) length;
+                else
+                    return -1;
+            }
+
+            public static int ReadBlock( byte[] buffer, ulong blockno)
+            {
+                byte[] in ExHeap bufferH;
+                bufferH = new [ExHeap] byte [2048];
+                ByteContainer bufferVec = new ByteContainer(bufferH);
+                Tracing.Log(Tracing.Debug," reading block at sector="+blockno);
+                int ret = ChannelRead(bufferVec,0,2048,blockno);
+                bufferH = bufferVec.GetVector();
+                for (int i = 0; i < buffer.Length; i++) {
+                    buffer[i] = bufferH[i];
+                }
+                delete bufferH;
+                return ret;
+            }
+
+            public  static int Close()
+            {
+                if (diskTRef != null) {
+                    DiskDeviceContract.Imp ep = diskTRef.Acquire();
+                    delete ep;
+                    // XXX
+                    diskTRef = null;
+                }
+                return 0;
+            }
+        }
+    }
+}

@@ -1,0 +1,221 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using System.Collections;
+    using System.Text;
+    using System.Threading;
+
+    using Microsoft.Contracts;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Directory;
+    using Microsoft.Singularity.Security;
+
+    /// <summary>
+    /// The implementation of the <code>SecurityService</code> state machine.
+    /// </summary>
+    public class SecurityDiagnostics
+    {
+        /// <summary>
+        /// The exporting endpoint of the security service.
+        /// </summary>
+        private TRef<ServiceProviderContract.Exp:Start> channel;
+        private bool run = true;
+
+        private ArrayList! coreList;
+
+        public SecurityDiagnostics()
+        {
+            coreList = new ArrayList();
+        }
+
+        /// <summary>
+        /// Starts the service and registers it in the namespace
+        /// </summary>
+        public void Start()
+        {
+            DebugStub.WriteLine("Starting the Security Diagnostics provider");
+
+            // register the service with the namespace
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(SecurityDiagnosticsContract.ModuleName), nsImp);
+
+                switch receive {
+                case epNS.AckRegister() :
+                    // All is well.
+                    break;
+                case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                    // All is very much not well; abort.
+                    DebugStub.WriteLine("Failed to register the Security Service under: {0}",
+                                        __arglist(SecurityDiagnosticsContract.ModuleName));
+                    delete nsExp;
+                    delete rejectedEP;
+                    throw new Exception("Failed to register the Security Diagnostics provider");
+                case epNS.ChannelClosed():
+                    delete nsExp;
+                    DebugStub.WriteLine(
+                               "Failed to register the Security Diagnostics provider under: {0}",
+                               __arglist(SecurityDiagnosticsContract.ModuleName));
+                    throw new Exception("Failed to register the Security Diagnostics provider");
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            channel = new TRef<ServiceProviderContract.Exp:Start>(nsExp);
+
+            Thread thread = Thread.CreateThread(((!)Thread.CurrentThread).Process,
+                                                new ThreadStart(StateMachine));
+
+            if (thread != null) {
+                thread.Start();
+            }
+            else {
+                throw new Exception("Could not create worker thread");
+            }
+        }
+
+        public void RegisterAclCore(AclCore core)
+        {
+            //*** need locking here, but it doesn't work for now
+            //we're called at the wrong point in the init sequence
+            coreList.Add(core);
+        }
+
+        /// <summary>
+        /// State machine for the security namespace
+        /// </summary>
+        private void StateMachine()
+            requires this.channel != null;
+        {
+            // get the endpoint and start listening
+            ServiceProviderContract.Exp! exp = channel.Acquire();
+            // the clients
+            ESet<SecurityDiagnosticsContract.Exp, SecurityDiagnosticsContract.ReadyState> clients =
+               new ESet<SecurityDiagnosticsContract.Exp, SecurityDiagnosticsContract.ReadyState>();
+
+            while (run) {
+                switch receive {
+                    case exp.Connect(ServiceContract.Exp:Start! epClient):
+                    {
+                        // incoming bind request: always grant, anyone should be able to talk to us
+                        SecurityDiagnosticsContract.Exp client =
+                                       epClient as SecurityDiagnosticsContract.Exp;
+                        if (client == null) {
+                            exp.SendNackConnect(epClient);
+                        }
+                        else {
+                            exp.SendAckConnect();
+                            client.SendReady();
+                            clients.Add(client);
+                        }
+                    }
+
+                    break;
+
+                    case client.GetStatistics() in clients:
+                    {
+                        StringBuilder sb = new StringBuilder();
+                        DumpAllStats(sb);
+                        client.SendGetStatisticsAck(Bitter.FromString2(sb.ToString()));
+                        clients.Add(client);
+                    }
+                    break;
+
+                    case client.ClearStatistics() in clients:
+                    {
+                        ClearAllStats();
+                        client.SendAck();
+                        clients.Add(client);
+                    }
+                    break;
+
+                    case client.Disable(bool yes) in clients:
+                    {
+                        DisableAll(yes);
+                        client.SendAck();
+                        clients.Add(client);
+                    }
+                    break;
+
+                    case client.FlushCaches() in clients:
+                    {
+                        FlushAllCaches();
+                        client.SendAck();
+                        clients.Add(client);
+                    }
+                    break;
+
+                    case client.ChannelClosed() in clients:
+                    {
+                        delete client;
+                    }
+                    break;
+
+                    case exp.ChannelClosed():
+                    {
+                        run = false;
+                    }
+                    break;
+                }
+            }
+
+            delete exp;
+            clients.Dispose();
+        }
+
+        private void DisableAll(bool value) {
+            lock (coreList) {
+                for (int i = 0; (i < coreList.Count); i++) {
+                    AclCore core = (AclCore!) coreList[i];
+                    core.Disable = value;
+                }
+            }
+        }
+
+        private void DumpAllStats(StringBuilder! sb)
+        {
+            lock (coreList) {
+                for (int i = 0; (i < coreList.Count); i++) {
+                    AclCore core = (AclCore!) coreList[i];
+                    core.DumpStats(sb);
+                }
+            }
+        }
+
+        private void ClearAllStats()
+        {
+            lock (coreList) {
+                for (int i = 0; (i < coreList.Count); i++) {
+                    AclCore core = (AclCore!) coreList[i];
+                    core.ClearStats();
+                }
+            }
+        }
+
+        private void FlushAllCaches()
+        {
+            lock (coreList) {
+                for (int i = 0; (i < coreList.Count); i++) {
+                    AclCore core = (AclCore!) coreList[i];
+                    core.FlushCache();
+                }
+            }
+        }
+    }
+}
+

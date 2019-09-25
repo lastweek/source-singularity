@@ -1,0 +1,154 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TContainer.sg
+//
+//  Note: File is part of Sing# runtime files and copied into Singularity tree
+//        whenever a new version of Sing# is dropped.
+//        Coordinate any changes with Sing# team.
+//
+
+using System;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Channels
+{
+  using System.Threading;
+  
+  /// <summary>
+  /// TContainer is similar to TRef. It wraps ownership tracked objects (deriving from ITracked) so that
+  /// they can be stored in the GC heap.
+  /// </summary>
+  public sealed class TContainer<T> where T : class, ITracked
+  {
+    unsafe T obj;
+    Mutex! mutex;
+
+    public TContainer([Claims] T! i_obj)
+    {
+      if (i_obj == null) {
+        throw new ArgumentNullException("TContainer must be initialized with a non-null value!");
+      }
+      obj = i_obj;
+      i_obj.Release();
+      mutex = new Mutex();
+      base();
+    }
+
+    // invariant:
+    //   If mutex is held, thread holding mutex is responsible for calling Release
+    //   during that time, the obj slot is empty and if the thread tries to acquire it
+    //   again, an exception is thrown.
+
+    /// <summary>
+    /// Will block until the container is full.
+    /// </summary>
+    /// <returns>Acquired tracked type protected by TContainer</returns>
+    public T! Acquire()
+    {
+      mutex.WaitOne();
+      T elem = this.obj;
+      if (elem == null) {
+        throw new ApplicationException("thread already holds TRef!");
+      }
+      elem.Acquire();
+      this.obj = null;
+      return elem;
+    }
+
+    /// <summary>
+    /// Releases tracked data into the container so other threads can access it.
+    /// </summary>
+    /// <param name="newObj">tracked data to be released</param>
+    public void Release([Claims] T! newObj)
+    {
+      if (newObj == null) {
+        throw new ArgumentNullException("TContainer must be released with a non-null value!");
+      }
+      newObj.Release();
+      obj = newObj;
+      mutex.ReleaseMutex();
+    }
+    
+    
+    /// <summary>
+    /// Finalizer to dispose of any left over contents
+    /// </summary>
+    ~TContainer() {
+      ITracked toDelete = this.obj;
+      if (toDelete != null) {
+        this.obj = null;
+        toDelete.Dispose();
+      }
+    }
+  }
+
+
+  /// <summary>
+  /// VContainer are TContainers for vectors without tracked contents in the shared heap.
+  /// </summary>
+  public sealed class VContainer<T> where T : unmanaged struct
+  {
+    unsafe T[] in ExHeap obj;
+    Mutex! mutex;
+
+    public VContainer([Claims] T[]! in ExHeap i_obj)
+    {
+      if (i_obj == null) {
+        throw new ArgumentNullException("TContainer must be initialized with a non-null value!");
+      }
+      obj = i_obj;
+      mutex = new Mutex();
+      base();
+    }
+
+    // invariant:
+    //   If mutex is held, thread holding mutex is responsible for calling Release
+    //   during that time, the obj slot is empty and if the thread tries to acquire it
+    //   again, an exception is thrown.
+
+    /// <summary>
+    /// Will block until the container is full.
+    /// </summary>
+    /// <returns>Acquired tracked type protected by TContainer</returns>
+    public T[]! in ExHeap Acquire()
+    {
+      mutex.WaitOne();
+      T[] in ExHeap elem = this.obj;
+      if (elem == null) {
+        throw new ApplicationException("thread already holds TRef!");
+      }
+      this.obj = null;
+      return elem;
+    }
+
+    /// <summary>
+    /// Releases tracked data into the container so other threads can access it.
+    /// </summary>
+    /// <param name="newObj">tracked data to be released</param>
+    public void Release([Claims] T[]! in ExHeap newObj)
+    {
+      if (newObj == null) {
+        throw new ArgumentNullException("TContainer must be released with a non-null value!");
+      }
+      obj = newObj;
+      mutex.ReleaseMutex();
+    }
+    
+    
+    /// <summary>
+    /// Finalizer to dispose of any left over contents
+    /// </summary>
+    ~VContainer() {
+      T[] in ExHeap toDelete = this.obj;
+      if (toDelete != null) {
+        this.obj = null;
+        delete toDelete;
+      }
+    }
+  }
+
+}

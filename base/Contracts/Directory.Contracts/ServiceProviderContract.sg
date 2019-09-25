@@ -1,0 +1,32 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ServiceProviderContract.sg
+//
+
+//
+// Every leaf in the Directory communicates to a service by connecting through this contract 
+//
+
+namespace Microsoft.Singularity.Directory
+{
+    contract ServiceProviderContract
+    {
+        in  message Connect(ServiceContract.Exp:Start! exp);
+        out message AckConnect();
+        out message NackConnect(ServiceContract.Exp:Start exp);
+        // return the unconnected endpoint if possible.
+        
+        state Start: Connect? ->  Ack; 
+        
+        state Ack: one 
+        {
+            AckConnect!  -> Start;
+            NackConnect! -> Start;
+        }
+    }
+ }
+

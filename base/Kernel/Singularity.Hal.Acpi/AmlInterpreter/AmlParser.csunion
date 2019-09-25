@@ -1,0 +1,316 @@
+using Microsoft.Singularity.Hal.Acpi;
+using ByteData  = System.Byte;
+using WordData  = System.UInt16;
+using DWordData = System.UInt32;
+using QWordData = System.UInt64;
+
+%%
+
+datatype SimpleName : AmlParserNode {
+    NameString(AmlParser.NameString nameString),
+    ArgObj(AmlParser.ArgObj argObj),
+    LocalObj(AmlParser.LocalObj localObj)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype SuperName : AmlParserNode {
+    SimpleName(SimpleName simpleName),
+    DebugObj(AmlParser.DebugObj debugObj),
+    Type6Opcode(Type6Opcode type6Opcode)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype ComputationalData : AmlParserNode {
+    ByteConst(ByteData byteConst),
+    WordConst(WordData wordConst),
+    DWordConst(DWordData dWordConst),
+    QWordConst(QWordData qWordConst),
+    StringConst(string stringConst),
+    ConstObj(AmlParser.ConstObj constObj),
+    RevisionOp,
+    DefBuffer(AmlParser.DefBuffer defBuffer)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype DataObject : AmlParserNode {
+    ComputationalData(ComputationalData computationalData),
+    DefPackage(AmlParser.DefPackage defPackage),
+    DefVarPackage(AmlParser.DefVarPackage defVarPackage)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype DataRefObject : AmlParserNode {
+    DataObject(DataObject dataObject),
+    ObjectReference(TermArg objectReference),
+    DDBHandle(AmlParser.DDBHandleObject ddbHandle)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype TermObj : AmlParserNode {
+    NameSpaceModifierObj(NameSpaceModifierObj nameSpaceModifierObj),
+    NamedObj(NamedObj namedObj),
+    Type1Opcode(Type1Opcode type1Opcode),
+    Type2Opcode(Type2Opcode type2Opcode)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype TermArg : AmlParserNode {
+    Type2Opcode(Type2Opcode type2Opcode),
+    DataObject(DataObject dataObject),
+    ArgObj(AmlParser.ArgObj argObj),
+    LocalObj(AmlParser.LocalObj localObj)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype AmlObject : AmlParserNode {
+    NameSpaceModifierObj(NameSpaceModifierObj nameSpaceModifierObj),
+    NamedObj(NamedObj namedObj)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype NameSpaceModifierObj : AmlParserNode {
+    DefAlias(AmlParser.DefAlias defAlias),
+    DefName(AmlParser.DefName defName),
+    DefScope(AmlParser.DefScope defScope)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype NamedObj : AmlParserNode {
+    DefBankField(AmlParser.DefBankField defBankField),
+    DefCreateBitField(AmlParser.DefCreateBitField defCreateBitField),
+    DefCreateByteField(AmlParser.DefCreateByteField defCreateByteField),
+    DefCreateDWordField(AmlParser.DefCreateDWordField defCreateDWordField),
+    DefCreateField(AmlParser.DefCreateField defCreateField),
+    DefCreateQWordField(AmlParser.DefCreateQWordField defCreateQWordField),
+    DefCreateWordField(AmlParser.DefCreateWordField defCreateWordField),
+    DefDataRegion(AmlParser.DefDataRegion defDataRegion),
+    DefDevice(AmlParser.DefDevice defDevice),
+    DefEvent(AmlParser.DefEvent defEvent),
+    DefField(AmlParser.DefField defField),
+    DefIndexField(AmlParser.DefIndexField defIndexField),
+    DefMethod(AmlParser.DefMethod defMethod),
+    DefMutex(AmlParser.DefMutex defMutex),
+    DefOpRegion(AmlParser.DefOpRegion defOpRegion),
+    DefPowerRes(AmlParser.DefPowerRes defPowerRes),
+    DefProcessor(AmlParser.DefProcessor defProcessor),
+    DefThermalZone(AmlParser.DefThermalZone defThermalZone)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype FieldElement : AmlParserNode {
+    NamedField(AmlParser.NamedField namedField),
+    ReservedField(AmlParser.ReservedField reservedField),
+    AccessField(AmlParser.AccessField accessField)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype Type1Opcode : AmlParserNode {
+    DefBreak      (AmlParser.DefBreak      defBreak),
+    DefBreakPoint (AmlParser.DefBreakPoint defBreakPoint),
+    DefContinue   (AmlParser.DefContinue   defContinue),
+    DefFatal      (AmlParser.DefFatal      defFatal),
+    DefIfElse     (AmlParser.DefIfElse     defIfElse),
+    DefLoad       (AmlParser.DefLoad       defLoad),
+    DefNoop       (AmlParser.DefNoop       defNoop),
+    DefNotify     (AmlParser.DefNotify     defNotify),
+    DefRelease    (AmlParser.DefRelease    defRelease),
+    DefReset      (AmlParser.DefReset      defReset),
+    DefReturn     (AmlParser.DefReturn     defReturn),
+    DefSignal     (AmlParser.DefSignal     defSignal),
+    DefSleep      (AmlParser.DefSleep      defSleep),
+    DefStall      (AmlParser.DefStall      defStall),
+    DefUnload     (AmlParser.DefUnload     defUnload),
+    DefWhile      (AmlParser.DefWhile      defWhile)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.VisitType1Opcode(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype Type2Opcode : AmlParserNode {
+    DefAcquire(AmlParser.DefAcquire defAcquire),
+    DefAdd(AmlParser.DefAdd defAdd),
+    DefAnd(AmlParser.DefAnd defAnd),
+    DefBuffer(AmlParser.DefBuffer defBuffer),
+    DefConcat(AmlParser.DefConcat defConcat),
+    DefConcatRes(AmlParser.DefConcatRes defConcatRes),
+    DefCondRefOf(AmlParser.DefCondRefOf defCondRefOf),
+    DefCopyObject(AmlParser.DefCopyObject defCopyObject),
+    DefDecrement(AmlParser.DefDecrement defDecrement),
+    DefDerefOf(AmlParser.DefDerefOf defDerefOf),
+    DefDivide(AmlParser.DefDivide defDivide),
+    DefFindSetLeftBit(AmlParser.DefFindSetLeftBit defFindSetLeftBit),
+    DefFindSetRightBit(AmlParser.DefFindSetRightBit defFindSetRightBit),
+    DefFromBCD(AmlParser.DefFromBCD defFromBCD),
+    DefIncrement(AmlParser.DefIncrement defIncrement),
+    DefIndex(AmlParser.DefIndex defIndex),
+    DefLAnd(AmlParser.DefLAnd defLAnd),
+    DefLEqual(AmlParser.DefLEqual defLEqual),
+    DefLGreater(AmlParser.DefLGreater defLGreater),
+    DefLGreaterEqual(AmlParser.DefLGreaterEqual defLGreaterEqual),
+    DefLLess(AmlParser.DefLLess defLLess),
+    DefLLessEqual(AmlParser.DefLLessEqual defLLessEqual),
+    DefMid(AmlParser.DefMid defMid),
+    DefLNot(AmlParser.DefLNot defLNot),
+    DefLNotEqual(AmlParser.DefLNotEqual defLNotEqual),
+    DefLoadTable(AmlParser.DefLoadTable defLoadTable),
+    DefLOr(AmlParser.DefLOr defLOr),
+    DefMatch(AmlParser.DefMatch defMatch),
+    DefMod(AmlParser.DefMod defMod),
+    DefMultiply(AmlParser.DefMultiply defMultiply),
+    DefNAnd(AmlParser.DefNAnd defNAnd),
+    DefNOr(AmlParser.DefNOr defNOr),
+    DefNot(AmlParser.DefNot defNot),
+    DefObjectType(AmlParser.DefObjectType defObjectType),
+    DefOr(AmlParser.DefOr defOr),
+    DefPackage(AmlParser.DefPackage defPackage),
+    DefVarPackage(AmlParser.DefVarPackage defVarPackage),
+    DefRefOf(AmlParser.DefRefOf defRefOf),
+    DefShiftLeft(AmlParser.DefShiftLeft defShiftLeft),
+    DefShiftRight(AmlParser.DefShiftRight defShiftRight),
+    DefSizeOf(AmlParser.DefSizeOf defSizeOf),
+    DefStore(AmlParser.DefStore defStore),
+    DefSubtract(AmlParser.DefSubtract defSubtract),
+    DefTimer(AmlParser.DefTimer defTimer),
+    DefToBCD(AmlParser.DefToBCD defToBCD),
+    DefToBuffer(AmlParser.DefToBuffer defToBuffer),
+    DefToDecimalString(AmlParser.DefToDecimalString defToDecimalString),
+    DefToHexString(AmlParser.DefToHexString defToHexString),
+    DefToInteger(AmlParser.DefToInteger defToInteger),
+    DefToString(AmlParser.DefToString defToString),
+    DefWait(AmlParser.DefWait defWait),
+    DefXOr(AmlParser.DefXOr defXOr),
+    UserTermObj(AmlParser.UserTermObj userTermObj)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.VisitType2Opcode(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype Type6Opcode : AmlParserNode {
+    DefRefOf(AmlParser.DefRefOf defRefOf),
+    DefDerefOf(AmlParser.DefDerefOf defDerefOf),
+    DefIndex(AmlParser.DefIndex defIndex),
+    UserTermObj(AmlParser.UserTermObj userTermObj)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.VisitType6Opcode(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}
+
+datatype PackageElement : AmlParserNode {
+    DataRefObject(DataRefObject dataRefObject),
+    NameString(AmlParser.NameString nameString)
+    %%
+    public override void Accept(AmlParserNodeVisitor v) {
+        v.Visit(this);
+    }
+    
+    public void AcceptAlternative(AmlParserNodeVisitor v) {
+        ((AmlParserNode)value).Accept(v);
+    }
+    %%
+}

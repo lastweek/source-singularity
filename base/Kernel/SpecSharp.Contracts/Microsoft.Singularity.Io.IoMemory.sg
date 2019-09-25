@@ -1,0 +1,17 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Io
+{
+    public sealed class IoMemory
+    {
+        public unsafe IoMemory! AtOffset(uint byteOffset, int count);
+
+        public unsafe IoMemory! AtOffset(uint byteOffset, int count,
+                                         bool read, bool write);
+
+    }
+}

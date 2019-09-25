@@ -1,0 +1,43 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   MemoryInfoService.csi
+//
+//  Note:
+//
+
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct MemoryInfoService
+    {
+        // What are the error status codes?
+        [NoHeapAllocation]
+        public static unsafe int MemoryUsageInfo(
+            ulong *totalMemoryFree,
+            ulong *totalMemoryInUse,
+            ulong *kernelHeapInUse,
+            ulong *kernelStackInUse,
+            ulong *totalSIPHeapInUse,
+            ulong *totalSIPStackInUse,
+            ulong *kernelStackReservation,
+            ulong *kernelHeapReservation
+        );
+
+        public static int MemoryUsageInfo(
+            out ulong totalMemoryFree,
+            out ulong totalMemoryInUse,
+            out ulong kernelHeapInUse,
+            out ulong kernelStackInUse,
+            out ulong totalSIPHeapInUse,
+            out ulong totalSIPStackInUse,
+            out ulong kernelStackReservation,
+            out ulong kernelHeapReservation
+            );
+    }
+}
+

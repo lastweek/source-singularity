@@ -1,0 +1,296 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/Client/Transactor.sg
+//
+//  Note:
+//
+//		A "transactor" is anything that can issue requests (transactions)
+//		against the transport mux.  These requests are issued using the
+//		SmbTransactor contract (in Services/Smb/PrivateContracts).  The
+//		TransportMux thread holds the export side of the contract, and
+//		various other threads (DirectoryClient and FileExp service threads)
+//		hold the import sides.
+//
+//		The Transactor class contains state information for each SmbTransactor
+//		channel, for the TransportMux class.  The transport mux runs on a
+//		single thread; only that thread creates and uses instances of the
+//		Transactor class.  So there is no need to synchronize access to these
+//		instances.
+//
+//	TODO:
+//
+//		*	Implement fragmentation for TRANSACTION2 requests.  Reassembly
+//			for inbound fragments is implemented, but not for outbound requests.
+//
+
+//
+//	REQUESTS vs TRANSACTIONS
+//	------------------------
+//	
+//	At its most basic, SMB provides a way to identify message boundaries (framing),
+//	and a common header for all messages exchanged.  Most of those messages are
+//	request/response messages, where a single message sent from the client to the
+//	server causes the server to response with exactly one message.  We will refer
+//	to these as "SMB requests", although that's a really horribly vague term.
+//	
+//	There are some SMB protocols that do not conform to this usage pattern.
+//	Notably, SMB supports "transactions", which are identified by the SMB commands
+//	SMB_TRANSACTION and SMB_TRANSACTION2.  We will only deal with SMB_TRANSACTION2.
+//	These transactions add several fields to the basic request/response header,
+//	and they also allow the payload of the transaction to span more than one SMB
+//	message.
+//	
+//	First, the client sends an SMB message to the server, identifying the SMB
+//	transaction.  There are two possibilities to consider: First, the client's
+//	transaction message may be small enough to fit into a single SMB message;
+//	this is the easy case.  Otherwise, the client must fragment its transaction
+//	request.  In either case, the client sends its first SMB message, with
+//	the Command field of the SMB header set to SMB_TRANSACTION2.
+//	
+//	Then the client waits for a response from the server.  If the client needed
+//	to fragment its transaction request, then it does NOT yet send any further
+//	fragments.  The server then decides whether or not it likes the request.
+//	If the primary request indicates that the client needs to send more fragments,
+//	then the server will respond with the "Interim Server Response".  This is
+//	just a "go ahead" message (which means one more useless round-trip).
+//	The client then sends all of its fragments.
+//
+//	The server then sends its transaction responses.  If the response does not
+//	need to be fragmented, then there will only be a single response message.	
+//	
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using System.Text;
+using System.Security.Protocols.Ntlm;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using NetStack.Contracts;
+using Smb.Protocol;
+using Smb.PublicChannels;
+using Smb.PrivateChannels;
+using Smb.Shared;
+
+namespace Smb.Client
+{
+	/// <summary>
+	/// This class represents the mux's view of a transactor.  Only the mux thread creates or manipulates
+	/// instances of this class.  And because only a single thread ever touches these instances, locking
+	/// is not required.
+	/// </summary>
+	internal class Transactor
+	{	
+		public Transactor(MuxTuple tuple)
+		{
+			this.Tuple = tuple;
+			this.State = TransactorState.Ready;
+			this.DebugPrefix = "Tran" + tuple.ToString() + ": ";
+			
+			TrackedData data = new TrackedData();
+			this._datacon = new TContainer<TrackedData>(data);
+		}
+		
+		public class TrackedData : ITracked
+		{
+			// This buffer can be null.
+			// This buffer is used to reassemble fragments of a TRANSACTION2 request.		
+			public byte[] in ExHeap TransactionResponseBuffer;
+			public int TransactionResponseFragmentByteIndex;
+			
+			
+			public int TransactionRequestFragmentByteIndex;
+
+			public byte[] in ExHeap ResponseReassemblyBuffer;
+			public int Transaction_ReceivedParameterBytes;
+			public int Transaction_ReceivedDataBytes;
+			public int Transaction_ReceivedFragmentCount;
+			public int Transaction_DataOffset;
+			public int Transaction_ParameterOffset;
+
+			// In the "Ready" state, this field is null.
+			// In all other states, this field is non-null.
+			public SmbTransactor.Exp Exp;
+			
+			// Contains a reference to the byte[] in ExHeap buffer that contains a message that
+			// needs to be transmitted to the remote SMB peer.  A transactor client (a holder of
+			// SmbTransactor.Imp) submits these buffers by sending the Request message.			
+			public byte[] in ExHeap RequestBuffer;
+
+			// The length of the data in _buffer.  Right now, this is always equal to the length
+			// of the buffer itself, because the current TcpConnectionContract does not allow
+			// for sends that are shorter than the length of the buffer.
+			public int RequestLength;
+			
+			public byte[] in ExHeap ExtractResponseReassemblyBuffer()
+			{
+				expose(this)
+				{
+					byte[] in ExHeap buffer = this.ResponseReassemblyBuffer;
+					this.ResponseReassemblyBuffer = null;
+					return buffer;				
+				}
+			}
+			
+			
+			public SmbTransactor.Exp! AcquireEndpoint()
+			{
+				expose (this) {
+					SmbTransactor.Exp exp = this.Exp;
+					this.Exp = null;
+					assert exp != null;
+					return exp;
+				}
+			}
+			
+			#if false
+			void ITracked.Acquire() {}
+			void ITracked.Release() {}
+			void ITracked.Expose() {}
+			void ITracked.UnExpose() {}
+			#else
+			public void Acquire() {}
+			public void Release() {}
+			public void Expose() {}
+			public void UnExpose() {}
+			#endif
+			
+			public void Dispose()
+			{
+				delete TransactionResponseBuffer;
+				delete RequestBuffer;
+				delete Exp;
+				// SelfReference.Dispose();
+				// delete SelfReference;
+				delete ResponseReassemblyBuffer;
+			}
+			
+		}
+		
+		readonly TContainer<TrackedData>! _datacon;
+		
+		public TrackedData! AcquireData()
+		{
+			return _datacon.Acquire();
+		}
+		
+		public void ReleaseData([Claims]TrackedData! data)
+		{
+			_datacon.Release(data);
+		}
+		
+		public SmbTransactor.Exp! AcquireEndpoint()
+		{
+			TrackedData! tracked = AcquireData();
+			SmbTransactor.Exp exp = tracked.AcquireEndpoint();
+			ReleaseData(tracked);
+			assert exp != null;
+			return exp;
+		}
+		
+		public byte[] in ExHeap ExtractResponseReassemblyBuffer()
+		{
+			TrackedData! tracked = AcquireData();
+			byte[] in ExHeap buffer;
+			expose(tracked)
+			{
+				buffer = tracked.ResponseReassemblyBuffer;
+				tracked.ResponseReassemblyBuffer = null;
+				ReleaseData(tracked);
+			}
+			return buffer;
+		}
+		
+		public readonly string! DebugPrefix;
+		public readonly MuxTuple Tuple;
+		
+		public TransactorState State;
+
+		public bool InQueue;
+		
+		public SmbFlag1 _smbFlag1;
+		public SmbFlag2 _smbFlag2;
+
+		public SmbCommand Command;
+
+		public void Dispose()
+		{
+			TrackedData data = AcquireData();
+			data.Dispose();
+		}
+		
+		override public string! ToString()
+		{
+			string! stateText = StateToString(this.State);
+			return String.Format("[Transactor tuple {0} state {1}]", this.Tuple.ToString(), stateText);
+		}
+		
+		public static string! StateToString(TransactorState tstate)
+		{
+			switch (tstate)
+			{
+				case TransactorState.Ready: return "Ready";
+				case TransactorState.WaitingSendRequest: return "WaitingSendRequest";
+				case TransactorState.WaitingSendPrimaryTransactionRequest: return "WaitingSendPrimaryTransactionRequest";
+				case TransactorState.WaitingSendSecondaryTransactionRequest: return "WaitingSendSecondaryTransactionRequest";
+				case TransactorState.WaitingReceiveResponse: return "WaitingReceiveResponse";
+				case TransactorState.WaitingReceivePrimaryTransactionResponse: return "WaitingReceivePrimaryTransactionResponse";
+				case TransactorState.WaitingReceiveSecondaryTransactionResponse: return "WaitingReceiveSecondaryTransactionResponse";
+				default: return "???" + ((int)tstate).ToString();
+			}
+		}
+	}
+
+	enum TransactorState
+	{
+		// In this state, the ExpRef has been acquired (so don't try to acquire it again), and the exp is in the
+		// endpoint map that is owned by the multiplexer thread.  Two things can happen to this transactor:
+		//
+		//		* The transactor can close its channel.  In this case, the multiplexer thread removes the
+		//			transactor state from the _transactors hash table.
+		//
+		//		* The transactor can start a new request.  The multiplexer thread releases the ExpRef, and
+		//			sets Transactor.State to Queued.
+		Ready,
+		
+		// In this state, the multiplexer has received a request from the transactor client (the imp side).
+		// The multiplexer has not yet transmitted the packet to the remote peer.
+		//
+		// _waitingResponseExp contains a valid pointer.
+		// _buffer contains a valid pointer.
+		//
+		// Events:
+		//
+		//		* If the TCP connection closes or fails, then the multiplexer thread will:
+		//				acquire _waitingResponseExp, send its a NakRequest, and then delete it.
+		//				acquire _buffer and delete it.
+		//				remove the Transactor from the _transactors hash table.
+		//
+		//		* When the multiplexer transmits the message, it removes the 
+		WaitingSendRequest,
+		
+		// In this state, the multiplexer has transmitted the request to the remote peer, and is now waiting
+		// for a response.
+		//
+		//		* If the TCP connection closes or fails, then the multiplexer thread will acquire the
+		//			waiting response endpoint, will send a NakRequest, will close the channel, and then
+		//			will remove the tuple entry from the table.
+		//
+		WaitingReceiveResponse,		
+
+		
+		WaitingSendPrimaryTransactionRequest,
+		WaitingReceiveInterimTransactionResponse,
+		WaitingSendSecondaryTransactionRequest,
+		WaitingReceivePrimaryTransactionResponse,
+		WaitingReceiveSecondaryTransactionResponse,		
+	}
+}

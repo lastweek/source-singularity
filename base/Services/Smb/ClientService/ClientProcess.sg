@@ -1,0 +1,73 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Smb.PublicChannels;
+
+namespace Smb.ClientManager
+{
+    enum ClientState
+    {
+		// We have started the process.  The manager endpoint that requested that the
+		// client be started is held at the ClientProcess.StartingManagerEndpoint tref.
+		Starting,
+					
+		Running,
+		
+		Stopping,
+    }
+    
+    // This class represents an instance of the SMB client process (smbclient.exe)
+    // that is managed by this process.  All instances of smbclient.exe are started
+    // by this process (smbclientmgr.exe).
+    class ClientProcess
+    {
+		public ClientProcess(
+			string! mountPath,
+			SmbClientConfig config,
+			Process! process)
+		{
+			this.Process = process;
+			this.MountPath = mountPath;
+			this.UncPath = Bitter.ToString2(config.UncPath);
+			this.CredentialsName = Bitter.ToString2(config.CredentialsName);
+			this.Tag = Bitter.ToString2(config.Tag);
+			
+			DebugPrefix = "SMBMGR[" + mountPath + "]: ";
+		}
+		
+		public readonly string! DebugPrefix;
+
+		public readonly Process! Process;
+		
+		// config fields
+		public string! MountPath;
+		public string! UncPath;
+		public string! CredentialsName;
+		public string! Tag;
+
+		// status fields
+		public SmbClientConnectionStatus ConnectionStatus;
+		public SmbReasonDisconnected ReasonDisconnected;
+		public string ServerOperatingSystem;
+		public string ServerDomainName;
+		public string ServerMachineName;
+		public string ActiveCredentialsName;
+		
+		// This field is assigned (was null) when we receive NakConfigure or AckConfigure.
+		public TRef<SmbClientControllerContract.Imp:Running> Controller;
+		
+		public ClientState State;
+		
+		// This field is non-null and holds a valid reference while this process is in the Starting state.
+		// In all other states, this field is null.
+		public TRef<SmbClientManagerContract.Exp:CreatingClient> StartingManagerEndpoint;
+    }
+}

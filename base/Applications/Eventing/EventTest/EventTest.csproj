@@ -1,0 +1,37 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>EventTest</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="EventTest.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\UnitTest\UnitTestLib.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Eventing\Eventing.csproj"/>
+    <ProjectReference Include="..\testdef\testdef.csproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Event.tst"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\TestCategory.targets"/>
+</Project>

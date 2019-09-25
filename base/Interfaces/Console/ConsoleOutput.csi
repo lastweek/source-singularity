@@ -1,0 +1,32 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ConsoleOutput.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Io
+{
+    public class ConsoleOutput
+    {
+        static public void Initialize();
+        new static public void Finalize();
+
+        public static void Write(String value);
+        public static void Write(char[] buffer, int index, int count);
+
+    }
+} // namespace Microsoft.Singularity.Io

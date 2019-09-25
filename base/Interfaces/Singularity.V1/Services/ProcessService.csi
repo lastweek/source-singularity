@@ -1,0 +1,138 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ProcessService.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Security;
+using Microsoft.Singularity.V1.Services;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct LogEntry
+    {
+    }
+
+    public enum  ParameterCode {
+        Success,
+        OutOfRange,
+        NotSet,
+        Retrieved,
+        AlreadySet,
+        Undefined,
+    }
+
+    public struct ProcessService
+    {
+        public readonly int id;
+
+        [NoHeapAllocation]
+        public static void Stop(int exitCode);
+        [NoHeapAllocation]
+        public static TimeSpan GetUpTime();
+        [NoHeapAllocation]
+        public static DateTime GetUtcTime();
+        [NoHeapAllocation]
+        public static int GetCpuCount();
+        [NoHeapAllocation]
+        public static long GetCycleCount();
+        [NoHeapAllocation]
+        public static long GetContextSwitchCount();
+        [NoHeapAllocation]
+        public static long GetKernelGcCount();
+        [NoHeapAllocation]
+        public static long GetKernelBootCount();
+        [NoHeapAllocation]
+        public static long GetKernelInterruptCount();
+        [NoHeapAllocation]
+        public static long GetCyclesPerSecond();
+        [NoHeapAllocation]
+        public static ushort GetCurrentProcessId();
+
+        // Return parameter is really: DirectoryService.Imp opt(ExHeap) *
+        [NoHeapAllocation]
+        public static unsafe SharedHeapService.Allocation * GetNamespaceEndpoint();
+
+        [NoHeapAllocation]
+        public static TimeSpan GetThreadTime();
+
+
+        [NoHeapAllocation]
+        public static long GetThreadsCreatedCount();
+
+        [NoHeapAllocation]
+        public static int GetStartupEndpointCount();
+
+        // Return parameter is really: ExtensionContract.Exp opt(ExHeap) *
+        [NoHeapAllocation]
+        public static unsafe SharedHeapService.Allocation * GetStartupEndpoint(int arg);
+
+        // First parameter is really: ExtensionContract.Exp opt(ExHeap) *
+        [NoHeapAllocation]
+        public static unsafe void SetStartupEndpoint(int arg, SharedHeapService.Allocation * ep);
+
+        [NoHeapAllocation]
+        public static int GetStartupArgCount();
+        [NoHeapAllocation]
+        public static unsafe int GetStartupArg(int arg, char * output, int maxout);
+
+        [NoHeapAllocation]
+        public static long GetStorageHandle();
+
+        [NoHeapAllocation]
+        public static unsafe bool GetSharedSourceHandles(uint infoId,
+                                                         out UIntPtr storageHandle,
+                                                         out UIntPtr sourceHandle,
+                                                         out UIntPtr eventTypeHandle);
+
+        [NoHeapAllocation]
+        public static void SetGcPerformanceCounters(TimeSpan spent, long bytes);
+
+        [NoHeapAllocation]
+        public static void Waypoint0();
+        [NoHeapAllocation]
+        public static void Waypoint(int num);
+        [NoHeapAllocation]
+        public static void WaypointDone();
+        [NoHeapAllocation]
+        public static void WaypointDump();
+
+        [NoHeapAllocation]
+        public static int GetStartupBoolArgCount();
+
+        [NoHeapAllocation]
+        public static int GetStartupLongArgCount();
+
+        [NoHeapAllocation]
+        public static int GetStartupStringArgCount();
+
+        [NoHeapAllocation]
+        public static int GetStartupStringArrayArgCount();
+
+        [NoHeapAllocation]
+        public static ParameterCode GetStartupBoolArg(int index, out bool value);
+
+        [NoHeapAllocation]
+        public static ParameterCode GetStartupLongArg(int index, out long value);
+
+        [NoHeapAllocation]
+        public static unsafe ParameterCode GetStartupStringArg(int arg, char * output, ref int inoutlength);
+
+        [NoHeapAllocation]
+        public static unsafe ParameterCode GetStartupStringArrayArg(
+                                                int index,
+                                                char *args,
+                                                int *argLengths,
+                                                out int arrayLength,
+                                                out int totalCharCount
+                                         );
+    }
+}

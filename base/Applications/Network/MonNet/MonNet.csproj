@@ -1,0 +1,31 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>MonNet</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="MonNet.sg" />
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Net.Contracts\Io.Net.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Diagnostics.Contracts\Diagnostics.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+
+  </ItemGroup>
+  
+  <Import Project="..\NetworkCommand.targets" />
+
+</Project>

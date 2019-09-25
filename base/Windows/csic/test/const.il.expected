@@ -1,0 +1,43 @@
+.assembly 'const' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class 'D'
+	extends [mscorlib]System.Object
+{
+.field public static literal float32 'B' = float32(9)
+.field public static literal int32 'C' = int32(3)
+.field public static literal value class A 'E' = int32(4)
+.method hidebysig public static void 'Main'() {
+.entrypoint
+ldstr "B={0}"
+ldc.r4 9
+box float32
+call  void [mscorlib]System.Console::'WriteLine'(string,object)
+ldstr "C={0}"
+ldc.i4 3
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object)
+ldstr "D={0}={1}"
+ldc.i4 4
+box value class A
+ldc.i4 4
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object,object)
+ret
+.maxstack 3
+} // end of method D.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor D.D
+} // end of class D
+.class auto ansi serializable sealed 'A' extends [mscorlib]System.Enum
+{
+.field public static literal valuetype A X = int32(3)
+.field public static literal valuetype A Y = int32(4)
+.field public rtspecialname specialname int32 value__
+} // end of enumeration A

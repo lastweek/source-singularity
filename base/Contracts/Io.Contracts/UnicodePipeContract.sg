@@ -1,0 +1,92 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   UnicodePipeContract.sg - Contract between processes for STDIO pipes
+//
+
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Naming;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract UnicodePipeContract
+    {
+        in message Write(char[]! in ExHeap buffer, int offset, int count);
+        out message AckWrite(char[]! in ExHeap buffer);
+        
+        // start state
+        state READY : Write? -> ACK;
+        state ACK : AckWrite! -> READY;
+
+        // For sending an Exp side pipe initially, create channel in this state
+        // NewChannel(out imp, out exp, UnicodePipeContract.EXPMOVABLE.Value);
+        state EXPMOVABLE : Moved! -> READY;
+        out message Moved();
+
+    }
+}
+
+namespace Microsoft.Singularity.Io.Tty
+{
+    public enum Modifiers {
+        SHIFT       = 1,
+        CTRL        = 2,
+        ALT         = 4
+    }
+    
+    public enum ControlCodes {
+        CTRL_C      = 0x3,
+        CTRL_Z      = 26,
+    }
+    
+    public enum EscapeCodes {
+        HOME        = 1,
+        INSERT      = 2,
+        DELETE      = 3,
+        END         = 4,
+        PAGE_UP     = 5,
+        PAGE_DOWN   = 6,
+        CENTER      = 7,
+        BACKSPACE   = 8,
+        TAB         = 9,
+        ENTER       = 10,
+        ESCAPE      = 11,
+        F1          = 12,
+        F2          = 13,
+        F3          = 14,
+        F4          = 15,
+        F5          = 16,
+        F6          = 17,
+        F7          = 18,
+        F8          = 19,
+        F9          = 20,
+        F10         = 21,
+        F11         = 22,
+        F12         = 23,
+        F13         = 24,
+        F14         = 25,
+        F15         = 26,
+        F16         = 27,
+        F17         = 28,
+        F18         = 29,
+        F19         = 30,
+        F20         = 31,
+        SPACE       = 32,
+        UP          = 33,
+        DOWN        = 34,
+        RIGHT       = 35,
+        LEFT        = 36,
+        ERASE_FROM_CURSOR   = 100,
+        SET_CURSOR_SIZE     = 101,
+        CLEAR_SCREEN        = 102,
+        NOCODE              = 999,
+    }
+}   

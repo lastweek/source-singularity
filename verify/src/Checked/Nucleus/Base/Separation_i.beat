@@ -1,0 +1,245 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+// Memory layout:
+//   sMem: Nucleus private stack
+//   dMem: Nucleus private data
+//   tMem[]: Thread control blocks
+//   fMem[]: Managed code stacks
+//   gcMem: GC memory (heap + auxiliary data)
+
+var $sMem:[int]int;
+var $dMem:[int]int;
+var $pciMem:[int]int;
+var $tMems:[int][int]int;
+var $fMems:[int][int]int;
+var $gcMem:[int]int;
+
+var SLo:int; // memLo == SLo
+var DLo:int; // DLo == sHi
+var PciLo:int;
+var TLo:int;
+var FLo:int;
+var GcLo:int; 
+var GcHi:int; // memHi == GcHi
+
+var DmaAddr:int;
+
+var $memVars @ {$sMem:[int]int, $dMem:[int]int, $pciMem:[int]int, $tMems:[int][int]int, $fMems:[int][int]int, $gcMem:[int]int}
+var  MemVars @ {SLo:int, DLo:int, PciLo:int, TLo:int, FLo:int, GcLo:int, GcHi:int}
+var $MemVars @ {$Mem:[int]int, $memVars:_, MemVars:_}
+var $IoVars  @ {$IoMmuEnabled:bool, $PciConfigState:[int]int, DmaAddr:int}
+
+// Reserve fixed amount of space for all but gcMem:
+const ?SSize:int; axiom ?SSize == 1024;
+const ?DSize:int; axiom ?DSize == 1024;
+const ?PciSize:int; axiom ?PciSize == 8 * 65536;
+const ?TSize:int; axiom ?TSize == 256;
+const ?FSize:int; axiom ?FSize == 16384;
+// Rest of memory devoted to gcMem
+
+const ?sLo:int; axiom ?sLo == ?memLo;
+const ?sHi:int; axiom ?sHi == ?sLo + ?SSize;
+const ?dLo:int; axiom ?dLo == ?sHi;
+const ?dHi:int; axiom ?dHi == ?dLo + ?DSize;
+const ?pciLo:int; axiom ?pciLo == ?dHi;
+const ?pciHi:int; axiom ?pciHi == ?pciLo + ?PciSize;
+const ?tLo:int; axiom ?tLo == ?pciHi;
+const ?tHi:int; axiom ?tHi == ?tLo + ?NumStacks * ?TSize;
+const ?fLo:int; axiom ?fLo == ?tHi;
+const ?fHi:int; axiom ?fHi == ?fLo + ?NumStacks * ?FSize;
+
+function isStack(s:int) returns (bool) {0 <= s && s < ?NumStacks}
+
+function sAddr(i:int) returns (bool) {?sLo <= i && i < ?sHi}
+function sAddrEx(i:int) returns (bool) {?sLo <= i && i <= ?sHi}
+
+function dAddr(i:int) returns (bool) {?dLo <= i && i < ?dHi}
+function dAddrEx(i:int) returns (bool) {?dLo <= i && i <= ?dHi}
+
+function pciAddr(i:int) returns (bool) {?pciLo <= i && i < ?pciHi}
+function pciAddrEx(i:int) returns (bool) {?pciLo <= i && i <= ?pciHi}
+
+function fAddr(s:int, i:int) returns (bool) {isStack(s) && ?fLo + s * ?FSize <= i && i < ?fLo + s * ?FSize + ?FSize}
+function fAddrEx(s:int, i:int) returns (bool) {isStack(s) && ?fLo + s * ?FSize <= i && i <= ?fLo + s * ?FSize + ?FSize}
+
+function tAddr(s:int, i:int) returns (bool) {isStack(s) && ?tLo + s * ?TSize <= i && i < ?tLo + s * ?TSize + ?TSize}
+function tAddrEx(s:int, i:int) returns (bool) {isStack(s) && ?tLo + s * ?TSize <= i && i <= ?tLo + s * ?TSize + ?TSize}
+
+function MemSepInv($MemVars:_) returns(bool);
+
+function MemInv($MemVars:_) returns(bool)
+{
+    MemSepInv($MemVars)
+ && ?gcLo <= ?gcHi
+ && Aligned(?sLo)
+ && Aligned(?dLo)
+ && Aligned(?pciLo)
+ && Aligned(?tLo)
+ && Aligned(?fLo)
+ && Aligned(?gcLo)
+ && Aligned(?gcHi)
+ && SLo == ?sLo
+ && DLo == ?dLo
+ && PciLo == ?pciLo
+ && TLo == ?tLo
+ && FLo == ?fLo
+ && GcLo == ?gcLo
+ && GcHi == ?gcHi
+}
+
+procedure initSeparation();
+  requires Aligned(?memLo);
+  requires Aligned(?memHi);
+  requires ecx == ?memLo;
+  requires edx == ?memHi;
+  modifies $Eip, eax, ebx, ecx, edx, esp;
+  modifies $memVars, MemVars;
+  ensures  MemInv($MemVars);
+  ensures  esp == old(esp);
+
+// call r := Load($ptr); call sLoad($ptr);
+procedure sLoad($ptr:int);
+  requires MemInv($MemVars);
+  requires sAddr($ptr);
+  ensures  $Mem[$ptr] == $sMem[$ptr];
+
+// call sStore($ptr, $val); call Store($ptr, $val);
+procedure sStore($ptr:int, $val:int);
+  requires MemInv($MemVars);
+  requires sAddr($ptr);
+  modifies $sMem;
+  ensures  MemInv($Mem[$ptr := $val], $memVars, MemVars);
+  ensures  $sMem == old($sMem)[$ptr := $val];
+
+// call r := Load($ptr); call dLoad($ptr);
+procedure dLoad($ptr:int);
+  requires MemInv($MemVars);
+  requires dAddr($ptr);
+  ensures  $Mem[$ptr] == $dMem[$ptr];
+
+// call dStore($ptr, $val); call Store($ptr, $val);
+procedure dStore($ptr:int, $val:int);
+  requires MemInv($MemVars);
+  requires dAddr($ptr);
+  modifies $dMem;
+  ensures  MemInv($Mem[$ptr := $val], $memVars, MemVars);
+  ensures  $dMem == old($dMem)[$ptr := $val];
+
+// call r := Load($ptr); call pciLoad($ptr);
+procedure pciLoad($ptr:int);
+  requires MemInv($MemVars);
+  requires pciAddr($ptr);
+  ensures  $Mem[$ptr] == $pciMem[$ptr];
+
+// call pciStore($ptr, $val); call Store($ptr, $val);
+procedure pciStore($ptr:int, $val:int);
+  requires MemInv($MemVars);
+  requires pciAddr($ptr);
+  modifies $pciMem;
+  ensures  MemInv($Mem[$ptr := $val], $memVars, MemVars);
+  ensures  $pciMem == old($pciMem)[$ptr := $val];
+
+// call r := Load($ptr); call gcLoad($ptr);
+procedure gcLoad($ptr:int);
+  requires MemInv($MemVars);
+  requires gcAddr($ptr);
+  requires TV($ptr); // REVIEW: this may be a counterproductive heuristic
+  ensures  $Mem[$ptr] == $gcMem[$ptr];
+  ensures  TV($Mem[$ptr]); // REVIEW: this may be a counterproductive heuristic
+
+// call gcStore($ptr, $val); call Store($ptr, $val);
+procedure gcStore($ptr:int, $val:int);
+  requires MemInv($MemVars);
+  requires gcAddr($ptr);
+  requires TV($ptr) && TV($val); // REVIEW: this may be a counterproductive heuristic
+  modifies $gcMem;
+  ensures  MemInv($Mem[$ptr := $val], $memVars, MemVars);
+  ensures  $gcMem == old($gcMem)[$ptr := $val];
+
+procedure fLoad($s:int, $ptr:int);
+  requires MemInv($MemVars);
+  requires fAddr($s, $ptr);
+  ensures  $Mem[$ptr] == $fMems[$s][$ptr];
+  ensures  memAddr($ptr);
+
+procedure fStore($s:int, $ptr:int, $val:int);
+  requires MemInv($MemVars);
+  requires fAddr($s, $ptr);
+  modifies $fMems;
+  ensures  MemInv($Mem[$ptr := $val], $memVars, MemVars);
+  ensures  $fMems == old($fMems)[$s := old($fMems[$s])[$ptr := $val]];
+  ensures  memAddr($ptr);
+
+procedure tLoad($s:int, $ptr:int);
+  requires MemInv($MemVars);
+  requires tAddr($s, $ptr);
+  ensures  $Mem[$ptr] == $tMems[$s][$ptr];
+  ensures  memAddr($ptr);
+
+procedure tStore($s:int, $ptr:int, $val:int);
+  requires MemInv($MemVars);
+  requires tAddr($s, $ptr);
+  modifies $tMems;
+  ensures  MemInv($Mem[$ptr := $val], $memVars, MemVars);
+  ensures  $tMems == old($tMems)[$s := old($tMems[$s])[$ptr := $val]];
+  ensures  memAddr($ptr);
+
+// Reserve n bytes of stack space
+function SMemRequire(n:int, $sMem:[int]int, $esp:int) returns(bool)
+{
+    Aligned($esp)
+ && ?sLo + n <= $esp && $esp <= ?sHi
+}
+
+// Reserve n bytes of stack space, and require return address on stack
+function SMemRequireRA(n:int, $sMem:[int]int, $esp:int, $RET:ReturnTo) returns(bool)
+{
+    SMemRequire(n, $sMem, $esp)
+ && ?sLo + n <= $esp && $esp <= ?sHi - 4
+ && ReturnToAddr($sMem[$esp]) == $RET
+}
+
+// Stack contents not altered
+function SMemInv($sMem:[int]int, oldSMem:[int]int, $esp:int, oldEsp:int) returns(bool)
+{
+    $esp == oldEsp
+ && (forall i:int::{$sMem[i]} $esp <= i ==> $sMem[i] == oldSMem[i])
+}
+
+// Stack contents not altered
+function SMemEnsure($sMem:[int]int, oldSMem:[int]int, $esp:int, oldEsp:int) returns(bool)
+{
+    $esp == oldEsp + 4
+ && (forall i:int::{$sMem[i]} $esp <= i ==> $sMem[i] == oldSMem[i])
+}
+
+procedure revealFMem();
+  requires MemInv($MemVars);
+  ensures (forall s:int, i:int::{$fMems[s][i]} fAddr(s, i) ==> $Mem[i] == $fMems[s][i]);
+
+procedure _call();
+  requires MemInv($MemVars);
+  requires sAddr(esp - 4);
+  modifies $sMem;
+  ensures  $sMem == old($sMem)[esp - 4 := NextEip($Eip)];
+  ensures  MemInv($Mem[esp - 4 := NextEip($Eip)], $memVars, MemVars);
+
+// TODO: clean up
+procedure _ret($oldMem:[int]int, $oldSMem:[int]int, $oldDMem:[int]int, $oldPciMem:[int]int, $oldTMem:[int][int]int, $oldFMem:[int][int]int, $oldGcMem:[int]int);
+  requires MemInv($MemVars);
+  requires MemInv($oldMem, $oldSMem, $oldDMem, $oldPciMem, $oldTMem, $oldFMem, $oldGcMem, MemVars);
+  requires $sMem[esp] == $oldSMem[esp];
+  requires sAddr(esp);
+  ensures  $Mem[esp] == $oldMem[esp];
+  ensures  $Mem[esp] == $sMem[esp];
+
+procedure _fret($s:int, $oldMem:[int]int, $oldSMem:[int]int, $oldDMem:[int]int, $oldPciMem:[int]int, $oldTMem:[int][int]int, $oldFMem:[int][int]int, $oldGcMem:[int]int);
+  requires MemInv($MemVars);
+  requires MemInv($oldMem, $oldSMem, $oldDMem, $oldPciMem, $oldTMem, $oldFMem, $oldGcMem, MemVars);
+  requires $fMems[$s][esp] == $oldFMem[$s][esp];
+  requires fAddr($s, esp);
+  ensures  $Mem[esp] == $oldMem[esp];
+  ensures  $Mem[esp] == $fMems[$s][esp];
+

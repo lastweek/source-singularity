@@ -1,0 +1,17 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+namespace Microsoft.Singularity
+{
+	public class Processor
+	{
+        public static Processor! CurrentProcessor
+        {
+            get;
+        }
+	}
+}

@@ -1,0 +1,75 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple ping-pong second child process
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.PingPong.Contracts;
+using System;
+using System.Diagnostics;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.PingPong
+{
+    [Category("PingPong")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<PongContract.Exp:Start> pongRef;
+
+        reflective private Parameters();
+        
+    }
+    
+    public class ChildPong
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            PongContract.Exp conn = ((!)config.pongRef).Acquire(); 
+            if (conn == null) { 
+                throw new Exception("ChildPing: Unable to acquire handle to the the Pong Contract"); 
+            } 
+#if false
+            Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            PongContract.Exp conn = ep as PongContract.Exp;
+            if (conn == null) {
+                // Wrong contract type!
+                delete ep;
+                return;
+            }
+#endif 
+            conn.SendPongReady();
+
+            try {
+                while (true) {
+                    switch receive {
+                        case conn.Ping(int data):
+                            conn.SendPong(data);
+                            break;
+
+                        case conn.ChannelClosed():
+                            return -1;
+                    }
+                }
+            }
+            finally {
+                delete conn;
+            }
+            return 0;
+        }
+    }
+}

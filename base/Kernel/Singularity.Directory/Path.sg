@@ -1,0 +1,84 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Nameserver.cs
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+#if !SINGULARITY_PROCESS 
+namespace Microsoft.Singularity.Directory
+#else
+namespace Microsoft.Application.DSP
+#endif 
+{
+    public class Path
+    {
+        ArrayList! elts;
+
+        public Path(String! s)
+        {
+            string[] sa = s.Split("/".ToCharArray());
+            ArrayList elts = this.elts = new ArrayList(sa);
+            elts.RemoveAt(0); // since paths start with a slash, the first one will be empty
+        }
+
+        public bool Empty { get { return this.elts.Count == 0; } }
+
+        public int Length()
+        {
+            return elts.Count;
+        }
+
+        public String StripLast()
+        {
+            int pos = elts.Count - 1;
+            String s = (String)elts[pos];
+            elts.RemoveAt(pos);
+            return s;
+        }
+
+        public void Append(String elt)
+        {
+            elts.Add(elt);
+        }
+
+        public String FirstElement()
+        {
+            return (String)elts[0];
+        }
+
+        public void RemoveFirstElement()
+        {
+            elts.RemoveAt(0);
+        }
+
+        public String! PathString()
+        {
+            String result = "";
+            IEnumerator e = elts.GetEnumerator();
+            while (e.MoveNext()) {
+                result += "/" + e.Current;
+            }
+            return result;
+        }
+
+        public char[]! in ExHeap PathVector()
+        {
+            String result = PathString();
+            return Bitter.FromString2(result);
+        }
+    }
+}

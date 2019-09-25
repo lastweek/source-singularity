@@ -1,0 +1,46 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>Shell</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Shell.sg"/>
+    <Compile Include="Terminal.sg"/>
+    <Compile Include="ScriptEngine.cs"/>
+    <Compile Include="Parser.cs"/>
+    <Compile Include="Breaker.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Diagnostics.Contracts\Diagnostics.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Xml\Xml.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Manifest\Manifest.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+
+    <LanguageFile Include="script.lang">
+      <Namespace>Microsoft.Singularity.Applications</Namespace>
+      <ClassName>ScriptParser</ClassName>
+    </LanguageFile>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+</Project>

@@ -1,0 +1,1276 @@
+procedure startTimer()
+  requires word(ecx);
+  modifies $Eip, eax, $TimerSeq, $TimerFreq;
+  ensures  TimerOk($TimerSeq) && $TimerFreq == old(ecx);
+{
+  eax := 48;
+  call PitModeOut8(ecx);
+  eax := ecx;
+  call PitFreqOut8();
+  call eax := Shr(eax, 8);
+  call PitFreqOut8();
+}
+
+procedure setupIoTablesHelper1(tableBase@esi, dmaAlignedLo@ebx)
+  requires word(?iomLo) && word(?iomHi) && word(?dmaHi);
+  requires ?dmaLo == ?iomHi;
+  requires and(dmaAlignedLo, 4095) == 0;
+  requires ?dmaLo <= dmaAlignedLo && dmaAlignedLo + 0x200000 + 4096 <= ?dmaHi;
+  requires Aligned(tableBase);
+  requires ?iomLo <= tableBase && tableBase + 32768 <= ?iomHi;
+  requires and(tableBase + 0x0000, 4095) == 0;
+  requires and(tableBase + 0x1000, 4095) == 0;
+  requires and(tableBase + 0x2000, 4095) == 0;
+  requires and(tableBase + 0x3000, 4095) == 0;
+  requires !$IomFrozen;
+  modifies $Eip, eax, ebx, ecx, edx, edi, ebp;
+  modifies $IomMem;
+  ensures  IoPageTable($IomMem, tableBase);
+  ensures  (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                 ($IomMem[tableBase + 0x1000 + 8 * i] == 0 || $IomMem[tableBase + 0x1000 + 8 * i] == tableBase + 3)
+               && $IomMem[tableBase + 0x1000 + 8 * i + 4] == 0);
+  ensures  (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                  $IomMem[tableBase + 0x2000 + 8 * i] == 0
+               && $IomMem[tableBase + 0x2000 + 8 * i + 4] == 0);
+  ensures  (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                  $IomMem[tableBase + 0x3000 + 8 * i] == 0
+               && $IomMem[tableBase + 0x3000 + 8 * i + 4] == 0);
+{
+  var ptr@edi := tableBase;
+  var end@ebp := ptr + 4096;
+  var pagePtr@edx := dmaAlignedLo;
+  var $entry:int := 0;
+  while (ptr < end)
+    invariant Aligned(ptr) && TV(ptr) && TO(1) && TO(2);
+    invariant pagePtr == dmaAlignedLo + $entry * 4096;
+    invariant and(pagePtr, 4095) == 0;
+    invariant ptr == tableBase + 8 * $entry;
+    invariant 0 <= $entry && $entry <= 512;
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < $entry ==>
+      IoPageTableEntry($IomMem[tableBase + 8 * i], $IomMem[tableBase + 8 * i + 4]));
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < $entry ==>
+      $IomMem[tableBase + 0x1000 + 8 * i] == 0 && $IomMem[tableBase + 0x1000 + 8 * i + 4] == 0);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < $entry ==>
+      $IomMem[tableBase + 0x2000 + 8 * i] == 0 && $IomMem[tableBase + 0x2000 + 8 * i + 4] == 0);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < $entry ==>
+      $IomMem[tableBase + 0x3000 + 8 * i] == 0 && $IomMem[tableBase + 0x3000 + 8 * i + 4] == 0);
+  {
+    assert TO(1024) && TO(1025) && TO(2048) && TO(2049) && TO(3072) && TO(3073);
+    ecx := pagePtr + 3;
+    call IomStore(ptr + 0, ecx);
+    call IomStore(ptr + 4, 0);
+    call IomStore(ptr + 0x1000, 0);
+    call IomStore(ptr + 0x1004, 0);
+    call IomStore(ptr + 0x2000, 0);
+    call IomStore(ptr + 0x2004, 0);
+    call IomStore(ptr + 0x3000, 0);
+    call IomStore(ptr + 0x3004, 0);
+    $entry := $entry + 1;
+    ptr := ptr + 8;
+    call __add4kAligned(pagePtr);
+    pagePtr := pagePtr + 4096;
+  }
+
+  ecx := dmaAlignedLo;
+  call ecx := Shr(ecx, 21);
+  if (ecx >= 512)
+  {
+    eax := 0x5555002e; // dma zone is beyond first 1GB
+    call debugBreak();
+  }
+  assert TV(ecx) && TO(2 * ecx + 1024);
+  edx := tableBase + 3;
+  call IomStore(tableBase + 8 * ecx + 0x1000, edx);
+
+}
+
+procedure setupIoTablesHelper2(tableBase@esi)
+  requires word(?iomLo) && word(?iomHi);
+  requires Aligned(?dmaLo);
+  requires ?dmaLo == ?iomHi;
+  requires ecx == ?dmaLo;
+  requires IoPageTable($IomMem, tableBase);
+  requires (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                 ($IomMem[tableBase + 0x1000 + 8 * i] == 0 || $IomMem[tableBase + 0x1000 + 8 * i] == tableBase + 3)
+               && $IomMem[tableBase + 0x1000 + 8 * i + 4] == 0);
+  requires (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                  $IomMem[tableBase + 0x2000 + 8 * i] == 0
+               && $IomMem[tableBase + 0x2000 + 8 * i + 4] == 0);
+  requires (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                  $IomMem[tableBase + 0x3000 + 8 * i] == 0
+               && $IomMem[tableBase + 0x3000 + 8 * i + 4] == 0);
+  requires Aligned(tableBase);
+  requires Aligned(tableBase + 0x4000);
+  requires ?iomLo <= tableBase && tableBase + 32768 <= ?iomHi;
+  requires and(tableBase + 0x1000, 4095) == 0;
+  requires and(tableBase + 0x2000, 4095) == 0;
+  requires and(tableBase + 0x3000, 4095) == 0;
+  requires and(tableBase + 0x4000, 4095) == 0;
+  requires and(tableBase + 0x5000, 4095) == 0;
+  requires !$IomFrozen;
+  modifies $Eip, eax, ebx, ecx, edx, edi, ebp;
+  modifies $IomMem;
+  ensures  IoPageTable($IomMem, tableBase);
+  ensures  $IomMem[tableBase + 0x2000] == tableBase + 0x1000 + 3;
+  ensures  $IomMem[tableBase + 0x2004] == 0;
+  ensures  $IomMem[tableBase + 0x3000] == tableBase + 0x2000 + 3;
+  ensures  $IomMem[tableBase + 0x3004] == 0;
+  ensures  (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                 ($IomMem[tableBase + 0x1000 + 8 * i] == 0 || $IomMem[tableBase + 0x1000 + 8 * i] == tableBase + 3)
+               && $IomMem[tableBase + 0x1000 + 8 * i + 4] == 0);
+  ensures  (forall i:int::{TV(i)} TV(i) && 1 <= i && i < 512 ==>
+                  $IomMem[tableBase + 0x2000 + 8 * i] == 0
+               && $IomMem[tableBase + 0x2000 + 8 * i + 4] == 0);
+  ensures  (forall i:int::{TV(i)} TV(i) && 1 <= i && i < 512 ==>
+                  $IomMem[tableBase + 0x3000 + 8 * i] == 0
+               && $IomMem[tableBase + 0x3000 + 8 * i + 4] == 0);
+  ensures  (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 256 ==>
+                  $IomMem[tableBase + 0x4000 + 16 * i + 0] == tableBase + 0x3000 + 3
+               && $IomMem[tableBase + 0x4000 + 16 * i + 4] == 0
+               && $IomMem[tableBase + 0x4000 + 16 * i + 8] == 258
+               && $IomMem[tableBase + 0x4000 + 16 * i + 12] == 0);
+  ensures  (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 256 ==>
+                  $IomMem[tableBase + 0x5000 + 16 * i + 0] == tableBase + 0x4000 + 1
+               && $IomMem[tableBase + 0x5000 + 16 * i + 4] == 0
+               && $IomMem[tableBase + 0x5000 + 16 * i + 8] == 0
+               && $IomMem[tableBase + 0x5000 + 16 * i + 12] == 0);
+  ensures  $IomMem[?dmaLo - 8] == ?BYTE_VECTOR_VTABLE;
+  ensures  $IomMem[?dmaLo - 4] == ?dmaHi - ?dmaLo;
+{
+  var dmaLo:int := ecx;
+
+  var $entry:int := 0;
+  var ptr@edi := tableBase + 0x4000;
+  var end@ebp := ptr + 4096;
+  ecx := tableBase + 0x3000 + 3;
+  edx := tableBase + 0x4000 + 1;
+  while (ptr < end)
+    invariant Aligned(ptr) && TV(ptr) && TO(1) && TO(2) && TO(3) && TO(4);
+    invariant ptr == tableBase + 0x4000 + 16 * $entry;
+    invariant 0 <= $entry && $entry <= 256;
+    invariant IoPageTable($IomMem, tableBase);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                 ($IomMem[tableBase + 0x1000 + 8 * i] == 0 || $IomMem[tableBase + 4096 + 8 * i] == tableBase + 3)
+               && $IomMem[tableBase + 0x1000 + 8 * i + 4] == 0);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                    $IomMem[tableBase + 0x2000 + 8 * i] == 0
+                 && $IomMem[tableBase + 0x2000 + 8 * i + 4] == 0);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 512 ==>
+                    $IomMem[tableBase + 0x3000 + 8 * i] == 0
+                 && $IomMem[tableBase + 0x3000 + 8 * i + 4] == 0);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < $entry ==>
+                  $IomMem[tableBase + 0x4000 + 16 * i + 0] == tableBase + 0x3000 + 3
+               && $IomMem[tableBase + 0x4000 + 16 * i + 4] == 0
+               && $IomMem[tableBase + 0x4000 + 16 * i + 8] == 258
+               && $IomMem[tableBase + 0x4000 + 16 * i + 12] == 0);
+    invariant (forall i:int::{TV(i)} TV(i) && 0 <= i && i < $entry ==>
+                  $IomMem[tableBase + 0x5000 + 16 * i + 0] == tableBase + 0x4000 + 1
+               && $IomMem[tableBase + 0x5000 + 16 * i + 4] == 0
+               && $IomMem[tableBase + 0x5000 + 16 * i + 8] == 0
+               && $IomMem[tableBase + 0x5000 + 16 * i + 12] == 0);
+  {
+    call IomStore(ptr + 0, ecx);
+    call IomStore(ptr + 4, 0);
+    call IomStore(ptr + 8, 258);
+    call IomStore(ptr + 0xc, 0);
+    assert TO(1024) && TO(1025) && TO(1026) && TO(1027);
+    call IomStore(ptr + 0x1000, edx);
+    call IomStore(ptr + 0x1004, 0);
+    call IomStore(ptr + 0x1008, 0);
+    call IomStore(ptr + 0x100c, 0);
+    $entry := $entry + 1;
+    ptr := ptr + 16;
+  }
+
+  assert TV(tableBase);
+  assert TV(0) && TO(2048) && TO(3072);
+  edx := tableBase + 0x1000 + 3;
+  call IomStore(tableBase + 0x2000, edx);
+  edx := tableBase + 0x2000 + 3;
+  call IomStore(tableBase + 0x3000, edx);
+
+  edx := dmaLo;
+  call edx := AddChecked(edx, 0x1200000);
+  var dmaHi:int := edx;
+
+  assert TV(?dmaLo) && TO(0 - 1) && TO(0 - 2);
+  ecx := dmaLo - 8;
+  edx := ?BYTE_VECTOR_VTABLE;
+  call IomStore(ecx, edx);
+  edx := dmaHi - dmaLo;
+  call IomStore(ecx + 4, edx);
+}
+
+procedure setupIoTablesHelper3(tableBase@esi)
+  requires and(tableBase + 0x5000, 4095) == 0;
+  requires IoContextTable($IomMem, tableBase + 0x4000);
+  requires (forall i:int::{TV(i)} TV(i) && 0 <= i && i < 256 ==>
+                  $IomMem[tableBase + 0x5000 + 16 * i + 0] == tableBase + 0x4000 + 1
+               && $IomMem[tableBase + 0x5000 + 16 * i + 4] == 0
+               && $IomMem[tableBase + 0x5000 + 16 * i + 8] == 0
+               && $IomMem[tableBase + 0x5000 + 16 * i + 12] == 0);
+  ensures IoRootTable($IomMem, tableBase + 0x5000);
+{
+}
+
+procedure setupIoTables()
+  requires word(?iomLo) && word(?iomHi) && word(?dmaHi);
+  requires ecx == ?iomLo;
+  requires ?dmaLo == ?iomHi;
+  requires Aligned(?dmaLo);
+  requires !$IomFrozen;
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp;
+  modifies $IomMem;
+  ensures  IoRootTable($IomMem, eax);
+  ensures  $IomMem[?dmaLo - 8] == ?BYTE_VECTOR_VTABLE;
+  ensures  $IomMem[?dmaLo - 4] == ?dmaHi - ?dmaLo;
+{
+  var dmaLo:int := ecx + 65536;
+
+  ecx := ecx + 4096;
+  var tableBase@esi := ecx + 4096;
+  call __is4kAligned(ecx);
+  call __add4kAligned(ecx - and(ecx, 4095) + 0x0000);
+  call __add4kAligned(ecx - and(ecx, 4095) + 0x1000);
+  call __add4kAligned(ecx - and(ecx, 4095) + 0x2000);
+  call __add4kAligned(ecx - and(ecx, 4095) + 0x3000);
+  call __add4kAligned(ecx - and(ecx, 4095) + 0x4000);
+  call __add4kAligned(ecx - and(ecx, 4095) + 0x5000);
+  call ecx := And(ecx, 4095);
+  tableBase := tableBase - ecx;
+  assert TV(tableBase);
+
+  ecx := dmaLo + 0x200000;
+  var dmaAlignedLo@ebx := ecx + 0x200000;
+  call __is2m4kAligned(ecx);
+  call ecx := And(ecx, 0x1fffff);
+  dmaAlignedLo := dmaAlignedLo - ecx;
+
+  call setupIoTablesHelper1();
+
+  ecx := dmaLo;
+  call setupIoTablesHelper2();
+
+  call setupIoTablesHelper3();
+
+  eax := tableBase + 0x5000;
+}
+
+procedure setIoMmuRegs($entry:int, regs@esi)
+  requires regs == ?DrhdRegs[$entry];
+  requires IoRootTable($IomMem, ebx);
+  requires $IoMmuState[$entry] == 0;
+  modifies $Eip, eax, ecx, edx, esi, ebp;
+  modifies $IoMmuState, $IomFrozen;
+  ensures  $IoMmuState[$entry] == 4;
+  ensures  (forall i:int::{$IoMmuState[i]} i != $entry ==> $IoMmuState[i] == old($IoMmuState)[i]);
+{
+  call IomRegStore($entry, regs + 32, ebx);
+  call IomRegStore($entry, regs + 36, 0);
+  eax := 1;
+  call eax := Shl(eax, 30);
+  call IomRegStore($entry, regs + 24, eax);
+  eax := 1;
+  call eax := Shl(eax, 31);
+  call IomRegStore($entry, regs + 24, eax);
+
+//  edx := 0;
+//  call eax := IomRegLoad($entry, regs + 28);
+//  call writeHex();
+}
+
+procedure readDmar(ptr@edi)
+  requires ?DmarExists;
+  requires ptr == ?DmarPtr;
+  requires IoRootTable($IomMem, ebx);
+  requires $IomMem[?dmaLo - 8] == ?BYTE_VECTOR_VTABLE;
+  requires $IomMem[?dmaLo - 4] == ?dmaHi - ?dmaLo;
+  requires (forall i:int::{$IoMmuState[i]} $IoMmuState[i] == 0);
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp;
+  modifies $IoMmuState, $IomFrozen, $IoMmuEnabled;
+  ensures  $IoMmuEnabled;
+{
+  call ecx := RoLoad32(ptr + 4);
+  var end:int := ptr + ecx;
+
+  var $entry:int := 0;
+  ptr := ptr + 48;
+  while (ptr < end)
+    invariant TV($entry);
+    invariant ?DmarPtr + 48 <= ptr && ptr <= ?DmarPtr + ?DmarLen;
+    invariant MaybeDrhd(ptr, $entry);
+    invariant (forall i:int::{$IoMmuState[i]} i >= $entry ==> $IoMmuState[i] == 0);
+    invariant (forall i:int::{$IoMmuState[i]} 0 <= i && i < $entry ==> $IoMmuState[i] == 4);
+  {
+    var typ@edx;
+    var len@ecx;
+    call typ := RoLoadU16(ptr + 0);
+    call len := RoLoadU16(ptr + 2);
+    if (typ != 0)
+    {
+      call drhdEnd(ptr, $entry);
+      goto done;
+    }
+    call drhdExists(ptr, $entry);
+    call eax := RoLoad32(ptr + 12);
+    if (eax != 0)
+    {
+      eax := 0x55550026;
+      call debugBreak();
+    }
+    call esi := RoLoad32(ptr + 8);
+
+    var saveEcx:int := ecx;
+    call setIoMmuRegs($entry);
+    ecx := saveEcx;
+
+    $entry := $entry + 1;
+    ptr := ptr + len;
+  }
+  call drhdEnd(ptr, $entry);
+
+  done:
+  call iomEnable();
+}
+
+procedure readRsdt(ptr@esi)
+  requires ?RsdpExists;
+  requires !$IoMmuEnabled;
+  requires ptr == ?RsdtPtr;
+  requires ebp == ?dmaLo;
+  requires IoRootTable($IomMem, ebx);
+  requires $IomMem[?dmaLo - 8] == ?BYTE_VECTOR_VTABLE;
+  requires $IomMem[?dmaLo - 4] == ?dmaHi - ?dmaLo;
+  requires (forall i:int::{$IoMmuState[i]} $IoMmuState[i] == 0);
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp;
+  modifies $IoMmuState, $IomFrozen, $IoMmuEnabled, DmaAddr;
+  ensures ((DmaAddr == 0 && !$IoMmuEnabled) || (DmaAddr == ?dmaLo && $IoMmuEnabled));
+{
+  var dmaLo:int := ebp;
+
+  call ecx := RoLoad32(ptr + 4);
+  var end@ebp := ptr + ecx;
+
+  var $entry:int := 0;
+  ptr := ptr + 36;
+  while (ptr < end)
+    invariant TV($entry);
+    invariant ptr == ?RsdtPtr + 36 + 4 * $entry;
+    invariant 0 <= $entry && $entry <= ?RsdtCount;
+    invariant (forall j:int::{TV(j)} TV(j) && 0 <= j && j < $entry
+                ==> !MatchesDmar(ro32(?RsdtPtr + 36 + 4 * j)));
+  {
+    call ecx := RoLoad32(ptr + 0);
+    call edx := RoLoad32(ecx + 0);
+    if (edx == 0x52414d44)
+    {
+      // Found a DMAR entry.  Good.
+      var $dmarEntry:int := $entry;
+      var dmarPtr@edi := ecx;
+      assert MatchesDmar(dmarPtr);
+      $entry := $entry + 1;
+      ptr := ptr + 4;
+      while (ptr < end)
+        invariant TV($entry);
+        invariant ptr == ?RsdtPtr + 36 + 4 * $entry;
+        invariant 0 <= $entry && $entry <= ?RsdtCount;
+        invariant (forall j:int::{TV(j)} TV(j) && 0 <= j && j < $entry && j != $dmarEntry
+                    ==> !MatchesDmar(ro32(?RsdtPtr + 36 + 4 * j)));
+      {
+        call ecx := RoLoad32(ptr + 0);
+        call edx := RoLoad32(ecx + 0);
+        if (edx == 0x52414d44)
+        {
+          // Found another DMAR entry.  Bad.
+          DmaAddr := 0;
+          goto done;
+        }
+        $entry := $entry + 1;
+        ptr := ptr + 4;
+      }
+      call dmarExists(dmarPtr, $dmarEntry);
+      call readDmar();
+      eax := dmaLo;
+      DmaAddr := eax;
+      goto done;
+    }
+    $entry := $entry + 1;
+    ptr := ptr + 4;
+  }
+  DmaAddr := 0;
+
+  done:
+}
+
+procedure startIoMmu()
+  requires IoRootTable($IomMem, ebx);
+  requires !$IoMmuEnabled;
+  requires ebp == ?dmaLo;
+  requires $IomMem[?dmaLo - 8] == ?BYTE_VECTOR_VTABLE;
+  requires $IomMem[?dmaLo - 4] == ?dmaHi - ?dmaLo;
+  requires (forall i:int::{$IoMmuState[i]} $IoMmuState[i] == 0);
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp;
+  modifies $IoMmuState, $IomFrozen, $IoMmuEnabled, DmaAddr;
+  ensures ((DmaAddr == 0 && !$IoMmuEnabled) || (DmaAddr == ?dmaLo && $IoMmuEnabled));
+{
+  var dmaLo:int := ebp;
+  var $entry:int := 0;
+  var ptr@esi := ?RoBiosLo;
+  while (ptr < ?RoBiosHi - 16)
+    invariant TV($entry);
+    invariant ptr == ?RoBiosLo + 16 * $entry;
+    invariant ?RoBiosLo <= ptr && ptr <= ?RoBiosHi - 16;
+    invariant (forall j:int::{TV(j)} TV(j) && j < $entry && inBiosRo(?RoBiosLo + 16 * j)
+                ==> !MatchesRsdp(?RoBiosLo + 16 * j));
+  {
+    call ecx := RoLoad32(ptr + 0);
+    call edx := RoLoad32(ptr + 4);
+
+    if (ecx == 0x20445352)
+    {
+      if (edx == 0x20525450)
+      {
+        var ptr2@edi := ptr;
+        var sum@ebp := 0;
+        while (ptr2 < ptr + 20)
+          invariant TV(ptr) && TV(ptr2);
+          invariant ptr <= ptr2 && ptr2 <= ptr + 20;
+          invariant sum == ByteSum(ptr, ptr2);
+        {
+          call eax := RoLoadU8(ptr2);
+          call sum := AddChecked(sum, eax);
+          ptr2 := ptr2 + 1;
+        }
+
+        call sum := And(sum, 0xff);
+        if (sum == 0)
+        {
+          call rsdpExists(ptr, $entry);
+          call ptr := RoLoad32(ptr + 16);
+          ebp := dmaLo;
+          call readRsdt();
+          goto done;
+        }
+      }
+    }
+
+    $entry := $entry + 1;
+    ptr := ptr + 16;
+  }
+  DmaAddr := 0;
+
+  done:
+}
+
+implementation NucleusEntryPoint($smap:int)
+{
+  var platform:int := ecx;
+
+  eax := 0x12345678;
+  edx := 20;
+  call writeHex();
+
+  eax := platform;
+  edx := 40;
+  call writeHex();
+
+  esi := platform;
+  call eax := RoLoad32(esi + 40);
+  edx := 60;
+  call writeHex();
+
+  esi := platform;
+  call eax := RoLoad32(esi + 44);
+  edx := 80;
+  call writeHex();
+
+  // Load smap count
+  esi := platform;
+  call eax := RoLoad32(esi + 44);
+  if (eax >= 4)
+  {
+    // Found at least 4 smap entries.
+    call edi := RoLoad32(esi + 40);
+
+    // Get smap entry 3
+    call eax := RoLoad32(edi + 72);
+    ebx := eax;
+    edx := 100;
+    call writeHex();
+
+    call eax := RoLoad32(edi + 80);
+    esi := eax;
+    edx := 120;
+    call writeHex();
+
+    call eax := RoLoad32(edi + 88);
+    if (eax == 1)
+    {
+      // Found main memory!
+      //   ?idtLo == ebx
+      //   ?memLo == ?idtHi == ebx + 2048
+      //   ?memHi == ebx + esi
+      var idtLo:int := ebx;
+
+      // Initialize memory
+      ecx := ebx + 2048;
+      ecx := ecx + 65536;
+      ecx := ecx + 0x1200000;
+      edx := ebx + esi;
+      call initSeparation();
+
+      // Switch to nucleus stack
+      esp := DLo;
+
+      // Set up interrupt table
+      var entry@edi := 0;
+      var ptr@esi := idtLo;
+      while (entry < 256)
+        invariant entry >= 0 && TV(entry);
+        invariant ptr == idtLo + 8 * entry;
+        invariant (forall i:int::{TV(i)} TV(i) ==> 0 <= i && i < entry ==>
+                    $IdtMemOk[?idtLo + 8 * i] && $IdtMemOk[?idtLo + 8 * i + 4]);
+      {
+        var handler:int;
+        if      (entry == 0)  { handler := ?FaultHandler; }
+        else {if(entry == 3)  { handler := ?FaultHandler; }
+        else {if(entry == 4)  { handler := ?FaultHandler; }
+        else {if(entry == 13) { handler := ?ErrorHandler; }
+        else {if(entry == 14) { handler := ?ErrorHandler; }
+        else {if(entry < 32)  { handler := ?FatalHandler; }
+        else                  { handler := ?InterruptHandler; }}}}}}
+
+        edx := handler;
+        call edx := And(edx, 0x0000ffff);
+        ecx := 0x20;
+        call ecx := Shl(ecx, 16);
+        call ecx := Or(ecx, edx);
+        assert ecx == or(shl(?CodeSegmentSelector, 16), and(handler, ?Mask16Lo));
+        call IdtStore(entry, 0, handler, ptr, ecx);
+
+        ecx := handler;
+        edx := 0x7fff8000 + 0x7fff8000; // 0xffff0000
+        call ecx := And(ecx, edx);
+        call ecx := Or(ecx, 0x8e00);
+        call IdtStore(entry, 4, handler, ptr + 4, ecx);
+
+        ptr := ptr + 8;
+        entry := entry + 1;
+      }
+
+      // Set IDT register
+      ecx := idtLo;
+      edi := DLo;
+      call ecx := Shl(ecx, 16);
+      call ecx := Or(ecx, 2047);
+      call DStore(edi, ecx);
+      ecx := idtLo;
+      call ecx := Shr(ecx, 16);
+      assert TV(DLo) && TO(1);
+      call DStore(edi + 4, ecx);
+      call Lidt(edi);
+
+      // Set up PIC
+      eax := 0x11; edx := 0x20; call PicOut8(0, 0, 0);
+      eax := 0x11; edx := 0xa0; call PicOut8(1, 0, 0);
+      eax := 0x70; edx := 0x21; call PicOut8(0, 1, 1);
+      eax := 0x78; edx := 0xa1; call PicOut8(1, 1, 1);
+      eax := 0x04; edx := 0x21; call PicOut8(0, 1, 2);
+      eax := 0x02; edx := 0xa1; call PicOut8(1, 1, 2);
+      eax := 0x01; edx := 0x21; call PicOut8(0, 1, 3);
+      eax := 0x01; edx := 0xa1; call PicOut8(1, 1, 3);
+      eax := 0xfe; edx := 0x21; call PicOut8(0, 1, 4);
+      eax := 0xff; edx := 0xa1; call PicOut8(1, 1, 4);
+      eax := 0x20; edx := 0x20; call PicOut8(0, 0, 5);
+      eax := 0x20; edx := 0xa0; call PicOut8(1, 0, 5);
+
+      // Set up PCI table
+      entry := 0;
+      ptr := PciLo;
+      while (entry < 65536)
+        invariant 0 <= entry && entry <= 65536;
+        invariant ptr == PciLo + 8 * entry;
+        invariant (forall i:int::{TV(i)} TV(i) ==> 0 <= i && i < entry ==>
+                    $pciMem[PciLo + 8 * i] == 0 && $PciConfigState[i] == 0);
+        invariant MemInv($MemVars);
+      {
+        assert TV(PciLo) && TO(entry * 2);
+        call PciStore(ptr, 0);
+        entry := entry + 1;
+        ptr := ptr + 8;
+      }
+      call _ioInv();
+
+      // Set up IO-MMU tables
+      assert TV(?memLo) && TO(0 - 18 * 256 * 1024);
+      ecx := idtLo + 2048;
+      call setupIoTables();
+      ebx := eax;
+
+      // Set up IO-MMU
+      ebp := idtLo + 2048 + 65536;
+      call startIoMmu();
+
+      // Set initial timer
+      ecx := 0;
+      call startTimer();
+
+      // Set state of all managed stacks to empty
+      var s:int := 0;
+      ecx := TLo;
+      while (s < ?NumStacks)
+        invariant s >= 0;
+        invariant ecx == ?tLo + s * ?TSize;
+        invariant Aligned(ecx);
+        invariant (forall $s:int::{TStk($s)} TStk($s) ==> $s < s ==> isStack($s) ==> StackTag($s, $tMems) == ?STACK_EMPTY);
+        invariant MemInv($MemVars);
+      {
+        assert TV(ecx) && TO(2) && TO(64);
+        call TStore(s, ecx, ?STACK_EMPTY);
+        ecx := ecx + ?TSize;
+        s := s + 1;
+      }
+
+      // Initialize GC
+      CurrentStack := ?InitialStack;
+      call InitializeGc();
+
+      // Switch to initial managed stack
+      StackCheck := FLo + ?StackReserve + ?InterruptReserve;
+      assert FLo == ?fLo;
+      esp := FLo + ?FSize - 8;
+      assert TV(FLo) && TO(4094) && TO(4095);
+      edi := TLo;
+      assert TV(TLo) && TO(2);
+
+      ecx := ?KernelEntryPoint;
+      call setStackRunning1(0);
+      ebp := 0;
+
+      call Ret(old($RET)); return;
+    }
+    edx := 140;
+    call writeHex();
+  }
+
+  eax := 0x55550001;
+  call debugBreak();
+
+  // not reached
+  call Ret(old($RET)); return;
+}
+
+implementation FaultHandler($_stackState:[int]StackState, $ebp:int, $esp:int, $eip:int)
+{
+  var $__stackState:[int]StackState := $StackState[$S := StackEmpty];
+  call revealInv1($S, $StackState);
+
+  eax := CurrentStack;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $S);
+
+  call setStackEmpty($S);
+  call revealInv1(?InterruptStack, $__stackState);
+
+  ecx := FLo;
+  call ecx := Add(ecx, ?StackReserve);
+  call ecx := Add(ecx, ?InterruptReserve);
+  StackCheck := ecx;
+
+  ecx := 0;
+  edi := TLo;
+  call ebx := TLoad(?InterruptStack, edi);
+  if (ebx != ?STACK_YIELDED)
+  {
+    // Fatal error: interrupt stack not ready to receive interrupt
+    eax := 0x55550004;
+    call debugBreak();
+  }
+
+  call setStackRunning3(?InterruptStack, $__stackState, $ebp, $esp, $eip);
+  call Ret(old($RET)); return;
+}
+
+implementation ErrorHandler($_stackState:[int]StackState, $ebp:int, $esp:int, $eip:int)
+{
+  var $__stackState:[int]StackState := $StackState[$S := StackEmpty];
+  call revealInv1($S, $StackState);
+
+  eax := CurrentStack;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $S);
+
+  call setStackEmpty($S);
+  call revealInv1(?InterruptStack, $__stackState);
+
+  ecx := FLo;
+  call ecx := Add(ecx, ?StackReserve);
+  call ecx := Add(ecx, ?InterruptReserve);
+  StackCheck := ecx;
+
+  ecx := 0;
+  edi := TLo;
+  call ebx := TLoad(?InterruptStack, edi);
+  if (ebx != ?STACK_YIELDED)
+  {
+    // Fatal error: interrupt stack not ready to receive interrupt
+    eax := 0x55550005;
+    call debugBreak();
+  }
+
+  call setStackRunning3(?InterruptStack, $__stackState, $ebp, $esp, $eip);
+  call Ret(old($RET)); return;
+}
+
+implementation InterruptHandler($_stackState:[int]StackState, $ebp:int, $esp:int, $eip:int)
+{
+  var $__stackState:[int]StackState :=
+    $StackState[$S := StackInterrupted(eax, ebx, ecx, edx, esi, edi, ebp, esp + 12, $Mem[esp], $Mem[esp + 4], $Mem[esp + 8])];
+  call setStackInterrupted();
+  call revealInv1(?InterruptStack, $__stackState);
+
+  ecx := FLo;
+  call ecx := Add(ecx, ?StackReserve);
+  call ecx := Add(ecx, ?InterruptReserve);
+  StackCheck := ecx;
+
+  ecx := 0;
+  edi := TLo;
+  call ebx := TLoad(?InterruptStack, edi);
+  if (ebx != ?STACK_YIELDED)
+  {
+    // Fatal error: interrupt stack not ready to receive interrupt
+    eax := 0x55550006;
+    call debugBreak();
+  }
+
+  call setStackRunning3(?InterruptStack, $__stackState, $ebp, $esp, $eip);
+  call Ret(old($RET)); return;
+}
+
+implementation Throw($_stackState:[int]StackState, $ebp:int, $esp:int, $eip:int)
+{
+  var $__stackState:[int]StackState := $StackState[$S := StackEmpty];
+  call revealInv1($S, $StackState);
+
+  eax := CurrentStack;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $S);
+
+  call setStackEmpty($S);
+  call revealInv1(?InterruptStack, $__stackState);
+
+  ecx := FLo;
+  call ecx := Add(ecx, ?StackReserve);
+  call ecx := Add(ecx, ?InterruptReserve);
+  StackCheck := ecx;
+
+  ecx := 0;
+  edi := TLo;
+  call ebx := TLoad(?InterruptStack, edi);
+  if (ebx != ?STACK_YIELDED)
+  {
+    // Fatal error: interrupt stack not ready to receive interrupt
+    eax := 0x55550003;
+    call debugBreak();
+  }
+
+  call setStackRunning3(?InterruptStack, $__stackState, $ebp, $esp, $eip);
+  call Ret(old($RET)); return;
+}
+
+implementation FatalHandler()
+{
+  eax := 0x55550007;
+  call debugBreak();
+  call Ret(old($RET)); return;
+}
+
+implementation GetStackState($s:int)
+{
+  if (ecx >= ?NumStacks)
+  {
+    eax := 0x55550009;
+    call debugBreak();
+  }
+  call revealInv1($s, $StackState);
+
+  // Get $s state
+  eax := ecx;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $s);
+  call eax := TLoad($s, eax);
+  call Ret(old($RET)); return;
+}
+
+implementation ResetStack($s:int)
+{
+  if (ecx >= ?NumStacks)
+  {
+    eax := 0x55550009;
+    call debugBreak();
+  }
+  call revealInv1($s, $StackState);
+
+  // Get $s state
+  eax := ecx;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $s);
+  call ebx := TLoad($s, eax);
+
+  if (ebx == ?STACK_RUNNING)
+  {
+    // Can't reset our own stack
+    eax := 0x5555000a;
+    call debugBreak();
+  }
+
+  call setStackEmpty($s);
+  call Ret(old($RET)); return;
+}
+
+implementation YieldTo($s:int, $_stackState:[int]StackState,
+            $eax:int, $ebx:int, $ecx:int, $edx:int, $esi:int, $edi:int, $ebp:int, $esp:int,
+            $eip:int, $cs:int, $efl:int)
+{
+  if (ecx >= ?NumStacks)
+  {
+    eax := 0x55550008;
+    call debugBreak();
+  }
+
+  var $__stackState:[int]StackState := $StackState[$S := StackYielded(ebp, esp + 4, $Mem[esp])];
+  call revealInv1($s, $StackState);
+
+  // Set stack check limit
+  eax := ecx;
+  edx := ?FSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, FLo);
+  call eax := Add(eax, ?StackReserve);
+  call eax := Add(eax, ?InterruptReserve);
+  StackCheck := eax;
+
+  // Get $s state
+  eax := ecx;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $s);
+  call ebx := TLoad($s, eax);
+  edi := eax;
+
+  // Prepare to set $S state if necessary
+  eax := CurrentStack;
+  edx := ?TSize;
+  call eax, edx := Mul(eax, edx);
+  call eax := Add(eax, TLo);
+  assert TV(TLo) && TO(64 * $S);
+
+  if (ebx == ?STACK_YIELDED)
+  {
+    call setStackYielded();
+    call setStackRunning3($s, $__stackState, $ebp, $esp, $eip);
+    call Ret(old($RET)); return;
+  }
+  else {if(ebx == ?STACK_INTERRUPTED)
+  {
+    call setStackYielded();
+    call setStackRunning4($s, $__stackState, $eax, $ebx, $ecx, $edx, $esi, $edi, $ebp, $esp, $eip, $cs, $efl);
+    call IRet(old($RET)); return;
+  }
+  else {if(ebx == ?STACK_EMPTY)
+  {
+    call setStackYielded();
+
+    eax := ecx;
+    edx := ?FSize;
+    call eax, edx := Mul(eax, edx);
+    call eax := Add(eax, FLo);
+    assert TV(FLo) && TO($s * 4096 + 4094) && TO($s * 4096 + 4095);
+    call esp := Lea(eax + 16376);
+    eax := ?KernelEntryPoint;
+    call setStackRunning2($s, $__stackState);
+    ebp := 0;
+    call Ret(old($RET)); return;
+  }}}
+  // ebx == ?STACK_RUNNING
+  call Ret(old($RET)); return;
+}
+
+implementation VgaTextWrite()
+{
+  if (ecx < 4000)
+  {
+    call VgaTextStore16(ecx + 1 * ecx + 0xb8000, edx);
+  }
+  call Ret(old($RET)); return;
+}
+
+implementation TryReadKeyboard()
+{
+  call /*eax := */ KeyboardStatusIn8();
+  call eax := And(eax, 1);
+  call Go(); if (eax != 0) { goto skip; }
+    call eax:=Mov(256);
+    call Ret(old($RET)); return;
+  skip:
+  call /*eax := */ KeyboardDataIn8();
+  call eax := And(eax, 255);
+  call Ret(old($RET)); return;
+}
+
+implementation StartTimer()
+{
+  call startTimer();
+  call Ret(old($RET)); return;
+}
+
+implementation SendEoi()
+{
+  var $seq0:int := $PicSeq[0] + 1;
+  var $seq1:int := $PicSeq[1] + 1;
+  eax := 0x20; edx := 0x20; call PicOut8(0, 0, $seq0);
+  eax := 0x20; edx := 0xa0; call PicOut8(1, 0, $seq1);
+  call Ret(old($RET)); return;
+}
+
+procedure pciConfigAddr($id:int, $offset:int)
+  requires IsValidPciId($id);
+  requires IsValidPciOffset($offset);
+  requires ecx == $id;
+  requires edx == $offset;
+  modifies $Eip, eax, edx;
+  modifies $PciConfigId, $PciConfigOffset;
+  ensures  $PciConfigId == $id;
+  ensures  $PciConfigOffset == $offset;
+  ensures  edx == 0xcfc;
+{
+  eax := ecx;
+  call eax := Shl(eax, 8);
+  call eax := Or(eax, edx);
+  edx := 0x7fffffff;
+  call edx := AddChecked(edx, 1);
+  call eax := Or(eax, edx);
+  edx := 0xcf8;
+  call PciConfigAddrOut32($id, $offset);
+  edx := 0xcfc;
+}
+
+// ecx = id
+// edx = offset
+implementation PciConfigRead32()
+{
+  var $id:int := ecx;
+  var $offset:int := edx;
+
+  if (ecx >= 65536)
+  {
+    eax := 0x5555000c;
+    call debugBreak();
+  }
+  if (edx >= 256)
+  {
+    eax := 0x5555000d;
+    call debugBreak();
+  }
+  eax := edx;
+  call eax := And(eax, 3);
+  if (eax != 0)
+  {
+    eax := 0x5555000e;
+    call debugBreak();
+  }
+  call __andAligned(edx);
+  call pciConfigAddr($id, $offset);
+  call /*eax :=*/ PciConfigDataIn32($id, $offset);
+  call Ret(old($RET)); return;
+}
+
+// ecx = id
+implementation PciMemSetup()
+{
+  var $id:int := ecx;
+  var ffffffff:int := 2147483647 + 2147483647 + 1;
+  call revealInv1(0, $StackState);
+  call _ioInv();
+  assert TV($id);
+
+  if (ecx >= 65536)
+  {
+    eax := 0x5555000f;
+    call debugBreak();
+  }
+
+  eax := ecx;
+  call eax := And(eax, 7);
+  if (eax != 0)
+  {
+    eax := 0x55550020;
+    call debugBreak();
+  }
+
+  eax := ecx;
+  call eax := Add(eax, eax);
+  call eax := Add(eax, eax);
+  call eax := Add(eax, eax);
+  call eax := Add(eax, PciLo);
+  var tableEntry:int := eax;
+  assert TV(PciLo) && TO($id * 2) && TO($id * 2 + 1);
+
+  eax := tableEntry;
+  call eax := PciLoad(eax);
+  if (eax != 0)
+  {
+    // Already initialized
+    eax := 0x55550024;
+    call debugBreak();
+  }
+
+  call __zeroAligned();
+  assert TV(0) && TO(1) && TO(3) && TO(4);
+
+  edx := 0;
+  call pciConfigAddr($id, 0);
+  call /*eax :=*/ PciConfigDataIn32($id, 0);
+  var config0:int := eax;
+
+  edx := 4;
+  call pciConfigAddr($id, 4);
+  call /*eax :=*/ PciConfigDataIn32($id, 4);
+  var config4:int := eax;
+
+  edx := 12;
+  call pciConfigAddr($id, 12);
+  call /*eax :=*/ PciConfigDataIn32($id, 12);
+  var config12:int := eax;
+
+  edx := 16;
+  call pciConfigAddr($id, 16);
+  call /*eax :=*/ PciConfigDataIn32($id, 16);
+  var config16:int := eax;
+  if (eax == 0)
+  {
+    eax := 0x55550025;
+    call debugBreak();
+  }
+
+  // Check VendorID
+  eax := config0;
+  call eax := And(eax, 0xffff);
+  if (eax == 0xffff)
+  {
+    eax := 0x55550021;
+    call debugBreak();
+  }
+
+  // Check HeaderType
+  eax := config12;
+  call eax := Shr(eax, 16);
+  call eax := And(eax, 0xff);
+  if (eax != 0)
+  {
+    eax := 0x55550022;
+    call debugBreak();
+  }
+
+  // Check MemoryAddress type
+  eax := config16;
+  call eax := And(eax, 15);
+  if (eax != 0)
+  {
+    eax := 0x55550023;
+    call debugBreak();
+  }
+
+  // State 0
+  edx := 4;
+  call pciConfigAddr($id, 4);
+  ebx := ffffffff - 2;
+  eax := config4;
+  call eax := And(eax, ebx);
+  call PciConfigDataOut32($id, 4, config0, config4, config12, config16);
+
+  // State 1
+  edx := 16;
+  call pciConfigAddr($id, 16);
+  eax := ffffffff;
+  call PciConfigDataOut32($id, 16, config0, config4, config12, config16);
+
+  // State 2
+  edx := 16;
+  call pciConfigAddr($id, 16);
+  call /*eax :=*/ PciConfigDataIn32($id, 16);
+  var sizeBits:int := eax;
+
+  edx := 16;
+  call pciConfigAddr($id, 16);
+  eax := config16;
+  call PciConfigDataOut32($id, 16, config0, config4, config12, config16);
+
+  // State 3
+  edx := 4;
+  call pciConfigAddr($id, 4);
+  eax := config4;
+  call eax := Or(eax, 2);
+  call PciConfigDataOut32($id, 4, config0, config4, config12, config16);
+
+  // State 4
+  eax := sizeBits;
+  call eax := Not(eax);
+  call eax := AddChecked(eax, 1);
+
+  edx := tableEntry;
+  ecx := config16;
+  call PciStore(edx + 0, ecx);
+  call PciStore(edx + 4, eax);
+
+  call updateInv1(old($PciConfigState), old($pciMem), old($Mem));
+
+  call _fret($S, old($Mem), old($sMem), old($dMem), old($pciMem), old($tMems), old($fMems), old($gcMem));
+  call Ret(old($RET)); return;
+}
+
+implementation PciDmaBuffer()
+{
+  call revealInv1($S, $StackState);
+  call _ioInv();
+  eax := DmaAddr;
+  if (eax != 0)
+  {
+    eax := eax - 8;
+  }
+  call Ret(old($RET)); return;
+}
+
+implementation PciDmaPhysicalAddr()
+{
+  call revealInv1($S, $StackState);
+  call _ioInv();
+  eax := DmaAddr;
+  call Ret(old($RET)); return;
+}
+
+implementation PciMemRead32($id:int, $offset:int)
+{
+  call revealInv1($S, $StackState);
+  call _ioInv();
+  assert TV($id) && TV(?pciLo) && TO(2 * ecx) && TO(2 * ecx + 1);
+
+  eax := DmaAddr;
+  if (eax == 0)
+  {
+    // IO-MMU not enabled
+    eax := 0x5555002a;
+    call debugBreak();
+  }
+
+  if (ecx >= 65536)
+  {
+    eax := 0x55550027;
+    call debugBreak();
+  }
+
+  ebx := PciLo;
+  call esi := PciLoad(ebx + 8 * ecx);
+  if (esi == 0)
+  {
+    // $id not yet set up by PciMemSetup
+    eax := 0x55550028;
+    call debugBreak();
+  }
+
+  call edi := PciLoad(ebx + 8 * ecx + 4);
+
+  eax := edx;
+  call eax := AddChecked(eax, 4);
+  if (eax > edi)
+  {
+    // $offset out of bounds
+    eax := 0x55550029;
+    call debugBreak();
+  }
+
+  call eax := PciMemLoad32($id, esi + 1 * edx);
+
+  call Ret(old($RET)); return;
+}
+
+implementation PciMemWrite32($id:int, $offset:int, $val:int)
+{
+  call revealInv1($S, $StackState);
+  call _ioInv();
+  assert TV($id) && TV(?pciLo) && TO(2 * ecx) && TO(2 * ecx + 1);
+
+  assert TO(1) && TV(esp);
+  call eax := FLoad($S, esp + 4);
+  var val:int := eax;
+
+  eax := DmaAddr;
+  if (eax == 0)
+  {
+    // IO-MMU not enabled
+    eax := 0x5555002b;
+    call debugBreak();
+  }
+
+  if (ecx >= 65536)
+  {
+    eax := 0x5555002c;
+    call debugBreak();
+  }
+
+  ebx := PciLo;
+  call esi := PciLoad(ebx + 8 * ecx);
+  if (esi == 0)
+  {
+    // $id not yet set up by PciMemSetup
+    eax := 0x5555002d;
+    call debugBreak();
+  }
+
+  call edi := PciLoad(ebx + 8 * ecx + 4);
+
+  eax := edx;
+  call eax := AddChecked(eax, 4);
+  if (eax > edi)
+  {
+    // $offset out of bounds
+    eax := 0x5555002e;
+    call debugBreak();
+  }
+
+  eax := val;
+  call PciMemStore32($id, esi + 1 * edx, eax);
+
+  call Ret(old($RET)); return;
+}
+
+implementation CycleCounter()
+{
+  call Rdtsc();
+  call Ret(old($RET)); return;
+}
+
+implementation DebugPrintHex()
+{
+  if (ecx >= 72)
+  {
+    eax := 0x5555000b;
+    call debugBreak();
+  }
+  eax := edx;
+  call edx := Lea(ecx + ecx);
+  call writeHex();
+  call Ret(old($RET)); return;
+}

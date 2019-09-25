@@ -1,0 +1,35 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Windows\Nib\Nib.csproj
+
+Note:   Native Image Builder
+
+        This program handles converting collections of IL assemblies into native
+        executable images.  It is mostly a front-end to Bartok and LINK.
+        
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="3.5">
+  <Import Project="..\Paths.targets" />
+  <PropertyGroup>
+    <AssemblyName>nib</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ProjectGuid>{84B9B480-CE90-423A-A3AE-532AAF37D1EB}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="nib.cs" />
+    <Compile Include="..\WindowsInteropLib\Kernel32.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+</Project>

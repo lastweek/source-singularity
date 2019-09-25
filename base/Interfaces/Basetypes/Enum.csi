@@ -1,0 +1,39 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+    public abstract class Enum : ValueType, IComparable, IFormattable
+    {
+        public String ToString(String format);
+        public static Object Parse(Type enumType, String value);
+        public static Object Parse(Type enumType, String value, bool ignoreCase);
+
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+        public override String ToString();
+
+        public static Type GetUnderlyingType(Type enumType);
+        public static Array GetValues(Type enumType);
+        public static String GetName(Type enumType, Object value);
+        public static String[] GetNames(Type enumType);
+
+        public static Object ToObject(Type enumType, Object value);
+
+        public static bool IsDefined(Type enumType,Object value);
+
+        public int CompareTo(Object target);
+
+        public static Object ToObject(Type enumType, sbyte value);
+        public static Object ToObject(Type enumType, short value);
+        public static Object ToObject(Type enumType, int value);
+        public static Object ToObject(Type enumType, byte value);
+        public static Object ToObject(Type enumType, ushort value);
+        public static Object ToObject(Type enumType, uint value);
+        public static Object ToObject(Type enumType, long value);
+        public static Object ToObject(Type enumType, ulong value);
+    }
+}

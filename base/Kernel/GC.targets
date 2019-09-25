@@ -1,0 +1,213 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Kernel\GC.targets
+#
+#   Note:
+#
+##############################################################################
+
+This file contains the definitions for selecting the different GC implementations.
+Projects that import this file must set the 'Collector' property to a valid collector
+name before importing this file.
+
+If the 'DefineGCCompileItems' property is set to true, then this target will define
+'Compile' items for the C# source code for the specified GC implementation.
+
+This file will always set the GCDefine name to be the name of the GC, as passed to
+C#, Sing#, C/C++, and assembler files as a preprocessor directive.  If the
+DefineGCCompileItems property is 'true', then the DefineConstants property will be
+updated to include this value.  Other kinds of projects will need to handle
+passing 'GCDefine' to the appropriate preprocessor.
+
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+
+  <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+    <!-- BARTOK_SOURCES -->
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\ArrayHelper.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\Headers.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\Magic.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\MultiUseWord.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\Options.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\Shared.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\VTable.cs" />
+    <Compile Include="$(BartokSrcDir)\library\shared\System\Runtime\CompilerServices\Attributes.cs" />
+    <Compile Include="$(BartokSrcDir)\library\singularity\System\Runtime\CompilerServices\Attributes.cs" />
+    <Compile Include="$(SINGULARITY_ROOT)\Kernel\System\Security\Attributes.cs" />
+    <Compile Include="$(SINGULARITY_ROOT)\Kernel\System\Threading\SpinLockBase.cs"/>
+    <Compile Include="$(AppRuntimeSrcDir)\System\Threading\UserSpinLock.cs" Condition= "'$(AssemblyName)'!='kernel'"/>
+    <Compile Include="$(SINGULARITY_ROOT)\Kernel\System\Threading\KernelSpinLock.cs" Condition= "'$(AssemblyName)'=='kernel'"/>
+    <Compile Include="$(SINGULARITY_ROOT)\Kernel\System\Threading\PreemptionLock.cs" />
+
+    <!-- RUNTIME_SOURCES -->
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\Finalizer.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\GC.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\StackHeight.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\TryAll.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\TryAllAttributes.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\TryAllException.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\System\WeakReference.cs" />
+
+    <!-- COLLECTOR_SOURCES -->
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Allocator.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Barrier.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\BaseCollector.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\BootstrapMemory.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\BumpAllocator.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CalleeSave.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CalleeSaveARM.cs" Condition="'$(Machine)'=='arm'"/>
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CalleeSaveX64.cs" Condition="'$(Machine)'=='x64'"/>
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CalleeSaveX86.cs" Condition="'$(Machine)'=='x86'"/>
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CallStack.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CentralPT.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Collector.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CollectorStatistics.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\FrameDescriptor.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\FrameDescriptorARM.cs" Condition="'$(Machine)'=='arm'"/>
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\FrameDescriptorX64.cs" Condition="'$(Machine)'=='x64'"/>
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\FrameDescriptorX86.cs" Condition="'$(Machine)'=='x86'"/>
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GCProfiler.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\InteriorPtrTable.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\MemoryAccounting.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\MemoryManager.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\ObjectLayout.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\PageManager.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\PageTable.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\PageType.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\ReferenceVisitor.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\RefWriteBarrier.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SegregatedFreeList.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\StaticData.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Trace.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Transitions.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\UIntPtrQueue.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\UIntPtrStack.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\UnmanagedPageList.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Util.cs" />
+    <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\Verifier.cs" />
+  </ItemGroup>
+
+
+  <Choose>
+    <When Condition="'$(Collector)'=='AdaptiveCopying'">
+      <PropertyGroup>
+        <GCDefine>ADAPTIVE_COPYING_COLLECTOR</GCDefine>
+        <BARTOK_COLLECTOR>/AdaptiveCopying</BARTOK_COLLECTOR>
+        <GC_CSC_DEFS>ADAPTIVE_COPYING_COLLECTOR</GC_CSC_DEFS>
+        <GC_ML_DEFS>/DWRITEBARRIER_SSB=1</GC_ML_DEFS>
+      </PropertyGroup>
+      <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\AdaptiveCopyingCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\AllCardsWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CardTable.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CopyScan.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\OffsetTable.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\RememberedSet.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SemiSpaceCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SlidingCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SequentialStoreBuffer.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\StopTheWorldCollector.cs" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Collector)'=='Concurrent'">
+      <PropertyGroup>
+        <GCDefine>CONCURRENT_MS_COLLECTOR</GCDefine>
+        <BARTOK_COLLECTOR>/ConcurrentMSGC</BARTOK_COLLECTOR>
+        <GC_CSC_DEFS>CONCURRENT_MS_COLLECTOR</GC_CSC_DEFS>
+        <GC_ML_DEFS>/DWRITEBARRIER_CMS=1</GC_ML_DEFS>
+      </PropertyGroup>
+      <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CMSMarking.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\ConcurrentMSCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\ThreadHeaderQueue.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\UniversalWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\WriteBarrierCMS.cs" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Collector)'=='MarkSweep'">
+      <PropertyGroup>
+        <GCDefine>MARK_SWEEP_COLLECTOR</GCDefine>
+        <BARTOK_COLLECTOR>/MarkSweepGC</BARTOK_COLLECTOR>
+        <GC_CSC_DEFS>MARK_SWEEP_COLLECTOR</GC_CSC_DEFS>
+        <GC_ML_DEFS></GC_ML_DEFS>
+      </PropertyGroup>
+      <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\EmptyWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\MarkSweepCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\StopTheWorldCollector.cs" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Collector)'=='Null'">
+      <PropertyGroup>
+        <GCDefine>NULL_COLLECTOR</GCDefine>
+        <BARTOK_COLLECTOR>/NullGC</BARTOK_COLLECTOR>
+        <GC_CSC_DEFS>NULL_COLLECTOR</GC_CSC_DEFS>
+        <GC_ML_DEFS></GC_ML_DEFS>
+      </PropertyGroup>
+      <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\EmptyWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\NullCollector.cs" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Collector)'=='Semispace'">
+      <PropertyGroup>
+        <GCDefine>SEMISPACE_COLLECTOR</GCDefine>
+        <BARTOK_COLLECTOR>/SemispaceGC</BARTOK_COLLECTOR>
+        <GC_CSC_DEFS>SEMISPACE_COLLECTOR</GC_CSC_DEFS>
+        <GC_ML_DEFS>/DWRITEBARRIER_SSB=1</GC_ML_DEFS>
+      </PropertyGroup>
+      <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SemispaceCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CardTable.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CopyScan.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\OffsetTable.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\AllCardsWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\RememberedSet.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\StopTheWorldCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SequentialStoreBuffer.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalGCData.cs" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Collector)'=='Sliding'">
+      <PropertyGroup>
+        <GCDefine>SLIDING_COLLECTOR</GCDefine>
+        <BARTOK_COLLECTOR>/SlidingGC</BARTOK_COLLECTOR>
+        <GC_CSC_DEFS>SLIDING_COLLECTOR</GC_CSC_DEFS>
+        <GC_ML_DEFS>/DWRITEBARRIER_SSB=1</GC_ML_DEFS>
+      </PropertyGroup>
+      <ItemGroup Condition="'$(DefineGCCompileItems)'=='true'">
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SlidingCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\CardTable.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\OffsetTable.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\GenerationalWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\AllCardsWriteBarrier.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\RememberedSet.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\StopTheWorldCollector.cs" />
+        <Compile Include="$(BartokSrcDir)\runtime\shared\GCs\SequentialStoreBuffer.cs" />
+      </ItemGroup>
+    </When>
+    <Otherwise>
+      <!-- 'Collector' not specified. -->
+      <PropertyGroup>
+        <ERROR>The 'Collector' property has not been specified, or is not a recognized value.</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <PropertyGroup Condition="'$(GCDefine)'!=''">
+    <DefineConstants Condition="'$(DefineConstants)'!=''">$(DefineConstants);</DefineConstants>
+    <DefineConstants>$(DefineConstants)$(GCDefine)</DefineConstants>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,19 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System
+{
+
+    public class InvalidOperationException : SystemException
+    {
+        public InvalidOperationException();
+        public InvalidOperationException(String message);
+        public InvalidOperationException(String message, Exception innerException);
+    }
+}
+

@@ -1,0 +1,131 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IdeController.cs
+//
+//  Base Classes and Interfaces for interacting with ATA
+//
+//  References used:
+//  "AT Attachment Interface with Extension (ATA-2)", Revision 4c, DRAFT
+//          09/03/97, ISO Working Group T13, http://www.t13.org/
+//
+//  "AT Attachment 8 - ATA/ATAPI Command Set (ATA8-ACS)", Revision 0, DRAFT
+//          08/17/04, ISO Working Group T13, http://www.t13.org/
+//
+
+using System;
+using System.Collections;
+using System.Text;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Drivers.IDE;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Extending;
+
+using Microsoft.Singularity.Directory;
+
+using Microsoft.Singularity.Drivers;
+[assembly: Transform(typeof(DriverResourceTransform))]
+
+namespace Microsoft.Singularity.Drivers.IDE
+{
+    // create the resource object for CTR to fill in
+    [DriverCategory]
+    [Signature("/ata/controller")]
+    [EnumeratesDevice("/ata/disk")]
+    [EnumeratesDevice("/ata/atapi/...")]
+    internal class DiskResources : DriverCategoryDeclaration
+    {
+        [IoIrqRange(0, Default = 0x0e, Shared = true)]
+        internal readonly IoIrqRange irq;
+
+        // [TODO] do all of these need to be shared?
+        [IoPortRange(1, Default = 0x01f0, Length = 0x08, Shared = true)]
+        internal readonly IoPortRange command;
+
+        [IoPortRange(2, Default = 0x03f4, Length = 0x04, Shared = true)]
+        internal readonly IoPortRange control;
+
+        [IoPortRange(3, Default = 0xffa0, Length = 0x08, Shared = true)]
+        internal readonly IoPortRange dma;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> extension;
+
+        [ServiceEndpoint(typeof(DiskDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> service;
+
+        [Endpoint]
+        internal TRef<VolumeManagerContract.Imp:Start> volman;
+
+        internal int DriverMain(string instance) {
+            return DiskDriverControl.DriverMain(instance, this);
+        }
+    }
+
+    public class DiskDriverControl
+    {
+        private static IoConfig       config;
+        private static IdeController  controller;
+        private static IdeDisk        disk;
+        private static IdeDiskConfig  diskConfig;
+        private static IdeDiskConfig  slaveDiskConfig;
+
+        public static void SetMasterDiskConfig(IdeDiskConfig config)
+        {
+            diskConfig = config;
+        }
+        public static void SetSlaveDiskConfig(IdeDiskConfig config)
+        {
+            slaveDiskConfig = config;
+        }
+
+        internal static int DriverMain(string instance, DiskResources! resources)
+        {
+            DebugStub.Print("Disk: {0}: Irq={1}\n",
+                            __arglist(instance, resources.irq.ToString()));
+
+            // Create the Controller
+            controller = IdeController.Create(resources, (!)instance);
+            controller.Initialize();
+
+            ExtensionContract.Exp! extension = resources.extension.Acquire();
+            ServiceProviderContract.Exp! service = resources.service.Acquire();
+            VolumeManagerContract.Imp! volman = resources.volman.Acquire();
+
+            //Create the disk
+            if (diskConfig == null) {
+                if (slaveDiskConfig != null) {
+                    diskConfig = slaveDiskConfig;
+                    DebugStub.WriteLine("Using slave disk configuration.");
+                }
+            }
+            if (diskConfig == null) {
+                DebugStub.WriteLine("Master disk configuration not found.");
+                delete service;
+                delete extension;
+                delete volman;
+            }
+            else {
+                disk = new IdeDisk(diskConfig, instance);
+                disk.Run(extension, service, volman);
+            }
+
+            if (disk != null) {
+                disk.Finalize();
+            }
+
+            controller.Finalize();
+            return 0;
+        }
+
+    }
+}

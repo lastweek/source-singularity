@@ -1,0 +1,94 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   
+//
+//  Note:
+//
+
+//
+//
+//This file contains typesafe collection wrappers.  These are wrappers around the CLR 1.x (non-generic) collection
+//classes.  When the backend MSIL compiler supports templates, these collections will go away.
+//
+//
+
+using System;
+using System.Collections;
+
+namespace Smb.Client
+{
+
+	class DictionaryBase
+	{
+		protected readonly Hashtable! _table = new Hashtable();
+		
+		public void Clear()
+		{
+			_table.Clear();
+		}
+		
+		public ICollection Values
+		{
+			get { return _table.Values; }
+		}
+		
+		public ICollection Keys
+		{
+			get { return _table.Keys; }
+		}
+	}
+	
+	class ListBase : IEnumerable
+	{
+		protected readonly ArrayList! _list = new ArrayList();
+		
+		public int Count
+		{
+			get { return _list.Count; }
+		}
+		
+		public IEnumerator GetEnumerator()
+		{
+			return _list.GetEnumerator();
+		}
+		
+		public void RemoveAt(int index)
+		{
+			_list.RemoveAt(index);
+		}
+		
+		//
+		//public T this[int index]
+		//{
+		//	get { return (T)_list[index]; }
+		//	set { _list[index] = value; }
+		//}
+		//
+	}
+	
+	#if false
+	class List_DirectoryClient : ListBase
+	{
+		public DirectoryClient this[int index]
+		{
+			get { return (DirectoryClient)_list[index]; }
+			set { _list[index] = value; }
+		}
+		
+		public void Add(DirectoryClient value)
+		{
+			_list.Add(value);
+		}
+		
+		public void Remove(DirectoryClient value)
+		{
+			_list.Remove(value);
+		}
+		
+	}
+	#endif
+}

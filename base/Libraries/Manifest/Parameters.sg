@@ -1,0 +1,1158 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Parameter.cs
+//
+//  Note:
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Diagnostics;
+using System.Text;
+using System.Collections;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.V1.Services;
+using System.Globalization;
+
+namespace Microsoft.Singularity.Applications
+{
+    [CLSCompliant(false)]
+    public class ParameterProcessor
+    {
+        private Parameter[]  parameterSet; 
+        private Parameter[]  positionSet; 
+        private bool         havePositional; 
+        private string       appName; 
+        private int          totalCount;
+        private string       helpMsg; 
+        private int          boolCount, longCount, stringCount;
+        private bool         hasStringArray; 
+        private int          stringArrayIndex;
+
+        public ParameterProcessor() 
+        {
+        }
+        
+        private enum pType {
+            boolType,
+            longType, 
+            stringType,
+            stringArrayType
+        }
+       
+        private class Parameter
+        {
+            public  string  Name; 
+            public  bool    Mandatory; 
+            public  string  Default; 
+            public  int     Position; 
+            public  int     Index; 
+            public  pType   Kind; 
+            public bool     Resolved; 
+            public string   HelpMsg; 
+            
+            public bool     boolValue;
+            public string   stringValue;
+            public long     longValue;
+            public string[] stringArrayValue;
+                        
+            public Parameter(pType kind) {
+                Resolved    = false; 
+                Name        = null; 
+                Kind        = kind; 
+            }
+        }
+        
+        private string CodeToString(ParameterCode code)
+        {
+            switch (code) {
+                case ParameterCode.Success:
+                    return "Success"; 
+                    break; 
+                case ParameterCode.OutOfRange:
+                    return "OutOfRange"; 
+                    break; 
+                case ParameterCode.NotSet:
+                    return "NotSet"; 
+                    break; 
+                case ParameterCode.Retrieved:
+                    return "Retrieved"; 
+                    break; 
+                case ParameterCode.Undefined:
+                    return "Undefined"; 
+                    break; 
+                default:
+                    return "This should never happen"; 
+                    break; 
+            }   
+            return null; 
+        }
+        
+        private bool StringToBool (string arg, out bool value)
+        {
+            
+            value = false; 
+            bool ok = false; 
+            if (arg == null) return false; 
+            
+            string s = arg.ToLower(); 
+            
+            if (s == "true" || s == "t" || s == "1") {
+                value = true; 
+                ok = true; 
+            }
+            
+            if (s == "false" || s == "f" || s == "0") {
+                value = false; 
+                ok = true; 
+            }
+            
+            return ok; 
+        }
+        
+        private bool StringToLong (string arg, out long value) 
+        {
+           value = -1; 
+           int start = 0; 
+           bool doHex = false; 
+        
+            if (arg == null) return false; 
+            if (arg.StartsWith("0x") || arg.StartsWith("0X")) {
+                if (arg.Length == 2) return false; 
+                doHex = true; 
+                start = 2; 
+            }
+            else { 
+                for (int i = start; i < arg.Length; i++) {
+                    if (!Char.IsNumber(arg[i]) && arg[i] != '-') return false; 
+                }
+            }
+            try {
+                if (doHex) value = System.Int64.Parse(arg, NumberStyles.AllowHexSpecifier); 
+                else value = System.Int64.Parse(arg);
+            }
+            catch (Exception e) {
+                Console.WriteLine("Exception: converting {0} to Long. error={1}",arg,e.Message); 
+                return false; 
+            }
+            return true; 
+        }
+        
+        private Parameter! GetXmlAttributes(XmlNode! p, pType t)
+        {
+            
+             Parameter a = new Parameter(t); 
+             assert a != null; 
+             
+             a.Position     = p.GetAttribute("Position", -1);
+             a.Index        = p.GetAttribute("id", -1);
+             a.Mandatory    = p.GetAttribute("Mandatory", false);
+             a.Name         = p.GetAttribute("Name",null); 
+             a.Default      = p.GetAttribute("Default",null); 
+             a.HelpMsg      = p.GetAttribute("HelpMessage",null); 
+
+             //Console.WriteLine("name=({0}), Mandatory={1}, id={2}, position={3}",
+             //   a.Name, a.Mandatory, a.Index, a.Position); 
+             return a;
+        }
+
+        private static bool InSeparators(char c, char []! separators)
+        {
+            for (int i = 0; i < separators.Length; i++) {
+                if (separators[i] == c)
+                    return true;
+            }
+            return false;
+        }
+
+        
+        private static ArrayList! Tokenize(string! input, int last,
+                                           char []! separators)
+        {
+            ArrayList tokens = new ArrayList();
+
+            for (int i = 0; i <= last;) {
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to slurp word
+                int start = i;
+                while (i <= last &&
+                       !InSeparators(input[i], separators) &&
+                       input[i] != '\'')
+                {
+                    i++;
+                }
+                if (i != start) {
+                    tokens.Add(input.Substring(start, i - start));
+                }
+
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to quoted slurp word
+                if (input[i] == '\'') {
+                    start = i;
+                    i++;
+                    while (i <= last && input[i] != '\'') {
+                        i++;
+                    }
+
+                    if (i <= last && input[i] == '\'') {
+                        tokens.Add(input.Substring(start + 1, i - start - 1));
+                        i++;
+                    }
+                    else {
+                        tokens.Add(input.Substring(start, i - start));
+                        i++;
+                    }
+                }
+            } // end for
+
+            return tokens;
+        }
+        
+        private Parameter FindParameter(string name)
+        {
+            if (parameterSet != null) {
+                for (int i = 0; i < parameterSet.Length; i++) {
+                    Parameter a = parameterSet[i]; 
+                    if (a == null) continue; 
+                    assert a.Name != null; 
+                    if (a.Name == name) return parameterSet[i];
+                }
+            }
+
+            return null; 
+        }
+        
+        private bool ParseAndSetParameter(Parameter! a, string! value)
+        {
+            a.Resolved = false;
+            
+            switch (a.Kind) {
+                case pType.boolType:
+					if (value == "") {
+						// Allow for "-x" to mean "-x=true".
+						a.Resolved = true;
+						a.boolValue = String.Compare(a.Default, "true", true) == 0;
+					}
+					else {
+						a.Resolved = StringToBool(value, out a.boolValue); 
+                    }
+                    break; 
+                case pType.longType:
+                    a.Resolved = StringToLong(value, out a.longValue); 
+                    break; 
+                case pType.stringType:
+                    a.stringValue = value;
+                    a.Resolved = true; 
+                    break; 
+            }
+            
+            if(a.Resolved) {
+                return true;
+            }
+            else {
+                if(a.Kind == pType.boolType) {
+                    Console.WriteLine("{0} for {1} is not a bool value.", value, a.Name); 
+                }
+                else if(a.Kind == pType.longType) {
+                    Console.WriteLine("{0} for {1} is not a integer value.", value, a.Name); 
+                }
+                else {
+                    Console.WriteLine("Unknown type for {0}", a.Name); 
+                }
+                return false; 
+            }
+        }
+        
+        private string! KindToString(pType t)
+        {
+            switch (t) {
+                case pType.boolType:
+                    return "bool"; 
+                case pType.longType:
+                    return "int"; 
+                case pType.stringType:
+                    return "string"; 
+                case pType.stringArrayType:
+                    return "strings"; 
+                default:
+                    return "???";
+            }
+        }
+
+#if false        
+        public void Show(string action, Manifest! manifest, bool verbose) 
+        {
+            if (action != null) {
+                Console.Write("\n    {0}  @{1} ", appName, action); 
+                InitializeParameters(action, manifest);
+                ShowArgs(action, manifest);
+                 return;
+            }
+
+            XmlNode catNode = manifest.GetCategoriesNode(); 
+            if (catNode == null) { 
+                Console.WriteLine(" unable to find categories node!"); 
+                return;
+            } 
+            ArrayList actions = new ArrayList(); 
+            
+            assert catNode != null;
+            foreach (XmlNode n in catNode.Children) {
+                assert n != null; 
+                string s = n.GetAttribute("Action", null); 
+                actions.Add(s); 
+            }
+            
+            if (actions.Count > 0) { 
+                Console.Write("\n   {0} Actions: ", appName);
+                for (int i = 0; i < actions.Count; i++) {
+                    Console.Write("{0} ",actions[i]); 
+                } 
+                Console.WriteLine("\n"); 
+            }
+
+			if (verbose) {
+				for (int i = 0; i < actions.Count; i++) {
+					string a = (string) actions[i]; 
+					if (a != null ) Console.Write("\n Configuration Parameters for action @{0}",a);
+					InitializeParameters(a, manifest);
+					ShowArgs(action, manifest);
+				}
+			}
+			else {
+				// Show a reasonably-short list of commands.
+			    ShowCommandsSummary(manifest);			    
+			}            
+       }
+#endif
+       
+        /// <summary>
+        /// This method shows a list of all of the commands (actions) that an
+        /// application provides, as defined in its manifest.  The list simply
+        /// shows the names of each command, and the helptext for each.
+        /// </summary>
+       void ShowCommandsSummary(Manifest! manifest)
+       {
+            XmlNode catNode = manifest.GetCategoriesNode(); 
+            if (catNode == null) { 
+                Console.WriteLine(" unable to find categories node!"); 
+                return;
+            } 
+            
+            const string format = "{0,-16}  {1}";
+            
+            bool any = false;
+            
+            foreach (XmlNode node in catNode.Children) {
+                assert node != null; 
+                
+                if (node.Name != "category")
+                    continue;
+                    
+                string action;
+                string actionWithAt;
+                
+                // Is it the default action?
+                string value = node.GetAttribute("DefaultAction", null);
+                bool isDefault = value != null && value.Length != 0;
+                if (isDefault) {
+                    action = "";
+                    actionWithAt = "";
+                }
+                else {
+                    action = node.GetAttribute("Action", null); 
+                    if (action == null)
+                        continue;
+                    actionWithAt = "@" + action;                    
+                }
+                
+                string! help = GetHelpMessage(node);
+                
+                if (!any) {
+                    any = true;
+                    Console.WriteLine("The program supports the following actions:");
+                    Console.WriteLine();
+                }
+                
+                actionWithAt = this.appName + " " + actionWithAt;
+                
+                const int max_help_length = 60;
+                
+                if (help.Length > max_help_length) {
+                    string[]! help_lines = BreakLineAtWords(help, max_help_length);
+                    bool first = true;
+                    foreach (string! help_line in help_lines) {
+                        if (first) {
+                            Console.WriteLine(format, actionWithAt, help_line);
+                            first = false;
+                        }
+                        else {
+                            Console.WriteLine(format, "", help_line);
+                        }
+                    }
+                }
+                else {
+                    Console.WriteLine(format, actionWithAt, help);
+                }
+            }
+            
+            if (!any) {
+                Console.WriteLine("The program does not support any commands.");
+            }
+            else {
+                Console.WriteLine();            
+			    // Console.WriteLine("Use -?? for verbose info on all actions.");
+			    Console.WriteLine("Use '@cmd -?' for detailed help on a particular command.");
+            }
+       }
+
+        /// <summary>
+        /// This method breaks a string into a list of strings, each of which is at most 'maxlength'
+        /// in length, if possible.  The method tries to break the string at whitespace boundaries.
+        /// Note that it is possible for entries returned to be longer than 'maxlength', so don't
+        /// rely on that behavior.
+        /// </summary>       
+       string[]! BreakLineAtWords(string! line, int maxlength)
+       {
+            if (line.Length < maxlength)
+                return new string[] { line };
+            
+            ArrayList list = new ArrayList();
+            
+            int pos = 0;
+            for (;;) {
+                if (pos >= line.Length)
+                    break;
+                 
+                int remaining = line.Length - pos;
+                if (remaining <= maxlength) {
+                    // No need to break anymore.
+                    list.Add(line.Substring(pos, remaining));
+                    break;
+                }
+                
+                int len = maxlength;
+                assert len < remaining;
+
+                // Move backward and find the first whitespace char.
+                while (len > 0 && !Char.IsWhiteSpace(line[pos + len - 1]))
+                    len--;
+                
+                // Remove whitespace from the end of the current line.
+                while (len > 0 && Char.IsWhiteSpace(line[pos + len - 1]))
+                    len--;
+                
+                if (len == 0) {
+                    // Uh oh.  The current line is one big long non-breaking string.
+                    // Just break it at maxlength.  Ugly.
+                    len = maxlength;
+                }
+                
+                list.Add(line.Substring(pos, len));
+                
+                pos += len;
+                
+                // Skip whitespace.
+                while (pos < line.Length && Char.IsWhiteSpace(line[pos]))
+                    pos++;                
+            }
+            
+            Array obj_array = list.ToArray(typeof(string));
+            return (string[])obj_array;
+       }
+       
+       string! GetHelpMessage(XmlNode! actionNode)
+       {
+            string value = actionNode.GetAttribute("HelpMessage", null);
+            if (value != null)
+                return value;
+            else
+                return "";
+       }
+
+        /// <summary>
+        /// This method shows a summary of all of the commands (actions) defined in
+        /// an application manifest.
+        /// </summary>       
+       void ShowCommandsSummaryWithArgs(Manifest! manifest)
+       {
+			// Show a reasonably-short list of commands.
+
+            string[] actions = GetAllActions(manifest);			
+            
+			if (actions.Length > 0) {
+			    foreach (string action in actions) {
+			        InitializeParameters(action, manifest);
+    				
+				    string! line = GetParameterSyntaxSummary(manifest, action);
+				    Console.WriteLine(line);
+				    
+				    if (this.helpMsg != null) {
+				        string! help = this.helpMsg;
+				        const int max_length = 70;
+				        if (help.Length > max_length) {
+				            string[]! help_lines = BreakLineAtWords(help, max_length);
+				            for (int i = 0; i < help_lines.Length; i++) {
+				                Console.WriteLine("    " + help_lines[i]);
+				            }
+				        }
+				        else {
+    				        Console.WriteLine("    " + this.helpMsg);
+				        }
+				        Console.WriteLine();
+				    }
+				}
+			}
+
+			Console.WriteLine("Use '" + this.appName + " @cmd -?' for detailed help on a particular command.");
+			Console.WriteLine("Use '" + this.appName + " -??' for detailed help on all commands.");
+       }
+
+        /// <summary>
+        /// Builds a 
+        /// </summary>       
+       string! GetParameterSyntaxSummary(Manifest! manifest, string action)
+       {
+            StringBuilder buffer = new StringBuilder();
+            
+			if (action != null) {
+				buffer.Append(appName);
+				buffer.Append(" @");
+				buffer.Append(action);
+			}
+			else {
+				buffer.Append(appName);
+			}
+			
+			// First pass, show positional arguments.
+				
+			if (positionSet != null)
+			{
+				foreach (Parameter p in positionSet) {
+					if (p == null)
+						continue;
+						
+					buffer.Append(' ');
+
+					if (!p.Mandatory)
+						buffer.Append('[');
+					
+					buffer.Append('<');
+					buffer.Append(p.Name);
+					buffer.Append('>');
+					
+					if (!p.Mandatory)
+						buffer.Append(']');
+				}
+			}
+			
+			// Next, show non-positional arguments (-foo=x)
+			if (parameterSet != null) {
+				foreach (Parameter p in parameterSet) {
+					if (p == null)
+						continue;
+
+					// Positional parameters are apparently in both lists.
+					// Screen them out.
+					bool skip = false;
+					if (positionSet != null) {
+						foreach (Parameter positional in positionSet) {
+							if (positional == p) {
+								skip = true;
+								break;
+							}
+						}
+					}
+					if (skip)
+						continue;
+						
+					buffer.Append(' ');
+
+					if (!p.Mandatory)
+						buffer.Append('[');
+					
+					buffer.Append('-');
+					buffer.Append(p.Name);
+					
+					switch (p.Kind) {
+						case pType.boolType:
+							break;
+							
+						case pType.longType:
+							buffer.Append("=nn");
+							break;
+							
+						default:
+							buffer.Append("=...");
+							break;
+					}
+					
+					if (!p.Mandatory)
+						buffer.Append(']');
+				}
+			}
+				
+			return buffer.ToString();
+       }
+
+        /// <summary>
+        /// Builds a list of all of the actions (commands) defined in a manifest.
+        /// Note: This CAN return a null entry (an array containing a null entry),
+        /// if the program has a default action, and most do.
+        /// </summary>       
+       string[]! GetAllActions(Manifest! manifest)
+       {
+            XmlNode catNode = manifest.GetCategoriesNode(); 
+            if (catNode == null) { 
+                Console.WriteLine(" unable to find categories node!"); 
+                return new string[0];
+            } 
+            ArrayList actions = new ArrayList(); 
+            
+            foreach (XmlNode n in catNode.Children) {
+                assert n != null; 
+                string s = n.GetAttribute("Action", null); 
+                actions.Add(s); 
+            }
+            
+            Array actions_array = actions.ToArray(typeof(string));
+            return (string[])actions_array;
+       }
+       
+       void ShowVerboseCommandHelpAll(Manifest! manifest)
+       {
+            string[]! actions = GetAllActions(manifest);
+            
+            foreach (string action in actions) {
+                InitializeParameters(action, manifest);
+                ShowVerboseCommandHelp(manifest, action);
+                Console.WriteLine();
+            }
+       }
+       
+       ///
+       //<summary>
+       //   This method shows detailed help for a specific command.
+       //   It shows the command syntax, and information on each
+       //   parameter.
+       //</summary>
+       //
+       void ShowVerboseCommandHelp(Manifest! manifest, string action)
+       {
+            Console.WriteLine("Help for command: " + action);
+
+            InitializeParameters(action, manifest);
+       
+            if (this.helpMsg != null) {
+                Console.WriteLine();
+                string[]! lines = BreakLineAtWords(this.helpMsg, 70);
+                foreach (string line in lines) {
+                    Console.WriteLine("    " + line);
+                }
+            }
+            
+            Console.WriteLine();
+            Console.WriteLine("Usage:");
+            string! syntax_summary = GetParameterSyntaxSummary(manifest, action);
+            Console.WriteLine("    " + syntax_summary);
+            
+            Console.WriteLine();
+            
+            // Now show parameter details.
+
+            if (parameterSet != null && parameterSet.Length != 0) {
+                Console.WriteLine("Parameters:");
+                Console.WriteLine();
+                
+                // 0 = parameter name
+                // 1 = parameter type
+                // 2 = mandatory?
+                // 3 = help text
+                const string parameter_format = "{0,-10} {1,-8} {2,-6} {3}";
+                
+                Console.WriteLine(parameter_format, "Name", "Type", "Req'd?", "Description");
+                Console.WriteLine(parameter_format, "====", "====", "======", "===========");
+                
+                if (parameterSet != null) {
+                    foreach (Parameter a in parameterSet) {
+                        if (a == null)
+                            continue;
+                        
+                        string! typestring = KindToString(a.Kind);
+                        const int max_length = 40;
+                        string! help = a.HelpMsg != null ? a.HelpMsg : "";
+                        if (help.Length > max_length) {
+                            string[]! help_lines = BreakLineAtWords(help, max_length);
+                            for (int i = 0; i < help_lines.Length; i++) {
+                                if (i == 0)
+                                    Console.WriteLine(parameter_format, a.Name, typestring, a.Mandatory ? "yes" : "no", help_lines[i]);
+                                else
+                                    Console.WriteLine(parameter_format, "", "", "", help_lines[i]);
+                            }
+                        }
+                        else {
+                            Console.WriteLine(parameter_format, a.Name, typestring, a.Mandatory ? "yes" : "no", a.HelpMsg != null ? a.HelpMsg : "");
+                        }
+                    }
+                }
+            }
+
+            // Console.WriteLine("\nExternal Channels needed:"); 
+            // manifest.SetEndpoints(null, action, true); 
+        } 
+        
+        ///<summary>
+        /// Parse the command line and return the appName, action, and strongly typed parameter values.
+        /// manifest is used to deduce the strong type information for the parameters.
+        ///</summary>
+        ///<return>
+        /// True if a new process should be created. 
+        /// There are several reasons this function may return false, including:
+        ///     invalid action,
+        ///     -? or -?? for help information only,
+        ///     missing required parameters, 
+        ///     unknown parameter name,
+        ///     incorrect parameter format,
+        ///</return>
+        private bool Parse(String[]! cmd, 
+                           Manifest! manifest, 
+                           out string appName, 
+                           out string action, 
+                           out Parameter[] parameters)
+        {
+            appName = null;
+            action = null; 
+            parameters = null;
+
+            if(cmd == null || cmd.Length == 0 || cmd[0] == null) {
+                Console.WriteLine("Invalid command line");
+                return false;
+            }           
+            
+            appName = (!)cmd[0]; 
+            string[] args = cmd; 
+            
+            // see if we have an action verb. If so determine if it is valid.
+            // if it is valid prime the parameter set based on it. 
+            if (cmd.Length > 1 && cmd[1] != null && ((!)cmd[1]).Length >= 1 
+                && ((!)cmd[1])[0] == '@') {
+                // we have an action.
+                action = ((!)cmd[1]).Substring(1);
+                InitializeParameters(action,  manifest);
+                args = new String[cmd.Length -1];
+                Array.Copy(cmd, 1, args, 0, cmd.Length-1);
+            }
+            else {
+                InitializeParameters(null, manifest);
+            }
+
+            if (args.Length > 1 && args[1] != null && args[1] == "-?") {
+                if (action != null) {
+                    ShowVerboseCommandHelp(manifest, action);
+                }
+                else {
+                    ShowCommandsSummaryWithArgs(manifest); 
+                }
+                return false; 
+            }
+            
+            if (args.Length > 1 && args[1] != null && args[1] == "-??"){
+				ShowVerboseCommandHelpAll(manifest);
+				return false;
+            }
+
+            ArrayList extras = new ArrayList(); 
+            ArrayList parameterList = new ArrayList();
+            bool seenPositional = false; 
+            int positionalBase = 0; 
+            
+            for (int i=1; i < args.Length ; i++){
+                Parameter param = null; 
+                string arg = args[i];
+                assert arg != null; 
+                if (arg.Length>0 && arg[0] == '-') {
+                    // this is an optional arg 
+                    arg = arg.Substring(1);  
+                    if (arg == null || arg == "") {
+                        Console.WriteLine("'-' with no parameter name is invalid");
+                        return false; 
+                    }
+                    ArrayList tokens = Tokenize(arg, arg.Length - 1, new char[] {'=', ':'});
+                    string name = (string)tokens[0]; 
+                    param = FindParameter(name); 
+                    if (param != null) {
+                        if (tokens.Count == 1) { 
+                            //this is potentially a bool parameter with no value 
+                            if (param.Kind == pType.boolType) {
+                                param.boolValue = true;
+                                param.Resolved = true;
+                            }
+                            else {
+                                Console.WriteLine("invalid parameter assignment");
+                                return false; 
+                            }
+                        } 
+                        else if (tokens.Count == 2) {
+                            bool ok =  ParseAndSetParameter(param, (string)(!)tokens[1]); 
+                            if (!ok) return false;
+                        }
+                        else {
+                            Console.WriteLine("invalid parameter assignment");
+                            return false;
+                        }
+                        parameterList.Add(param);
+                    }
+                    else {
+                        //unknown parameter 
+                        Console.WriteLine("Unknown parameter not set");
+                        return false; 
+                    } 
+                }
+                else {
+                    if (!seenPositional) {
+                        seenPositional = true; 
+                        positionalBase = i;
+                    }
+                    assert i - positionalBase >= 0; 
+                    if (positionSet != null && (i - positionalBase) <  positionSet.Length) {
+                        param = positionSet[i - positionalBase];
+                    }
+                    if (param != null) {
+                        bool ok =  ParseAndSetParameter(param, arg); 
+                        if (!ok) return false;
+                        parameterList.Add(param);
+                    }
+                    else {
+                        if (hasStringArray) {
+                            // add it to the Array List 
+                            // After processing all the tokens the list will be 
+                            // converted to  StringArray parameter if present
+                            extras.Add(args[i]);
+                        }
+                        else {
+                            Console.WriteLine("{0} is not a known parameter.", arg); 
+                            return false;
+                        } 
+                    }
+                }
+            }
+            
+            // check to see if all positional args were resolved
+            if (positionSet != null) {
+                for (int i=0; i < positionSet.Length; i++) {
+                    Parameter param = positionSet[i];  
+                    if (param != null && ! param.Resolved && param.Mandatory) { 
+                        Console.WriteLine("Mandatory positional Parameter {0} at {1} not set.", 
+                            param.Name, i); 
+                        return false; 
+                    }
+                }
+            }
+             
+            // check to see if all mandatory args were resolved
+            if (parameterSet != null) {
+                for (int i=0; i < parameterSet.Length; i++) {
+                    Parameter param = parameterSet[i];  
+                    assert param != null; 
+                    assert param.Name != null; 
+                    if (param.Mandatory && ! param.Resolved) {
+                        Console.WriteLine("Mandatory Parameter {0} not set.", param.Name); 
+                        return false; 
+                    }
+                }
+            }
+
+            // Set default values if needed on non mandatory parameters
+            if (parameterSet != null) {
+                for (int i=0; i < parameterSet.Length; i++ ) {
+                    Parameter param = parameterSet[i];  
+                    assert param != null; 
+                    assert param.Name != null; 
+                    // ignore defaults for string array type.. 
+                    if (param.Kind != pType.stringArrayType 
+                        && !param.Resolved) {
+                        ParseAndSetParameter(param, param.Default != null ? param.Default : ""); 
+                        parameterList.Add(param);
+                    }
+                }
+            }
+            
+            // is there a StringArrayParameter defined in the manifest?
+            // If so pass the extras to the process  
+            if (hasStringArray) {
+                // note if hasStringArray is true, then parameterSet is guaranteed to be non-null
+                Parameter! param = (!)((!)parameterSet)[stringArrayIndex];
+                param.stringArrayValue = (string[])extras.ToArray(typeof(string)); 
+                parameterList.Add(param);
+            }
+            
+            parameters = (Parameter[])parameterList.ToArray(typeof(Parameter));
+            return true; 
+        }
+        
+        ///<summary>
+        /// Parse the command line into stronly typed parameters using the manifest, 
+        /// validate the parameters, and create the process if all parameters 
+        /// are in the right format.
+        ///</summary>
+        ///<return>
+        /// True if process is created and paramters are parsed, 
+        /// validated, and set successfully.
+        ///</return>
+        public bool ProcessParameters(string[] commandLine, 
+                                      Manifest manifest, 
+                                      out Process process, 
+                                      out string action)
+        {
+            process = null; 
+            action = null; 
+            if (manifest == null) return false;
+            if (commandLine == null) return false; 
+            
+            string appName;
+            Parameter[] parameters;
+            if(! Parse(commandLine, manifest, out appName, out action, out parameters)) {
+                Console.WriteLine("Failed to parse command line");
+                return false;
+            }
+
+            process = new Process((!)appName, action, null); 
+            if (process == null) {
+                Console.WriteLine("Unable to create process {0} with action={1}",appName,action); 
+                return false;
+            }
+          
+            if (parameters != null) {
+                for(int i = 0; i < parameters.Length; i++) {
+                    Parameter! param = (!)parameters[i];
+                    ParameterCode code = ParameterCode.Undefined; 
+
+                    switch(param.Kind) {
+                        case pType.boolType:            
+                            code = process.SetStartupBoolArg(param.Index, param.boolValue); 
+                            break;
+                        case pType.longType:
+                            code = process.SetStartupLongArg(param.Index, param.longValue); 
+                            break;
+                        case pType.stringType:
+                            code = process.SetStartupStringArg(param.Index, param.stringValue); 
+                            break;
+                        case pType.stringArrayType:
+                            string[] stringArray = param.stringArrayValue == null ?
+                                new string[] {} : param.stringArrayValue;
+                            code = process.SetStartupStringArrayArg(0, stringArray);
+                            break;
+                    }
+                    
+                    if (code != ParameterCode.Success){ 
+                       Console.WriteLine("unable to set {0} index {1} to {2} for arg {3}. error={4}",
+                            param.Kind, param.Index, param.boolValue, param.Name, CodeToString(code) ); 
+                       return false; 
+                    }
+                } 
+            }
+            return true;
+        }
+    
+        ///<summary>
+        /// Set the position for the parameter. 
+        ///</summary>
+        private void SetPosition(Parameter! p) 
+        {
+            if (p != null && p.Position != -1) {
+                if (p.Position < 0 || p.Position > totalCount-1) {
+                    string error = string.Format("{0} position index out of range ({1})",
+                        p.Name, p.Position); 
+                    throw new ManifestException(error);
+                }
+                else if (positionSet != null) {
+                    positionSet[p.Position] = p; 
+                }
+            }
+        }
+        
+        ///<summary>
+        /// Use the manifest to initialize the parameters without values. 
+        /// Later ProcessParameters() will fill in the values from the command line.
+        ///
+        /// Throws ManifestException upon error.
+        ///</summary>
+        public void InitializeParameters(string actionName, Manifest! manifest) 
+        {   
+            XmlNode  bools; 
+            XmlNode  strings; 
+            XmlNode  stringArrays; 
+            XmlNode  longs; 
+            XmlNode  ActionNode; 
+            int     pIndex; 
+
+            longCount   = 0; 
+            boolCount   = 0;
+            stringCount = 0; 
+            hasStringArray = false;
+            stringArrayIndex = 0;
+            int stringArrayCount = 0; 
+             
+            bools = null;
+            longs = null; 
+            strings = null;
+            stringArrays = null; 
+            parameterSet = null; 
+            positionSet = null;
+          
+            // Use Action to determine which set of parameters are going to be used. 
+            // If action is null we need to ensure there is 1 Parameter configuration 
+            // and its DefaultAction parameter is set to true. 
+            XmlNode actionNode  = manifest.GetCategoryNode(actionName);
+
+            if (actionNode == null)  {
+                string error = actionName != null ? 
+                    string.Format("Unknown action {0} recognized", actionName) :
+                    "Unable to find default action"; 
+                throw new ManifestException(error);
+            }
+
+            string categoryName = actionNode.GetAttribute("name","");
+
+            if (categoryName  != "console") {
+                throw new ManifestException(string.Format(
+                    "This manifest's category is not 'console': ({0})", categoryName));
+            }    
+                         
+            bools   = manifest.GetBoolParameterNode(actionNode); 
+            longs   = manifest.GetLongParameterNode(actionNode); 
+            strings = manifest.GetStringParameterNode(actionNode); 
+            stringArrays = manifest.GetStringArrayParameterNode(actionNode); 
+            helpMsg = manifest.GetHelpMessage(actionNode); 
+           
+            if (bools == null && longs == null && strings == null && stringArrays == null) {
+                parameterSet = new Parameter[0]; 
+                positionSet = new Parameter[0]; 
+                return; 
+            }
+            
+            if (bools != null) {
+                 boolCount = bools.GetAttribute("length", 0);
+            }
+
+            if (longs != null) {
+                longCount = longs.GetAttribute("length", 0);
+            }
+
+            if (strings != null) {
+                stringCount = strings.GetAttribute("length", 0);
+            }
+
+            if (stringArrays != null) {
+                stringArrayCount = stringArrays.GetAttribute("length", 0);
+                if (stringArrayCount > 1) {
+                    throw new ManifestException("Cannot support more than one string array parameters");
+                }
+                else if (stringArrayCount == 1) {
+                    hasStringArray = true; 
+                }
+            }
+
+            totalCount = stringCount + stringArrayCount + longCount + boolCount; 
+            
+            parameterSet = new Parameter[totalCount]; 
+            positionSet = new Parameter[totalCount]; 
+            if (totalCount == 0 ) return; 
+
+            assert positionSet != null; 
+            assert parameterSet != null; 
+            
+            pIndex = 0; 
+            if (bools != null) {
+                if (boolCount > 0) {
+                    foreach (XmlNode! bp in bools.Children) {
+                        if ( bp.Name == "BoolParameter") {
+                            Parameter p = GetXmlAttributes(bp, pType.boolType); 
+                            SetPosition(p);
+                            parameterSet[pIndex++] = p;
+                        }
+                    }
+                }
+            }
+
+            if (longs != null) {
+                if (longCount > 0) {
+                    foreach (XmlNode! lp in longs.Children) {
+                        if ( lp.Name == "LongParameter") {
+                            Parameter p = GetXmlAttributes(lp, pType.longType); 
+                            SetPosition(p);
+                            parameterSet[pIndex++] = p;
+                        }
+                    }
+                }
+            }
+
+            if (strings != null) {
+                if (stringCount > 0) {
+                    foreach (XmlNode! sp in strings.Children) {
+                        if ( sp.Name == "StringParameter") {
+                            Parameter p = GetXmlAttributes(sp, pType.stringType); 
+                            SetPosition(p);
+                            parameterSet[pIndex++] = p;
+                        }
+                    }
+                }
+            }
+
+            if (stringArrays != null) {
+                if (stringArrayCount > 0) {
+                    foreach (XmlNode! sp in stringArrays.Children) {
+                        if ( sp.Name == "StringArrayParameter") {
+                            Parameter p = GetXmlAttributes(sp, pType.stringArrayType); 
+                            SetPosition(p);
+                            stringArrayIndex = pIndex;
+                            parameterSet[pIndex++] = p;
+                        }
+                    }
+                }
+            }
+
+            if (positionSet != null && positionSet[0] != null) {  
+                havePositional = true;
+                bool seenNull = false;  
+                for (int i = 0; i < positionSet.Length; i++) {
+                    if (positionSet[i] == null) {
+                        seenNull = true; 
+                        continue; 
+                    }
+                    if (seenNull) {
+                        StringBuilder buffer = new StringBuilder(64);
+                        buffer.Append("Positional indices not contiguous! ");  
+                        for (int j = 0; j < positionSet.Length; j++) {
+                            Parameter p = positionSet[j];
+                            if (p != null ) {
+                                buffer.AppendFormat("{0}({1}) ",j, p.Name); 
+                            }              
+                        } 
+                        throw new ManifestException(buffer.ToString());
+                    } 
+                }
+            }
+        }
+    }
+}

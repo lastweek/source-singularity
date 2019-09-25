@@ -1,0 +1,27 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>TcpBlast</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="TcpBlast.sg" />
+    <Compile Include="IInt32Sequence.cs" />
+    <Compile Include="WellKnownSequences.cs" />
+    <Compile Include="FibonacciSequence.cs" />
+    <Compile Include="AscendingSequence.cs" />
+  </ItemGroup>
+
+  <Import Project="..\NetworkCommand.targets" />
+
+</Project>

@@ -1,0 +1,78 @@
+<!--
+##############################################################################
+
+ Microsoft Research Singularity
+
+ Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+
+  <ItemGroup>
+    <NMakeDir Include="bootd"/>
+    <NMakeDir Include="grabsector"/>
+    <NMakeDir Include="jobcontrol"/>
+    <NMakeDir Include="mkasm"/>
+    <NMakeDir Include="mutexwrap"/>
+    <NMakeDir Include="PowerSwitchService"/>
+    <NMakeDir Include="RefGraph"/>
+<!--    <NMakeDir Include="rialto"/> -->
+    <NMakeDir Include="RunAll"/>
+    <NMakeDir Include="sdizepdb"/>
+
+    <ProjectReference Include="BuildTasks\BuildTasks.csproj"/>
+    <ProjectReference Include="BuildToolsLibrary\BuildToolsLibrary.csproj"/>
+    <ProjectReference Include="TestExport\TestExport.csproj"/>
+    <ProjectReference Include="mkcontagmap\mkcontagmap.csproj"/>
+    <ProjectReference Include="mkmani\mkmani.csproj"/>
+    <ProjectReference Include="mkpxecom\mkpxecom.csproj"/>
+    <ProjectReference Include="mktests\mktests.csproj"/>
+    <ProjectReference Include="mkjig\mkjig.csproj"/>
+    <ProjectReference Include="mlarm\mlarm.csproj"/>
+    <ProjectReference Include="nib\nib.csproj"/>
+    <ProjectReference Include="profmap\profmap.csproj"/>
+    <ProjectReference Include="setvhdboot\setvhdboot.csproj"/>
+    <ProjectReference Include="spg\spg.csproj"/>
+    <ProjectReference Include="substitute\substitute.csproj"/>
+    <ProjectReference Include="SyscallBuilder\SyscallBuilder.csproj"/>
+    <ProjectReference Include="MpSyscallBuilder\MpSyscallBuilder.csproj"/>
+    <ProjectReference Include="Verifier\Verifier.proj"/>
+    <ProjectReference Include="singx86\singx86.proj"/>
+
+  </ItemGroup>
+
+  <PropertyGroup>
+    <BuildDependsOn>$(BuildDependsOn);BuildNMakeDirs</BuildDependsOn>
+    <CleanDependsOn>$(CleanDependsOn);CleanNMakeDirs</CleanDependsOn>
+  </PropertyGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets"/>
+
+  <Target Name="BuildNMakeDirs">
+    <Exec Condition="'%(NMakeDir.identity)'!=''"
+          WorkingDirectory="%(NMakeDir.identity)"
+          Command="echo %(NMakeDir.identity) &amp; PATH $(BUILDDIR)\x86_x86;$(PATH) &amp; nmake /nologo"/>
+  </Target>
+
+  <Target Name="CleanNMakeDirs">
+    <Exec Condition="'%(NMakeDir.identity)'!=''"
+          WorkingDirectory="%(NMakeDir.identity)"
+          Command="cd /d %(NMakeDir.identity) &amp;&amp; nmake /nologo clean"/>
+  </Target>
+
+  <Target Name="Install" DependsOnTargets="InstallProjectReferences;InstallNMakeDirs">
+  </Target>
+
+  <Target Name="InstallProjectReferences">
+    <MSBuild Projects="@(ProjectReferences)" Targets="Install"/>
+  </Target>
+
+  <Target Name="InstallNMakeDirs">
+    <Exec Condition="'%(NMakeDir.identity)'!=''"
+          Command="cd /d %(NMakeDir.identity) &amp;&amp; nmake /nologo install"/>
+  </Target>
+
+</Project>

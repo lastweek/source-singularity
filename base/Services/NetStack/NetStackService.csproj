@@ -1,0 +1,37 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>NetStack</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <ProjectGuid>{9D5E75E9-44EB-404F-917A-11E95D6104C6}</ProjectGuid>
+    <ServiceActivationMode>AlwaysActive</ServiceActivationMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="NetStack.sg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="Events\Events.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Net.Contracts\Io.Net.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\ServiceManager.Contracts\ServiceManager.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Drivers.Net\Drivers.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DebugUtils\DebugUtils.csproj"/>
+    <ProjectReference Include="NetStackLib.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Eventing\Eventing.csproj"/>
+    <ProjectReference Include="Channels.Nic\NetStack.Channels.Nic.csproj" />
+    <ProjectReference Include="Channels.Private\NetStack.Channels.Private.csproj" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ServiceCategory.targets" />
+</Project>

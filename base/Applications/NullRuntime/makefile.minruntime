@@ -1,0 +1,468 @@
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+#
+##############################################################################
+
+OBJROOT=..\obj
+PRIROOT=.\obj
+!INCLUDE "$(SINGULARITY_ROOT)/Makefile.inc"
+
+AS=ml
+LIB = lib
+LINK = link
+
+AFLAGS=/nologo /Zi /Cp /DSINGULARITY=1 /DSINGULARITY_PROCESS=1 /I$(OBJDIR)
+CFLAGS=/nologo /Zi /W3 /WX /Gy /Gr /O2 /Oy- /GS- \
+        /I$(SINGULARITY_ROOT)\boot\include /I$(OBJDIR) \
+        /DSINGULARITY=1 /DSINGULARITY_PROCESS=1
+
+LFLAGS = /NOLOGO $(LINKDFLAGS) /INCREMENTAL:NO /OPT:REF \
+    /RELEASE /nod /machine:IX86 /subsystem:native \
+
+##############################################################################
+
+MASTER=..\..\Kernel
+LIBRARIES=..\..\Libraries
+APPRUNTIME=..\Runtime
+
+!IF ("$(COLLECTOR_APP)" == "AdaptiveCopying")
+GC_SOURCE        = $(MASTER)\Bartok\GCs\AdaptiveCopyingCollector.cs \
+                   $(MASTER)\Bartok\GCs\CardTable.cs \
+                   $(MASTER)\Bartok\GCs\CopyScan.cs \
+                   $(MASTER)\Bartok\GCs\OffsetTable.cs \
+                   $(MASTER)\Bartok\GCs\GenerationalCollector.cs \
+                   $(MASTER)\Bartok\GCs\GenerationalWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\AllCardsWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\RememberedSet.cs \
+                   $(MASTER)\Bartok\GCs\SemiSpaceCollector.cs \
+                   $(MASTER)\Bartok\GCs\SequentialStoreBuffer.cs \
+                   $(MASTER)\Bartok\GCs\SlidingCollector.cs \
+                   $(MASTER)\Bartok\GCs\StopTheWorldCollector.cs
+GC_CSC_DEFS      = /d:ADAPTIVE_COPYING_COLLECTOR
+GC_ML_DEFS       = /DWRITEBARRIER_SSB=1
+!ELSEIF ("$(COLLECTOR_APP)" == "Concurrent")
+GC_SOURCE        = $(MASTER)\Bartok\GCs\ConcurrentMSCollector.cs \
+                   $(MASTER)\Bartok\GCs\ThreadHeaderQueue.cs \
+                   $(MASTER)\Bartok\GCs\UniversalWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\WriteBarrierCMS.cs
+GC_CSC_DEFS      = /d:CONCURRENT_MS_COLLECTOR
+GC_ML_DEFS       = /DWRITEBARRIER_CMS=1
+!ELSEIF ("$(COLLECTOR_APP)" == "MarkSweep")
+GC_SOURCE        = $(MASTER)\Bartok\GCs\EmptyWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\MarkSweepCollector.cs \
+                   $(MASTER)\Bartok\GCs\StopTheWorldCollector.cs
+GC_CSC_DEFS      = /d:MARK_SWEEP_COLLECTOR
+!ELSEIF ("$(COLLECTOR_APP)" == "Semispace")
+GC_SOURCE        = $(MASTER)\Bartok\GCs\SemispaceCollector.cs \
+                   $(MASTER)\Bartok\GCs\CardTable.cs \
+                   $(MASTER)\Bartok\GCs\CopyScan.cs \
+                   $(MASTER)\Bartok\GCs\OffsetTable.cs \
+                   $(MASTER)\Bartok\GCs\GenerationalCollector.cs \
+                   $(MASTER)\Bartok\GCs\GenerationalWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\AllCardsWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\RememberedSet.cs \
+                   $(MASTER)\Bartok\GCs\StopTheWorldCollector.cs \
+                   $(MASTER)\Bartok\GCs\SequentialStoreBuffer.cs
+GC_CSC_DEFS      = /d:SEMISPACE_COLLECTOR
+GC_ML_DEFS       = /DWRITEBARRIER_SSB=1
+!ELSEIF ("$(COLLECTOR_APP)" == "Sliding")
+GC_SOURCE        = $(MASTER)\Bartok\GCs\SlidingCollector.cs \
+                   $(MASTER)\Bartok\GCs\CardTable.cs \
+                   $(MASTER)\Bartok\GCs\OffsetTable.cs \
+                   $(MASTER)\Bartok\GCs\GenerationalCollector.cs \
+                   $(MASTER)\Bartok\GCs\GenerationalWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\AllCardsWriteBarrier.cs \
+                   $(MASTER)\Bartok\GCs\RememberedSet.cs \
+                   $(MASTER)\Bartok\GCs\StopTheWorldCollector.cs \
+                   $(MASTER)\Bartok\GCs\SequentialStoreBuffer.cs
+GC_CSC_DEFS      = /d:SLIDING_COLLECTOR
+GC_ML_DEFS       = /DWRITEBARRIER_SSB=1
+!ELSE
+!ERROR COLLECTOR_APP needs to be set to AdaptiveCopying, Concurrent, MarkSweep, or Semispace, or Sliding.
+!ENDIF
+
+
+##############################################################################
+
+IMAGE_DLLS = \
+    $(OBJDIR)\MinCorlib.dll \
+    $(LIBSDIR)\Singularity.V1.dll \
+
+
+##############################################################################
+
+all: pass1
+
+# Pass 1 creates the MSIL image of the runtime.
+pass1: $(OBJDIR) $(PRIDIR) $(OBJDIR)\MinCorlib.dll
+
+
+clean:
+    -del /q /s $(OBJDIR)\native.* $(OBJDIR)\MinCorlib.* $(OBJDIR)\MinCorlibsg.* $(OBJDIR)\testapp.* $(OBJDIR)\testapp_*.obj $(OBJDIR)\halclass.* *~ 2>nul
+    @-del /q /s $(NATIVE_OBJS) 2>nul
+    -del *~ 2> nul
+    @-rmdir $(OBJDIR) 2>nul
+    @-rmdir $(OBJROOT) 2>nul
+    @-rmdir $(PRIDIR) 2>nul
+    @-rmdir $(PRIROOT) 2>nul
+
+$(OBJDIR):
+    @if not exist $(OBJDIR) mkdir $(OBJDIR)
+
+$(PRIDIR):
+    @if not exist $(PRIDIR) mkdir $(PRIDIR)
+
+##############################################################################
+
+TESTAPP_ILLS = \
+    /r:$(ILLSDIR)\basetypes.ill \
+    /r:$(ILLSDIR)\baseattrs.ill \
+    /r:$(ILLSDIR)\bartok.ill \
+    /r:$(ILLSDIR)\singularity.V1.ill \
+
+$(OBJDIR)\testapp.exe : testapp.cs
+    csc /nologo $(CSFLAGS) /nostdlib /warnaserror+ /nowarn:169,649 \
+    /d:SINGULARITY /d:SINGULARITY_PROCESS /D:PTR_SIZE_32 /d:LITTLE_ENDIAN \
+    /d:ENDPOINT_STRUCT \
+     \
+    /t:exe \
+    $(TESTAPP_ILLS) \
+    /out:$(OBJDIR)\testapp.exe testapp.cs
+
+##############################################################################
+
+RUNTIME_SOURCES = \
+    $(MASTER)\Bartok\Finalizer.cs \
+    $(MASTER)\Bartok\GC.cs \
+    $(MASTER)\Bartok\StackHeight.cs \
+    $(MASTER)\Bartok\TryAll.cs \
+    $(MASTER)\Bartok\TryAllAttributes.cs \
+    $(MASTER)\Bartok\TryAllException.cs \
+    $(MASTER)\Bartok\WeakReference.cs \
+    $(MASTER)\System\ApplicationException.cs \
+    $(MASTER)\System\ArgumentException.cs \
+    $(MASTER)\System\ArgumentNullException.cs \
+    $(MASTER)\System\ArgumentOutOfRangeException.cs \
+    $(MASTER)\System\ArithmeticException.cs \
+    $(MASTER)\System\ArrayTypeMismatchException.cs \
+    $(MASTER)\System\DivideByZeroException.cs \
+    $(MASTER)\System\Exception.cs \
+    $(MASTER)\System\FormatException.cs \
+    $(MASTER)\System\IndexOutOfRangeException.cs \
+    $(MASTER)\System\InvalidCastException.cs \
+    $(MASTER)\System\InvalidOperationException.cs \
+    $(MASTER)\System\MulticastNotSupportedException.cs  \
+    $(MASTER)\System\NotSupportedException.cs \
+    $(MASTER)\System\NullReferenceException.cs \
+    $(MASTER)\System\ObjectDisposedException.cs \
+    $(MASTER)\System\OutOfMemoryException.cs \
+    $(MASTER)\System\OverflowException.cs \
+    $(APPRUNTIME)\System\ProcessCreateException.cs \
+    $(MASTER)\System\ProcessStateException.cs \
+    $(MASTER)\System\RankException.cs \
+    $(MASTER)\System\StackOverflowException.cs \
+    $(MASTER)\System\SystemException.cs \
+    $(MASTER)\System\TypeInitializationException.cs \
+    \
+    $(MASTER)\System\AttributeUsageAttribute.cs \
+    $(MASTER)\System\CLSCompliantAttribute.cs \
+    $(MASTER)\System\FlagsAttribute.cs \
+    $(MASTER)\System\ObsoleteAttribute.cs \
+    $(MASTER)\System\ParamArrayAttribute.cs \
+    \
+    $(MASTER)\System\ArgIterator.cs   \
+    System\Array.cs   \
+    $(MASTER)\System\AsyncCallback.cs \
+    $(MASTER)\System\Attribute.cs \
+    $(MASTER)\System\AttributeTargets.cs \
+    $(MASTER)\System\BitConverter.cs \
+    $(MASTER)\System\Boolean.cs \
+    $(MASTER)\System\Buffer.cs \
+    $(MASTER)\System\Byte.cs   \
+    $(MASTER)\System\Char.cs   \
+    $(MASTER)\System\CharEnumerator.cs \
+    $(APPRUNTIME)\System\Console.cs \
+    $(APPRUNTIME)\System\DateTime.cs \
+    $(MASTER)\System\SchedulerTime.cs \
+    $(MASTER)\System\DayOfWeek.cs \
+    $(MASTER)\System\Decimal.cs \
+    $(MASTER)\System\Delegate.cs  \
+    $(MASTER)\System\Double.cs   \
+    $(MASTER)\System\Empty.cs \
+    $(MASTER)\System\Enum.cs \
+    $(APPRUNTIME)\System\Environment.cs \
+    $(MASTER)\System\EventArgs.cs  \
+    $(MASTER)\System\EventHandler.cs  \
+    $(MASTER)\System\Guid.cs   \
+    $(MASTER)\System\IAsyncResult.cs \
+    $(MASTER)\System\ICloneable.cs \
+    $(MASTER)\System\IComparable.cs \
+    $(MASTER)\System\IDisposable.cs \
+    $(MASTER)\System\IFormattable.cs \
+    $(MASTER)\System\Int16.cs   \
+    $(MASTER)\System\Int32.cs   \
+    $(MASTER)\System\Int64.cs   \
+    $(MASTER)\System\IntPtr.cs   \
+    $(MASTER)\System\Internal.cs \
+    $(MASTER)\System\Math.cs   \
+    $(MASTER)\System\MulticastDelegate.cs  \
+    $(MASTER)\System\Number.cs \
+    $(MASTER)\System\Object.cs \
+    $(MASTER)\System\ParseNumbers.cs \
+#    $(APPRUNTIME)\System\PrincipalId.cs \
+    $(MASTER)\System\ProcessExitCode.cs \
+    $(MASTER)\System\Random.cs \
+    $(MASTER)\System\RuntimeArgumentHandle.cs \
+    $(MASTER)\System\RuntimeFieldHandle.cs \
+    $(MASTER)\System\RuntimeMethodHandle.cs \
+    $(MASTER)\System\RuntimeType.cs \
+    $(MASTER)\System\RuntimeTypeHandle.cs \
+    $(MASTER)\System\SByte.cs   \
+    $(MASTER)\System\Single.cs   \
+    $(MASTER)\System\String.cs   \
+    $(MASTER)\System\Text\StringBuilder.cs   \
+    $(MASTER)\System\TimeSpan.cs \
+    $(MASTER)\System\Type.cs \
+    $(MASTER)\System\TypeCode.cs \
+    $(MASTER)\System\TypedReference.cs \
+    $(MASTER)\System\UInt16.cs \
+    $(MASTER)\System\UInt32.cs \
+    $(MASTER)\System\UInt64.cs \
+    $(MASTER)\System\UIntPtr.cs \
+    $(MASTER)\System\ValueType.cs \
+    $(MASTER)\System\VarargList.cs \
+    $(MASTER)\System\Version.cs \
+    $(MASTER)\System\Void.cs \
+    $(MASTER)\System\_LocalDataStore.cs   \
+    $(MASTER)\System\_LocalDataStoreMgr.cs   \
+    $(LIBRARIES)\Crypto\MD5.cs \
+
+COLLECTOR_SOURCES = \
+    $(GC_SOURCE) \
+    $(MASTER)\Bartok\GCs\Allocator.cs \
+    $(MASTER)\Bartok\GCs\Barrier.cs \
+    $(MASTER)\Bartok\GCs\BaseCollector.cs \
+    $(MASTER)\Bartok\GCs\BootstrapMemory.cs \
+    $(MASTER)\Bartok\GCs\BumpAllocator.cs \
+    $(MASTER)\Bartok\GCs\CalleeSave.cs \
+!IF "$(PLATFORM)" == "Apic64"
+    $(MASTER)\Bartok\GCs\CalleeSaveX64.cs \
+!ELSE
+    $(MASTER)\Bartok\GCs\CalleeSaveX86.cs \
+!ENDIF
+    $(MASTER)\Bartok\GCs\CallStack.cs \
+    $(MASTER)\Bartok\GCs\CentralPT.cs \
+    $(MASTER)\Bartok\GCs\Collector.cs \
+    $(MASTER)\Bartok\GCs\CollectorStatistics.cs \
+    $(MASTER)\Bartok\GCs\GCProfiler.cs \
+    $(MASTER)\Bartok\GCs\InteriorPtrTable.cs \
+    $(MASTER)\Bartok\GCs\MemoryAccounting.cs \
+    $(MASTER)\Bartok\GCs\MemoryManager.cs \
+#   $(MASTER)\Bartok\GCs\ModifiedFirstFit.cs \
+    $(MASTER)\System\GCs\Monitoring.cs \
+    $(MASTER)\Bartok\GCs\ObjectLayout.cs \
+    $(MASTER)\Bartok\GCs\PageManager.cs \
+    $(MASTER)\Bartok\GCs\PageTable.cs \
+    $(MASTER)\Bartok\GCs\PageType.cs \
+#   $(MASTER)\Bartok\GCs\ReferenceCountingCollector.cs \
+    $(MASTER)\Bartok\GCs\ReferenceVisitor.cs \
+    $(MASTER)\Bartok\GCs\RefWriteBarrier.cs \
+    $(MASTER)\Bartok\GCs\SegregatedFreeList.cs \
+#   $(MASTER)\Bartok\GCs\StackManager.cs \
+    $(MASTER)\Bartok\GCs\StaticData.cs \
+    $(MASTER)\Bartok\GCs\Trace.cs \
+    $(MASTER)\Bartok\GCs\Transitions.cs \
+    $(MASTER)\Bartok\GCs\UIntPtrQueue.cs \
+    $(MASTER)\Bartok\GCs\UIntPtrStack.cs \
+    $(MASTER)\Bartok\GCs\UnmanagedPageList.cs \
+    $(MASTER)\Bartok\GCs\Util.cs \
+    $(MASTER)\Bartok\GCs\Verifier.cs \
+
+THREADING_SOURCES = \
+    $(APPRUNTIME)\System\Threading\AutoResetEvent.cs \
+    $(MASTER)\System\Threading\HandleCreateException.cs \
+    $(MASTER)\System\Threading\Interlocked.cs   \
+    $(APPRUNTIME)\System\Threading\ManualResetEvent.cs \
+    $(MASTER)\System\Threading\Monitor.cs \
+    $(APPRUNTIME)\System\Threading\Mutex.cs \
+    $(MASTER)\System\Threading\SynchronizationLockException.cs \
+    $(APPRUNTIME)\System\Threading\Thread.cs \
+    $(MASTER)\System\Threading\ThreadStart.cs \
+    $(MASTER)\System\Threading\ThreadState.cs \
+    $(MASTER)\System\Threading\ThreadStateException.cs \
+    $(MASTER)\System\Threading\Timeout.cs \
+    $(APPRUNTIME)\System\Threading\WaitHandle.cs \
+
+COLLECTIONS_SOURCES = \
+    $(MASTER)\System\Collections\ArrayList.cs \
+    $(MASTER)\System\Collections\BitArray.cs \
+    $(MASTER)\System\Collections\CaseInsensitiveComparer.cs \
+    $(MASTER)\System\Collections\CaseInsensitiveHashCodeProvider.cs \
+    $(MASTER)\System\Collections\CollectionBase.cs \
+    $(MASTER)\System\Collections\Comparer.cs \
+    $(MASTER)\System\Collections\DictionaryBase.cs \
+    $(MASTER)\System\Collections\DictionaryEntry.cs \
+    $(MASTER)\System\Collections\Hashtable.cs \
+    $(MASTER)\System\Collections\ICollection.cs \
+    $(MASTER)\System\Collections\IComparer.cs \
+    $(MASTER)\System\Collections\IDictionary.cs \
+    $(MASTER)\System\Collections\IDictionaryEnumerator.cs \
+    $(MASTER)\System\Collections\IEnumerable.cs \
+    $(MASTER)\System\Collections\IEnumerator.cs \
+    $(MASTER)\System\Collections\IHashCodeProvider.cs \
+    $(MASTER)\System\Collections\IList.cs \
+    $(MASTER)\System\Collections\Queue.cs \
+    $(MASTER)\System\Collections\ReadOnlyCollectionBase.cs \
+    $(MASTER)\System\Collections\SortedList.cs \
+    $(MASTER)\System\Collections\Stack.cs \
+    $(MASTER)\System\Collections\Specialized\ListDictionary.cs \
+    $(MASTER)\System\Collections\Specialized\StringDictionary.cs \
+
+DIAGNOSTICS_SOURCES = \
+    $(MASTER)\System\Diagnostics\Assert.cs \
+    $(MASTER)\System\Diagnostics\AssertFilter.cs \
+    $(MASTER)\System\Diagnostics\AssertFilters.cs \
+    $(MASTER)\System\Diagnostics\ConditionalAttribute.cs \
+    $(MASTER)\System\Diagnostics\Debug.cs \
+    $(MASTER)\System\Diagnostics\DebuggerAttributes.cs \
+
+REFLECTION_SOURCES = \
+    $(MASTER)\System\Reflection\Assembly.cs \
+    $(MASTER)\System\Reflection\AssemblyAttributes.cs \
+    $(MASTER)\System\Reflection\AssemblyName.cs \
+    $(MASTER)\System\Reflection\AssemblyReflectionAttributes.cs \
+    $(MASTER)\System\Reflection\DefaultMemberAttribute.cs \
+    $(MASTER)\System\Reflection\Module.cs \
+    $(MASTER)\System\Reflection\TypeAttributes.cs \
+
+GLOBALIZATION_SOURCES = \
+    $(MASTER)\System\Globalization\CharacterInfo.cs \
+    $(MASTER)\System\Globalization\CompareInfo.cs \
+    $(MASTER)\System\Globalization\CultureInfo.cs \
+    $(MASTER)\System\Globalization\NumberFormatInfo.cs \
+    $(MASTER)\System\Globalization\NumberStyles.cs \
+    $(MASTER)\System\Globalization\TextInfo.cs \
+    $(MASTER)\System\Globalization\UnicodeCategory.cs   \
+
+TEXT_SOURCES = \
+    $(MASTER)\System\Text\ASCIIEncoding.cs     \
+    $(MASTER)\System\Text\Decoder.cs           \
+    $(MASTER)\System\Text\Encoder.cs           \
+    $(MASTER)\System\Text\Encoding.cs          \
+    $(MASTER)\System\Text\UnicodeEncoding.cs   \
+    $(MASTER)\System\Text\UTF8Encoding.cs      \
+
+COMPILER_SERVICES_SOURCES = \
+    $(MASTER)\System\Runtime\CompilerServices\DecimalConstantAttribute.cs \
+    $(MASTER)\System\Runtime\CompilerServices\IndexerNameAttribute.cs \
+    $(MASTER)\System\Runtime\CompilerServices\IsVolatile.cs \
+    $(MASTER)\System\Runtime\CompilerServices\MethodImplAttribute.cs \
+    $(MASTER)\System\Runtime\CompilerServices\RuntimeHelpers.cs \
+
+INTEROP_SOURCES = \
+    $(MASTER)\System\Runtime\InteropServices\Attributes.cs \
+    $(MASTER)\System\Runtime\InteropServices\CharSet.cs \
+    $(MASTER)\System\Runtime\InteropServices\GCHandle.cs \
+    $(MASTER)\System\Runtime\InteropServices\LayoutKind.cs \
+    $(MASTER)\System\Runtime\InteropServices\Marshal.cs \
+
+BARTOK_SOURCES = \
+    $(MASTER)\Bartok\Shared.cs \
+    $(MASTER)\Bartok\Options.cs \
+    \
+    $(MASTER)\Bartok\ArrayHelper.cs \
+    $(MASTER)\Bartok\MultiUseWord.cs \
+    $(MASTER)\Bartok\VTable.cs \
+    $(MASTER)\Bartok\Magic.cs \
+    $(MASTER)\Bartok\Headers.cs \
+    $(MASTER)\System\Runtime\CompilerServices\Attributes.cs \
+    $(MASTER)\System\Security\Attributes.cs \
+    $(MASTER)\System\Threading\SpinLock.cs \
+
+X86_SOURCES = \
+    $(MASTER)\Singularity\X86\CR0.cs \
+    $(MASTER)\Singularity\X86\CR3.cs \
+    $(MASTER)\Singularity\X86\CR4.cs \
+    $(MASTER)\Singularity\X86\EFlags.cs \
+    $(MASTER)\Singularity\X86\EVectors.cs \
+    $(MASTER)\Singularity\X86\Gdt.cs \
+    $(MASTER)\Singularity\X86\Idt.cs \
+    $(MASTER)\Singularity\X86\MmxContext.cs \
+    $(MASTER)\Singularity\X86\Pdt.cs \
+    $(MASTER)\Singularity\X86\ProcessorContext.cs \
+    $(MASTER)\Singularity\X86\ThreadContext.cs \
+    $(MASTER)\Singularity\X86\Tss.cs \
+
+CHANNEL_SOURCES = \
+    $(MASTER)\Singularity\Channels\ChannelClosedException.cs \
+    $(MASTER)\Singularity\Channels\ChannelException.cs \
+    $(MASTER)\Singularity\Channels\ChannelTransferredException.cs \
+    $(MASTER)\Singularity\Channels\ClaimsAttribute.cs \
+    $(MASTER)\Singularity\Channels\ISelectable.sg \
+    $(MASTER)\Singularity\Channels\ITracked.cs \
+
+IO_SOURCES = \
+    $(MASTER)\Singularity\Io\Access.cs \
+    $(MASTER)\Singularity\Io\ByteOrder.cs \
+    $(MASTER)\Singularity\Io\Error.cs \
+    $(MASTER)\Singularity\Io\IoConfig.cs \
+    $(MASTER)\Singularity\Io\IoDma.cs \
+    $(MASTER)\Singularity\Io\IoDmaRange.cs \
+    $(APPRUNTIME)\Singularity\Io\IoIrq.cs \
+    $(MASTER)\Singularity\Io\IoIrqRange.cs \
+    $(MASTER)\Singularity\Io\IoMemory.cs \
+    $(MASTER)\Singularity\Io\IoMemoryRange.cs \
+    $(MASTER)\Singularity\Io\IoPort.cs \
+    $(MASTER)\Singularity\Io\IoPortRange.cs \
+    $(MASTER)\Singularity\Io\IoRange.cs \
+    $(MASTER)\Singularity\Io\PnpConfig.cs \
+    $(MASTER)\Singularity\Io\PciConfig.cs \
+    $(MASTER)\Singularity\Memory\PhysicalAddress.cs \
+
+RUNTIME_SOURCES  =    \
+    $(CHANNEL_SOURCES) \
+    $(IO_SOURCES) \
+    $(BARTOK_SOURCES) \
+    $(COLLECTIONS_SOURCES) \
+    $(COLLECTOR_SOURCES) \
+    $(COMPILER_SERVICES_SOURCES) \
+    $(DIAGNOSTICS_SOURCES) \
+    $(GLOBALIZATION_SOURCES) \
+    $(INTEROP_SOURCES) \
+    $(REFLECTION_SOURCES) \
+    $(RESOURCE_MANAGEMENT_SOURCES) \
+    $(RUNTIME_SOURCES)  \
+    $(SCHEDULING_SOURCES) \
+    $(TEXT_SOURCES) \
+    $(THREADING_SOURCES) \
+    $(X86_SOURCES) \
+    \
+    $(APPRUNTIME)\Singularity\AppRuntime.cs \
+    $(APPRUNTIME)\Singularity\DebugStub.cs \
+    $(APPRUNTIME)\Singularity\Processor.cs \
+    $(APPRUNTIME)\Singularity\Memory\Stacks.cs \
+    $(MASTER)\Singularity\Tracing.cs \
+
+##############################################################################
+
+$(OBJDIR)\mincorlib.dll : $(RUNTIME_SOURCES) \
+        $(ILLSDIR)\Singularity.V1.ill
+    @echo Compiling .cs sources
+    @csc /nologo /unsafe $(CSFLAGS) $(GC_CSC_DEFS) /nostdlib /warnaserror+ /nowarn:169,649 \
+    /d:SINGULARITY /d:SINGULARITY_PROCESS /d:PTR_SIZE_32 /d:X86 \
+    /d:LITTLE_ENDIAN /d:ENDPOINT_STRUCT /d:MINRUNTIME \
+     \
+    /t:library \
+    /r:$(ILLSDIR)\Singularity.V1.ill \
+    /r:$(ILLSDIR)\Singularity.V1.ill \
+    /r:$(OBJDIR)\ILHelpers.dll \
+    /out:$(OBJDIR)\mincorlib.dll $(RUNTIME_SOURCES)
+
+############################################################### il
+$(OBJDIR)\ILHelpers.dll: $(MASTER)\System\ILHelpers.il
+    $(ILASM) /quite /dll /output=$@ $(MASTER)\System\ILHelpers.il

@@ -1,0 +1,32 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+
+    //  This value type is used for making classlib type safe.
+    //
+    //  SECURITY : m_ptr cannot be set to anything other than null by untrusted
+    //  code.
+    //
+    //  This corresponds to EE MethodDesc.
+    //| <include file='doc\RuntimeMethodHandle.uex' path='docs/doc[@for="RuntimeMethodHandle"]/*' />
+    public struct RuntimeMethodHandle
+    {
+#if !DONT_DO_BARTOK
+        private int value;
+#endif
+        //| <include file='doc\RuntimeMethodHandle.uex' path='docs/doc[@for="RuntimeMethodHandle.Value"]/*' />
+        public IntPtr Value {
+            get;
+        }
+
+        //| <include file='doc\RuntimeMethodHandle.uex' path='docs/doc[@for="RuntimeMethodHandle.GetFunctionPointer"]/*' />
+        public System.IntPtr GetFunctionPointer();
+    }
+}

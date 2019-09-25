@@ -1,0 +1,29 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for web applications
+//
+
+using System;
+using Microsoft.Singularity.Extending;
+
+namespace Microsoft.Singularity.WebApps.Contracts
+{
+    public contract WebAppContract : ExtensionContract
+    {
+        //
+        // The WebApp contract simply lets the web app receive
+        // requests to process new HttpRequests. Each one
+        // is represented by a dedicated channel.
+        //
+        in message Process(HttpRequestContract.Imp:Start! requestEP);
+        out message WebAppReady();
+        out message OK();
+
+        override state Start : WebAppReady! -> ProcessingState;
+        state ProcessingState : Process? -> OK! -> ProcessingState;
+    }
+}

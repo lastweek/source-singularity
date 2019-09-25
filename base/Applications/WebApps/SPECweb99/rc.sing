@@ -1,0 +1,292 @@
+
+###############################################################################
+#                                                                             #
+#                    Test parameters for SPECweb99                            #
+#                                                                             #
+###############################################################################
+
+###############################################################################
+#
+# Changeable Benchmark Configuration Parameters
+#
+###############################################################################
+
+# SIMULTANEOUS_CONNECTIONS sets the number of load generators for the
+# tests to be run.  You may specify one value or a list of values.
+# manager will run a separate test for each value in the list.  During
+# each test, N measurements will be taken, where N is the value assigned
+# to ITERATIONS.  If you use a list, each value results in a separate
+# test with its own output files, unless ITERATIONS=1.  When
+# ITERATIONS=1, all the values in SIMULTANEOUS_CONNECTIONS get reported
+# in a single set of output files.  This is for testing and tuning
+# purposes only.  For reporting purposes ITERATIONS must be set to 3.
+# The form <first>-<last>x<increment> can be used to run a series of
+# tests starting at <first>, ending at <last> and incrementing by
+# <increment>.
+
+SIMULTANEOUS_CONNECTIONS="10"
+#SIMULTANEOUS_CONNECTIONS="5-65x15"
+#SIMULTANEOUS_CONNECTIONS="10-100x10 85 95 98"
+
+# CLIENTS: client-name(port)[speed]{servername}
+# SERVER: server-name as seen by the prime-client
+
+# You may use multiple network adapters in a client by specifying that client
+# multiple times with different {servername} settings and using the
+# @@SERVER@@ form of URL_ROOT. For example:
+# 	CLIENTS=box1{sut-fddi1} box1{sut-fddi2}
+# The speed setting gives relative speed of each
+# client and the port setting is the port through which the prime-client
+# communicates with that client. For example: 
+# 	CLIENTS=client1[2] client2(2223)
+# client1 is twice as fast as client2, client2 will open port 2223 to
+# receive its messages from the prime client.
+
+CLIENTS=localhost
+SERVER=172.31.43.73
+
+# URL_ROOT is the URL for the directory that contains "file_set". For
+# example, if your file_set directory is in the web-server root then use
+# "URL_ROOT=http://server1" (where server1 is the name of your web
+# server).  If you built the file_set in a directory named "specweb99"
+# then use "URL_ROOT=http://server1/specweb99". To use multi-adapter
+# clients use: URL_ROOT=http://@@SERVER@@/specweb99
+
+URL_ROOT=http://172.31.43.73/fs
+
+
+# DYNAMIC_ROOT or DYN_GET_SCRIPT, DYN_CAD_SCRIPT, DYN_POST_SCRIPT, 
+#         DYN_CMD_SCRIPT
+# The URL of the dynamic program(s) (e.g. CGI executable, ISAPI
+# module, NSAPI module, etc).  If your file_set directory is not in the
+# web-server root then add a question mark and the URL to the directory
+# that contains file_set.
+# 
+# For example, if file_set is in a directory
+# named "specweb99" then you would use
+# "DYNAMIC_ROOT=http://server1/cgi-bin/specweb99-cgi.pl?/specweb99".
+# 
+# You may also use separate URL's for each class of DYNAMIC operation
+# supported: POST, standard dynamic GET, custom ad rotation (CAD) GET
+# and Commands (fetch, reset).  You may set any or all of the 4 separate
+# variables.  The unset variables will default to DYNAMIC_ROOT.
+#
+
+DYNAMIC_ROOT=http://172.31.43.73/spec/cgi-bin/specweb99-cgi.pl
+
+DYN_GET_SCRIPT=http://172.31.43.73/dynamic-content
+DYN_CAD_SCRIPT=http://172.31.43.73/dynamic-content
+DYN_POST_SCRIPT=http://172.31.43.73/dynamic-content
+DYN_CMD_SCRIPT=http://172.31.43.73/dynamic-content
+
+
+# You must specify the URL for DYN_CGI_SCRIPT that is a CGI-based
+# implementation of the standard dynamic GET.  This will not default to
+# DYNAMIC_ROOT.
+
+DYN_CGI_SCRIPT=http://172.31.43.73/spec/cgi-bin/specweb99-cgi.pl
+
+# HTTP_PROTOCOL is used to specify HTTP version 1.0 or 1.1.  If you
+# leave this commented out then <I>manager</I> makes a connection to
+# your web server to determine what version of the protocol to use.  You
+# can set the HTTP_PROTOCOL variable in order to force SPECweb99 to use
+# a particular version of HTTP.  The valid settings are "HTTP/1.0" or
+# "HTTP/1.1".
+
+#HTTP_PROTOCOL="HTTP/1.1"
+#HTTP_PROTOCOL="HTTP/1.0"
+
+# WARMUP_TIME is the amount of time in seconds to run to get to steady
+# state prior to the 1st measurement in the test.  This time is intended
+# to warm up any caches before taking a measurement.  The minimum legal
+# value is 1200 seconds.
+
+WARMUP_TIME=60
+
+# WAIT_TO_BEGIN is the time to sleep in seconds before starting each
+# iteration. This delay is taken after the prime client tells the
+# clients about the workload and before telling them to start working.
+# If test startup isn't synchronizing properly, this might need to be
+# increased.
+
+WAIT_TO_BEGIN=5
+
+# All outputs get put in ./results/<OUTPUT_NAME>.nnn.xxx where nnn is an
+# ascending test number and xxx is the output format type (i.e. raw, ps,
+# pdf, asc, html).
+
+OUTPUT_NAME="output"
+
+
+###############################################################################
+#
+# Configuration Description - set these parameters to describe the test.
+# These settings will show up in the reports
+#
+###############################################################################
+
+
+#Server Hardware
+
+hw_vendor="Some Texas Company"
+hw_model="Kowabunga 2000"
+hw_cpu="60 Hz PDP-11"
+hw_ncpu=13
+hw_pcache="16KBI+16KBD on chip"
+hw_scache="1MB(I+D) off chip"
+hw_ocache="16MB(I+D) off chip per CPU pair"
+hw_memory="7 GB"
+hw_disk="3 CDRW, 10 9GB SCSI AB-CD01 "
+hw_controllers="1 IDE KURU-2000"
+hw_other="1 Everready Bunny"
+
+#Availability Dates
+
+hw_avail="Dec-1999"
+http_avail="Jan-2000"
+os_avail="Jun-1997"
+software_avail="Jan-2001"
+
+#HTTP Software
+
+sw_vendor="Software House of Horrors"
+sw_http="WebServer 12.0"
+sw_api="Fast CGI"
+http_cache="WebSpeedup 0.12"
+http_logmode="Uncommon Log Format"
+
+#Other Software
+
+sw_os="MS-DOS 2.1"
+sw_file="NFS"
+sw_other="Quake II"
+
+
+#Test Sponsor
+
+test_date="Dec-1901"
+tester_name="Some Texas Company"
+license_num=-1
+
+#Network
+
+net_nctrls=100
+net_controller="3 Proteon ISA Microbit & 97 MultiCom Ethernet"
+net_nnets=100
+net_net="3 Microbit & 97 Ethernet"
+net_speed="1Mb/s & 10Mb/s"
+msl=30
+time_wait=60
+net_mtu=1500
+
+#Clients (i.e. Load Generators)
+
+#lg_num=This field is derived from the client list
+lg_model="PackardBell 286i"
+lg_cpu="1.28Mhz 8088+"
+lg_ncpu=1
+lg_memory="64KB"
+lg_netctrlr="Hayes Internal"
+lg_os="Disk O.S."
+lg_compiler="TurboPascal"
+
+
+#Notes
+# any of the notes can be multi-line by using the nnn suffix
+
+notes_sut000="I overclocked this machine"
+notes_sut001="I learned how to do it on the Internet"
+notes_os000="Tuning parameters:"
+notes_os001="  superboost=1"
+notes_os002="  megacache_size=9009009009"
+notes_http=
+notes_api=
+notes_software=
+notes_hardware=
+notes_net=
+notes_client=
+notes="I'd like to teach the world to sing"
+
+
+###############################################################################
+#
+# Benchmark Constants - any change to these will lead to an invalid result
+#
+###############################################################################
+#
+#  you cannot change these without invalidating benchmark results
+#
+
+#
+#
+
+# "warmup" time before 2nd through nth iteration of the test 
+RAMPUP_TIME="300"
+
+# measurement time for each iteration (default = 1200)</DD>
+RUN_TIME="60"
+
+# time after each iteration of the test (default = 300)</DD>
+RAMPDOWN_TIME="300"
+
+# number of times to repeat the measurement (default = 3)</DD>
+ITERATIONS=1
+
+#
+# Mix parameters - control the percentage of requests of each type.  Set
+#    values between 0 and 1.
+#
+
+
+# Percent of overall dynamic requests (default = 0.3 for 30% dynamic requests)
+
+DYNAMIC_CONTENT=0
+
+# Percent of dynamic requests that are posts (default = 0.16).
+
+DYNAMIC_POST=0
+
+# Percent of dynamic requests that are Custom Ad Rotation GETS (default = .42)
+
+DYNAMIC_CAD_GET=0
+
+# Percent of dynamic requests that are  GETs calling the CGI code 
+# (default = .005)
+
+DYNAMIC_CGI_GET=0
+
+# Number of files each in each class
+
+MAX_FILE=8
+
+# Emulation of user dialup line. SPEED in bits/sec.
+# Target line speed to emulate in bits/second (default = 400000)</DD>
+
+USER_LINE_SPEED=400000
+
+# Speed in bits/second below which a connection is deemed too slow.  For
+# a valid test, 95% of the connections must operate faster than the
+# USER_SPEED_LIMIT (default = 320000)
+
+USER_SPEED_LIMIT=320000
+
+# REQUESTS_PER_KEEP_ALIVE is the average number of HTTP requests to do
+# per "keep-alive" HTTP connection.  For example, if a connection
+# randomly selects 5 requests to keep alive it will open a connection to
+# the web server, request a page, read the server response, do this
+# request+read 4 more times, and then close the socket connection.  Each
+# of the 5 GETs on that socket will be for different URLs. (default =
+# 10)
+
+REQUESTS_PER_KEEP_ALIVE=10
+
+# PERCENT_KEEP_ALIVE_REQUETS is the percentage of GETs that to retrieve
+# via "keep-alive" connections.  Note that this is NOT the percentage of
+# connections that will have the keep-alive header. (default = 0.7)
+
+PERCENT_KEEP_ALIVE_REQUESTS=0.7
+
+# Set ABORTIVE_CLOSE to 0 or 1 to indicate whether or not to use
+# abortive closes.  (default = 0)
+
+ABORTIVE_CLOSE=0

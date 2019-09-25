@@ -1,0 +1,14 @@
+echo 'Starting DHCP'
+sleep '5'
+ipconfig '@dhcp' '/dev/nic0' start
+
+# Waste some time, for the dhcp request to complete
+sleep '20'
+ipconfig '@show'
+
+# cause the IP address to appear in the debugger
+testutil
+
+echo 'Starting WebStress'
+webserver &
+

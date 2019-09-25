@@ -1,0 +1,42 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>bartokp</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="Child.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="..\MSIL\Bartok.Analysis.dll"/>
+    <Reference Include="..\MSIL\Bartok.CfgUtil.dll" />
+    <Reference Include="..\MSIL\Bartok.Convert.dll" />
+    <Reference Include="..\MSIL\Bartok.Datatype.dll" />
+    <Reference Include="..\MSIL\Bartok.DebugInfo.dll" />
+    <Reference Include="..\MSIL\Bartok.Ir.dll" />
+    <Reference Include="..\MSIL\Bartok.Lir.dll" />
+    <Reference Include="..\MSIL\Bartok.Mangle.dll" />
+    <Reference Include="..\MSIL\Bartok.Marshal.dll" />
+    <Reference Include="..\MSIL\Bartok.Opt.dll" />
+    <Reference Include="..\MSIL\Bartok.Regalloc.dll" />
+    <Reference Include="..\MSIL\Bartok.Regreal.dll" />
+    <Reference Include="..\MSIL\Bartok.Utility.dll" />
+    <Reference Include="..\MSIL\Bartok.Cheap.dll" />
+    <Reference Include="..\MSIL\Bartok.Msil.dll" />
+
+    <ProjectReference Include="..\Contracts\BartokHContracts.csproj"/>
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Security\Security.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

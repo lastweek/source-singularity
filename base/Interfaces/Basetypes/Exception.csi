@@ -1,0 +1,29 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [RequiredByBartok]
+    public class Exception
+    {
+        public Exception();
+        public Exception(String message);
+        public Exception(String message, Exception innerException);
+
+        public virtual String Message { get; }
+
+        public virtual Exception GetBaseException();
+
+        public Exception InnerException { get; }
+        public virtual String StackTrace { get; }
+        public virtual String HelpLink { get; set; }
+        public virtual String Source { get; set; }
+
+        public override String ToString();
+    }
+}

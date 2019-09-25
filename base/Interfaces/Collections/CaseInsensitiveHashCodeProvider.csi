@@ -1,0 +1,22 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Globalization;
+
+namespace System.Collections
+{
+    public class CaseInsensitiveHashCodeProvider : IHashCodeProvider {
+
+        public static readonly CaseInsensitiveHashCodeProvider Default;
+
+        public CaseInsensitiveHashCodeProvider();
+
+        public static CaseInsensitiveHashCodeProvider DefaultInvariant { get; }
+
+        public int GetHashCode(Object obj);
+    }
+}

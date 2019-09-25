@@ -1,0 +1,33 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    public abstract class MulticastDelegate : Delegate
+    {
+        protected MulticastDelegate(Object target,String method);
+        protected MulticastDelegate(Type target, String method);
+
+        public override sealed bool Equals(Object obj);
+
+        protected override sealed Delegate CombineImpl(Delegate follow);
+        protected override sealed Delegate RemoveImpl(Delegate value);
+
+        public override sealed Delegate[] GetInvocationList();
+
+        public static bool operator ==(MulticastDelegate d1, MulticastDelegate d2);
+        public static bool operator !=(MulticastDelegate d1, MulticastDelegate d2);
+
+        public override sealed int GetHashCode();
+#if !DONT_DO_BARTOK
+        [RequiredByBartok]
+        private MulticastDelegate _prev;
+#endif
+
+    }
+}

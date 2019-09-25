@@ -1,0 +1,191 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Directory.WorkerFunctions;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+    using SharedHeap = Microsoft.Singularity.Memory.SharedHeap;
+
+    class DirectoryServiceWorker
+    {
+        private TRef<DirectoryServiceContract.Exp:Start> epRef;
+        private DirNode dirNode;
+
+        private DirectoryServiceWorker(DirNode dirNode,
+                                      [Claims] DirectoryServiceContract.Exp:Start! i_ep)
+            requires i_ep.InState(DirectoryServiceContract.Start.Value);
+        {
+            epRef = new TRef<DirectoryServiceContract.Exp:Start>(i_ep);
+            this.dirNode = dirNode;
+            base();
+        }
+
+        private void Start()
+        {
+#if !SINGULARITY_PROCESS
+            Thread thread = Thread.CreateThread(DirectoryService.processForWorkerThreads,
+                                                new ThreadStart(Run));
+#else
+            Thread thread = new Thread (new ThreadStart(Run));
+#endif
+
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+
+        public static void Create(DirNode dirNode,
+                                  [Claims] DirectoryServiceContract.Exp:Start! i_ep)
+        {
+            //
+            // We need to do some trickery to pass the ownership of i_ep to
+            // the thread that will run the worker.
+            // We are currently working on behalf of some user process, but
+            // the worker thread will be a kernel thread.
+            // The transfer has to happen after we released the i_ep into the TRef
+            // but before we acquire the TRef. This is because the Release and Acquire
+            // operations actually cause the endpoint to be dereferenced and that
+            // must happen by the correct owner.
+
+            // The TRef implementation in the kernel now takes care of this.
+
+            DirectoryServiceWorker worker;
+
+            worker = new DirectoryServiceWorker(dirNode, i_ep);
+
+            // Now start the worker, which will acquire the endpoint in the TRef.
+            worker.Start();
+        }
+
+        private void Run()
+        {
+            bool success;
+            int code;
+            char* opt(ExHeap[]) path;
+#if !SINGULARITY_PROCESS
+            Tracing.Log(Tracing.Debug,"new thread={0:x8}",(UIntPtr)Kernel.AddressOf(Thread.CurrentThread));
+#endif
+            DirectoryServiceContract.Exp ep = epRef.Acquire();
+
+            epRef = null;
+
+            ep.SendSuccess();
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        case ep.Bind(i_path, i_server) :
+                             WorkerFunctions.DoBind(dirNode, ep, i_path, i_server);
+                             break;
+
+                        case ep.BeginEnumeration() :
+                            WorkerFunctions.DoEnumerate(dirNode, ep);
+                            break;
+
+                        case ep.GetAttributes( char []! in ExHeap i_path) :
+                            WorkerFunctions.DoGetAttributes(dirNode, ep, i_path);
+                            break;
+
+                        case ep.ReadEnumeration() :
+                            WorkerFunctions.DoMore(dirNode, ep);
+                            break;
+
+                        case ep.Notify(i_path, i_pattern, i_sendExisting, i_notifyImp):
+                            WorkerFunctions.DoNotify(dirNode, ep,i_path, i_pattern, i_sendExisting, i_notifyImp);
+                            break;
+
+                        case ep.Register(i_path, i_provider):
+                            WorkerFunctions.DoRegister(dirNode, ep, i_path, i_provider);
+                            break;
+
+                        case ep.EndEnumeration() :
+                            WorkerFunctions.DoStop(dirNode, ep);
+                            break;
+
+                        case ep.Deregister(i_path):
+                            WorkerFunctions.DoDeregister(dirNode, ep, i_path);
+                            break;
+
+                        case ep.CreateDirectory(i_name) :
+                            WorkerFunctions.DoCreateDirectory(dirNode, ep,i_name);
+                            break;
+
+                        case ep.DeleteDirectory(i_name) :
+                            WorkerFunctions.DoDeleteDirectory(dirNode, ep,i_name);
+                            break;
+
+                        case ep.CreateFile( char []! in ExHeap i_name) :
+                            WorkerFunctions.DoCreateFile(dirNode, ep,i_name);
+                            break;
+
+                        case ep.DeleteFile(i_name):
+                            WorkerFunctions.DoDeleteFile(dirNode, ep,i_name);
+                            break;
+
+                        case ep.QueryACL(char[]! in ExHeap i_name):
+                            WorkerFunctions.DoQueryACL(dirNode, ep, i_name);
+                            break;
+
+                        case ep.StoreACL(char[]! in ExHeap i_name, char[] in ExHeap acl):
+                            WorkerFunctions.DoStoreACL(dirNode, ep, i_name, acl);
+                            break;
+
+                       case ep.CreateAndBindFile(char []! in ExHeap i_name, FileContract.Imp:Ready! imp) :
+                            WorkerFunctions.DoCreateAndBindFile(dirNode, ep, i_name, imp);
+                            break;
+
+                        case ep.CreateLink(i_name,i_value) :
+                            WorkerFunctions.DoCreateLink(dirNode, ep,i_name, i_value);
+                            break;
+
+                        case ep.DeleteLink(i_name):
+                            WorkerFunctions.DoDeleteLink(dirNode, ep,i_name);
+                            break;
+
+                        case ep.GetLinkValue(i_name):
+                            WorkerFunctions.DoGetLinkValue(dirNode, ep,i_name);
+                            break;
+
+                        case ep.ChannelClosed():
+#if SINGULARITY_PROCESS
+                            //DebugStub.WriteLine("SDSWorker Thread shutting down");
+#endif
+                            run = false;
+                            break;
+
+                        case unsatisfiable:
+                            DebugStub.Print("NameServiceWorker shutting down\n");
+                            DebugStub.Break();
+                            run = false;
+                            break;
+                    }//switch
+                } //for
+            } //try
+            finally {
+                delete ep;
+            }
+        } //run
+    } //DirectoryServiceWorker class
+} //namespace

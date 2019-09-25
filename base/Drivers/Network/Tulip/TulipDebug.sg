@@ -1,0 +1,97 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TulipDebug.cs
+//
+//  Simple Driver for DEC 21140a PCI Ethernet card.  (as used in Virtual PC)
+//
+//  Useful reference URLs:
+//      http://www.intel.com/design/network/manuals/21140ahm.pdf
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Diagnostics;
+
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    class TulipDebug
+    {
+        [Conditional("DEBUG_TULIP")]
+        internal static void
+        Print(string! format)
+        {
+            DebugStub.Print(format);
+        }
+
+        [Conditional("DEBUG_TULIP")]
+        internal static void
+        Print(string! format, __arglist)
+        {
+            DebugStub.Print(format, new ArgIterator(__arglist));
+        }
+
+        [Conditional("DEBUG_TULIP")]
+        private static void
+        PrintByteRow(byte[]! data, int start, int end)
+        {
+            Print("{0:x8}  ", __arglist(start));
+            for (int j = start; j < end; j++) {
+                Print("{0:x2} ", __arglist(data[j]));
+            }
+            Print("\n");
+        }
+
+        [Conditional("DEBUG_TULIP")]
+        internal static void
+        PrintBytes(string! title, byte[]! data, int start, int length)
+        {
+            Print("{0}\n", __arglist(title));
+            const int bpl = 16;
+
+            int m = start + length - (length % bpl);
+            int n = start + length;
+
+            for (int i = start; i < m; i += bpl) {
+                PrintByteRow(data, i, i + bpl);
+            }
+            if (n != m) {
+                PrintByteRow(data, m, n);
+            }
+        }
+
+        [Conditional("DEBUG_TULIP")]
+        internal static void
+        PrintBytes(string! title, byte[]! data)
+        {
+            PrintBytes(title, data, 0, data.Length);
+        }
+
+        [Conditional("DEBUG_TULIP")]
+        internal static void
+        PrintCsrs(IoPort!  csr0, IoPort!  csr1, IoPort!  csr2, IoPort!  csr3,
+                  IoPort!  csr4, IoPort!  csr5, IoPort!  csr6, IoPort!  csr7,
+                  IoPort!  csr8, IoPort!  csr9, IoPort! csr10, IoPort! csr11,
+                  IoPort! csr12, IoPort! csr15)
+        {
+            Print("CSR0  {0:x8}  CSR3  {1:x8}  CSR4  {2:x8}\n",
+                  __arglist(csr0.Read32(), csr3.Read32(), csr4.Read32()));
+
+            uint status = csr5.Read32();
+            Print("CSR5 {0:x} Bus Error {0:x} TX {1:x} RX {2:x}\n",
+                  __arglist(status,
+                            (status >> CSR5.EB_ROLL) & CSR5.EB_MASK,
+                            (status >> CSR5.TS_ROLL) & CSR5.TS_MASK,
+                            (status >> CSR5.RS_ROLL) & CSR5.RS_MASK
+                            ));
+            Print("CSR6  {0:x8}  CSR7  {1:x8}  CSR8  {2:x8}\n",
+                  __arglist(csr6.Read32(), csr7.Read32(), csr8.Read32()));
+            Print("CSR11 {0:x8}  CSR12 {1:x8}  CSR15 {2:x8}\n",
+                  __arglist(csr11.Read32(), csr12.Read32(), csr15.Read32()));
+        }
+    }
+}

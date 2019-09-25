@@ -1,0 +1,59 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace Microsoft.SingSharp
+{
+    /// <summary>
+    /// This is the Base class for all Custom allocators.
+    ///
+    /// <i>Custom Allocator support</i>
+    ///
+    /// Custom allocators enable Sing# programs to allocate memory explicitly in a variety of
+    /// different heaps.
+    ///
+    /// Pointers to objects in custom allocation regions have types that are tagged by an optional
+    /// type modifier pointing to the Allocator class. E.g., a pointer to a struct S in allocation
+    /// heap controlled by type A is given type
+    ///
+    ///   (S* ) opt A
+    ///
+    /// In the same vein, we can support vectors in these allocation regions by tagging the pointer
+    /// with a vector type A[]
+    ///
+    ///   (S* ) opt A[]      represents a vector of S in allocation region managed by A.
+    ///
+    /// 
+    /// The idea is that given a pointer tagged with an allocator, we can perform operations
+    /// specific to that allocator, such as getting the array length, freeing the block, or
+    /// indirect to the data (if the allocator uses that representation).
+    ///
+    /// A pointer without an allocator tag is thus interpreted no differently than the CLR normally
+    /// would treat it, and no special operations can be performed on it, in particular, it cannot
+    /// be freed.
+    ///
+    /// The allocator tagging also enables us to make sure we free the pointer with the right
+    /// allocator and to restrict certain operations to particular heaps, for example message sends
+    /// only accept pointers allocated in the exchange heap.
+    /// 
+    /// </summary>
+    public class CustomAllocator {
+    }
+    
+    /// <summary>
+    /// This is a marker used in optional modifiers to encode that a pointer to a custom heap is actually a 
+    /// vector and can be indexed. We encode these as T* opt(Allocator) opt(CustomVector)
+    ///
+    /// History:
+    ///   We used to encode these as T* opt(Allocator[]), but the array type in the modifier position throws
+    ///   off IL readers such as ABSIL.
+    /// </summary>
+    public class CustomVector {
+        public unsafe static void Expose(void* arr, int idx) { }
+        public unsafe static void UnExpose(void* arr, int idx) { }
+    }
+}

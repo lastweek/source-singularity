@@ -1,0 +1,47 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    public struct IntPtr
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public static readonly IntPtr Zero;
+        public static readonly int Size;
+
+        public IntPtr(int value);
+        public IntPtr(long value);
+
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+        public override String ToString();
+
+        public int ToInt32();
+        public long ToInt64();
+
+        public static explicit operator UIntPtr (IntPtr value);
+        public static explicit operator IntPtr (int value);
+        public static explicit operator IntPtr (long value);
+        public static explicit operator int (IntPtr  value);
+        public static explicit operator long (IntPtr  value);
+        public static bool operator == (IntPtr value1, IntPtr value2);
+        public static bool operator != (IntPtr value1, IntPtr value2);
+
+        public static IntPtr operator - (IntPtr value1, IntPtr value2);
+        public static IntPtr operator - (IntPtr value1, int value2);
+        public static IntPtr operator -- (IntPtr value);
+        public static IntPtr operator + (IntPtr value1, IntPtr value2);
+        public static IntPtr operator ++ (IntPtr value);
+        public static bool operator < (IntPtr value1, IntPtr value2);
+        public static bool operator > (IntPtr value1, IntPtr value2);
+        public static bool operator <= (IntPtr value1, IntPtr value2);
+        public static bool operator >= (IntPtr value1, IntPtr value2);
+    }
+}

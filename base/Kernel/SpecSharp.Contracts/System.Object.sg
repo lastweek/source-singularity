@@ -1,0 +1,18 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.SpecSharp.Collections;
+
+namespace System
+{
+	public class Object
+	{
+		public new Type! GetType();
+
+        public string! ToString();
+	}
+}

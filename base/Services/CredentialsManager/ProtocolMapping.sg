@@ -1,0 +1,116 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.SingSharp;
+
+using Ex = Microsoft.Singularity.Security;
+
+namespace Microsoft.Singularity.Security.CredentialsManager
+{
+    class ProtocolTuple
+    {
+        public ProtocolTuple(Ex.ProtocolTuple extuple)
+        {
+            this.ApplicationProtocol = Bitter.ToString2(extuple.ApplicationProtocol);
+            this.ServiceAddress = Bitter.ToString2(extuple.ServiceAddress);
+            this.AuthenticationProtocol = Bitter.ToString2(extuple.AuthenticationProtocol);
+            this.Realm = Bitter.ToString2(extuple.Realm);
+        }
+        
+        public ProtocolTuple(
+            string! applicationProtocol,
+            string! serviceAddress,
+            string! authenticationProtocol,
+            string! realm)
+        {
+            this.ApplicationProtocol = applicationProtocol;
+            this.ServiceAddress = serviceAddress;
+            this.AuthenticationProtocol = authenticationProtocol;
+            this.Realm = realm;
+        }
+            
+        public readonly string! ApplicationProtocol;
+        public readonly string! ServiceAddress;
+        public readonly string! AuthenticationProtocol;
+        public readonly string! Realm;
+        
+        public const string WildcardValue = "*";
+        public const int ApplicationProtocolMaskBit = 0;
+        public const int ServiceAddressMaskBit = 1;
+        public const int AuthenticationProtocolMaskBit = 2;
+        public const int RealmMaskBit = 3;
+        
+        
+        public override string! ToString()
+        {
+            return String.Format("< app-prot:{0} service:{1} auth-prot:{2} realm:{3} >",
+                this.ApplicationProtocol,
+                this.ServiceAddress,
+                this.AuthenticationProtocol,
+                this.Realm);
+        }
+        
+        override public int GetHashCode()
+        {
+            return Util.CombineHashCodes(
+                ApplicationProtocol.GetHashCode(),
+                ServiceAddress.GetHashCode(),
+                AuthenticationProtocol.GetHashCode(),
+                Realm.GetHashCode());
+        }
+        
+        override public bool Equals(object obj)
+        {
+            ProtocolTuple comparand = obj as ProtocolTuple;
+            if (comparand == null)
+                return false;
+            return this == comparand;
+        }
+        
+        public static bool operator== (ProtocolTuple! a, ProtocolTuple! b)
+        {
+            return a.ApplicationProtocol == b.ApplicationProtocol
+                && a.ServiceAddress == b.ServiceAddress
+                && a.AuthenticationProtocol == b.AuthenticationProtocol
+                && a.Realm == b.Realm;
+        }
+        
+        public static bool operator!= (ProtocolTuple! a, ProtocolTuple! b)
+        {
+            return a.ApplicationProtocol != b.ApplicationProtocol
+                || a.ServiceAddress != b.ServiceAddress
+                || a.AuthenticationProtocol != b.AuthenticationProtocol
+                || a.Realm != b.Realm;
+        }
+    }
+    
+    class ProtocolMapping
+    {
+        public ProtocolMapping(
+            ProtocolTuple! protocolTuple,
+            CredentialsId! credentialsId)
+        {
+            this.ProtocolTuple = protocolTuple;
+            this.CredentialsId = credentialsId;
+        }
+        
+        public readonly ProtocolTuple! ProtocolTuple;
+        public readonly CredentialsId! CredentialsId;
+    }
+}

@@ -1,0 +1,175 @@
+//------------------------------------------------------------------------------
+//   Copyright (c) Microsoft Corporation. All Rights Reserved.
+//------------------------------------------------------------------------------
+
+
+using System;
+using System.Diagnostics;
+using System.Globalization;
+using System.Reflection;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.WebApps.Contracts;
+using Microsoft.Singularity.WebHost;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+[assembly: AssemblyProduct("Microsoft Research Singularity Operating System")]
+[assembly: AssemblyCompany("Microsoft Corporation")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyKeyFile("public.snk")]
+[assembly: AssemblyDelaySign(true)]
+
+namespace Microsoft.Singularity.WebHost
+{
+    [ConsoleCategory(HelpMessage="webhost [options] A web server",
+                     DefaultAction=true)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter("apparg", Default="",
+                         HelpMessage="Arg to pass to client app")]
+        internal string appArg;
+
+        [StringParameter("app", Mandatory=true, Default="",
+                         HelpMessage="Name of the app to run")]
+        internal string app;
+
+        [StringParameter("nspath", Mandatory=false, Default="/service/webapp",
+                         HelpMessage="NS path to server")]
+        internal string nsPath;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return WebHost.AppMain(this);
+        }
+    }
+
+    public sealed class WebHost
+    {
+        private static string[] m_childArgs;
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        //
+        internal static int AppMain(Parameters! config)
+        {
+            DebugStub.WriteLine("WebHost.AppMain");
+
+            // Start up the webapp so it's ready to respond to requests
+            string[] args;
+
+            if (config.appArg != null) {
+                args = new string[2];
+                args[0] = config.app;
+                args[1] = config.appArg;
+            }
+            else {
+                args = new string[1];
+                args[0] = config.app;
+            }
+            m_childArgs = args;
+
+            if (config.nsPath != null) {
+                // Publish out connection endpoint.
+                DirectoryServiceContract.Imp ds = (config.nsRef).Acquire();
+                if (ds == null) {
+                    throw new Exception("WebHost: Unable to acquire handle to Directory Service.");
+                }
+                ds.RecvSuccess();
+
+                ServiceProviderContract.Imp! nsImp;
+                ServiceProviderContract.Exp! nsExp;
+                ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+                try {
+                    ds.SendRegister(Bitter.FromString2(config.nsPath), nsImp);
+
+                    switch receive {
+                        case ds.AckRegister() :
+                            // All is well.
+                            break;
+
+                        case ds.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                            // All is very much not well; abort.
+                            Console.WriteLine("WebHost: Failed to register endpoint as {0}: error {1}.",
+                                              config.nsPath, error);
+                            delete nsExp;
+                            delete rejectedEP;
+                            return -1;
+
+                        case ds.ChannelClosed():
+                            Console.WriteLine("WebHost: ds channel closed");
+                            delete nsExp;
+                            return -1;
+                    }
+                }
+                finally {
+                    delete ds;
+                }
+
+                Console.WriteLine("WebHost: Ready at {0}", config.nsPath);
+
+                // Wait for the web server to bind to us.
+                for (;;) {
+                    switch receive {
+                        // ------------------------------- Requests for new connections
+
+                        case nsExp.Connect(ServiceContract.Exp:Start! newEp):
+                            // We expect people to give us WebAppContract.Exp instances
+                            WebAppContract.Exp appConnExp = newEp as WebAppContract.Exp;
+                            if (appConnExp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+
+                                Console.WriteLine("WebHost: Starting child.");
+                                StartChild(appConnExp);
+                            }
+                            break;
+
+                        case nsExp.ChannelClosed():
+                            // The namespace channel is closed so quit.
+                            delete nsExp;
+                            return -1;
+                    }
+                }
+                Console.WriteLine("WebHost: Server connected.");
+                delete nsExp;
+            }
+            return 0;
+        }
+
+        public static void StartChild([Claims] WebAppContract.Exp:ProcessingState appConnExp)
+        {
+            Process child = new Process(m_childArgs, (Endpoint * in ExHeap)appConnExp);
+            child.Start();
+        }
+    }
+}

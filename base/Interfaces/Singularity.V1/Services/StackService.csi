@@ -1,0 +1,36 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File: StackService.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct StackService
+    {
+        private readonly int id;
+
+        [NoHeapAllocation]
+        public static void GetUnlinkStackRange(out ulong unlinkBegin, out ulong unlinkLimit);
+        [NoHeapAllocation]
+        public static void WalkStack();
+        [NoHeapAllocation]
+        public static void GetUsageStatistics(out ulong gets, out ulong returns);
+        [NoHeapAllocation]
+        public static void StackOverflow();
+
+        [NoHeapAllocation]
+        public static unsafe UIntPtr AllocateStackSegment(UIntPtr growSize);
+
+        [NoHeapAllocation]
+        public static unsafe void FreeStackSegment();
+    }
+}

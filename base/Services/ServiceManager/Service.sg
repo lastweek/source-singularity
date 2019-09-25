@@ -1,0 +1,360 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services\ServiceManager\Service.sg
+//
+//  Note:   Service counterpart
+//
+using System;
+using System.Collections;
+using System.Collections.Specialized;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.ServiceManager;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Services.ServiceManager
+{
+    /// <summary>
+    /// This class represents the state of a service, as seen by the Service Manager.
+    ///
+    /// Threading: Instances of this class are owned by the main (entry point) thread.
+    /// That is the only thread that creates instances of this class, and reads/writes
+    /// its fields.
+    ///
+    /// There is one important exception to consider: The main thread uses the ServiceStarter
+    /// class to create and start service processes, and when it does so, the main thread
+    /// passes a reference to an instance of Service to ServiceStarter.  ServiceStarter never
+    /// examines the contents of the instance; it passes it back to the main thread.
+    /// This maintains the invariant that only the main thread can read/write fields.
+    ///
+    /// This class encapsulates this information:
+    ///     * the complete configuration of the service, 
+    ///     * current information about the status of the service,
+    ///     * references to all of the processes that have been created for this service,
+    ///     * state fields that control state transitions (starting, stopping, etc.)
+    ///     * state fields relevant to detection of defective service processes and recovery.
+    ///
+    /// This class provides methods for reading/writing some of the state of a Service
+    /// instance, but in general, this class does not contain much of the semantics of the
+    /// Service Manager.  The Service class is not an independent, standalone object; it is
+    /// a data structure owned and manipulated by the ServiceManager class.  The methods
+    /// defined on this class handle making controlled state transitions (such as acquiring
+    /// an endpoint); the methods do *not* make global or broadly-scoped state transitions.
+    /// That is the responsibility of the ServiceManager class.
+    /// </summary>
+    class Service
+    {
+        public Service(InternalServiceConfig config)
+        {
+            this.ServiceName = config.ServiceName;
+            this.Config = config;
+            this.dbgprefix = String.Format("SMS[{0,-20}] ", config.ServiceName);
+            this.NextThinkTime = Util.SchedulerTimeNever;
+            
+            InternalServiceStatus status;
+            status.State = ServiceState.Stopped;
+            status.TotalActiveClients = -1;
+            status.TotalActiveProcesses = 0;
+            status.ConnectQueueLength = 0;
+            status.ProcessId = -1;
+            status.LastStartFailed = false;
+            status.LastStartError = ServiceError.None;
+            
+            this.LastServiceStatusPublished = status;
+        }
+
+        #region Data Fields
+
+        public string! dbgprefix;
+    
+        #region Configuration
+        public readonly string! ServiceName;
+        public string[] DependentServices;
+        public bool IsAdministrativelyDisabled { get { return Config.IsAdministrativelyDisabled; } }
+        public InternalServiceConfig Config;
+        #endregion
+        
+        public readonly ArrayList/*<ServiceProcess!>*/! Processes = new ArrayList();
+        
+        public bool IsMarkedForDeletion;
+        public bool IsDeleted;
+        
+        public bool IsDefective;
+        
+        public bool LastStartFailed;
+        public ServiceError LastStartError;
+        public SchedulerTime LastStartFailedTime;
+        
+        public SchedulerTime NextThinkTime;
+        
+        /// <summary>
+        /// This is the last service status that we have published to management clients that are
+        /// watching service status.  When there is any possibility that the status of a service
+        /// has changed, we build a new ServiceStatus object, then compare it to this field.
+        /// If any field has changed, then we notify all service watchers.
+        /// </summary>
+        public InternalServiceStatus LastServiceStatusPublished;
+        
+        public bool CanStartServiceProcess()
+        {
+            if (this.IsAdministrativelyDisabled)
+                return false;
+            
+            if (this.Processes.Count >= this.Config.MaxProcesses)
+                return false;
+                
+            if (LastStartFailed)
+                return false;
+                
+            return true;
+        }
+
+        /// <summary>
+        /// Contains instances of ServiceConnectRequest, representing clients that want
+        /// to connect to a service.
+        /// </summary>
+        private readonly Queue/*<ServiceConnectRequest>*/! connectQueue = new Queue();
+        
+
+        public readonly ArrayList/*<ServiceWatcher!>*/! StatusWatchers = new ArrayList();
+        
+        #endregion
+        
+        public void EnqueueConnectRequest(
+            [Claims]DirectoryServiceContract.Exp:Ready! dir,
+            DirectoryClientInfo! dirinfo,
+            string! subpath,
+            [Claims]ServiceContract.Exp:Start! channel,
+            SchedulerTime timeStarted)
+        {
+            ServiceConnectRequest! connect = new ServiceConnectRequest(dir, dirinfo, subpath, channel, timeStarted);
+            connectQueue.Enqueue(connect);
+        }
+        
+        public void EnqueueConnectRequest(ServiceConnectRequest! connect)
+        {
+            connectQueue.Enqueue(connect);
+        }
+        
+        public bool HasConnectRequests
+        {
+            get { return connectQueue.Count > 0; }
+        }
+        
+        public int ConnectQueueLength
+        {
+            get { return connectQueue.Count; }
+        }
+        
+        public ServiceConnectRequest! DequeueConnectRequest()
+        {
+            if (connectQueue.Count == 0)
+                throw new InvalidOperationException("There are no requests in the connect queue for this service.");
+            
+            ServiceConnectRequest! request = (ServiceConnectRequest!)connectQueue.Dequeue();
+            return request;
+        }
+
+        public void GetConfig(ref ServiceConfig config)
+        {
+            expose(config)
+            {
+                delete config.DisplayName;
+                delete config.ExecutableName;
+                delete config.ServiceName;
+                
+                this.Config.ToExchangeType(out config);
+                #if false
+                config.ServiceName = Bitter.FromString2(this.ServiceName);
+                config.DisplayName = Bitter.FromString2(this.DisplayName);
+                config.ExecutableName = Bitter.FromString2(this.ExecutableName);
+                config.IsAdministrativelyDisabled = this.IsAdministrativelyDisabled;
+                config.MinProcesses = this.MinProcesses;
+                config.MaxProcesses = this.MaxProcesses;
+                config.MaxClientsPerProcess = this.MaxClientsPerProcess;
+                config.MaxProcessAgeInSeconds = this.MaxProcessAgeInSeconds;
+                #endif
+            }
+        }
+    }
+    
+
+    // represents a client who is attempting to connect to a service
+    // the service cannot process the request immediately.
+    // either the service is starting, or its control channel is busy, etc.
+    class ServiceConnectRequest
+    {
+        public ServiceConnectRequest(
+            [Claims]DirectoryServiceContract.Exp:Ready! dir,
+            DirectoryClientInfo! dirinfo,
+            string! subpath,
+            [Claims]ServiceContract.Exp:Start! channel,
+            SchedulerTime timeStarted)
+        {
+            this.subpath = subpath;
+            this.dirref = new TRef<DirectoryServiceContract.Exp:Ready>(dir);
+            this.channelref = new TRef<ServiceContract.Exp:Start>(channel);
+            this.dirinfo = dirinfo;
+            this.timeStarted = timeStarted;
+        }
+        
+        public void Acquire(
+            out DirectoryServiceContract.Exp:Ready! dir,
+            out DirectoryClientInfo! dirinfo,
+            out string! subpath,
+            out ServiceContract.Exp:Start! channel,
+            out SchedulerTime timeStarted)
+        {
+            dir = this.dirref.Acquire();
+            dirinfo = this.dirinfo;
+            subpath = this.subpath;
+            channel = this.channelref.Acquire();
+            timeStarted = this.timeStarted;
+        }
+        
+        public void Release(
+            [Claims]DirectoryServiceContract.Exp:Ready! dir,
+            DirectoryClientInfo! dirinfo,
+            string! subpath,
+            [Claims]ServiceContract.Exp:Start! channel,
+            SchedulerTime timeStarted)
+        {
+            this.dirref.Release(dir);
+            this.subpath = subpath;
+            this.channelref.Release(channel);
+            this.timeStarted = timeStarted;
+            this.dirinfo = dirinfo;
+        }
+        
+        readonly TRef<DirectoryServiceContract.Exp:Ready>! dirref;
+        readonly TRef<ServiceContract.Exp:Start>! channelref;
+        string! subpath;
+        DirectoryClientInfo! dirinfo;
+        SchedulerTime timeStarted;
+        
+        public void Dispose()
+        {
+            // dirref.Dispose();
+            // channelref.Dispose();
+        }
+    }
+    
+    struct InternalServiceStatus
+    {
+        public ServiceStatus ToExchange()
+        {
+            ServiceStatus status;
+            status.State = this.State;
+            status.TotalActiveClients = this.TotalActiveClients;
+            status.TotalActiveProcesses = this.TotalActiveProcesses;
+            status.ConnectQueueLength = this.ConnectQueueLength;
+            status.ProcessId = this.ProcessId;
+            status.LastStartError = this.LastStartError;
+            status.LastStartFailed = this.LastStartFailed;
+            return status;            
+        }
+
+        public ServiceState State;
+        public int TotalActiveClients;
+        public int TotalActiveProcesses;
+        public int ConnectQueueLength;
+        public long ProcessId;
+        public bool LastStartFailed;
+        public ServiceError LastStartError;
+        
+        public static bool IsEqual(ref InternalServiceStatus left, ref InternalServiceStatus right)
+        {
+            return left.State == right.State
+                && left.TotalActiveClients == right.TotalActiveClients
+                && left.TotalActiveProcesses == right.TotalActiveProcesses
+                && left.ConnectQueueLength == right.ConnectQueueLength
+                && left.ProcessId == right.ProcessId
+                && left.LastStartFailed == right.LastStartFailed
+                && left.LastStartError == right.LastStartError;
+        }
+        
+        public static bool IsEqual(InternalServiceStatus left, InternalServiceStatus right)
+        {
+            return IsEqual(ref left, ref right);
+        }
+    }
+
+
+    /// <summary>
+    /// This structure is a "local" (in same process) equivalent to the exchangeable ServiceConfig type.
+    /// This is necessary because we can't store rep structures in local types, and because we want to use
+    /// System.String, not char[] in ExHeap for our strings.
+    /// </summary>
+    struct InternalServiceConfig
+    {
+        public string! ServiceName;
+        public string! DisplayName;
+        public string! ExecutableName;
+        public ServiceActivationMode ActivationMode;
+        public bool IsAdministrativelyDisabled;
+        public int MinProcesses;
+        public int MaxProcesses;
+        public int MaxClientsPerProcess;
+        public int MaxProcessAgeInSeconds;
+        
+        public InternalServiceConfig(ref ServiceConfig config)
+        {
+            expose (config)
+            {
+                this.ServiceName = Bitter.ToString2(config.ServiceName);
+                this.DisplayName = Bitter.ToString2(config.DisplayName);
+                this.ExecutableName = Bitter.ToString2(config.ExecutableName);
+                this.ActivationMode = config.ActivationMode;
+                this.IsAdministrativelyDisabled = config.IsAdministrativelyDisabled;
+                this.MinProcesses = config.MinProcesses;
+                this.MaxProcesses = config.MaxProcesses;
+                this.MaxClientsPerProcess = config.MaxClientsPerProcess;
+                this.MaxProcessAgeInSeconds = config.MaxProcessAgeInSeconds;            
+            }
+        }
+        
+        public ServiceConfig ToExchangeType()
+        {
+            ServiceConfig config = new ServiceConfig();
+            config.ServiceName = Bitter.FromString2(this.ServiceName);
+            config.DisplayName = Bitter.FromString2(this.DisplayName);
+            config.ExecutableName = Bitter.FromString2(this.ExecutableName);
+            config.ActivationMode = this.ActivationMode;
+            config.IsAdministrativelyDisabled = this.IsAdministrativelyDisabled;
+            config.MinProcesses = this.MinProcesses;
+            config.MaxProcesses = this.MaxProcesses;
+            config.MaxClientsPerProcess = this.MaxClientsPerProcess;
+            config.MaxProcessAgeInSeconds = this.MaxProcessAgeInSeconds;            
+            return config;           
+        }
+        
+        public void ToExchangeType(out ServiceConfig config)
+        {
+            config = new ServiceConfig();
+            // expose (config) {
+                delete config.DisplayName;
+                delete config.ExecutableName;
+                delete config.ServiceName;
+                config.ServiceName = Bitter.FromString2(this.ServiceName);
+                config.DisplayName = Bitter.FromString2(this.DisplayName);
+                config.ExecutableName = Bitter.FromString2(this.ExecutableName);
+                config.ActivationMode = this.ActivationMode;
+                config.IsAdministrativelyDisabled = this.IsAdministrativelyDisabled;
+                config.MinProcesses = this.MinProcesses;
+                config.MaxProcesses = this.MaxProcesses;
+                config.MaxClientsPerProcess = this.MaxClientsPerProcess;
+                config.MaxProcessAgeInSeconds = this.MaxProcessAgeInSeconds;            
+            // }        
+        }
+    }
+}
+

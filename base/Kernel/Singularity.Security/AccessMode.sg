@@ -1,0 +1,45 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+
+    /// <summary>
+    /// Represents an access mode (permission)
+    /// </summary>
+    public class AccessMode
+    {
+        private static uint next = 0;
+        private static object sync = new object();
+        private string! mode;
+        private uint num;
+
+        public AccessMode(string! mode)
+        {
+            this.mode = mode;
+            lock (sync)
+                this.num = next++;
+        }
+
+        public string! Val { get { return mode; } }
+        public uint Num { get { return num; } }
+
+        public override int GetHashCode()
+        {
+            return mode.GetHashCode();
+        }
+
+        public override bool Equals(object o)
+        {
+            AccessMode other = o as AccessMode;
+            if (other != null) {
+                return this.mode.Equals(other.mode);
+            }
+            return false;
+        }
+    }
+}

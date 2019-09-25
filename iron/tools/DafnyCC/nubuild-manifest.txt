@@ -1,0 +1,9 @@
+output CodeContractsExtender.dll
+output Core.dll
+output dafnycc.exe
+output DafnyPipeline.dll
+output Basetypes.dll
+output ParserHelper.dll
+output Provers.SMTLib.dll
+output VCGeneration.dll
+output z3.exe

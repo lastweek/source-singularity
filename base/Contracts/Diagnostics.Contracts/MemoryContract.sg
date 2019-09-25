@@ -1,0 +1,71 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for the memory diagnostic module
+//
+
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Diagnostics.Contracts
+{
+    public contract MemoryContract : ServiceContract
+    {
+        // The name you should use to look up this module using the NameServer.
+        public const string ModuleName = "/status/memory";
+
+        public rep struct BlockInfo {
+            public long ptrVal;
+            public long size;
+            public long type;
+            public int ownerProcID;
+        }
+
+        // Signal our identity
+        out message Ready();
+
+        // Retrieve memory statistics
+        in message GetUsedMemory();
+        in message GetFreeMemory();
+        in message GetMaxMemory();
+        out message Memory(long bytes);
+
+        // Process specific memory statistics
+        in message GetProcessUsedMemory(int processId);
+        in message GetProcessPeakMemory(int processId);
+        in message GetProcessHandlePages(int processId);
+        out message Pages(long pages);
+
+        // Communication heap statistics
+        in message TotalUsedCommunicationHeap();
+        in message ProcessUsedCommunicationHeap(int processId);
+        out message BlocksAndTotal(long blocks, long bytes);
+        in message DumpExHeap();
+        out message ExHeapDump(BlockInfo[]! in ExHeap dump);
+
+        // Force a kernel GC
+        in message CollectGarbage();
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            GetUsedMemory? -> Memory! -> ReadyState;
+            GetFreeMemory? -> Memory! -> ReadyState;
+            GetMaxMemory? -> Memory! -> ReadyState;
+            GetProcessUsedMemory? -> Memory! -> ReadyState;
+            GetProcessPeakMemory? -> Memory! -> ReadyState;
+            GetProcessHandlePages? -> Pages! -> ReadyState;
+            TotalUsedCommunicationHeap? -> BlocksAndTotal! -> ReadyState;
+            ProcessUsedCommunicationHeap? -> BlocksAndTotal! -> ReadyState;
+            DumpExHeap? -> ExHeapDump! -> ReadyState;
+            CollectGarbage? -> Memory! -> ReadyState;
+        }
+    }
+}

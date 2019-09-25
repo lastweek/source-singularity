@@ -1,0 +1,38 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Singularity pipe test program.
+//
+using System;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Print arguments to stdout", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+        
+        [StringArrayParameter("Args", HelpMessage="The arguments to echo.")]
+        public string[] Args;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            Console.WriteLine("running");
+            string line = Args != null ? String.Join(" ", Args) : "";
+            Console.WriteLine(line);
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,55 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+using System;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.ServiceManager;
+
+namespace Microsoft.Singularity.Services
+{
+    contract CounterContract : ServiceContract
+    {
+        public const string ModuleName = "/Counter";
+
+        out message Success();
+
+        in message Increment();
+        out message AckIncrement(int num);
+        out message NakIncrement();
+
+        in message BeginCount();
+        out message Current(int num);
+        in message Next();
+        in message End();
+        out message Terminated();
+
+        override state Start : one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            Increment? -> (AckIncrement!
+                           or NakIncrement!
+                          ) -> Ready;
+
+            BeginCount? -> Count;
+        }
+
+        state Count : one {
+            Current! -> AckCount;
+            Terminated! -> Ready;
+        }
+
+        state AckCount : one {
+            Next? -> Count;
+            End? -> Ready;
+        }
+    }
+}

@@ -1,0 +1,59 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+    public struct Char : IComparable
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public const char MaxValue;
+        public const char MinValue;
+
+        public override int GetHashCode();
+        public override bool Equals(Object obj);
+        public override String ToString();
+
+        public int CompareTo(Object value);
+
+        public static String ToString(char c);
+
+        public static char Parse(String s);
+
+        public static bool IsDigit(char c);
+        public static bool IsLetter(char c);
+        public static bool IsWhiteSpace(char c);
+        public static bool IsUpper(char c);
+        public static bool IsLower(char c);
+        public static bool IsPunctuation(char c);
+        public static bool IsLetterOrDigit(char c);
+        public static bool IsControl(char c);
+        public static bool IsNumber(char c);
+        public static bool IsSeparator(char c);
+        public static bool IsSurrogate(char c);
+        public static bool IsSymbol(char c);
+
+        public static char ToUpper(char c);
+        public static char ToLower(char c);
+
+        public static bool IsControl(String s, int index);
+        public static bool IsDigit(String s, int index);
+        public static bool IsLetter(String s, int index);
+        public static bool IsLetterOrDigit(String s, int index);
+        public static bool IsLower(String s, int index);
+        public static bool IsNumber(String s, int index);
+        public static bool IsPunctuation (String s, int index);
+        public static bool IsSeparator(String s, int index);
+        public static bool IsSurrogate(String s, int index);
+        public static bool IsSymbol(String s, int index);
+        public static bool IsUpper(String s, int index);
+        public static bool IsWhiteSpace(String s, int index);
+
+        public static double GetNumericValue(char c);
+        public static double GetNumericValue(String s, int index);
+    }
+}

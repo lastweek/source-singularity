@@ -1,0 +1,26 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace Smb.Client
+{
+	class SmbProtocolViolationException : Exception
+	{
+		SmbProtocolViolationException()
+			: base("An SMB protocol violation has occurred.")
+		{}
+		
+		SmbProtocolViolationException(string! msg)
+			: base(msg)
+		{}
+		
+		SmbProtocolViolationException(string! msg, Exception! inner)
+			: base(msg, inner)
+		{}
+		
+	}
+}

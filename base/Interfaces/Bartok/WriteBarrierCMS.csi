@@ -1,0 +1,17 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+namespace System.GCs
+{
+
+    internal unsafe class WriteBarrierCMS {
+
+        internal static unsafe void ObjWriteBarrier(Object obj); 
+
+        internal static unsafe void LocWriteBarrier(UIntPtr *addr,
+                                                    UIntPtr value);
+
+    }
+
+}

@@ -1,0 +1,144 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+
+The components built by this project require knowledge of some
+of the data structures used by the managed kernel.  We handle
+this by building the kernel first and running it through native
+code generation (Bartok).  This generates halclass.h and
+halclass.inc, which contain structure layouts that the unmanaged
+C/C++ and assembly compilers can use.
+
+MSBuild is smart enough to handle this correctly.  Projects can
+build other projects, and can refer to specific targets within
+those projects.  So SarmBoot.proj contains references to kernel.proj.
+
+The result is that you get a clean, correct build, no matter
+what order you build the projects.
+
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Platform>Omap3430</Platform>
+  </PropertyGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Paths.targets" />
+
+  <PropertyGroup>
+    <SDIZEPDB>sdizepdb</SDIZEPDB>
+    <AFLAGS>$(AFLAGS)</AFLAGS>
+    <CFLAGS>/nologo $(CFLAGS) /Zi /Zl /Od /GS- /QRarch5 /QRimplicit-import- /I$(KERNEL_NATIVE_DIR) /I$(KERNEL_NATIVE_DIR) /I$(SINGULARITY_ROOT)\boot\include -UDEBUG</CFLAGS>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <BootSource Include="sarmboot.cpp">
+       <Dependencies>..\include\printf.cpp;..\include\debug.cpp;..\include\expandpe.cpp;debuguart.cpp</Dependencies>
+    </BootSource>
+
+    <BootSource Include="__udiv.asm"/>
+    <BootSource Include="boot.asm"/>
+    <BootSource Include="memmove.asm"/>
+    <BootSource Include="memset.asm"/>
+    <BootSource Include="memcpy.asm"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <KernelSource Include="kernel.cpp">
+       <Dependencies>..\include\printf.cpp;..\include\debug.cpp;..\include\expandpe.cpp;debuguart.cpp</Dependencies>
+    </KernelSource>
+
+    <KernelSource Include="__udiv.asm"/>
+    <KernelSource Include="memmove.asm"/>
+    <KernelSource Include="memset.asm"/>
+    <KernelSource Include="memcpy.asm"/>
+  </ItemGroup>
+
+  <Target Name="Build"
+          DependsOnTargets="LinkBoot;LinkKernel"/>
+
+  <Target Name="Clean">
+    <Delete Files="$(BOOTDIR)\sarmboot.exe;$(BOOTDIR)\sarmboot.lst;$(BOOTDIR)\sarmboot.txt;$(BOOTDIR)\sarmboot.map;$(BOOTDIR)\sarmboot.pdb;$(BOOTDIR)\%(BootSource.filename).obj"/>
+  </Target>
+
+  <Target Name="CreateDirs">
+    <MakeDir Directories="$(BOOTDIR)"/>
+  </Target>
+
+  <Target Name="CreateItems">
+    <CreateItem Include="$(BOOTDIR)\%(BootSource.filename).obj">
+      <Output TaskParameter="Include" ItemName="__boot_obj"/>
+    </CreateItem>
+    <CreateItem Include="$(BOOTDIR)\%(KernelSource.filename).obj">
+      <Output TaskParameter="Include" ItemName="__kernel_obj"/>
+    </CreateItem>
+  </Target>
+
+  <!-- ============================ SARMBOOT ============================================= -->
+
+  <Target Name="CompileBoot"
+          Inputs="@(BootSource)"
+          Outputs="$(BOOTDIR)\%(BootSource.filename).obj"
+          DependsOnTargets="CreateDirs;BuildHalclass">
+
+    <Exec Condition="'%(BootSource.extension)' == '.asm'"
+          Command="$(AS) $(AFLAGS) /c /I$(BOOTDIR) /I$(KERNEL_NATIVE_DIR) /Fl$(BOOTDIR)\%(BootSource.filename).lst /Fo$(BOOTDIR)\%(BootSource.filename).obj %(BootSource.identity)"/>
+
+    <Exec Condition="'%(BootSource.extension)' == '.cpp'"
+          Command="$(CC) $(CFLAGS) /c /FAscu /Fa$(BOOTDIR)\%(BootSource.filename).lst /Fd$(BOOTDIR)\sarmboot.pdb /Fo$(BOOTDIR)\%(BootSource.filename).obj %(BootSource.identity)"/>
+  </Target>
+
+  <Target Name="LinkBoot"
+          Outputs="$(BOOTDIR)\sarmboot.exe;$(BOOTDIR)\sarmboot.raw"
+          Inputs="@(__boot_obj)"
+          DependsOnTargets="CreateDirs;CreateItems;CompileBoot">
+    <!-- # NB Swapped /DEBUGTYPE:CV,FIXUP for $(LINKDFLAGS) which does not have FIXUP -->
+    <Message Text="BootSource: %(BootSource.identity)"/>
+    <Exec Command="$(LINK) /nologo $(UNDUMP_FLAGS) /out:$(BOOTDIR)\sarmboot.exe  @(__boot_obj,' ') /pdb:$(BOOTDIR)\sarmboot.pdb /map:$(BOOTDIR)\sarmboot.map /driver /align:0x200 /base:0x80000000 /fixed /entry:BootEntry /incremental:no /subsystem:native /ignore:4078 /ignore:4254 /merge:.rdata=.data /merge:.bss=.data /merge:.data=.text /debug /debugtype:cv,fixup /pdb:$(BOOTDIR)\sarmboot.pdb"/>
+    <Exec Condition="'$(EnableSdize)'=='true'"
+      ContinueOnError="true" Command="$(SDIZEPDB) /t:$(BOOTDIR)\sarmboot.txt $(BOOTDIR)\sarmboot.pdb"/>
+    <Exec ContinueOnError="false" Command="copy $(BOOTDIR)\sarmboot.exe $(BOOTDIR)\sarmboot.raw"/>
+    <Exec ContinueOnError="false" Command="$(BUILDDIR)\x86_arm\mkarmraw $(BOOTDIR)\sarmboot.raw"/>
+  </Target>
+
+  <!-- ============================ SARMBOOT ============================================= -->
+
+  <Target Name="CompileKernel"
+          Inputs="@(KernelSource)"
+          Outputs="$(BOOTDIR)\%(KernelSource.filename).obj"
+          DependsOnTargets="CreateDirs;BuildHalclass">
+
+    <Exec Condition="'%(KernelSource.extension)' == '.asm'"
+          Command="$(AS) $(AFLAGS) /c /I$(BOOTDIR) /I$(KERNEL_NATIVE_DIR) /Fl$(BOOTDIR)\%(KernelSource.filename).lst /Fo$(BOOTDIR)\%(KernelSource.filename).obj %(KernelSource.identity)"/>
+
+    <Exec Condition="'%(KernelSource.extension)' == '.cpp'"
+          Command="$(CC) $(CFLAGS) /c /FAscu /Fa$(BOOTDIR)\%(KernelSource.filename).lst /Fd$(BOOTDIR)\kernel.pdb /Fo$(BOOTDIR)\%(KernelSource.filename).obj %(KernelSource.identity)"/>
+  </Target>
+
+  <Target Name="LinkKernel"
+          Outputs="$(BOOTDIR)\kernel.exe;$(SINGULARITY_OBJROOT)\Distros\flash.raw"
+          Inputs="@(__kernel_obj)"
+          DependsOnTargets="CreateDirs;CreateItems;CompileKernel">
+    <!-- # NB Swapped /DEBUGTYPE:CV,FIXUP for $(LINKDFLAGS) which does not have FIXUP -->
+    <Message Text="KernelSource: %(KernelSource.identity)"/>
+    <Exec Command="$(LINK) /nologo $(UNDUMP_FLAGS) /out:$(BOOTDIR)\kernel.exe  @(__kernel_obj,' ') /pdb:$(BOOTDIR)\kernel.pdb /map:$(BOOTDIR)\kernel.map /driver /base:0x80100000 /fixed /entry:KernelEntry /incremental:no /subsystem:native /ignore:4078 /ignore:4254 /merge:.rdata=.data /merge:.bss=.data /merge:.data=.text"/>
+    <Exec Condition="'$(EnableSdize)'=='true'"
+      ContinueOnError="true" Command="$(SDIZEPDB) /t:$(BOOTDIR)\kernel.txt $(BOOTDIR)\kernel.pdb"/>
+    <Exec ContinueOnError="false" Command="$(BUILDDIR)\mkflash -flash:$(SINGULARITY_OBJROOT)\Distros\flash.raw -root:$(BOOTDIR) -file:\kernel.exe"/>
+
+<!--    <Exec ContinueOnError="false" Command="$(BUILDDIR)\x86_arm\mkarmraw $(BOOTDIR)\sarmboot.raw"/> -->
+  </Target>
+
+  <!-- ================================================================= -->
+
+  <Target Name="BuildHalclass">
+    <Message Text="Building kernel (for halclass.h)"/>
+    <MSBuild Projects="$(SINGULARITY_ROOT)\Kernel\Kernel.proj" Targets="CompileKernelObj"/>
+  </Target>
+
+</Project>

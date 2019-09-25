@@ -1,0 +1,398 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FSDirectoryInstanceWorker.sg
+//
+//  Note:   Handles servicing directory requests for all active directories
+//
+
+using System;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity;
+
+
+using Iso9660;
+
+namespace Microsoft.Singularity.FileSystem
+{
+    public class FSDirectoryInstanceWorker
+    {
+        private static string location;
+        private static bool started = false;
+        private static bool terminating = false;
+        private static bool success = false;
+        private static bool endpointCaptured = false;
+        private static bool endpointAvailable = true;
+        private static object lockToken = new Object();
+        private static Iso9660DirectoryInfo pendingDir;
+        private static TRef<DirectoryServiceContract.Exp:Ready>
+            pendingEPT = null;
+        private static TRef<ThreadPoolControlContract.Imp:Start> signalEPT;
+        public  static FSThreadPool threadPool;
+
+        public static bool Start(string mountLocation)
+        {
+            started = false;
+            terminating = false;
+            location = mountLocation;
+            threadPool =
+                new FSThreadPool(1, new FSThreadPoolCallback(ProcessRequest));
+            Thread t = new Thread(new ThreadStart(Run));
+            t.Start();
+            lock (lockToken) {
+                while (!started) Monitor.Wait(lockToken);
+            }
+
+            return success;
+        }
+
+        public static bool TrackEndpoint(
+            [Claims] DirectoryServiceContract.Exp:Ready s,
+            Iso9660DirectoryInfo dir) {
+
+            Monitoring.Log(Monitoring.Provider.Iso9660,
+                (ushort)FileSystemEvent.StartTrackEndpoint);
+
+            lock (lockToken) {
+                while (!endpointAvailable && !terminating) {
+                    Monitor.Wait(lockToken);
+                }
+                if (terminating) {
+                    delete s;
+                    return false;
+                }
+
+                endpointAvailable = false;
+                endpointCaptured = false;
+                pendingDir = dir;
+                pendingEPT = new TRef<DirectoryServiceContract.Exp:Ready>(s);
+                ThreadPoolControlContract.Imp signalEP = signalEPT.Acquire();
+                signalEP.SendTrackEndpoint();
+                //signalEP.RecvAckTrackEndpoint();
+                while (!endpointCaptured && !terminating) {
+                    Monitor.Wait(lockToken);
+                }
+
+                endpointAvailable = true;
+                Monitor.PulseAll(lockToken);
+                if (pendingEPT != null) {
+                    signalEPT.Release(signalEP);
+                    delete pendingEPT.Acquire();
+                    return false;
+                }
+                else {
+                    signalEP.RecvAckTrackEndpoint();
+                    signalEPT.Release(signalEP);
+                    return true;
+                }
+            }
+            Monitoring.Log(Monitoring.Provider.Iso9660,
+                (ushort)FileSystemEvent.StopTrackEndpoint);
+
+        }
+
+        public static void Terminate() {
+            lock (lockToken) {
+                ThreadPoolControlContract.Imp signalEP = signalEPT.Acquire();
+                signalEP.SendTerminate();
+                while (!terminating) {
+                    Monitor.Wait(lockToken);
+                }
+                signalEP.RecvAckTerminate();
+                started = false;
+                delete signalEP;
+            }
+        }
+
+        // worker thread that actually services requests
+        protected static void Run()
+        {
+            ServiceProviderContract.Imp! spClient;
+            ServiceProviderContract.Exp! spServer;
+            ServiceProviderContract.NewChannel(out spClient, out spServer);
+
+            DirectoryServiceContract.Imp systemNS = DirectoryService.NewClientEndpoint();
+            systemNS.SendRegister(Bitter.FromString2(location), spClient);
+
+            switch receive {
+                case systemNS.AckRegister():
+                    success = true;
+                    break;
+
+                case systemNS.NakRegister(rejected, error):
+                    delete rejected;
+                    success = false;
+                    break;
+            }
+
+            delete systemNS;
+
+            lock (lockToken) {
+                started = true;
+                Monitor.Pulse(lockToken);
+            }
+
+            if (!success) {
+                delete spServer;
+                return;
+            }
+
+            EMap<DirectoryServiceContract.Exp:Ready,
+                Iso9660DirectoryInfo> dirSet =
+                    new EMap<DirectoryServiceContract.Exp:Ready,
+                        Iso9660DirectoryInfo>();
+            ThreadPoolControlContract.Imp! imp;
+            ThreadPoolControlContract.Exp! exp;
+            ThreadPoolControlContract.NewChannel(out imp, out exp);
+            signalEPT = new TRef<ThreadPoolControlContract.Imp:Start>(imp);
+            //EMap<FileContract.Exp:Ready, Iso9660DirectoryInfo> dirSet;
+
+            lock (lockToken) {
+                endpointAvailable = true;
+                started = true;
+                Monitor.Pulse(lockToken);
+            }
+
+            for (bool run = true; run;) {
+                //dirSet = dirSetT.Acquire();
+                byte[] buf;
+                switch receive {
+                    case spServer.Connect(candidate) :
+                        // the directory server is trying to connect
+                        // with a DirectoryServiceContract endpoint
+                        DirectoryServiceContract.Exp dsClient = candidate as DirectoryServiceContract.Exp;
+                        if (null == dsClient) {
+                            spServer.SendNackConnect(candidate);
+                            break;
+                        }
+                        spServer.SendAckConnect();
+                        dsClient.SendSuccess();
+                        dirSet.Add(dsClient, SuperBlock.Root);
+                        break;
+
+                    case exp.TrackEndpoint():
+                        lock (lockToken) {
+
+                            endpointCaptured = true;
+                            if (!terminating) {
+                                DirectoryServiceContract.Exp newEP = pendingEPT.Acquire();
+                                dirSet.Add(newEP, pendingDir);
+                                pendingEPT = null;
+                            }
+                            exp.SendAckTrackEndpoint();
+                            Monitor.PulseAll(lockToken);
+                        }
+                        break;
+
+                    case exp.Terminate():
+                        lock (lockToken) {
+                            terminating = true;
+                            threadPool.KillPool();
+                            Monitor.PulseAll(lockToken);
+                        }
+                        exp.SendAckTerminate();
+                        run = false;
+                        break;
+
+                    case ep.Bind(char[]! in ExHeap pathTemp,
+                        ServiceContract.Exp:Start! serviceServer) in dirSet~>dir :
+
+                        string path = Bitter.ToString(pathTemp);
+                        delete pathTemp;
+
+                        if (path == null) {
+                            path = "";
+                        }
+
+                        threadPool.EnqueueItem(
+                            new FSBindRequestInfo(
+                                FSRequestAction.Bind,
+                                new TRef<DirectoryServiceContract.Exp:Ready>(ep),
+                                new TRef<ServiceContract.Exp:Start>(serviceServer),
+                                dir,
+                                path));
+                        break;
+                        
+                    case ep.BeginEnumeration()
+                        in dirSet~>dir:
+
+                        threadPool.EnqueueItem(
+                            new FSDirectoryRequestInfo(
+                                FSRequestAction.BeginEnumeration,
+                                new TRef<
+                                    DirectoryServiceContract.Exp:Ready>(ep),
+                                dir,
+                                null));
+                        break;
+
+                    case ep.GetAttributes(char []! in ExHeap fileNameTemp)
+                        in dirSet~>dir:
+                        Iso9660FileSystemInfo info;
+                        string fileName = Bitter.ToString(fileNameTemp);
+                        delete fileNameTemp;
+
+                        threadPool.EnqueueItem(
+                            new FSDirectoryRequestInfo(
+                                FSRequestAction.GetAttributes,
+                                new TRef<DirectoryServiceContract.Exp:Ready>(ep),
+                                dir,
+                                fileName));
+                        break;
+
+                    case ep.ChannelClosed() in dirSet~>dir:
+                        delete ep;
+                        break;
+
+                    case unsatisfiable:
+                        //DebugStub.Print("FSFileWorker shutting down\n");
+                        run = false;
+                        break;
+                        //return;
+                }//switch
+                //dirSetT.Release(dirSet);
+            } //for
+
+            dirSet.Dispose();
+            delete exp;
+            delete spServer;
+        } //run
+
+        protected static void ProcessRequest(FSRequestInfo request) {
+            FSDirectoryRequestInfo info;
+            DirectoryServiceContract.Exp ep;
+            Iso9660FileSystemInfo child;
+
+            switch (request.action) {
+                    case FSRequestAction.Bind:
+
+                    Monitoring.Log(Monitoring.Provider.Iso9660,
+                        (ushort)FileSystemEvent.StartBind);
+                    FSBindRequestInfo bindInfo = (FSBindRequestInfo)request;
+                    ep = bindInfo.endpointT.Acquire();
+                    Iso9660FileSystemInfo fsInfo = Iso9660FileSystemInfo.InstantiatePath
+                                                   (bindInfo.path, bindInfo.startingDir);
+
+                    // This var serves to track whether we have given away the
+                    // endpoint or not.
+                    ServiceContract.Exp localServiceServer =
+                        bindInfo.bindEndpointT.Acquire();
+
+                    if (fsInfo is Iso9660FileInfo) {
+                        FileContract.Exp fileServer =
+                            localServiceServer as FileContract.Exp;
+
+                        if (fileServer != null) {
+                            Iso9660FileStream fileStream =
+                                ((Iso9660FileInfo)fsInfo).Open(
+                                    System.IO.FileMode.Open,
+                                    System.IO.FileAccess.Read);
+
+                            fileServer.SendSuccess();
+                            FSFileInstanceWorker.TrackEndpoint(
+                                fileServer, fileStream);
+                            localServiceServer = null; // Gave it away
+                        }
+                    }
+                    else if (fsInfo is Iso9660DirectoryInfo) {
+                        DirectoryServiceContract.Exp dirServer =
+                            localServiceServer as DirectoryServiceContract.Exp;
+
+                        if (dirServer != null) {
+                            dirServer.SendSuccess();
+                            //FSDirectoryInstanceWorker.TrackEndpoint(
+                            //    dirServer, (Iso9660DirectoryInfo)fsInfo);
+                            TrackEndpoint(dirServer, (Iso9660DirectoryInfo)fsInfo);
+                            localServiceServer = null; // Gave it away
+                        }
+                    }
+
+                    if (localServiceServer == null) { // Did we give it away?
+                        // If so, success
+                        ep.SendAckBind();
+                    }
+                    else {
+                        // We didn't give it away, so give it back.
+                        ep.SendNakBind(localServiceServer, ErrorCode.NotFound);
+                    }
+                    TrackEndpoint(ep, bindInfo.startingDir);
+                    Monitoring.Log(Monitoring.Provider.Iso9660,
+                        (ushort)FileSystemEvent.StopBind);
+                    break;
+                    
+                case FSRequestAction.BeginEnumeration :
+                    info = (FSDirectoryRequestInfo)request;
+                    ep = info.endpointT.Acquire();
+                    EnumerationRecords[] in ExHeap responses = null;
+
+                    // use the root
+                    ErrorCode errorOut;
+                    responses = info.dir.Enumerate(out errorOut);
+                    if (null == responses) {
+                        ep.SendEnumerationTerminated(errorOut);
+                        delete responses;
+                    }
+                    else {
+                        ep.SendEnumerationEntries(responses,false);
+                    }
+                    TrackEndpoint(ep, info.dir);
+                    break;
+
+                case FSRequestAction.GetAttributes:
+                    info = (FSDirectoryRequestInfo)request;
+                    ep = info.endpointT.Acquire();
+                    Iso9660FileSystemInfo file = Iso9660FileSystemInfo.InstantiatePath(info.name, info.dir);
+                    if (file == null) {
+                    //if (!info.dir.FindChild(info.name, true, out file)) {
+                        ep.SendNakGetAttributes(ErrorCode.Unknown);
+                    }
+                    else {
+                        long len = 0;
+                        if (file is Iso9660FileInfo) {
+#if WHAT_FOR?
+                            Iso9660FileStream fileStream =
+                            ((Iso9660FileInfo)file).Open(
+                                System.IO.FileMode.Open,
+                                System.IO.FileAccess.Read);
+                            len = fileStream.Length;
+#else
+                            len = (long)((Iso9660FileInfo)file).size;
+#endif
+                        }
+
+                        NodeType nodeType = NodeType.File;
+
+                        // Translate flags
+                        if ((file.flags & (byte)Iso9660FileFlags.Directory) != 0) {
+                            nodeType = NodeType.Directory;
+                        }
+
+                        // Unprocessed: System, Archive
+
+                        FileAttributesRecord fileAttributes =
+                            new FileAttributesRecord();
+                        fileAttributes.FileSize = len;
+                        fileAttributes.Type = nodeType;
+                        // TODO: FIXFIX what about timestamp info
+
+                        ep.SendAckGetAttributes(fileAttributes);
+                    }
+
+                    TrackEndpoint(ep, info.dir);
+                    break;
+
+                default:
+                    // Should be impossible
+                    System.Diagnostics.Debug.Assert(false);
+                    break;
+            } // switch
+        } // ProcessRequest
+    } //FSFileWorker class
+} //namespace
+

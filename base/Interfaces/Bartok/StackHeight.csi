@@ -1,0 +1,64 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+using System.GCs;
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+  /// <summary>
+  /// Abstraction for information about the stack height.  This is currently
+  /// only used by the logging undo code for determining if a pointer write
+  /// occurred in stack space allocated after the tryall section began.
+  ///
+  /// StackHeight does not record information about the call stack.
+  ///
+  /// The current implementation is hardwired to a stack model where the stack
+  /// is a single contiguous piece of memory that grows by putting smaller
+  /// values into the stack pointer.
+  /// </summary>
+  [RequiredByBartok]
+  public struct StackHeight {
+      /// <summary>
+      /// Interpret the pointer as a stack pointer to determine the stack
+      /// height.
+      /// </summary>
+      /// <param name="stackPointer">Pointer into the stack.</param>
+      /// <returns>The stack height of the location pointed to by the
+      /// argument.</returns>
+      public StackHeight(UIntPtr stackPointer);
+
+      /// <summary>
+      /// Interpret the pointer as a stack pointer to determine the stack
+      /// height.
+      /// </summary>
+      /// <param name="stackPointer">Pointer into the stack.</param>
+      /// <returns>The stack height of the location pointed to by the
+      /// argument.</returns>
+      public static explicit operator StackHeight(UIntPtr stackPointer);
+
+      /// <summary>
+      /// Get the current stack height.
+      /// </summary>
+      /// <returns>The current stack height.</returns>
+      //[Intrinsic]
+      // [MethodImplAttribute(MethodImplOptions.PublicCall)]
+      public static StackHeight GetStackHeight();
+
+      /// <summary>
+      /// Check if the first stack height represents a deeper location on the
+      /// stack.
+      /// </summary>
+      /// <param name="first">The first stack height to compare.</param>
+      /// <param name="second">The second stack height to compare.</param>
+      /// <returns>True iff the first height is deeper in the stack than the
+      /// second height.</returns>
+      public static bool Deeper(StackHeight first, StackHeight second);
+
+      /// <summary>
+      /// The value of the stack pointer when the stack height was taken.
+      /// </summary>
+      private UIntPtr stackPointer;
+  }
+}

@@ -1,0 +1,62 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PnpContract.sg - Contract between I/O System and Device.
+//
+
+using System;
+using System.Collections;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract PnpContract {
+        in message Initialize();
+        out message AckInitialize();
+        out message NakInitialize();
+
+        in message Connect(DeviceContract.Exp:Start! eDevice);
+        out message AckConnect();
+        out message NakConnect();
+
+        in message Finalize();
+        out message AckFinalize();
+        out message NakFinalize();
+
+        state Start: one {
+            Initialize? -> DoInitialize;
+        }
+
+        state DoInitialize: one {
+            AckInitialize! -> Initialized;
+            NakInitialize! -> Start;
+        }
+
+        state Initialized: one {
+            Connect? -> DoConnect;
+            Finalize? -> DoFinalize;
+        }
+
+        state DoConnect: one {
+            AckConnect! -> Initialized;
+            NakConnect! -> Initialized;
+        }
+
+        state DoFinalize: one {
+            AckFinalize! -> End;
+            NakFinalize! -> Initialized;
+        }
+
+        state End: {
+        }
+    }
+}

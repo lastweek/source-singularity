@@ -1,0 +1,472 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets"/>
+  <PropertyGroup>
+    <AssemblyName>kernel</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <Language>C#</Language>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>169,649,436</NoWarn>
+    <WarningLevel>2</WarningLevel>
+    <DefineConstants>SINGULARITY_KERNEL;ENDPOINT_STRUCT;_NEW_CLASSLOADER</DefineConstants>
+    <OutputPath>$(KERNEL_IL_DIR)</OutputPath>
+    <NoStdLib>true</NoStdLib>
+    <UseResponseFile>true</UseResponseFile>
+    <ProjectGuid>{FA3325A6-5C21-475E-A600-51AD6163DFAA}</ProjectGuid>
+    <!-- Directory of the Runtime that the kernel shares files with -->
+    <KernelAppRuntimeDir>$(SINGULARITY_ROOT)\Applications\Runtime\Full</KernelAppRuntimeDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PAGING)'=='On'">
+    <DefineConstants>$(DefineConstants);PAGING</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefineConstants Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(DefineConstants);SINGULARITY_LINKED_STACKS</DefineConstants>
+    <DefineConstants Condition="'$(SINGULARITY_STACK_CHECKS)'=='true'">$(DefineConstants);SINGULARITY_STACK_CHECKS</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(KernelAppRuntimeDir)\System\ApplicationException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ArgumentException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ArgumentNullException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ArgumentOutOfRangeException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\ArgumentOutOfRangeException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ArithmeticException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\ArithmeticException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ArrayTypeMismatchException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\ArrayTypeMismatchException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\DivideByZeroException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\DivideByZeroException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Exception.cs" />
+    <Compile Include="$(BartokSrcDir)\System\Exception.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\FormatException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\IndexOutOfRangeException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\IndexOutOfRangeException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\InvalidCastException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\InvalidCastException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\InvalidOperationException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\MulticastNotSupportedException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\NotSupportedException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\NullReferenceException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\NullReferenceException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ObjectDisposedException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\OutOfMemoryException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\OverflowException.cs" />
+    <Compile Include="$(BartokSrcDir)\System\OverflowException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ProcessStateException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\RankException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\StackOverflowException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\SystemException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\TypeInitializationException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\AttributeUsageAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\CLSCompliantAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\FlagsAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ObsoleteAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ParamArrayAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ArgIterator.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Array.cs" />
+    <Compile Include="$(BartokSrcDir)\System\AsyncCallback.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Attribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\AttributeTargets.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\BitConverter.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Boolean.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Buffer.cs" />
+    <Compile Include="$(BartokSrcDir)\System\Buffer.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Byte.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Char.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\CharEnumerator.cs" />
+    <Compile Include="System\Console.cs" />
+    <Compile Include="System\DateTime.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\DayOfWeek.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Decimal.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Delegate.cs" />
+    <Compile Include="$(BartokSrcDir)\System\Delegate.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Double.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Empty.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Enum.cs" />
+    <Compile Include="System\Environment.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\EventArgs.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\EventHandler.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Guid.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\IAsyncResult.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ICloneable.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\IComparable.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\IDisposable.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\IFormattable.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Int16.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Int32.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Int64.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\IntPtr.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Internal.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Math.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\MulticastDelegate.cs" />
+    <Compile Include="$(BartokSrcDir)\System\MulticastDelegate.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\NotImplementedException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Number.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Object.cs" />
+    <Compile Include="$(BartokSrcDir)\System\Object.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ParseNumbers.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ProcessExitCode.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Random.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\RuntimeArgumentHandle.cs" />
+    <Compile Include="$(BartokSrcDir)\System\RuntimeArgumentHandle.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\RuntimeFieldHandle.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\RuntimeMethodHandle.cs" />
+    <Compile Include="$(BartokSrcDir)\library\shared\System\RuntimeType.cs" />
+    <Compile Include="$(BartokSrcDir)\library\singularity\System\RuntimeType.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\RuntimeTypeHandle.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\SchedulerTime.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\SByte.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Single.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\String.cs" />
+    <Compile Include="$(BartokSrcDir)\System\String.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\StringBuilder.cs" />
+    <Compile Include="$(BartokSrcDir)\Text\StringBuilder.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\TimeSpan.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Type.cs" />
+    <Compile Include="$(BartokSrcDir)\System\Type.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\TypeCode.cs" />
+    <Compile Include="$(BartokSrcDir)\System\TypedReference.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\UInt16.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\UInt32.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\UInt64.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\UIntPtr.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\ValueType.cs" />
+    <Compile Include="$(BartokSrcDir)\System\VarargList.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Version.cs" />
+    <Compile Include="$(BartokSrcDir)\System\Version.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Void.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\_LocalDataStore.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\_LocalDataStoreMgr.cs" />
+    <Compile Include="$(SINGULARITY_ROOT)\Libraries\Crypto\MD5.cs" />
+    <!-- PROCESSOR_SOURCES -->
+    <Compile Include="Singularity\Processor.cs" />
+    <Compile Include="Singularity\Scheduling\ProcessorDispatcher.cs" />
+    <Compile Include="Singularity\Scheduling\Scheduler.cs" />
+<!--    <Compile Include="Singularity\Scheduling\BaseScheduler.cs" /> -->
+    <Compile Include="Singularity\Scheduling\ThreadEntry.cs" />
+    <Compile Include="Singularity\Scheduling\ThreadQueue.cs" />
+    <Compile Include="Singularity\Scheduling\MinScheduler.cs"  />
+<!--    <Compile Include="Singularity\Scheduling\AffinityScheduler.cs" /> -->
+    <Compile Include="Singularity\PrivilegedGate.cs" />
+    <!-- THREADING_SOURCES -->
+    <Compile Include="System\Threading\AutoResetEvent.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\HandleCreateException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\Interlocked.cs" />
+    <Compile Include="System\Threading\ManualResetEvent.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\Monitor.cs" />
+    <Compile Include="$(BartokSrcDir)\Threading\Monitor.cs" />
+    <Compile Include="System\Threading\Mutex.cs" />
+    <Compile Include="System\Threading\SmartSpinlock.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\SynchronizationLockException.cs" />
+    <Compile Include="System\Threading\Thread.cs" />
+    <Compile Include="$(BartokSrcDir)\Threading\Thread.cs" />
+    <Compile Include="System\Threading\ThreadLocalServiceRequest.cs" />
+    <Compile Include="$(BartokSrcDir)\Threading\ThreadStart.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\ThreadState.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\ThreadStateException.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Threading\Timeout.cs" />
+    <Compile Include="System\Threading\WaitHandle.cs" />
+    <Compile Include="System\Threading\InterruptAwareWaitHandle.cs" />
+    <Compile Include="System\Threading\InterruptAwareAutoResetEvent.cs" />
+    <Compile Include="Singularity\Scheduling\ListNode.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\ArrayList.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\BitArray.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\CaseInsensitiveComparer.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\CaseInsensitiveHashCodeProvider.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\CollectionBase.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\Comparer.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\DictionaryBase.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\DictionaryEntry.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\Hashtable.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\ICollection.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IComparer.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IDictionary.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IDictionaryEnumerator.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IEnumerable.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IEnumerator.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IHashCodeProvider.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\IList.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\Queue.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\ReadOnlyCollectionBase.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\SortedList.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\Stack.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\Specialized\ListDictionary.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Collections\Specialized\StringDictionary.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\Assert.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\AssertFilter.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\AssertFilters.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\ConditionalAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\Debug.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\Debugger.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Diagnostics\DebuggerAttributes.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Reflection\Assembly.cs" />
+    <Compile Include="$(BartokSrcDir)\Reflection\Assembly.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Reflection\AssemblyAttributes.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Reflection\AssemblyName.cs" />
+    <Compile Include="$(BartokSrcDir)\Reflection\AssemblyName.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Reflection\AssemblyReflectionAttributes.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Reflection\DefaultMemberAttribute.cs" />
+    <Compile Include="$(BartokSrcDir)\Reflection\Module.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Reflection\TypeAttributes.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\CharacterInfo.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\CompareInfo.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\CultureInfo.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\NumberFormatInfo.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\NumberStyles.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\TextInfo.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Globalization\UnicodeCategory.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\ASCIIEncoding.cs" />
+    <Compile Include="$(BartokSrcDir)\Text\ASCIIEncoding.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\Decoder.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\Encoder.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\Encoding.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\UnicodeEncoding.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\UTF8Encoding.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regex.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexboyermoore.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexcapture.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexcapturecollection.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexcharclass.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexcode.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexcompilationinfo.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexfcd.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexgroup.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexgroupcollection.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexinterpreter.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexmatch.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexmatchcollection.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexnode.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexoptions.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexparser.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexreplacement.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexrunner.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regextree.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Text\RegularExpressions\regexwriter.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\CompilerServices\DecimalConstantAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\CompilerServices\IndexerNameAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\CompilerServices\IsVolatile.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\CompilerServices\MethodImplAttribute.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\CompilerServices\RuntimeHelpers.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\InteropServices\Attributes.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\InteropServices\CharSet.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\InteropServices\GCHandle.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\InteropServices\LayoutKind.cs" />
+    <Compile Include="$(KernelAppRuntimeDir)\System\Runtime\InteropServices\Marshal.cs" />
+    <!-- ABI_ORIGINAL_SOURCES -->
+    <Compile Include="Singularity\V1\Processes\ProcessHandle.cs" />
+    <Compile Include="Singularity\V1\Security\PrincipalHandle.cs" />
+    <Compile Include="Singularity\V1\Services\DeliveryHandle.cs" />
+    <Compile Include="Singularity\V1\Services\ChannelService.cs" />
+    <Compile Include="Singularity\V1\Services\DebugService.cs" />
+    <Compile Include="Singularity\V1\Services\DeviceService.cs"/>
+    <Compile Include="Singularity\V1\Services\PciPortHandle.cs"/>
+    <Compile Include="Singularity\V1\Services\PageTableService.cs" />
+    <Compile Include="Singularity\V1\Services\PlatformService.cs" />
+    <Compile Include="Singularity\V1\Services\ProcessService.cs" />
+    <Compile Include="Singularity\V1\Services\SharedHeapService.cs" />
+    <Compile Include="Singularity\V1\Services\StackService.cs" />
+    <Compile Include="Singularity\V1\Services\MemoryInfoService.cs" />
+    <Compile Include="Singularity\V1\Services\DiagnosisService.cs" />
+    <Compile Include="Singularity\V1\Stress\StressDirect.cs" />
+    <Compile Include="Singularity\V1\Threads\AutoResetEventHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\ContainerHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\InterruptHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\ManualResetEventHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\MutexHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\SyncHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\ThreadHandle.cs" />
+    <Compile Include="Singularity\V1\Threads\ThreadState.cs" />
+    <Compile Include="Singularity\V1\Types\SystemType.cs" />
+  <!-- Channels -->
+    <Compile Include="Singularity\Channels\ChannelClosedException.cs" />
+    <Compile Include="Singularity\Channels\ChannelException.cs" />
+    <Compile Include="Singularity\Channels\ChannelTransferredException.cs" />
+    <Compile Include="Singularity\Channels\ClaimsAttribute.cs" />
+    <Compile Include="Singularity\Channels\DeliveryHandle.cs" />
+    <Compile Include="Singularity\Channels\DeliveryImpl.cs" />
+    <Compile Include="Singularity\Channels\EndpointCore.cs" />
+    <Compile Include="Singularity\Channels\ISelectable.sg" />
+    <Compile Include="Singularity\Channels\ITracked.cs" />
+    <Compile Include="Singularity\Channels\RuntimeSystemType.cs" />
+    <Compile Include="Singularity\Channels\SingleAddrSpaceDelivery.cs" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+  <!-- HAL_SOURCES -->
+    <Compile Include="Singularity\Hal\Cpu.cs" />
+    <Compile Include="Singularity\Hal\Platform.cs" />
+    <Compile Include="Singularity\Hal\HalClock.cs" />
+    <Compile Include="Singularity\Hal\HalDevices.cs" />
+    <Compile Include="Singularity\Hal\HalMemory.cs" />
+    <Compile Include="Singularity\Hal\HalPic.cs" />
+    <Compile Include="Singularity\Hal\HalScreen.cs" />
+    <Compile Include="Singularity\Hal\HalTimer.cs" />
+  <!-- IO_SOURCES -->
+    <Compile Include="Singularity\Io\Access.cs" />
+    <Compile Include="Singularity\Io\ByteOrder.cs" />
+    <Compile Include="Singularity\Io\Error.cs" />
+    <Compile Include="Singularity\Io\FileImage.cs" />
+    <Compile Include="Singularity\Io\IoConfig.cs" />
+    <Compile Include="Singularity\Io\IoMemory.cs" />
+    <Compile Include="Singularity\Io\IoMappedPort.cs" />
+    <Compile Include="Singularity\Io\IoResult.cs" />
+
+    <Compile Include="Singularity\Io\Resources.cs" />
+  </ItemGroup>
+  <!-- IO_UNENLIGHTENED_SOURCES -->
+  <ItemGroup>
+    <Compile Include="Singularity\Io\IoDma.cs" />
+    <Compile Include="Singularity\Io\IoDmaRange.cs" />
+    <Compile Include="Singularity\Io\IoIrqRange.cs" />
+    <Compile Include="Singularity\Io\IoMemoryRange.cs" />
+    <Compile Include="Singularity\Io\IoPort.cs" />
+    <Compile Include="Singularity\Io\IoPortRange.cs" />
+    <Compile Include="Singularity\Io\IoRange.cs" />
+    <Compile Include="Singularity\Io\PnpConfig.cs" />
+    <Compile Include="Singularity\Io\PciConfig.cs" />
+    <Compile Include="Singularity\Io\PciPort.cs" />
+    <Compile Include="Singularity\Io\ResourceAttributes.cs" />
+    <Compile Include="Singularity\Io\CategoryAttributes.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- LOADER_SOURCES -->
+    <Compile Include="Singularity\Loader\DirectoryEntry.cs" />
+    <Compile Include="Singularity\Loader\ExportTable.cs" />
+    <Compile Include="Singularity\Loader\ImportTable.cs" />
+    <Compile Include="Singularity\Loader\BadImageFormatException.cs" />
+    <Compile Include="Singularity\Loader\PEImage.cs" />
+    <Compile Include="Singularity\Loader\Relocations.cs" />
+    <Compile Include="Singularity\Loader\SectionHeader.cs" />
+    <!-- MEMORY_SOURCES -->
+    <Compile Include="Singularity\Memory\AddressSpace.cs" />
+    <Compile Include="Singularity\Memory\FlatPages.cs" />
+    <Compile Include="Singularity\Memory\HandleTable.cs" />
+    <Compile Include="Singularity\Memory\MemoryDiagnosis.cs" />
+    <Compile Include="Singularity\Memory\MemoryManager.cs" />
+    <Compile Include="Singularity\Memory\MemoryReservations.cs" />
+    <Compile Include="Singularity\Memory\PhysicalAddress.cs" />
+    <Compile Include="Singularity\Memory\PhysicalHeap.cs" />
+    <Compile Include="Singularity\Memory\PhysicalPages.cs" />
+    <Compile Include="Singularity\Memory\SharedHeap.cs" />
+    <Compile Include="$(BartokSrcDir)\Memory\SharedHeap.cs" />
+    <Compile Include="Singularity\Memory\Stacks.cs" />
+    <Compile Include="$(BartokSrcDir)\Memory\Stacks.cs" />
+    <Compile Include="Singularity\Memory\VMManager.cs" />
+    <Compile Include="Singularity\Memory\VirtualMemoryRange.cs" />
+    <Compile Include="Singularity\Security\SecurityAttributes.cs" />
+    <!-- CONTEXT_SOURCES -->
+    <Compile Include="Singularity\ProcessorContext.cs" />
+    <Compile Include="Singularity\ThreadContext.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Singularity\Kd.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='arm'">
+    <Compile Include="Singularity\Isal\ix\EVectors.cs" />
+    <Compile Include="Singularity\Isal\ix\Pdt.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Machine)'=='x86' or '$(Machine)'=='x64'">
+    <Compile Include="Singularity\Isal\ix\CR0.cs" />
+    <Compile Include="Singularity\Isal\ix\CR3.cs" />
+    <Compile Include="Singularity\Isal\ix\CR4.cs" />
+    <Compile Include="Singularity\Isal\ix\EFlags.cs" />
+    <Compile Include="Singularity\Isal\ix\EVectors.cs" />
+    <Compile Include="Singularity\Isal\ix\Fpcw.cs" />
+    <Compile Include="Singularity\Isal\ix\Fpsw.cs" />
+    <Compile Include="Singularity\Isal\ix\Gdt.cs" />
+    <Compile Include="Singularity\Isal\ix\MmxContext.cs" />
+    <Compile Include="Singularity\Isal\ix\Pdt.cs" />
+    <Compile Include="Singularity\Isal\ix\Tss.cs" />
+    <Compile Include="Singularity\Isal\ix\Idt.cs" />
+    <Compile Include="Singularity\Isal\ix\DescriptorTable.cs"/>
+    <Compile Include="Singularity\Isal\ix\InterruptTable.cs"/>
+  </ItemGroup>
+  <ItemGroup Condition="'$(Machine)'=='x64'">
+    <Compile Include="Singularity\Isal\ix\Tss64.cs"/>
+  </ItemGroup>
+  <ItemGroup Condition="'$(Machine)'=='arm'">
+    <Compile Include="Singularity\Isal\Arm\DispatchStack.cs"/>
+    <Compile Include="Singularity\Isal\Arm\ExceptionVector.cs"/>
+    <Compile Include="Singularity\Isal\Arm\ProcessorMode.cs"/>
+    <Compile Include="Singularity\Isal\Arm\Psr.cs"/>
+    <Compile Include="Singularity\Isal\Arm\XScaleMmu.cs"/>
+    <Compile Include="Singularity\Isal\Arm\XScaleMmuDescriptors.cs"/>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Singularity\Isal\InterruptContext.cs"/>
+    <Compile Include="Singularity\Isal\SpillContext.cs"/>
+    <Compile Include="Singularity\Isal\CpuRecord.cs"/>
+    <Compile Include="Singularity\Isal\ThreadRecord.cs"/>
+    <Compile Include="Singularity\Isal\Isa.cs"/>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Singularity\KernelDebugger.cs" />
+    <Compile Include="Singularity\Xml\XmlReader.cs" />
+    <Compile Include="Singularity\Xml\XmlNode.cs" />
+    <Compile Include="Singularity\Xml\XmlException.cs" />
+    <Compile Include="Singularity\MpBootInfo.cs" />
+    <Compile Include="Singularity\MpBootStatus.cs" />
+    <Compile Include="Singularity\DebugStub.cs" />
+    <Compile Include="Singularity\GCTracing.cs" />
+    <Compile Include="Singularity\Kernel.cs" />
+    <Compile Include="Singularity\LimitedTypes.cs" />
+    <Compile Include="Singularity\MpExecution.cs" />
+    <Compile Include="Singularity\PerfCounters.cs" />
+    <Compile Include="Singularity\Process.cs" />
+    <Compile Include="Singularity\ProcessStart.cs" />
+    <Compile Include="Singularity\ProcessState.cs" />
+    <Compile Include="Singularity\ProcessStopException.cs" />
+    <Compile Include="Singularity\ProcessUncaughtException.cs" />
+    <Compile Include="Singularity\ProtectionDomain.cs" />
+    <Compile Include="Singularity\ServiceRequest.cs" />
+    <Compile Include="Singularity\ServiceRequestQueue.cs" />
+    <Compile Include="Singularity\ServiceThread.cs" />
+    <Compile Include="Singularity\SharedHeapWalker.cs" />
+    <Compile Include="Singularity\SmapInfo.cs" />
+    <Compile Include="Singularity\SystemClock.cs" />
+    <Compile Include="Singularity\Tracing.cs" />
+    <Compile Include="Singularity\Monitoring.cs" />
+    <Compile Include="Singularity\KdFiles.cs" />
+    <Compile Include="Singularity\Eventing\EventController.cs" />
+    <Compile Include="Singularity\Eventing\EventingKernel.cs" />
+    <Compile Include="Singularity\Eventing\EventQuery.cs" />
+    <Compile Include="Singularity\Eventing\EventSource.cs" />
+    <Compile Include="Singularity\Eventing\EventStorage.cs" />
+    <Compile Include="Singularity\Eventing\EventType.cs" />
+    <Compile Include="Singularity\Eventing\MemoryStorage.cs" />
+    <Compile Include="Singularity\Eventing\UnmanagedBuffer.cs" />
+    <Compile Include="Singularity\Eventing\EvProcessor.cs" />
+    <Compile Include="Singularity\Eventing\TestKernel.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Drivers\Drivers.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Channels\Channels.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Diagnostics\Diagnostics.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\IoSystem\IoSystem.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Console\Console.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Hal\Hal.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Loader\Loader.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Directory\Directory.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Security\Security.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Stress\Stress.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\KdFiles\KdFiles.csproj" />
+  </ItemGroup>
+  <PropertyGroup>
+    <Collector>$(COLLECTOR_KERNEL)</Collector>
+    <DefineGCCompileItems>true</DefineGCCompileItems>
+  </PropertyGroup>
+  <Import Project="GC.targets" />
+  <Import Project="$(SINGULARITY_ROOT)\Targets\SingSharp.targets" />
+</Project>

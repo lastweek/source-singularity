@@ -1,0 +1,49 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <ProductVersion>8.0.50727</ProductVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <AssemblyName>MapDemo</AssemblyName>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.cs"/>
+    <Compile Include="Global.asax.cs"/>
+    <Compile Include="MapImage.aspx.cs"/>
+    <Compile Include="MapPoint.cs"/>
+    <Compile Include="MapPointService.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System"/>
+    <Reference Include="System.Xml"/>
+    <Reference Include="System.Web"/>
+    <Reference Include="System.Web.Services"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+
+  <ItemGroup>
+    <Content Include="*.htm;*.aspx;*.asax;Web.config"/>
+    <ImageContent Include="img\*.*"/>
+  </ItemGroup>
+
+  <Target Name="AfterBuild">
+    <Copy SourceFiles="@(Content)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <MakeDir Directories="$(OutputPath)\img" />
+    <Copy SourceFiles="@(ImageContent)" DestinationFolder="$(OutputPath)\img" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

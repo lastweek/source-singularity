@@ -1,0 +1,33 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   MutexHandle.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Threads
+{
+    public struct MutexHandle // : public WaitHandle
+    {
+        public readonly UIntPtr id; // could be moved to WaitHandle
+
+        [NoHeapAllocation]
+        public static bool Create(bool initiallyOwned,
+                                  out MutexHandle handle);
+        [NoHeapAllocation]
+        public static void Dispose(MutexHandle handle);
+
+        [NoHeapAllocation]
+        public static void Release(MutexHandle handle);
+
+        [NoHeapAllocation]
+        public static bool IsOwnedByCurrentThread(MutexHandle handle);
+    }
+}

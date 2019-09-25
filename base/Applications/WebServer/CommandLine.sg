@@ -1,0 +1,75 @@
+//------------------------------------------------------------------------------
+//   Copyright (c) Microsoft Corporation. All Rights Reserved.
+//------------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.WebServer
+{
+    using System;
+    using System.Collections;
+    using System.Globalization;
+    using Microsoft.Contracts;
+
+    /// <summary>
+    /// </summary>
+    internal sealed class CommandLine
+    {
+        private string[] arguments;
+        private IDictionary options;
+        private bool showHelp;
+
+        [NotDelayed]
+        public CommandLine(string[]! args)
+        {
+            ArrayList argList = new ArrayList();
+
+            for (int i = 0; i < args.Length; i++) {
+                string! args_i = (!)args[i];
+                char c = args_i[0];
+                if ((c != '/') && (c != '-')) {
+                    argList.Add(args_i);
+                }
+                else {
+                    int index = args_i.IndexOf(':');
+                    if (index == -1) {
+                        string option = args_i.Substring(1);
+                        if ((String.Compare(option, "help", true) == 0) ||
+                            option.Equals("?")) {
+                            showHelp = true;
+                        }
+                        else {
+                            Options[option] = String.Empty;
+                        }
+                    }
+                    else {
+                        Options[args_i.Substring(1, index - 1)] = args_i.Substring(index + 1);
+                    }
+                }
+            }
+            arguments = (string[])argList.ToArray(typeof(string));
+        }
+
+        public string[] Arguments
+        {
+            get {
+                return arguments;
+            }
+        }
+
+        public IDictionary/*!*/ Options
+        {
+            get {
+                if (options == null) {
+                    options = new Hashtable();
+                }
+                return options;
+            }
+        }
+
+        public bool ShowHelp
+        {
+            get {
+                return showHelp;
+            }
+        }
+    }
+}

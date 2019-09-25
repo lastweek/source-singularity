@@ -1,0 +1,8 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <ExcludePhoenixTestApp Condition="'$(Machine)'=='arm'">$(SINGULARITY_ROOT)\Applications\tests\bartok\tree\tree.csproj</ExcludePhoenixTestApp>
+    <ExcludePhoenixTestApp Condition="'$(COLLECTOR_APP)'!='MarkSweep' and '$(COLLECTOR_APP)'!='Semispace'">$(SINGULARITY_ROOT)\Applications\tests\bartok\tree\tree.csproj</ExcludePhoenixTestApp>
+  </PropertyGroup>
+
+</Project>

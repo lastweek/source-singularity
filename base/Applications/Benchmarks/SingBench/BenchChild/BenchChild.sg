@@ -1,0 +1,117 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple ping-pong second child process
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+
+namespace Microsoft.Singularity.Applications.Singbench
+{
+    [Category("WebApp")]
+    internal  class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<ExtensionContract.Exp:Start> sendRef;
+
+        [BoolParameter("where", Default=false, HelpMessage="Show what space we are running in")]
+        internal bool doWhere; 
+        
+        reflective private Parameters();
+        
+        internal int AppMain() {
+            return BenchChild.AppMain(this);
+        }
+    }
+
+    public class BenchChild
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            if (config.doWhere) {
+                if (Processor.AtKernelPrivilege()) {
+                    DualWriteLine("Benchchild running at KERNEL privilege");
+                }
+                else {
+                    DualWriteLine("Benchchild running at USER privilege");
+                }
+            }
+
+            ExtensionContract.Exp ep = ((!)config.sendRef).Acquire();
+            
+
+            SendTestContract.Exp simpleConn = ep as SendTestContract.Exp;
+            
+            if (simpleConn != null) {
+                DoSimpleTest(simpleConn);
+            }
+
+            BufferTestContract.Exp bufferConn = ep as BufferTestContract.Exp;
+
+            if (bufferConn != null) {
+                DoBufferTest(bufferConn);
+            }
+
+            // Wrong contract type!
+            delete ep;
+            return 0; 
+        }
+
+        private static void DoSimpleTest(SendTestContract.Exp! conn)
+        {
+            conn.SendTestReady();
+            int arg;
+
+            while (true) {
+                conn.RecvReq(out arg);
+
+                if (arg == -1) {
+                    return;
+                }
+
+                conn.SendResp(arg);
+            }
+        }
+
+        private static void DoBufferTest(BufferTestContract.Exp! conn)
+        {
+            int arg;
+            byte[]! in ExHeap buffer;
+
+            conn.SendBufferReady();
+
+            while (true) {
+                conn.RecvReq(out arg, out buffer);
+                conn.SendResp(buffer);
+                if (arg == 0) {
+                    return;
+                }
+            }
+        }
+
+        private static void DualWriteLine(string message)
+        {
+            Console.WriteLine(message);
+            DebugStub.WriteLine(message);
+        }
+    }
+}

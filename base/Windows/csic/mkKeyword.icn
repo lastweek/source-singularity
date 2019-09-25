@@ -1,0 +1,26 @@
+procedure main(argv)
+	local s, L, i
+
+	L := []
+	while s := read() do {
+		put(L, s)
+	}
+
+	write("public class ", argv[1], " {")
+
+	write("\tstatic System.Collections.Hashtable set = new System.Collections.Hashtable();")
+	write("\tstatic ", argv[1], "() {")
+	every i := !L do {
+		write("\t\tset.Add(", image(i), ", ", image(i), ");")
+	}
+	write("\t}")
+	write()
+
+	write("\tpublic static string keywordTag(string s) {")
+	write("\t\tif (set.Contains(s)) {")
+	write("\t\t\treturn s;")
+	write("\t\t}")
+	write("\t\treturn null;")
+	write("\t} // keywordTag")
+	write("} // ", argv[1])
+end

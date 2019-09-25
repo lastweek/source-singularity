@@ -1,0 +1,102 @@
+.assembly 'namespace' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.namespace N {
+.class 'A'
+	extends [mscorlib]System.Object
+{
+.method hidebysig instance void 'f'() {
+ldstr "A.f()"
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of method N.A.f
+.method hidebysig static void 'g'() {
+ldstr "A.g()"
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of method N.A.g
+.class nested public 'X'
+	extends [mscorlib]System.Object
+{
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor N.A.X.X
+} // end of class N.A.X
+.field public static class 'N.A/X' 'x'
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor N.A.A
+} // end of class N.A
+.class 'B'
+	extends 'N.A'
+{
+.field public int32 'f'
+.method hidebysig public newslot static void 'g'() {
+ldstr "B.g()"
+call  void [mscorlib]System.Console::'WriteLine'(string)
+newobj instance void 'N.A/X'::.ctor()
+stsfld class 'N.A/X' 'N.A'::'x'
+ret
+.maxstack 1
+} // end of method N.B.g
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+ldc.i4 51
+conv.i4
+stfld int32 'N.B'::'f'
+ldarg.0
+call instance void 'N.A'::.ctor()
+ret
+.maxstack 2
+} // end of constructor N.B.B
+} // end of class N.B
+} // end of namespace N
+.class 'test'
+	extends [mscorlib]System.Object
+{
+.field public static class [mscorlib]System.IO.TextWriter 'w'
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]class 'N.B' 't0')
+newobj instance void 'N.B'::.ctor()
+stloc 0 // a
+ldsfld class [mscorlib]System.IO.TextWriter 'test'::'w'
+ldstr "a.f={0}"
+ldloc 0 // a
+ldfld int32 'N.B'::'f'
+box int32
+callvirt instance void [mscorlib]System.IO.TextWriter::'WriteLine'(string,object)
+ldloc 0 // a
+call instance void 'N.A'::'f'()
+call  void 'N.A'::'g'()
+call  void 'N.B'::'g'()
+ldsfld class [mscorlib]System.IO.TextWriter 'test'::'w'
+ldstr "A.x={0}"
+ldsfld class 'N.A/X' 'N.A'::'x'
+callvirt instance void [mscorlib]System.IO.TextWriter::'WriteLine'(string,object)
+ret
+.maxstack 3
+} // end of method test.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor test.test
+.method hidebysig specialname rtspecialname static private void .cctor() {
+call  class [mscorlib]System.IO.TextWriter [mscorlib]System.Console::'get_Out'()
+stsfld class [mscorlib]System.IO.TextWriter 'test'::'w'
+ret
+.maxstack 1
+} // end of constructor test.test
+} // end of class test

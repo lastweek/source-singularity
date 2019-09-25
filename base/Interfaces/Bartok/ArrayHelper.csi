@@ -1,0 +1,53 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+using System.Collections;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [RequiredByBartok]
+    internal class ArrayHelper {
+
+        [RequiredByBartok]
+        public static void CopyBoolUp(bool[] srcArray, int srcOffset, bool[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyCharUp(char[] srcArray, int srcOffset, char[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyInt8Up(sbyte[] srcArray, int srcOffset, sbyte[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyInt16Up(short[] srcArray, int srcOffset, short[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyInt32Up(int[] srcArray, int srcOffset, int[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyInt64Up(long[] srcArray, int srcOffset, long[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyUInt8Up(byte[] srcArray, int srcOffset, byte[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyUInt16Up(ushort[] srcArray, int srcOffset, ushort[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyUInt32Up(uint[] srcArray, int srcOffset, uint[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyUInt64Up(ulong[] srcArray, int srcOffset, ulong[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyFloat32Up(float[] srcArray, int srcOffset, float[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void CopyFloat64Up(double[] srcArray, int srcOffset, double[] dstArray, int dstOffset, int length);
+
+        [RequiredByBartok]
+        public static void InitArray(Array srcArray, Array dstArray);
+    }
+}

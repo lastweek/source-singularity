@@ -1,0 +1,402 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   VolMgr.sg
+//
+//  Reads and manages volumes and partitions on the system
+//
+//  Useful links:
+//     http://www.ata-atapi.com/hiwtab.htm
+//     http://www.win.tue.nl/~aeb/partitions/
+
+using System;
+using System.Threading;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Services;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Services.VolumeManager
+{
+    public class VolumeManagerMain
+    {
+    }
+
+    public class VolumeManager
+    {
+        private static VolMgr volMgr;
+        private static TRef <NotifyContract.Exp:Start>! notificationExp;
+
+        private  static void NotifyPump()
+        {
+            NotifyContract.Exp exp = notificationExp.Acquire();
+            exp.RecvBegin();
+
+            while (true) {
+                switch receive {
+                    case exp.ChangeNotification(i_path,i_type):
+                        DebugStub.WriteLine("VolMgr: notified of {0} for {1}",
+                                          __arglist(i_type,
+                                          Bitter.ToString2(i_path)));
+                        exp.SendAckChangeNotification();
+                        delete i_path;
+                        continue;
+
+                    case unsatisfiable:
+                        Tracing.Log(Tracing.Debug,"unable to register VolMgr with Nameservice\n");
+                        DebugStub.Break();
+                        break;
+                }
+            }
+
+            notificationExp.Release(exp);
+        }
+
+        public static int Main(string[] args)
+        {
+            volMgr = new VolMgr();
+            //register volume manager with the name space.
+            ServiceProviderContract.Imp! imp;
+            ServiceProviderContract.Exp! s;
+            ServiceProviderContract.NewChannel(out imp, out s);
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2("/service/volumes"),imp);
+                switch receive {
+                    case epNS.AckRegister():
+                        break;
+
+                    case epNS.NakRegister(rejected, error):
+                        delete rejected;
+                        DebugStub.Break();
+                        break;
+
+                    case unsatisfiable:
+                        Tracing.Log(Tracing.Debug,"unable to register VolMgr with Nameservice\n");
+                        DebugStub.Break();
+                        delete s;
+                        return -1;
+                }
+
+                // spin up a thread to handle notifications
+                NotifyContract.Imp! notifyImp;
+                NotifyContract.Exp! notifyExp;
+                NotifyContract.NewChannel(out notifyImp, out notifyExp);
+
+                notificationExp = new TRef <NotifyContract.Exp:Start> (notifyExp) ;
+                Thread! thread = new Thread(new ThreadStart(NotifyPump));
+                if (thread != null) {
+                    thread.Start();
+                }
+
+                epNS.SendNotify(Bitter.FromString2("/dev/disk"),
+                                Bitter.FromString2("*"),
+                                false,
+                                notifyImp);
+                switch receive {
+                    case epNS.AckNotify():
+                        break;
+
+                    case epNS.NakNotify (rejectedEP, error):
+                        DebugStub.Break();
+                        delete rejectedEP;
+                        break;
+
+                    case unsatisfiable:
+                        Tracing.Log(Tracing.Debug,"unable to register Notify \n");
+                        DebugStub.Break();
+                        delete s;
+                        return -1;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            volMgrPump(s,volMgr);
+            delete s;
+            volMgr.Finalize();
+            return 0;
+        }
+
+        private static void volMgrPump(ServiceProviderContract.Exp:Start! volMgrSP,
+                                       VolMgr! volMgr)
+        {
+            //Holds EPs for the VolumeManager contract that have been connected but have not registered
+            ESet<VolumeManagerContract.Exp:Ready> clients
+                = new ESet<VolumeManagerContract.Exp:Ready>();
+
+            //State needed to complete an Accept message
+            EMap<VolumeManagerContract.Exp:Accept,Volume!> diskReplyMap
+                = new EMap<VolumeManagerContract.Exp:Accept,Volume!>();
+
+            //Associates a particular /dev/volX  service provider in the NS with a Volume Object
+            EMap<ServiceProviderContract.Exp:Start, Volume!> volEpMap
+                = new EMap<ServiceProviderContract.Exp:Start,Volume!>();
+
+            for (bool run = true; run;) {
+                switch receive {
+                    // listen for CONNECT messages for volMgr from NS
+                    case volMgrSP.Connect(candidate):
+                        VolumeManagerContract.Exp newClient = candidate as VolumeManagerContract.Exp;
+
+                        if (newClient != null) {
+                            newClient.SendSuccess();
+                            clients.Add(newClient);
+                            volMgrSP.SendAckConnect();
+#if VERBOSE
+                            DebugStub.WriteLine("VolMgr client accepted");
+#endif
+                        }
+                        else {
+                            volMgrSP.SendNackConnect(candidate);
+                        }
+                        break;
+
+                        //listen for REGISTER Messages on connections added to ESet above
+                    case diskEp.RegisterDisk(name) in clients:
+#if VERBOSE
+                        DebugStub.WriteLine("VolMgr received Register");
+#endif
+                        Disk d = volMgr.Register(name);
+                        delete name;
+
+                        if (null != d) {
+                            int count = d.PartitionCount;
+                            for (int i = 0; i < count; i++) {
+                                ServiceProviderContract.Exp:Start! volSp;
+                                Volume vol = volMgr.CreateVolume(d, i, out volSp);
+#if VERBOSE
+                                DebugStub.WriteLine("VolMgr adding to map");
+#endif
+                                volEpMap.Add(volSp,vol);
+                            }
+
+                            diskEp.SendAckRegisterDisk();
+                            //store diskEp. to disk in the disk object for connect messages
+                            d.MakeTRef(diskEp);
+                        }
+                        else {
+                            diskEp.SendNakRegisterDisk();
+                            delete diskEp;
+                        }
+                        break;
+
+                        // listen to new CONNECT messages for "/dev/volX" from NS (lookup)
+                    case nsClient.Connect(candidate) in volEpMap~>vol:
+#if VERBOSE
+                        DebugStub.WriteLine("connecting to disk!");
+#endif
+                        DiskDeviceContract.Exp diskExp = candidate as DiskDeviceContract.Exp;
+
+                        // Vol -> Disk -> TRef<VolumeManagerContract>
+                        VolumeManagerContract.Exp! volExp = vol.VolumeDisk.AcquireTRef();
+
+                        if (diskExp != null) {
+                            assert volExp.InState(VolumeManagerContract.Accept.Value);
+                            // Send Connect message with base and bound
+                            volExp.SendConnect(diskExp, vol.SystemId, vol.StartSector, vol.SectorCount);
+                            assert nsClient.InState(ServiceProviderContract.Ack.Value);
+                            vol.AttachClientChannel(nsClient);
+                            diskReplyMap.Add(volExp, vol);
+                        }
+                        else {
+                            delete volExp;
+                            delete candidate;
+                            delete nsClient;
+                        }
+                        break;
+
+                    case diskEp.AckConnect() in diskReplyMap~>vol:
+#if VERBOSE
+                        DebugStub.WriteLine("VolMgrPump: received ACK from disk connect");
+#endif
+                        ServiceProviderContract.Exp volExp = vol.DetachClientChannel();
+                        volExp.SendAckConnect();
+                        assert volExp.InState(VolumeManagerContract.Start.Value);
+                        volEpMap.Add(volExp,vol);
+                        vol.VolumeDisk.MakeTRef(diskEp);
+                        break;
+
+                    case diskEp.NakConnect(endpoint) in diskReplyMap~>vol:
+#if VERBOSE
+                        DebugStub.WriteLine("VolMgrPump: received NAK from disk connect");
+#endif
+                        ServiceProviderContract.Exp volExp = vol.DetachClientChannel();
+                        volExp.SendNackConnect(endpoint);
+                        assert volExp.InState(VolumeManagerContract.Start.Value);
+                        volEpMap.Add(volExp,vol);
+                        vol.VolumeDisk.MakeTRef(diskEp);
+                        break;
+
+                    case unsatisfiable:
+#if VERBOSE
+                        DebugStub.WriteLine("NS: client ServiceProvider gone! ");
+#endif
+                        run = false;
+                        break;
+                } //receive
+            }//for
+
+            volEpMap.Dispose();
+            clients.Dispose();
+            diskReplyMap.Dispose();
+        }//pump
+    } //VolumeManager
+
+
+    public class Volume
+    {
+        private TRef<ServiceProviderContract.Exp:Ack> VolumeSpRef;
+        public  Disk!  VolumeDisk;
+        private byte   systemId;
+        private ulong  startSector;
+        private ulong  totalSector;
+        public  String Name;
+
+        public byte SystemId
+        {
+            get { return systemId; }
+        }
+
+        public ulong StartSector
+        {
+            get { return startSector; }
+        }
+
+        public ulong SectorCount
+        {
+            get { return totalSector; }
+        }
+
+        public void AttachClientChannel([Claims]ServiceProviderContract.Exp:Ack! exp)
+            requires exp.InState(ServiceProviderContract.Ack.Value);
+        {
+            VolumeSpRef= new TRef<ServiceProviderContract.Exp:Ack> (exp);
+        }
+
+        public ServiceProviderContract.Exp:Ack! DetachClientChannel() {
+            TRef<ServiceProviderContract.Exp:Ack> spref = this.VolumeSpRef;
+
+            if (spref == null) {
+                DebugStub.Break();
+                throw new ApplicationException("Volume not attached to any client");
+            }
+            this.VolumeSpRef = null;
+            return spref.Acquire();
+        }
+
+        public Volume(Disk! disk,
+                      int partitionId,
+                      String! name,
+                      out ServiceProviderContract.Exp:Start! server)
+        {
+            VolumeDisk = disk;
+            PartitionDescriptor pd;
+            if (disk.GetPartition(partitionId, out pd) == true) {
+                systemId    = pd.SystemId;
+                startSector = pd.StartSector;
+                totalSector = pd.TotalSector;
+            }
+            ServiceProviderContract.Imp! imp;
+            ServiceProviderContract.Exp! exp;
+            ServiceProviderContract.NewChannel(out imp, out exp);
+            server = exp;
+            Name = name;
+
+            base();
+
+            // when the driver is a process  this will go away
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+            try {
+                epNS.SendRegister(Bitter.FromString2(name),imp);
+                switch receive {
+                    case epNS.AckRegister():
+                        break;
+                    case epNS.NakRegister(rejected, error):
+                        DebugStub.Break();
+                        delete rejected;
+                        break;
+                    case unsatisfiable:
+                        Tracing.Log(Tracing.Debug,"unable to register VolMgr with Nameservice\n");
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+        }
+
+        public void Finalize ()
+        {
+        }
+
+    } //Volume
+
+    public class VolMgr
+    {
+        SortedList! disks;
+        SortedList! volumes;
+        int volumeCount;
+
+        public Disk Register(char[]! in ExHeap heapName)
+        {
+            string! name = Bitter.ToString2(heapName);
+
+            Disk d = new Disk();
+            if  (null == d) {
+                return d;
+            }
+            if (d.Initialize(name)) {
+                DebugStub.WriteLine("Registered disk {0}.", __arglist(name));
+                disks.Add(name,d);
+            }
+            else {
+                DebugStub.WriteLine("Failed to register disk {0}.", __arglist(name));
+                d = null;
+            }
+            return d;
+        }
+
+        public Volume! CreateVolume(Disk! disk,
+                                    int partitionId,
+                                    out ServiceProviderContract.Exp:Start! server)
+        {
+            // cons up the global system-wide name
+            string name = String.Format("/dev/vol{0}.{1}",
+                                        disks.Count - 1, partitionId);
+#if VERBOSE
+            //DebugStub.WriteLine("adding volume {0}", __arglist(name));
+#endif
+            Volume vol = new Volume(disk,partitionId, name, out server);
+            volumes.Add(name,vol);
+            return vol;
+        }
+
+        public VolMgr()
+        {
+            disks   = new SortedList();
+            volumes = new SortedList();
+        }
+
+        public void Finalize()
+        {
+            disks.Clear();
+            volumes.Clear();
+            volumeCount = 0;
+        }
+    }
+}

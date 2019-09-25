@@ -1,0 +1,2376 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Directory.sg
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.Threading;
+
+using MSD = Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal sealed class Directory : FsObject
+    {
+        private  const int  MaxDirectoryEntryLimit = 0xffff;
+        internal const int  EnumerationChunkSize   = 1024;
+        internal const uint FinalWhence            = UInt32.MaxValue;
+
+        // BlockIndex cache for directory (not used by FAT12/16 root directory)
+        BlockIndex blockIndex;
+
+        // Root directory bounds for FAT12/16 root directory
+        uint       startBlockId;
+        uint       endBlockId;
+
+        // Hashtable of <hash(filename), entry index> pairs
+        DHashtable dirHash      = new DHashtable();
+
+        // Hashtable of open child directories and files
+        Hashtable  openFsObjects = new Hashtable();
+
+        // Bitmap of used entries in directory blocks
+        Bitmap     entryBitmap;
+
+        // Terminating entry index
+        uint       lastEntry     = UInt32.MaxValue;
+
+        // Short name seed
+        int        shortNameSeed = 0;
+
+        /// <summary> Generic directory constructor. </summary>
+        /// <param name="parent"> Parent directory. </param>
+        /// <param name="shortEntryOffset"> Index of directory entry
+        /// containing metadata for directory being constructed.
+        /// </param>
+        /// <param name="firstCluster"> First cluster of directory.
+        /// </param>
+        [ Microsoft.Contracts.NotDelayed ]
+        private Directory(Directory! parent,
+                          int        shortEntryOffset,
+                          int        firstCluster)
+            : base(parent, shortEntryOffset)
+        {
+            this.blockIndex   = new BlockIndex();
+            this.startBlockId = UInt32.MaxValue;
+            this.endBlockId   = UInt32.MaxValue;
+            this.entryBitmap  = new Bitmap(MaxDirectoryEntryLimit);
+
+            FatVolume.Fat.PopulateIndex(this.blockIndex, firstCluster);
+            BuildSummaries();
+        }
+
+        /// <summary> Constructor for FAT32 root directory. </summary>
+        [ Microsoft.Contracts.NotDelayed ]
+        private Directory(BlockIndex theBlockIndex)
+            : base()
+        {
+            this.blockIndex   = theBlockIndex;
+            this.startBlockId = UInt32.MaxValue;
+            this.endBlockId   = UInt32.MaxValue;
+            this.entryBitmap  = new Bitmap(MaxDirectoryEntryLimit);
+            BuildSummaries();
+        }
+
+        /// <summary> Constructor for FAT12/16 root directory. </summary>
+        [ Microsoft.Contracts.NotDelayed ]
+        private Directory(uint theStartBlockId, uint theEndBlockId)
+            : base()
+        {
+            this.blockIndex   = null;
+            this.startBlockId = theStartBlockId;
+            this.endBlockId   = theEndBlockId;
+            this.entryBitmap  = new Bitmap(CurrentDirectoryEntryLimit);
+            BuildSummaries();
+        }
+
+        internal bool IsRoot  { get { return ! base.HasParent; } }
+        internal bool IsEmpty { get { return dirHash.Count == 0; } }
+
+        private bool UseClusterCache
+        {
+            get {
+                return (FatVolume.FatVersion == FatVersion.Fat32 || !IsRoot);
+            }
+        }
+
+        internal override int FirstCluster
+        {
+            get {
+                if (UseClusterCache) {
+                    int blockId;
+                    if (blockIndex.Lookup(0, out blockId) == false) {
+                        assert false;
+                    }
+                    return blockId;
+                }
+                return 0;
+            }
+        }
+
+        private int CurrentDirectoryEntryLimit
+        {
+            get {
+                if (UseClusterCache) {
+                    return blockIndex.Count * DirectoryEntriesPerBlock;
+                }
+                return ((int)(endBlockId - startBlockId) *
+                        DirectoryEntriesPerBlock);
+            }
+        }
+
+        private bool IsFixedSize
+        {
+            get { return !UseClusterCache; }
+        }
+
+        private static bool ValidName(char[]! in ExHeap name)
+        {
+            return name.Length > 0 &&
+                    !Char.IsWhiteSpace(name[0]) &&
+                    !Char.IsWhiteSpace(name[name.Length - 1]) &&
+                    LongDirectoryEntry.ValidName(name);
+        }
+
+        public int DirectoryEntriesPerBlock
+        {
+            get {
+                assert sizeof(DirectoryEntry) == DirectoryEntry.Length;
+                assert sizeof(LongDirectoryEntry) == LongDirectoryEntry.Length;
+                assert sizeof(LongDirectoryEntry) == sizeof(DirectoryEntry);
+                BlockCache bc;
+                if (UseClusterCache) {
+                    bc = FatVolume.ClusterCache;
+                }
+                else {
+                    bc = FatVolume.NonClusterCache;
+                }
+                return (int) (bc.BytesPerBlock / DirectoryEntry.Length);
+            }
+        }
+
+        private void BuildSummaries()
+        {
+            // Long entry variables
+            uint longEntryOffset   = FinalWhence;
+            int  longEntriesComing = 0;
+            byte longEntryChecksum = 0;
+            int  runningChecksum   = 0;
+
+            // Iteration variables
+            uint entryOffset     = 0;
+            int  entriesPerBlock = DirectoryEntriesPerBlock;
+            int  blockNumber     = 0;
+
+            byte [] in ExHeap current = AcquireBlock(blockNumber);
+
+            assert current != null;
+
+            bool done = false;
+            do {
+                if (entryOffset == CurrentDirectoryEntryLimit) {
+                    break;
+                }
+                for (uint i = 0; i < entriesPerBlock; i++, entryOffset++) {
+                    int cOffset = (int)i * DirectoryEntry.Length;
+                    ref DirectoryEntry de = ref current[cOffset];
+
+                    if (i == 0 && this.IsRoot && de.IsVolumeId) {
+                        // Reserve slot for volume id so it is
+                        // not purged when all files and
+                        // directory are removed.
+                        this.lastEntry = entryOffset;
+                        int start, length;
+                        entryBitmap.Allocate((int)0, 1, out start, out length);
+                    }
+
+                    if (de.IsFinalFreeEntry) {
+                        this.lastEntry = entryOffset;
+                        done = true;
+                        break;
+                    }
+
+                    if (de.IsLongEntry) {
+                        ref LongDirectoryEntry le = ref current[cOffset];
+                        if (le.IsLastEntry) {
+                            longEntryOffset   = entryOffset;
+                            longEntryChecksum = le.Checksum;
+                            longEntriesComing = le.GetNumberOfLongEntries()-1;
+
+                            int clen = le.GetPathComponentLength();
+                            runningChecksum = le.GetDirHashCode(0, clen);
+                        }
+                        else if (longEntriesComing-- > 0 &&
+                                 le.Checksum == longEntryChecksum) {
+                            runningChecksum =
+                                le.GetDirHashCode(
+                                    runningChecksum,
+                                    LongDirectoryEntry.CharactersPerEntry
+                                    );
+                        }
+                        else {
+                            longEntryOffset = FinalWhence;
+                        }
+                    }
+                    else if (de.IsSelfPointer || de.IsParentPointer) {
+                        // "." and ".." are not exposed by the file system.
+                        // Reserve space in bitmap, but do not populate
+                        // name hash table.
+                        int start, length;
+                        entryBitmap.Allocate((int)entryOffset, 1,
+                                             out start, out length);
+
+                        assert start == entryOffset && length == 1;
+                        assert entryOffset < CurrentDirectoryEntryLimit;
+                    }
+                    else if (!de.IsFreeEntry &&
+                             (de.IsDirectory || de.IsFile)) {
+                        if (de.Checksum == longEntryChecksum &&
+                            longEntryOffset != FinalWhence) {
+
+                            int totalEntryLength =
+                                (int)entryOffset - (int)longEntryOffset + 1;
+
+                            int start, length;
+                            entryBitmap.Allocate((int)longEntryOffset,
+                                                 totalEntryLength,
+                                                 out start, out length);
+
+                            assert start  == longEntryOffset;
+                            assert length == (int)totalEntryLength;
+                            assert longEntryOffset <CurrentDirectoryEntryLimit;
+
+                            bool success;
+                            success = dirHash.Insert(runningChecksum,
+                                                     (ushort)longEntryOffset,
+                                                     (ushort)totalEntryLength);
+                            assert success;
+
+                            success = dirHash.Insert(de.GetDirHashCode(),
+                                                     (ushort)longEntryOffset,
+                                                     (ushort)totalEntryLength);
+                            assert success;
+                        }
+                        else {
+                            int start, length;
+                            entryBitmap.Allocate((int)entryOffset, 1,
+                                                 out start, out length);
+
+                            assert start == entryOffset && length == 1;
+                            assert entryOffset < CurrentDirectoryEntryLimit;
+
+                            bool success = dirHash.Insert(de.GetDirHashCode(),
+                                                          (ushort)entryOffset,
+                                                          (ushort)1);
+                            assert success;
+                        }
+
+                        longEntryOffset = FinalWhence;
+                    }
+                    else {
+                        longEntryOffset = FinalWhence;
+                    }
+                }
+                ReleaseBlock(blockNumber++, current, false);
+                current = null;
+            } while (!done && (current = AcquireBlock(blockNumber)) != null);
+
+            if (current != null) {
+                ReleaseBlock(blockNumber, current, false);
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // Create file and directory methods
+
+        bool LockedProvisionDirectory(int requestedEntryCount)
+            requires requestedEntryCount <= MaxDirectoryEntryLimit;
+            requires requestedEntryCount > this.CurrentDirectoryEntryLimit;
+            requires this.IsFixedSize == false;
+            // ensures this.CurrentDirectoryEntryLimit > old(this.CurrentDirectoryEntryLimit) or returns false;
+        {
+            assert blockIndex != null;
+
+            const int RequestedClusters = 1;
+            int actualClusters;
+
+            bool success = FatVolume.Fat.GrowChain(this.blockIndex,
+                                                   RequestedClusters,
+                                                   out actualClusters);
+            assert success == (actualClusters == RequestedClusters);
+            return success;
+        }
+
+        void
+        LockedInitializeNewDirectory(int newDirectoryCluster)
+        {
+            byte[]! in ExHeap cluster =
+                FatVolume.ClusterCache.CreateBlockAndBeginQuickOperation(
+                    (uint)newDirectoryCluster, true
+                    );
+
+            int offset = 0;
+            ref DirectoryEntry selfEntry = ref cluster[offset];
+            selfEntry.InitializeAsSelfPointer((uint)newDirectoryCluster);
+            offset += DirectoryEntry.Length;
+
+            // Page 25 of spec says initialize
+            // root cluster as zero even for FAT32 (where it
+            // exists and can *not* be zero by definition).
+            ref DirectoryEntry parentEntry = ref cluster [offset];
+            if (this.IsRoot) {
+                parentEntry.InitializeAsParentPointer(0);
+            }
+            else {
+                parentEntry.InitializeAsParentPointer((uint)this.FirstCluster);
+            }
+            offset += DirectoryEntry.Length;
+
+            ref DirectoryEntry lastEntry = ref cluster[offset];
+            lastEntry.Invalidate(true);
+
+            FatVolume.ClusterCache.EndQuickBlockOperation(
+                (uint)newDirectoryCluster, cluster, true
+                );
+        }
+
+        private void
+        GenerateShortNameEntry(char[]! in ExHeap longName,
+                               char[]! in ExHeap shortNameEntry)
+            requires (shortNameEntry.Length ==
+                      DirectoryEntry.ShortNameEntryLength);
+        {
+            // This always succeeds because there are more extension
+            // digits possible than files in a directory.
+            //
+            // NB LongDirectoryEntry.WriteShortNameEntry is inefficient
+            // because it has to determine the short form of the name
+            // every time.
+
+            //
+            // Try first few tails in sequence.
+            //
+            const int SmallLimit = 11;
+            for (int i = 1; i < SmallLimit; i++) {
+                LongDirectoryEntry.WriteShortNameEntry(longName, i,
+                                                       shortNameEntry);
+                if (!LockedFileOrDirectoryExists(shortNameEntry)) {
+                    return;
+                }
+            }
+
+            //
+            // Generate tails using open addressing search
+            // - Choose space as power of two.
+            // - Choose stride to be an odd number.
+            //
+            const int LargeLimit = 524288;
+            assert (LargeLimit + SmallLimit <
+                    LongDirectoryEntry.MaxShortNameAttempts);
+
+            shortNameSeed++;
+            int h1 = (shortNameSeed * 15307) % LargeLimit;
+            int h2 = ((shortNameSeed * 2) % LargeLimit) + 1;
+
+            for (int i = 0; i < LargeLimit; i++) {
+                int j = (h1 + i * h2) % LargeLimit;
+                LongDirectoryEntry.WriteShortNameEntry(longName,
+                                                       SmallLimit + j,
+                                                       shortNameEntry);
+                if (!LockedFileOrDirectoryExists(shortNameEntry)) {
+                    return;
+                }
+            }
+        }
+
+        MSD.ErrorCode
+        LockedCreateFileOrDirectory(char[]! in ExHeap longName,
+                                    char[]! in ExHeap shortNameEntry,
+                                    int               firstCluster,
+                                    bool              isFile)
+            requires (shortNameEntry.Length ==
+                      DirectoryEntry.ShortNameEntryLength);
+        {
+            if (LockedFileOrDirectoryExists(longName)) {
+                return MSD.ErrorCode.AlreadyExists;
+            }
+
+            GenerateShortNameEntry(longName, shortNameEntry);
+
+            //
+            // Allocate contiguous run of directory entries for long
+            // and short name data.
+            //
+            int cpe        = LongDirectoryEntry.CharactersPerEntry;
+            int entryCount = (longName.Length + cpe - 1) / cpe + 1;
+            int allocStart, allocLength;
+            if (!entryBitmap.Allocate(entryCount,
+                                      out allocStart,
+                                      out allocLength)) {
+                return MSD.ErrorCode.DirectoryFull;
+            }
+            assert allocStart + allocLength <= MaxDirectoryEntryLimit;
+            assert allocLength == entryCount;
+
+            //
+            // Check if we need to grow directory and attempt to if so.
+            //
+            // Note +1 comes from trailing directory entry with the last
+            // entry marker set.
+            //
+            int totalEntriesNeeded = Math.Min(allocStart + allocLength + 1,
+                                              MaxDirectoryEntryLimit);
+            if (totalEntriesNeeded > CurrentDirectoryEntryLimit) {
+                if ((this.IsFixedSize ||
+                     !LockedProvisionDirectory(totalEntriesNeeded))
+                    ) {
+                    entryBitmap.Free(allocStart, allocLength);
+                    return MSD.ErrorCode.DirectoryFull;
+                }
+            }
+
+            //
+            // Write long directory entries
+            //
+            int entry           = allocStart;
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int blockNumber     = allocStart / entriesPerBlock;
+            int offset          = 0;
+
+            byte checksum = LongDirectoryEntry.ComputeChecksum(shortNameEntry);
+
+            byte[]! in ExHeap block = (!)AcquireBlock(blockNumber);
+            for (int k = 0; k < (allocLength - 1); k++) {
+                // TODO: Check entry is
+                // empty before overwriting, or beyond last entry
+
+                offset = (entry % entriesPerBlock) * DirectoryEntry.Length;
+                ref LongDirectoryEntry le = ref block[offset];
+
+                le.SetNameComponent(allocLength - 1 - k,
+                                    allocLength - 1,
+                                    longName,
+                                    checksum);
+
+                entry++;
+                int nextBlockNumber = entry / entriesPerBlock;
+                if (nextBlockNumber != blockNumber) {
+                    ReleaseBlock(blockNumber, block, true);
+                    blockNumber = nextBlockNumber;
+                    block       = (!)AcquireBlock(blockNumber);
+                }
+            }
+
+            //
+            // Write short name
+            //
+            offset = (entry % entriesPerBlock) * DirectoryEntry.Length;
+            ref DirectoryEntry de = ref block[offset];
+            if (isFile) {
+                de.InitializeAsFile(shortNameEntry, (uint)firstCluster);
+            }
+            else {
+                de.InitializeAsDirectory(shortNameEntry, (uint)firstCluster);
+            }
+            int sneHashCode = de.GetDirHashCode();
+            entry++;
+
+            // TODO: Validate checksum
+            // matches that computed
+            byte checksum2 = de.Checksum;
+            assert checksum == checksum2;
+
+            //
+            // Optionally bump last entry
+            //
+            assert entry <= CurrentDirectoryEntryLimit;
+            if (entry > (int)this.lastEntry) {
+                if (entry != MaxDirectoryEntryLimit) {
+                    int nextBlockNumber = entry / entriesPerBlock;
+                    if (nextBlockNumber != blockNumber) {
+                        ReleaseBlock(blockNumber, block, true);
+                        blockNumber = nextBlockNumber;
+                        block       = (!)AcquireBlock(blockNumber);
+                    }
+                    offset = (entry % entriesPerBlock) * DirectoryEntry.Length;
+                    ref DirectoryEntry last = ref block[offset];
+                    last.Invalidate(true);
+                }
+                this.lastEntry = (uint)entry;
+                assert this.lastEntry <= MaxDirectoryEntryLimit;
+            }
+
+            ReleaseBlock(blockNumber, block, true);
+
+            //
+            // Populate directory name hash
+            //
+            this.dirHash.Insert(LongDirectoryEntry.GetDirHashCode(longName),
+                                (ushort)allocStart,
+                                (ushort)allocLength);
+            this.dirHash.Insert(sneHashCode,
+                                (ushort)allocStart,
+                                (ushort)allocLength);
+
+            if (!isFile) {
+                LockedInitializeNewDirectory(firstCluster);
+            }
+
+            return MSD.ErrorCode.NoError;
+        }
+
+        // --------------------------------------------------------------------
+        // Delete file and directory
+
+        private static void
+        LockedDeleteLongEntries(byte[]! in ExHeap buffer,
+                                int               entryOffset,
+                                int               entryLength,
+                                ref int           dirHashCode)
+        {
+            while (entryLength > 0) {
+                int byteOffset = entryOffset * DirectoryEntry.Length;
+
+                ref DirectoryEntry de = ref buffer[byteOffset];
+                assert de.IsLongEntry;
+
+                ref LongDirectoryEntry le = ref buffer[byteOffset];
+                if (le.IsLastEntry) {
+                    dirHashCode =
+                        le.GetDirHashCode(
+                            dirHashCode,
+                            le.GetPathComponentLength()
+                            );
+                }
+                else {
+                    dirHashCode =
+                        le.GetDirHashCode(
+                            dirHashCode,
+                            LongDirectoryEntry.CharactersPerEntry
+                            );
+                }
+
+                de.Invalidate(false);
+
+                entryOffset++;
+                entryLength--;
+            }
+        }
+
+        private static void
+        LockedDeleteShortEntry(byte[]! in ExHeap buffer,
+                               int               entryOffset,
+                               out int           dirHashCode,
+                               out uint          firstCluster)
+        {
+                int byteOffset = entryOffset * DirectoryEntry.Length;
+                ref DirectoryEntry de = ref buffer[byteOffset];
+                assert !de.IsLongEntry;
+
+                dirHashCode  = de.GetDirHashCode();
+                firstCluster = de.FirstCluster;
+
+                de.Invalidate(false);
+        }
+
+        private void LockedDeleteMatchEntries(ref FindMatch match)
+        {
+            // TODO: reduce number of
+            // acquire and release operations in this section.
+
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int absoluteOffset  = match.AbsoluteEntryOffset;
+            int entryLength     = match.AbsoluteEntryLength;
+            int entryOffset     = absoluteOffset % entriesPerBlock;
+            int shortOffset     = entryOffset + entryLength - 1;
+            int blockNumber     = absoluteOffset / entriesPerBlock;
+
+            assert (absoluteOffset >= 0 &&
+                    absoluteOffset < MaxDirectoryEntryLimit);
+            assert (entryLength > 0 &&
+                    absoluteOffset + entryLength <= MaxDirectoryEntryLimit);
+            //
+            // Free bits in directory entry bitmap
+            //
+            entryBitmap.Free(absoluteOffset, entryLength);
+
+            //
+            // Delete directory entries and get checksums so we
+            // can delete directory hash entries.
+            //
+            if (entryLength > 1) {
+                int longDirHashCode = 0;
+                if (entryOffset + entryLength - 1 < entriesPerBlock) {
+                    byte[]! in ExHeap block = (!)AcquireBlock(blockNumber);
+                    LockedDeleteLongEntries(
+                        block, entryOffset, entryLength - 1,
+                        ref longDirHashCode
+                        );
+                    ReleaseBlock(blockNumber, block, true);
+                }
+                else {
+                    byte[]! in ExHeap block = (!)AcquireBlock(blockNumber);
+                    LockedDeleteLongEntries(
+                        block, entryOffset, entriesPerBlock - entryOffset,
+                        ref longDirHashCode
+                        );
+                    ReleaseBlock(blockNumber, block, true);
+
+                    block = (!)AcquireBlock(blockNumber + 1);
+                    LockedDeleteLongEntries(
+                        block, 0,
+                        entryOffset + entryLength - 1 - entriesPerBlock,
+                        ref longDirHashCode
+                        );
+                    ReleaseBlock(blockNumber + 1, block, true);
+                }
+
+                int m = this.dirHash.Count;
+                this.dirHash.Remove(longDirHashCode,
+                                    (ushort)absoluteOffset,
+                                    (ushort)entryLength);
+                assert this.dirHash.Count == m - 1;
+            }
+
+            //
+            // Remove short entry and its dirhash value
+            //
+            int shortDirHashCode;
+            uint firstCluster;
+            if (shortOffset >= entriesPerBlock) {
+                byte []! in ExHeap seBlock =
+                    (!)AcquireBlock(blockNumber + 1);
+                LockedDeleteShortEntry(seBlock,
+                                       shortOffset - entriesPerBlock,
+                                       out shortDirHashCode,
+                                       out firstCluster);
+                ReleaseBlock(blockNumber + 1, seBlock, true);
+
+            }
+            else {
+                byte []! in ExHeap seBlock =
+                    (!)AcquireBlock(blockNumber);
+                LockedDeleteShortEntry(seBlock, shortOffset,
+                                       out shortDirHashCode,
+                                       out firstCluster);
+                ReleaseBlock(blockNumber, seBlock, true);
+            }
+            int n = (int)this.dirHash.Count;
+            this.dirHash.Remove(shortDirHashCode,
+                                (ushort)absoluteOffset,
+                                (ushort)entryLength);
+            assert this.dirHash.Count == n - 1;
+
+            //
+            // Purge associated clusters
+            //
+            if (firstCluster != 0) {
+                FatVolume.Fat.FreeChain((int)firstCluster);
+            }
+        }
+
+        private void LockedInvalidateEntriesWithinBlock(int blockNumber,
+                                                        int entryStart,
+                                                        int entryCount)
+            requires blockNumber >= 0; // && < this.CurrentDirectoryEntryLimit;
+            requires entryStart >= 0;
+            requires entryCount >= 0;
+        //requires entryCount <= this.DirectoryEntriesPerBlock
+        //requires entryStart + entryCount <= this.DirectoryEntriesPerBlock;
+        {
+            if (entryCount > 0) {
+                byte []! in ExHeap block = (!)AcquireBlock(blockNumber);
+                try {
+                    Bitter.Zero(
+                        block,
+                        entryStart * DirectoryEntry.Length,
+                        entryCount * DirectoryEntry.Length
+                        );
+                }
+                finally {
+                    ReleaseBlock(blockNumber, block, true);
+                }
+            }
+        }
+
+        private void LockedInvalidateEndDirectoryEntries(int start, int end)
+            requires start >= 0;
+            requires end >= start;
+        // requires end <= this.CurrentDirectoryEntryLimit;
+        {
+            int entriesPerBlock = this.DirectoryEntriesPerBlock;
+
+            int curBlock = start / entriesPerBlock;
+            int endBlock = end / entriesPerBlock;
+
+            if (curBlock == endBlock) {
+                LockedInvalidateEntriesWithinBlock(
+                    curBlock,
+                    start & (entriesPerBlock - 1),
+                    end - start);
+            }
+            else {
+                LockedInvalidateEntriesWithinBlock(
+                    curBlock++,
+                    start & (entriesPerBlock - 1),
+                    entriesPerBlock - start
+                    );
+                while (curBlock < endBlock) {
+                    LockedInvalidateEntriesWithinBlock(
+                        curBlock++,
+                        0,
+                        entriesPerBlock
+                        );
+                }
+                LockedInvalidateEntriesWithinBlock(
+                    endBlock,
+                    0,
+                    end - endBlock * entriesPerBlock
+                    );
+            }
+        }
+
+        private void LockedUpdateEndOfDirectoryMarker(int oldMarker)
+        {
+            int firstFree =
+                this.entryBitmap.GetFirstBitSetBefore(oldMarker) + 1;
+
+            LockedInvalidateEndDirectoryEntries(
+                firstFree,
+                Math.Min((int)this.lastEntry + 1,
+                         this.CurrentDirectoryEntryLimit)
+                );
+
+            this.lastEntry = (uint)firstFree;
+
+            // See if directory is inside FAT and return free clusters if so.
+            if (FatVolume.FatVersion == FatVersion.Fat32 || !this.IsRoot) {
+                int entriesPerBlock = this.DirectoryEntriesPerBlock;
+                int newClusterCount = (firstFree / entriesPerBlock) + 1;
+
+                assert this.blockIndex.Count >= newClusterCount;
+
+                if (this.blockIndex.Count > newClusterCount) {
+                    FatVolume.Fat.TruncateChain(
+                        this.blockIndex,
+                        newClusterCount
+                        );
+                }
+
+                uint maxBlock = ((uint)lastEntry + (uint)DirectoryEntriesPerBlock - 1) / (uint)DirectoryEntriesPerBlock;
+                DebugStub.Assert(maxBlock == blockIndex.Count);
+            }
+        }
+
+        private void LockedDeleteMatch(ref FindMatch match)
+        {
+            // Failure beyond this point is fatal.
+            // We found a match of the right type to delete, it'd better
+            // still exist
+            LockedDeleteMatchEntries(ref match);
+
+            int entryEnd = match.AbsoluteEntryOffset +
+                            match.AbsoluteEntryLength;
+            assert this.lastEntry >= entryEnd;
+            if (entryEnd == this.lastEntry) {
+                LockedUpdateEndOfDirectoryMarker(entryEnd);
+            }
+        }
+
+        internal MSD.ErrorCode
+        DeleteFile(char []! in ExHeap filename)
+        {
+            FindMatch match = new FindMatch();
+
+            lock (this) {
+                if (!LockedFindByName(filename, ref match)) {
+                    return MSD.ErrorCode.NotFound;
+                }
+                if (!match.IsFile) {
+                    return MSD.ErrorCode.NotFile;
+                }
+                if (LockedLookupOpenFsObject(match.ShortEntryOffset) != null) {
+                    return MSD.ErrorCode.IsOpen;
+                }
+
+                if (match.FirstCluster != 0) {
+                    // Remove from recently used cache if there
+                    FatVolume.FileCache.Get(match.FirstCluster);
+                }
+
+                LockedDeleteMatch(ref match);
+            }
+            return MSD.ErrorCode.NoError;
+        }
+
+        internal MSD.ErrorCode
+        DeleteDirectory(char []! in ExHeap dirname)
+        {
+            FindMatch match = new FindMatch();
+            lock (this) {
+                if (!LockedFindByName(dirname, ref match)) {
+                    return MSD.ErrorCode.NotFound;
+                }
+                if (!match.IsDirectory) {
+                    return MSD.ErrorCode.NotDirectory;
+                }
+                if (LockedLookupOpenFsObject(match.ShortEntryOffset) != null) {
+                    return MSD.ErrorCode.IsOpen;
+                }
+
+                // Get directory (checking with recently used cache first)
+                Directory toDelete =
+                    FatVolume.DirectoryCache.Get(match.FirstCluster);
+                if (toDelete == null) {
+                    try {
+                        // This is expensive if the directory is
+                        // large and full of entries.  We are
+                        // holding the directory lock and
+                        // stopping the forward progress of
+                        // others here.  We could just scan the
+                        // directory entries directly and see if
+                        // it is empty.
+                        toDelete = new Directory(this,
+                                                 match.ShortEntryOffset,
+                                                 match.FirstCluster);
+                    }
+                    catch (Exception e) {
+                        DebugStub.Print(
+                            "Unexpected exception deleting file {0}\n",
+                            __arglist(e)
+                            );
+                        return MSD.ErrorCode.Unknown;
+                    }
+                }
+
+                if (!toDelete.IsEmpty) {
+                    return MSD.ErrorCode.DirectoryNotEmpty;
+                }
+
+                LockedDeleteMatch(ref match);
+            }
+            return MSD.ErrorCode.NoError;
+        }
+
+        // --------------------------------------------------------------------
+        // Find-by-name related methods
+
+        /// <remarks> Structure for returning find query results.  Note
+        /// the data blocks have been acquired with AcquireBlock and the
+        /// recipient of this structure should call ReplaceBlock for the
+        /// non-null values in <c>firstBlock</c> and <c>secondBlock</c>.
+        /// </remarks>
+        internal struct FindMatch
+        {
+            private int  entryOffset;
+            private int  entryLength;
+            private bool isFile;
+            private int  firstCluster;
+            private byte attributes;
+
+            internal void Initialize(int               theEntryOffset,
+                                     int               theEntryLength,
+                                     byte[]! in ExHeap lastBlock)
+            {
+                this.entryOffset = theEntryOffset;
+                this.entryLength = theEntryLength;
+
+                int deBytes = DirectoryEntry.Length;
+                int entryMask = (lastBlock.Length / deBytes) - 1;
+                int shortEntry =
+                    (theEntryOffset + theEntryLength - 1) & entryMask;
+
+                ref DirectoryEntry de = ref lastBlock[shortEntry * deBytes];
+
+                assert de.IsShortEntry;
+                assert de.IsFile || de.IsDirectory;
+
+                this.isFile       = de.IsFile;
+                this.firstCluster = (int)de.FirstCluster;
+            }
+
+            internal int AbsoluteEntryOffset { get { return entryOffset; } }
+            internal int AbsoluteEntryLength { get { return entryLength; } }
+            internal int ShortEntryOffset
+            {
+                get { return entryOffset + entryLength - 1; }
+            }
+
+            internal bool IsFile       { get { return this.isFile; } }
+            internal bool IsDirectory  { get { return !this.isFile; } }
+            internal int  FirstCluster { get { return this.firstCluster; } }
+        }
+
+        /// <summary> Finds short directory entry of the
+        /// requested file or subdirectory and acquires the
+        /// block associated with the entry. </summary>
+        /// <param name="name">File or directory name to
+        /// find.</param>
+        /// <param name="result">Assigned block and offset
+        /// details on success</param>
+        /// <returns>true on success, false on failure.</returns>
+        private bool
+        LockedFindByName(char[]! in ExHeap name,
+                         ref FindMatch     match)
+            requires name.Length > 0;
+        {
+            if (LockedFindByLongName(name, ref match)) {
+                return true;
+            }
+            return LockedFindByShortName(name, ref match);
+        }
+
+        private bool LockedFindByLongName(char[]! in ExHeap name,
+                                          ref FindMatch     match)
+        {
+            // Walk entries in directory
+            // hash table that match checksum associated with
+            // name.  If there are many hash collisions, we are
+            // hammering the block cache, but we don't expect many.
+
+            const int deLength = DirectoryEntry.Length;
+
+            int    hashCode        = LongDirectoryEntry.GetDirHashCode(name);
+            int    entriesPerBlock = DirectoryEntriesPerBlock;
+            ushort entryOffset;
+            ushort entryLength;
+
+            this.dirHash.ResetSearch();
+            while (this.dirHash.Search(hashCode,
+                                       out entryOffset, out entryLength)) {
+                assert entryOffset < lastEntry;
+                assert (entryBitmap.GetFirstSetBitFrom(entryOffset) ==
+                        entryOffset);
+
+                int    blockNumber = entryOffset / entriesPerBlock;
+                ushort relOffset    = (ushort) (entryOffset % entriesPerBlock);
+                int    byteOffset  = (int) relOffset * deLength;
+
+                byte []! in ExHeap block = (!)AcquireBlock(blockNumber);
+
+                ref DirectoryEntry de = ref block[byteOffset];
+
+                if (!de.IsLongEntry) {
+                    ReleaseBlock(blockNumber, block, false);
+                    continue;
+                }
+
+                ref LongDirectoryEntry le = ref block[byteOffset];
+                assert le.IsValid && le.IsLastEntry;
+                if (le.GetPathLength() != name.Length) {
+                    ReleaseBlock(blockNumber, block, false);
+                    continue;
+                }
+
+                int count = le.GetNumberOfLongEntries();
+                assert count == entryLength - 1;
+                if (relOffset + entryLength - 1 < entriesPerBlock) {
+                    if (LockedMatchLongFragments(name, block,
+                                                 relOffset,
+                                                 entryLength - 1,
+                                                 entryLength - 1)) {
+                        match.Initialize(entryOffset, entryLength, block);
+                        ReleaseBlock(blockNumber, block, false);
+                        return true;
+                    }
+                    ReleaseBlock(blockNumber, block, false);
+                    continue;
+                }
+
+                int excess = relOffset + entryLength - entriesPerBlock;
+                assert excess >= 1 && excess < entryLength;
+                if (!LockedMatchLongFragments(name, block, relOffset,
+                                              entriesPerBlock - relOffset,
+                                              entryLength - 1)) {
+                    ReleaseBlock(blockNumber, block, false);
+                    continue;
+                }
+                ReleaseBlock(blockNumber, block, false);
+
+                blockNumber++;
+                block = (!)AcquireBlock(blockNumber);
+
+                if (LockedMatchLongFragments(name, block, 0,
+                                             excess - 1, excess - 1)) {
+                    match.Initialize(entryOffset, entryLength, block);
+                    ReleaseBlock(blockNumber, block, false);
+                    return true;
+                }
+                ReleaseBlock(blockNumber, block, false);
+            }
+            return false;
+        }
+
+        private bool LockedMatchLongFragments(char[]! in ExHeap name,
+                                              byte[]! in ExHeap block,
+                                              int               entryOffset,
+                                              int               entryCount,
+                                              int               expectedOrdinal)
+        {
+            int deLength = (int)DirectoryEntry.Length;
+            int done = 0;
+            while (done < entryCount) {
+                ref LongDirectoryEntry le = ref block[entryOffset * deLength];
+                assert (le.IsValid && le.ComponentNumber == expectedOrdinal - done);
+                if (!le.NameComponentMatches(name)) {
+                    return false;
+                }
+                entryOffset++;
+                done++;
+            }
+            return true;
+        }
+
+        private bool LockedFindByShortName(char[]! in ExHeap name,
+                                           ref FindMatch     match)
+        {
+            if (!DirectoryEntry.ValidShortName(name) &&
+                !DirectoryEntry.ValidPackedName(name)) {
+                return false;
+            }
+
+            const int deLength  = DirectoryEntry.Length;
+
+            int checksum        = DirectoryEntry.GetDirHashCode(name);
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+
+            ushort entryOffset;
+            ushort entryLength;
+
+            this.dirHash.ResetSearch();
+            while (this.dirHash.Search(checksum,
+                                       out entryOffset, out entryLength)) {
+                assert entryOffset < lastEntry;
+                assert entryLength > 0;
+                assert (entryBitmap.GetFirstSetBitFrom(entryOffset) ==
+                        entryOffset);
+
+                int index  = (int)entryOffset + (int)entryLength - 1;
+                int blockNumber = index / entriesPerBlock;
+                byte []! in ExHeap block = (!)AcquireBlock(blockNumber);
+
+                int byteOffset = (index % entriesPerBlock) * deLength;
+
+                ref DirectoryEntry de = ref block[byteOffset];
+                assert !de.IsLongEntry;
+                int deChecksum = de.GetDirHashCode();
+                assert deChecksum == checksum;
+
+                if (de.HasName(name)) {
+                    match.Initialize(entryOffset, entryLength, block);
+                    ReleaseBlock(blockNumber, block, false);
+                    return true;
+                }
+                ReleaseBlock(blockNumber, block, false);
+            }
+
+            return false;
+        }
+
+        private bool LockedFileOrDirectoryExists(char[]! in ExHeap name)
+        {
+            FindMatch match = new FindMatch();
+            return LockedFindByName(name, ref match);
+        }
+
+        internal bool FileOrDirectoryExists(char[]! in ExHeap name)
+        {
+            // REVIEW: Is this still needed once
+            // we have channels instead of dummy code.
+            lock (this) {
+                if (!LockedFileOrDirectoryExists(name)) {
+                    return LockedFileOrDirectoryExists(name);
+                }
+                return true;
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // Directory Enumeration code begins here
+
+        private int
+        LockedGetEnumerationRecords2(EnumEntry[]! in ExHeap entries,
+                                     uint                   whence,
+                                     out uint               nextWhence)
+        {
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int blockNumber     = Int32.MaxValue;
+
+            byte [] in ExHeap current = null;
+
+            int done = 0;
+            try {
+                do {
+                    // If next position does not correspond to a valid
+                    // entry stop.
+                    whence = (uint)entryBitmap.GetFirstSetBitFrom((int)whence);
+                    if (whence >= lastEntry) {
+                        if (current != null) {
+                            ReleaseBlock(blockNumber, current, false);
+                            current = null;
+                        }
+                        nextWhence = FinalWhence;
+                        return done;
+                    }
+
+                    // If required, acquire block for entry.
+                    int newBlockNumber = (int)whence / entriesPerBlock;
+                    if (newBlockNumber != blockNumber) {
+                        if (current != null) {
+                            ReleaseBlock(blockNumber, current, false);
+                            current = null;
+                        }
+                        blockNumber = newBlockNumber;
+                        current     = AcquireBlock(blockNumber);
+                    }
+                    assert current != null;
+
+                    int offset = (int)whence % entriesPerBlock;
+                    int bOff   = offset * DirectoryEntry.Length;
+
+                    ref DirectoryEntry de = ref current[bOff];
+                    if (de.IsLongEntry) {
+                        ref LongDirectoryEntry le = ref current[bOff];
+                        assert le.IsLastEntry;
+                        int length = le.GetNumberOfLongEntries() + 1;
+                        if (offset + length > entriesPerBlock) {
+                            ReleaseBlock(blockNumber, current, false);
+                            current = null;
+                            expose (entries[done]) {
+                                bool success =
+                                    ReadSplitLongEntry(blockNumber,
+                                                       offset, length,
+                                                       ref entries[done]);
+                                assert success;
+                            }
+                            blockNumber = Int32.MaxValue;
+                        }
+                        else {
+                            expose (entries[done]) {
+                                bool success =
+                                    ReadLongEntry(current, offset, length,
+                                                  ref entries[done]);
+                                assert success;
+                            }
+                        }
+                        whence += (uint)length;
+                    }
+                    else if (de.IsShortEntry) {
+                        expose (entries[done]) {
+                            bool success =
+                                ReadShortEntry(ref de, ref entries[done]);
+                            assert success;
+                        }
+                        whence += 1;
+                    }
+                    else if (whence == 0 && de.IsVolumeId) {
+                        whence += 1;
+                        continue;
+                    }
+                    else {
+                        assert false;
+                    }
+
+                    // Beware "continue"
+                    // keyword above this increment must not be
+                    // rolled into loop termination check.
+                    done = done + 1;
+
+                } while (done < EnumerationChunkSize);
+
+                if (current != null) {
+                    ReleaseBlock(blockNumber, current, false);
+                }
+                nextWhence = whence;
+                return done;
+            }
+            catch (OutOfMemoryException oom) {
+                if (current != null) {
+                    ReleaseBlock(blockNumber, current, false);
+                }
+                for (int i = 0; i < done; i++) {
+                    expose(entries[i]) {
+                        delete entries[done].Path;
+                        entries[done].Path = null;
+                        entries[done].Type = NodeType.BadNode;
+                    }
+                }
+                throw oom;
+            }
+        }
+
+        internal EnumerationRecords[] in ExHeap
+        Enumerate2(uint whence, out uint nextWhence)
+            requires whence >= 0 && whence != FinalWhence;
+        {
+            EnumEntry [] in ExHeap entries;
+            try {
+                entries = new [ExHeap] EnumEntry[EnumerationChunkSize];
+            }
+            catch (OutOfMemoryException) {
+                nextWhence = whence;
+                return null;
+            }
+
+            if (whence == 0 && this.IsRoot == false) {
+                // Skip . and .. entries in enumeration
+                whence += 2;
+            }
+
+            nextWhence = whence;
+            try {
+                int count;
+                lock (this) {
+                    count = LockedGetEnumerationRecords2(entries, whence, out nextWhence);
+                }
+
+                EnumerationRecords [] in ExHeap records =
+                    new [ExHeap] EnumerationRecords[count];
+
+                for (int i = 0; i < count; i++) {
+                    expose (records[i]) {
+                        expose (entries[i]) {
+                            delete records[i].Path;
+                            records[i].Path = (!)entries[i].Path;
+                            entries[i].Path = null;
+                            records[i].Type = entries[i].Type;
+                        }
+                    }
+                }
+                return records;
+            }
+            catch (OutOfMemoryException) {
+                return null;
+            }
+            finally {
+                delete entries;
+            }
+            return null;
+        }
+
+        internal rep struct EnumEntry : ITracked
+        {
+            public char[] in ExHeap Path;
+            public NodeType Type;
+        }
+
+        private bool
+        ReadSplitLongEntry(int           blockNumber,
+                           int           offset,
+                           int           length,
+                           ref EnumEntry result)
+        {
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+
+            byte[]! in ExHeap buffer = (!)AcquireBlock(blockNumber);
+
+            ref LongDirectoryEntry lastEntry =
+                ref buffer[offset * (int)DirectoryEntry.Length];
+
+            char []! in ExHeap name =
+                new [ExHeap] char [lastEntry.GetPathLength()];
+
+            lastEntry.GetPathComponent(name);
+            byte leChecksum = lastEntry.Checksum;
+
+            offset++;
+            length--;
+
+            try {
+                while (offset < entriesPerBlock) {
+                    ref LongDirectoryEntry le =
+                        ref buffer[offset * (int)DirectoryEntry.Length];
+                    if (le.Checksum != leChecksum ||
+                        le.ComponentNumber != length - 1) {
+                        DebugStub.Break();
+                        delete name;
+                        return false;
+                    }
+                    le.GetPathComponent(name);
+                    offset++;
+                    length--;
+                }
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+
+            blockNumber++;
+            buffer = (!)AcquireBlock(blockNumber);
+
+            try {
+                offset = 0;
+                while (length > 1) {
+                    ref LongDirectoryEntry le =
+                        ref buffer[offset * (int)DirectoryEntry.Length];
+                    if (le.Checksum != leChecksum ||
+                        le.ComponentNumber != length - 1) {
+                        DebugStub.Break();
+                        delete name;
+                        return false;
+                    }
+                    le.GetPathComponent(name);
+                    offset++;
+                    length--;
+                }
+
+                ref DirectoryEntry de =
+                    ref buffer[offset * (int)DirectoryEntry.Length];
+                byte deChecksum = de.Checksum;
+                if ((!de.IsFile && !de.IsDirectory) ||
+                    deChecksum != leChecksum) {
+                    DebugStub.Break();
+                    delete name;
+                    return false;
+                }
+
+                // Store result
+                expose (result) {
+                    delete result.Path;
+                    result.Path = name;
+                    result.Type =
+                        de.IsFile ? NodeType.File : NodeType.Directory;
+                }
+                return true;
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+        }
+
+        private bool
+        ReadLongEntry(byte[]! in ExHeap buffer,
+                      int               offset,
+                      int               length,
+                      ref EnumEntry     result)
+        {
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int finalOffset     = offset + length - 1;
+            assert finalOffset <= entriesPerBlock;
+
+            // Validate checksum of short name
+            ref LongDirectoryEntry lastEntry =
+                ref buffer[offset * DirectoryEntry.Length];
+
+            ref DirectoryEntry shortEntry =
+                ref buffer[finalOffset * DirectoryEntry.Length];
+
+            byte seSum = shortEntry.Checksum;
+            byte leSum = lastEntry.Checksum;
+
+            if (seSum != leSum) {
+                Tracing.Log(Tracing.Notice, "Bad checksum {0} != {1}",
+                            seSum, leSum);
+                DebugStub.Break();
+                return false;
+            }
+
+            // Validate entry is a file or directory
+            if (!shortEntry.IsFile && !shortEntry.IsDirectory) {
+                Tracing.Log(Tracing.Notice, "Not file or directory.");
+                return false;
+            }
+
+            char []! in ExHeap path = new [ExHeap] char [lastEntry.GetPathLength()];
+
+            // Copy path components from buffer
+            while (offset != finalOffset) {
+                ref LongDirectoryEntry lde =
+                    ref buffer [(int)offset * DirectoryEntry.Length];
+                lde.GetPathComponent(path);
+                offset++;
+            }
+
+            // Store result
+            expose (result) {
+                delete result.Path;
+                result.Path = path;
+                result.Type =
+                    shortEntry.IsFile ? NodeType.File : NodeType.Directory;
+            }
+            return true;
+        }
+
+        private bool ReadShortEntry(ref DirectoryEntry de,
+                                    ref EnumEntry      result)
+        {
+            if (!de.IsFile && !de.IsDirectory) {
+                return false;
+            }
+
+            expose (result) {
+                delete result.Path;
+                result.Path = de.GetPath();
+                result.Type = (de.IsFile) ? NodeType.File : NodeType.Directory;
+            }
+            return true;
+        }
+
+        private int
+        LockedGetEnumerationRecords(EnumEntry[]! in ExHeap entries,
+                                    uint                   whence,
+                                    out uint               nextWhence)
+        {
+            int done = 0;
+            nextWhence = whence;
+
+            byte [] in ExHeap current = null;
+
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int offset          = (int)whence % entriesPerBlock;
+            int blockNumber     = (int)whence / entriesPerBlock;
+
+            try {
+                current = AcquireBlock(blockNumber);
+                while (done != entries.Length) {
+                    int bOff = (int)offset * DirectoryEntry.Length;
+                    ref DirectoryEntry de = ref ((!)current)[bOff];
+
+                    if (de.IsFinalFreeEntry) {
+                        nextWhence = FinalWhence;
+                        ReleaseBlock(blockNumber, current, false);
+                        return done;
+                    }
+
+                    if (de.IsLongEntry) {
+                        ref LongDirectoryEntry le = ref current[bOff];
+                        if (le.IsLastEntry) {
+                            int length = le.GetNumberOfLongEntries() + 1;
+                            if (offset + length > entriesPerBlock) {
+                                ReleaseBlock(blockNumber, current, false);
+                                current = null;
+                                expose (entries[done]) {
+                                    if (ReadSplitLongEntry(
+                                            blockNumber,
+                                            offset, length,
+                                            ref entries[done])) {
+                                        done++;
+                                    }
+                                }
+                            }
+                            else {
+                                expose (entries[done]) {
+                                    if (ReadLongEntry(current,
+                                                      offset, length,
+                                                      ref entries[done])) {
+                                        done++;
+                                    }
+                                }
+                            }
+                            offset += length;
+                        }
+                        else {
+                            // Expected ordinal value to have last
+                            // entry set.
+                            DebugStub.Break();
+                        }
+                    }
+                    else if (de.IsShortEntry) {
+                        expose (entries[done]) {
+                            if (ReadShortEntry(ref de, ref entries[done])) {
+                                done++;
+                            }
+                            offset++;
+                        }
+                    }
+                    else {
+                        // Expect entry to be free here, but
+                        // don't mandate it.
+                        if (de.IsFreeEntry == false &&
+                            de.IsVolumeId  == false) {
+                            FatVolume.LogError("Skipped unexpected entry " +
+                                               "(root={0} blockNumber={1} " +
+                                               "offset={2})",
+                                               IsRoot, blockNumber, offset);
+                        }
+                        offset++;
+                    }
+
+                    if (offset >= entriesPerBlock) {
+                        if (current != null) {
+                            ReleaseBlock(blockNumber, current, false);
+                        }
+                        blockNumber++;
+                        offset  = offset % entriesPerBlock;
+                        current = AcquireBlock(blockNumber);
+                        if (current == null) {
+                            nextWhence = FinalWhence;
+                            return done;
+                        }
+                    }
+                }
+
+                nextWhence = (uint)(blockNumber * entriesPerBlock + offset);
+                ReleaseBlock(blockNumber, (!) current, false);
+                return done;
+            }
+            catch (OutOfMemoryException oom) {
+                if (current != null) {
+                    ReleaseBlock(blockNumber, current, false);
+                }
+                for (int i = 0; i < done; i++) {
+                    expose(entries[i]) {
+                        delete entries[done].Path;
+                        entries[done].Path = null;
+                        entries[done].Type = NodeType.BadNode;
+                    }
+                }
+                throw oom;
+            }
+            return 0;
+        }
+
+        internal EnumerationRecords[] in ExHeap
+        Enumerate(uint whence, out uint nextWhence)
+            requires whence >= 0 && whence != FinalWhence;
+        {
+            EnumEntry [] in ExHeap entries;
+
+            try {
+                entries = new [ExHeap] EnumEntry[EnumerationChunkSize];
+            }
+            catch (OutOfMemoryException) {
+                nextWhence = whence;
+                return null;
+            }
+
+            if (whence == 0 && this.IsRoot == false) {
+                // Skip . and .. entries in enumeration
+                whence += 2;
+            }
+
+            nextWhence = whence;
+            try {
+                int count;
+                lock (this) {
+                    count = LockedGetEnumerationRecords(entries, whence, out nextWhence);
+                }
+
+                EnumerationRecords [] in ExHeap records =
+                    new [ExHeap] EnumerationRecords[count];
+
+                for (int i = 0; i < count; i++) {
+                    expose (records[i]) {
+                        expose (entries[i]) {
+                            delete records[i].Path;
+                            records[i].Path = (!)entries[i].Path;
+                            entries[i].Path = null;
+                            records[i].Type = entries[i].Type;
+                        }
+                    }
+                }
+                return records;
+            }
+            catch (OutOfMemoryException) {
+                // TODO: Handle exception
+                DebugStub.Break();
+            }
+            finally {
+                delete entries;
+            }
+            return null;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        // Block acquisition
+
+        private byte [] in ExHeap AcquireBlock(int blockNumber)
+        {
+            byte [] in ExHeap buffer;
+            if (UseClusterCache) {
+                buffer = AcquireClusterBlock(blockNumber);
+            }
+            else {
+                buffer = AcquireNonClusterBlock(blockNumber);
+            }
+            return buffer;
+        }
+
+        private void
+        ReleaseBlock(int                        blockNumber,
+                     [Claims] byte[]! in ExHeap buffer,
+                     bool                       dirty)
+        {
+            if (UseClusterCache) {
+                ReleaseClusterBlock(blockNumber, buffer, dirty);
+            }
+            else {
+                ReleaseNonClusterBlock(blockNumber, buffer, dirty);
+            }
+        }
+
+        private byte [] in ExHeap AcquireClusterBlock(int blockNumber)
+        {
+            assert blockIndex.Count > 0;
+            int cluster;
+            if (blockIndex.Lookup(blockNumber, out cluster) == false) {
+                assert false;
+            }
+            BlockCache bc = FatVolume.ClusterCache;
+            return bc.BeginQuickBlockOperation((uint)cluster);
+        }
+
+        private void ReleaseClusterBlock(
+            int                        blockNumber,
+            [Claims] byte[]! in ExHeap buffer,
+            bool                       dirty
+            )
+        {
+            int cluster;
+            if (blockIndex.Lookup(blockNumber, out cluster) == false) {
+                // NOT REACHED   
+                assert false;
+            }
+            BlockCache bc = FatVolume.ClusterCache;
+            bc.EndQuickBlockOperation((uint)cluster, buffer, dirty);
+        }
+
+        private byte [] in ExHeap AcquireNonClusterBlock(int blockNumber)
+        {
+            if (blockNumber >= FatVolume.BpbSummary.RootDirectorySectors) {
+                return null;
+            }
+            assert startBlockId != endBlockId;
+            uint        n  = startBlockId + (uint)blockNumber;
+            BlockCache bc = FatVolume.NonClusterCache;
+            return bc.BeginQuickBlockOperation(n);
+        }
+
+        private void ReleaseNonClusterBlock(
+            int                        blockNumber,
+            [Claims] byte[]! in ExHeap buffer,
+            bool                       dirty)
+        {
+            uint       n  = startBlockId + (uint)blockNumber;
+            BlockCache bc = FatVolume.NonClusterCache;
+            bc.EndQuickBlockOperation(n, buffer, dirty);
+        }
+
+        // --------------------------------------------------------------------
+        // Meta-data manipulation functions
+
+        private void GetBlockAndByteOffsets(int     entryOffset,
+                                            out int blockOffset,
+                                            out int byteOffset)
+        {
+            int epb    = DirectoryEntriesPerBlock;
+            blockOffset = entryOffset / epb;
+            byteOffset  =
+                (entryOffset - blockOffset * epb) * DirectoryEntry.Length;
+        }
+
+        internal void UpdateLastWriteTime(int shortEntryOffset)
+            requires shortEntryOffset >= 0;
+        // requires shortEntryOffset < CurrentDirectoryEntryLimit;
+        {
+            int blockOffset, byteOffset;
+            GetBlockAndByteOffsets(shortEntryOffset,
+                                   out blockOffset, out byteOffset);
+            lock (this) {
+                byte []! in ExHeap sector = (!)AcquireBlock(blockOffset);
+                try {
+                    ref DirectoryEntry de = ref sector [byteOffset];
+                    de.UpdateWriteTime();
+                }
+                finally {
+                    ReleaseBlock(blockOffset, sector, true);
+                }
+            }
+        }
+
+        internal void UpdateLastAccessTime(int shortEntryOffset)
+            requires shortEntryOffset >= 0;
+        // requires shortEntryOffset < CurrentDirectoryEntryLimit;
+        {
+            int blockOffset, byteOffset;
+            GetBlockAndByteOffsets(shortEntryOffset,
+                                   out blockOffset, out byteOffset);
+            lock (this) {
+                byte []! in ExHeap sector = (!)AcquireBlock(blockOffset);
+                bool updated = false;
+                try {
+                    ref DirectoryEntry de = ref sector [byteOffset];
+                    updated = de.UpdateAccessTime();
+                }
+                finally {
+                    ReleaseBlock(blockOffset, sector, updated);
+                }
+            }
+        }
+
+        internal void UpdateFileSize(int  shortEntryOffset,
+                                     uint newFileBytes)
+            requires shortEntryOffset >= 0;
+            // requires shortEntryOffset < CurrentDirectoryEntryLimit;
+        {
+            int blockOffset, byteOffset;
+            GetBlockAndByteOffsets(shortEntryOffset,
+                                   out blockOffset, out byteOffset);
+            lock (this) {
+                bool updated = false;
+
+                byte []! in ExHeap sector = (!)AcquireBlock(blockOffset);
+                try {
+                    ref DirectoryEntry de = ref sector [byteOffset];
+                    updated = de.UpdateFileSize(newFileBytes);
+                    DebugStub.Assert(de.FileSize == newFileBytes);
+                }
+                finally {
+                    ReleaseBlock(blockOffset, sector, updated);
+                }
+            }
+        }
+
+        internal void UpdateFirstCluster(int  shortEntryOffset,
+                                         uint newFirstCluster)
+            requires shortEntryOffset >= 0;
+            // requires shortEntryOffset < CurrentDirectoryEntryLimit;
+        {
+            int blockOffset, byteOffset;
+            GetBlockAndByteOffsets(shortEntryOffset,
+                                   out blockOffset, out byteOffset);
+            lock (this) {
+                bool updated = false;
+
+                byte []! in ExHeap sector = (!)AcquireBlock(blockOffset);
+                try {
+                    ref DirectoryEntry de = ref sector [byteOffset];
+                    updated = de.UpdateFirstCluster(newFirstCluster);
+                    DebugStub.Assert(de.FirstCluster == newFirstCluster);
+                }
+                finally {
+                    ReleaseBlock(blockOffset, sector, updated);
+                }
+            }
+        }
+
+        internal byte GetMutableAttributes(int shortEntryOffset)
+        {
+            int blockOffset, byteOffset;
+            GetBlockAndByteOffsets(shortEntryOffset,
+                                   out blockOffset, out byteOffset);
+            lock (this) {
+                byte []! in ExHeap sector = (!)AcquireBlock(blockOffset);
+                try {
+                    ref DirectoryEntry de = ref sector [byteOffset];
+                    return de.MutableAttributes;
+                }
+                finally {
+                    ReleaseBlock(blockOffset, sector, true);
+                }
+            }
+        }
+
+        internal void SetMutableAttributes(int shortEntryOffset,
+                                           byte newAttributes)
+            requires (newAttributes & ~DirectoryEntry.AttributeMutable) == 0;
+        {
+            int blockOffset, byteOffset;
+            GetBlockAndByteOffsets(shortEntryOffset,
+                                   out blockOffset, out byteOffset);
+            lock (this) {
+                byte []! in ExHeap sector = (!)AcquireBlock(blockOffset);
+                bool updated = false;
+                try {
+                    ref DirectoryEntry de = ref sector [byteOffset];
+                    if (de.MutableAttributes != newAttributes) {
+                        de.MutableAttributes = newAttributes;
+                        updated = true;
+                    }
+                }
+                finally {
+                    ReleaseBlock(blockOffset, sector, updated);
+                }
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // Open FsObject cache methods
+
+        [ System.Diagnostics.Conditional("DEBUG") ]
+        private void AssertFsObjectIsOpen(FsObject! fsObject, bool inOpen)
+        {
+            int key = fsObject.ShortEntryOffset;
+            DebugStub.Assert(this.openFsObjects.ContainsKey(key) == inOpen);
+        }
+
+        private void LockedAddOpenFsObject(FsObject! fsObject)
+            requires fsObject.HasOneReference;
+        {
+            AssertFsObjectIsOpen(fsObject, false);
+            this.openFsObjects.Add(fsObject.ShortEntryOffset, fsObject);
+            AssertFsObjectIsOpen(fsObject, true);
+        }
+
+        FsObject LockedLookupOpenFsObject(int shortEntryOffset)
+        {
+            return (FsObject)this.openFsObjects[shortEntryOffset];
+        }
+
+        private void LockedRemoveOpenFsObject(FsObject! fsObject)
+            requires fsObject.HasNoReferences;
+        {
+            this.openFsObjects.Remove(fsObject.ShortEntryOffset);
+        }
+
+        private void LockedCacheClosedObject(FsObject! fsObject)
+        {
+            AssertFsObjectIsOpen(fsObject, false);
+
+            int firstCluster = fsObject.FirstCluster;
+            File file = fsObject as File;
+            if (file != null) {
+                if (firstCluster != 0) {
+                    FatVolume.FileCache.Add(firstCluster, file);
+                } else {
+                    // File has zero size and no valid first
+                    // cluster to be used as an index in the
+                    // recently used files cache.
+                }
+                return;
+            }
+            else {
+                Directory directory = fsObject as Directory;
+                if (directory != null) {
+                    FatVolume.DirectoryCache.Add(firstCluster, directory);
+                }
+            }
+        }
+
+        internal void CloseOpenFsObject(FsObject! fsObject)
+        {
+            lock (this) {
+                fsObject.Release();
+
+                if (fsObject.HasNoReferences) {
+                    LockedRemoveOpenFsObject(fsObject);
+                    LockedCacheClosedObject(fsObject);
+                }
+            }
+        }
+
+        internal int GetOpenFsObjectCount()
+        {
+            lock (this) {
+                return this.openFsObjects.Count;
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        // Directory operations
+
+        /// <remarks> Close open directory. </remarks>
+        internal void Close()
+        {
+            base.CloseInstance();
+        }
+
+        private MSD.ErrorCode
+        CreateFileOrDirectory(char[]! in ExHeap longName, bool isFile)
+        {
+            if (FatVolume.IsReadOnly) {
+                return MSD.ErrorCode.AccessDenied;
+            }
+
+            if (!ValidName(longName)) {
+                return MSD.ErrorCode.BadArguments;
+            }
+
+            // Allocate buffer for shortname (which has to be computed)
+            char []! in ExHeap shortName;
+            try {
+                shortName =
+                    new [ExHeap] char [DirectoryEntry.ShortNameEntryLength];
+            }
+            catch (OutOfMemoryException) {
+                return MSD.ErrorCode.InsufficientResources;
+            }
+
+            // Allocate a cluster for storage for directories, files have
+            // no space reserved.
+            int newFsObjectCluster = 0;
+            int newFsObjectLength  = 0;
+
+            if (!isFile) {
+                if (!FatVolume.Fat.AllocateChain(this.FirstCluster, 1,
+                                                 out newFsObjectCluster,
+                                                 out newFsObjectLength)) {
+                    delete shortName;
+                    return MSD.ErrorCode.CapacityReached;
+                }
+                assert newFsObjectLength == 1;
+            }
+
+            lock (this) {
+                MSD.ErrorCode ec =
+                    LockedCreateFileOrDirectory(longName,
+                                                shortName,
+                                                newFsObjectCluster,
+                                                isFile);
+                if (ec != MSD.ErrorCode.NoError) {
+                    FatVolume.Fat.FreeChain(newFsObjectCluster);
+                }
+                delete shortName;
+                return ec;
+            }
+        }
+
+        internal MSD.ErrorCode
+        CreateDirectory(char[]! in ExHeap longName)
+        {
+            return CreateFileOrDirectory(longName, false);
+        }
+
+        internal MSD.ErrorCode
+        CreateFile(char[]! in ExHeap longName)
+        {
+            return CreateFileOrDirectory(longName, true);
+        }
+
+        internal MSD.ErrorCode
+        CreateAndOpenFile(char[]! in ExHeap longName,
+                          out File          file)
+        {
+            file = null;
+
+            lock (this) {
+                MSD.ErrorCode error = CreateFile(longName);
+                if (error == MSD.ErrorCode.NoError) {
+                    return OpenFile(longName, out file);
+                }
+                return error;
+            }
+        }
+
+        private char[]! in ExHeap LockedGetName(int shortEntryOffset)
+        {
+            ushort entryOffset;
+            ushort entryLength;
+            bool   found = false;
+
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int blockNumber     = shortEntryOffset / entriesPerBlock;
+            shortEntryOffset   %= entriesPerBlock;
+
+            byte[]! in ExHeap buffer = (!)AcquireBlock(blockNumber);
+            try {
+                int bOffset = shortEntryOffset * DirectoryEntry.Length;
+                ref DirectoryEntry de = ref buffer[bOffset];
+
+                int hash = de.GetDirHashCode();
+                this.dirHash.ResetSearch();
+                while (this.dirHash.Search(hash,
+                                           out entryOffset, out entryLength)) {
+                    if (shortEntryOffset >= entryOffset &&
+                        shortEntryOffset < (int)entryOffset + (int)entryLength) {
+                        found = true;
+                        break;
+                    }
+                }
+                Debug.Assert(found == true);
+                if (entryLength == 1) {
+                    // Short Entry name, already have directory entry
+                    // with which to extract name
+                    return de.GetPath();
+                }
+                else if ((entryOffset / entriesPerBlock) == blockNumber) {
+                    // Long directory entry within same block
+                    int lbOffset = ((entryOffset % entriesPerBlock) *
+                                    LongDirectoryEntry.Length);
+
+                    ref LongDirectoryEntry lde = ref buffer[lbOffset];
+                    int pathLength = lde.GetPathLength();
+
+                    char []! in ExHeap longName =
+                        new [ExHeap] char [pathLength];
+
+                    int component = lde.ComponentNumber;
+                    while (component-- > 0) {
+                        ref LongDirectoryEntry l = ref buffer[lbOffset];
+                        l.GetPathComponent(longName,
+                                           component * LongDirectoryEntry.CharactersPerEntry);
+                        lbOffset += LongDirectoryEntry.Length;
+                    }
+                    return longName;
+                }
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+
+            // Nightmare :-) Long entry spans two directory blocks...
+            return LockedGetNameSpanning(entryOffset, entryLength);
+        }
+
+        private char[]! in ExHeap LockedGetNameSpanning(int entryStart,
+                                                        int entryLength)
+        {
+            int component  = -1;
+            int localEntry  = entryStart % DirectoryEntriesPerBlock;
+            int blockNumber = entryStart / DirectoryEntriesPerBlock;
+
+            char[] in ExHeap longName;
+
+            byte[]! in ExHeap buffer = (!)AcquireBlock(blockNumber);
+            try {
+                ref LongDirectoryEntry lde =
+                    ref buffer[localEntry * LongDirectoryEntry.Length];
+
+                component = lde.ComponentNumber;
+                longName  = new [ExHeap] char [lde.GetPathLength()];
+
+                while (localEntry < DirectoryEntriesPerBlock) {
+                    component--;
+                    ref LongDirectoryEntry l =
+                        ref buffer[localEntry * LongDirectoryEntry.Length];
+                    l.GetPathComponent(
+                        longName,
+                        component * LongDirectoryEntry.CharactersPerEntry
+                        );
+                    localEntry++;
+                }
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+
+            if (component < 0) {
+                return longName;
+            }
+
+            localEntry = 0;
+            blockNumber++;
+            buffer = (!)AcquireBlock(blockNumber);
+            try {
+                while (localEntry < DirectoryEntriesPerBlock &&
+                       component > 0) {
+                    component--;
+                    ref LongDirectoryEntry l =
+                        ref buffer[localEntry * LongDirectoryEntry.Length];
+                    l.GetPathComponent(
+                        longName,
+                        component * LongDirectoryEntry.CharactersPerEntry
+                        );
+                    localEntry++;
+                }
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+            return longName;
+        }
+
+        internal char[]! in ExHeap GetName(int shortEntryOffset)
+        {
+            lock (this) {
+                return LockedGetName(shortEntryOffset);
+            }
+        }
+
+        internal void LockedGetShortDirectoryEntry(int shortEntryOffset,
+                                                   out DirectoryEntry de)
+        {
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int blockNumber     = shortEntryOffset / entriesPerBlock;
+            shortEntryOffset   %= entriesPerBlock;
+
+            byte[]! in ExHeap buffer = (!)AcquireBlock(blockNumber);
+            try {
+                int bOffset = shortEntryOffset * DirectoryEntry.Length;
+                ref DirectoryEntry rde = ref buffer[bOffset];
+                de = rde;
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+        }
+
+        internal void GetShortDirectoryEntry(int shortEntryOffset,
+                                             out DirectoryEntry de)
+        {
+            lock (this) {
+                LockedGetShortDirectoryEntry(shortEntryOffset, out de);
+            }
+        }
+
+        private void LockedGetAttributes(int shortEntryOffset,
+                                         ref FileAttributesRecord fileAttributes)
+        {
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int blockNumber     = shortEntryOffset / entriesPerBlock;
+            shortEntryOffset   %= entriesPerBlock;
+
+            byte[]! in ExHeap buffer = (!)AcquireBlock(blockNumber);
+            try {
+                int bOffset = shortEntryOffset * DirectoryEntry.Length;
+                ref DirectoryEntry de = ref buffer[bOffset];
+
+                if (de.IsFile) {
+                    fileAttributes.Type = MSD.NodeType.File;
+                }
+                else if (de.IsDirectory) {
+                    fileAttributes.Type = MSD.NodeType.Directory;
+                }
+                else {
+                    fileAttributes.Type  = MSD.NodeType.BadNode;
+                }
+                fileAttributes.FileSize = de.FileSize;
+                fileAttributes.CreationTime = de.CreationDateTime.Ticks;
+                fileAttributes.LastWriteTime = de.LastWriteDateTime.Ticks;
+                fileAttributes.LastAccessTime = de.LastAccessDateTime.Ticks;
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+        }
+
+        internal void
+        GetAttributes(int              shortEntryOffset,
+                      ref FileAttributesRecord fileAttributes)
+        {
+            lock (this) {
+                LockedGetAttributes(shortEntryOffset,
+                                    ref fileAttributes);
+            }
+        }
+
+        internal MSD.ErrorCode
+        GetAttributes(char[]! in ExHeap name,
+                      ref FileAttributesRecord fileAttributes)
+        {
+            lock (this) {
+                FindMatch match = new FindMatch();
+
+                if (!LockedFindByName(name, ref match)) {
+                    fileAttributes.Type  = MSD.NodeType.BadNode;
+                    fileAttributes.FileSize = 0;
+                    return MSD.ErrorCode.NotFound;
+                }
+
+                LockedGetAttributes(match.ShortEntryOffset,
+                                    ref fileAttributes);
+            }
+            return MSD.ErrorCode.NoError;
+        }
+
+        private File LockedInstantiateFileObject(int shortEntryOffset)
+        {
+            int entriesPerBlock = DirectoryEntriesPerBlock;
+            int blockNumber     = shortEntryOffset / entriesPerBlock;
+
+            byte[]! in ExHeap buffer = (!)AcquireBlock(blockNumber);
+            try {
+                int bOffset = (shortEntryOffset % entriesPerBlock) * DirectoryEntry.Length;
+                ref DirectoryEntry de = ref buffer[bOffset];
+                return new File(this,
+                                shortEntryOffset,
+                                (int)de.FirstCluster,
+                                de.MutableAttributes,
+                                de.FileSize);
+            }
+            finally {
+                ReleaseBlock(blockNumber, buffer, false);
+            }
+        }
+
+        private File LockedOpenFile(int shortEntryOffset,
+                                    int firstCluster)
+        {
+            File file = (File)LockedLookupOpenFsObject(shortEntryOffset);
+            if (file != null) {
+                // Add reference to already opened file
+                file.AddRef();
+            }
+            else if (0 != firstCluster &&
+                     null != (file = FatVolume.FileCache.Get(firstCluster))) {
+                // Resurrect recently closed file in FileCache
+                file.AddRef();
+
+                // LockedAddOpenFsObject(file);
+                File! sgcWorkAround = file;
+                LockedAddOpenFsObject(sgcWorkAround);
+            }
+            else {
+                // Open the file
+                file = LockedInstantiateFileObject(shortEntryOffset);
+                File sgcWorkAround = file;
+                LockedAddOpenFsObject((!)sgcWorkAround);
+            }
+            return file;
+        }
+
+        internal MSD.ErrorCode OpenFile(char []! in ExHeap name,
+                                        out File           file)
+        {
+            file = null;
+
+            if (!ValidName(name)) {
+                return MSD.ErrorCode.BadArguments;
+            }
+
+            lock (this) {
+                FindMatch match = new FindMatch();
+
+                if (!LockedFindByName(name, ref match)) {
+                    return MSD.ErrorCode.NotFound;
+                }
+
+                if (!match.IsFile) {
+                    return MSD.ErrorCode.NotFile;
+                }
+
+                file = LockedOpenFile(match.ShortEntryOffset,
+                                      (int)match.FirstCluster);
+
+                return MSD.ErrorCode.NoError;
+            }
+        }
+
+        private Directory LockedOpenDirectory(int shortEntryOffset,
+                                              int firstCluster)
+        {
+            Directory directory =
+                (Directory)LockedLookupOpenFsObject(shortEntryOffset);
+            if (directory != null) {
+                // Add reference to already opened file
+                directory.AddRef();
+            }
+            else if (null !=
+                       (directory =
+                        FatVolume.DirectoryCache.Get(firstCluster))
+                       ) {
+                // Resurrect recently closed file in DirectoryCache
+                directory.AddRef();
+                Directory! sgcWorkAround = directory;
+                LockedAddOpenFsObject(sgcWorkAround);
+            }
+            else {
+                // Open the directory
+                directory =
+                    new Directory(this, shortEntryOffset, firstCluster);
+                Directory! sgcWorkAround = directory;
+                LockedAddOpenFsObject((!) sgcWorkAround);
+            }
+            return directory;
+        }
+
+        internal MSD.ErrorCode OpenDirectory(char []! in ExHeap name,
+                                             out Directory      directory)
+        {
+            directory = null;
+
+            if (!ValidName(name)) {
+                return MSD.ErrorCode.BadArguments;
+            }
+            else if (name.Length == 2 &&
+                name[0] == '.' && name[1] == '.') {
+                return MSD.ErrorCode.AccessDenied;
+            }
+            else if (name.Length == 1 && name[0] == '.') {
+                this.AddRef();
+                directory = this;
+                return MSD.ErrorCode.NoError;
+            }
+
+            lock (this) {
+                FindMatch match = new FindMatch();
+
+                if (!LockedFindByName(name, ref match)) {
+                    return MSD.ErrorCode.NotFound;
+                }
+
+                if (!match.IsDirectory) {
+                    return MSD.ErrorCode.NotDirectory;
+                }
+
+                directory = LockedOpenDirectory(match.ShortEntryOffset,
+                                                (int)match.FirstCluster);
+
+                return MSD.ErrorCode.NoError;
+            }
+        }
+
+        internal MSD.ErrorCode OpenFsObject(char []! in ExHeap name,
+                                            out FsObject fsObject)
+        {
+            fsObject = null;
+
+            if (!ValidName(name)) {
+                return MSD.ErrorCode.BadArguments;
+            }
+            else if (name.Length == 2 &&
+                name[0] == '.' && name[1] == '.') {
+                return MSD.ErrorCode.AccessDenied;
+            }
+            else if (name.Length == 1 && name[0] == '.') {
+                this.AddRef();
+                fsObject = this;
+                return MSD.ErrorCode.NoError;
+            }
+
+            lock (this) {
+                FindMatch match = new FindMatch();
+
+                if (!LockedFindByName(name, ref match)) {
+                    return MSD.ErrorCode.NotFound;
+                }
+
+                if (match.IsDirectory) {
+                    fsObject =
+                        LockedOpenDirectory(match.ShortEntryOffset,
+                                            (int)match.FirstCluster);
+                }
+                else {
+                    assert match.IsFile;
+                    fsObject = LockedOpenFile(match.ShortEntryOffset,
+                                              (int)match.FirstCluster);
+                }
+                return MSD.ErrorCode.NoError;
+            }
+        }
+
+        internal Directory OpenDirectory()
+        {
+            this.AddRef();
+            return this;
+        }
+
+        static object rootLock = new object();
+        static Directory rootDirectory;
+
+        internal static Directory! OpenRootDirectory()
+        {
+            lock (rootLock) {
+                BpbSummary bpbSummary = FatVolume.BpbSummary;
+
+                if (rootDirectory == null) {
+                    if (FatVolume.FatVersion == FatVersion.Fat32) {
+                        BlockIndex blockIndex = new BlockIndex();
+                        FatVolume.Fat.PopulateIndex(blockIndex,
+                                                    (int)bpbSummary.RootCluster);
+                        rootDirectory = new Directory(blockIndex);
+                    }
+                    else {
+                        uint startSector =
+                            (bpbSummary.ReservedSectors +
+                             bpbSummary.NumberOfFats * bpbSummary.SectorsPerFat);
+                        uint endSector =
+                            startSector + bpbSummary.RootDirectorySectors;
+                        rootDirectory = new Directory(startSector, endSector);
+                    }
+                }
+                return rootDirectory;
+            }
+        }
+    }
+}

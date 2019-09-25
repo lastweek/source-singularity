@@ -1,0 +1,44 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>SpecTest</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <BoogieSucceeded>"Spec#\ Program\ Verifier\ finished\ with\ [0-9]*\ verified,\ 0\ errors"</BoogieSucceeded>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="SpecTest.sg"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+
+  <!--
+    For now, we invoke boogie explicitly here.
+    In the future, if many projects use boogie, we could change the .target
+    files so that boogie is invoked implicitly, conditional on some property.
+    Alternately, we could use the "/verify" flag to sgc.
+  -->
+  <Target Name="AfterBuild" DependsOnTargets="Boogie">
+  </Target>
+
+  <Target Name="Boogie" Inputs="$(OutputPath)\$(AssemblyName)$(AssemblyExt)" Outputs="$(OutputPath)\$(AssemblyName).boogiesuccess">
+    <Exec Command="boogie /platform:&quot;$(CompilerPlatformVersion),$(CompilerPlatformDir)&quot; /stdlib:&quot;$(Stdlib)&quot; &quot;$(OutputPath)\$(AssemblyName)$(AssemblyExt)&quot; &gt; &quot;$(OutputPath)\$(AssemblyName).boogieout&quot;"/>
+    <Exec Command="type &quot;$(OutputPath)\$(AssemblyName).boogieout&quot;"/>
+    <Exec Command="findstr $(BoogieSucceeded) &quot;$(OutputPath)\$(AssemblyName).boogieout&quot; &gt; &quot;$(OutputPath)\$(AssemblyName).boogiefindstr&quot;"/>
+    <Copy SourceFiles="$(OutputPath)\$(AssemblyName).boogiefindstr" DestinationFiles="$(OutputPath)\$(AssemblyName).boogiesuccess"/>
+  </Target>
+
+</Project>

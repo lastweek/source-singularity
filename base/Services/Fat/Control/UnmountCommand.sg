@@ -1,0 +1,85 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   UnmountCommand.sg
+//
+//  Note:
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+namespace Microsoft.Singularity.Services.Fat.FatControl
+{
+    [ConsoleCategory(Action = "unmount",
+                     DefaultAction = false,
+                     HelpMessage = "Unmount a FAT filesystem.")]
+    internal class UnmountCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [BoolParameter("f", Default = false, Mandatory = false,
+                       HelpMessage = "Force unmount if filesystem is in use.")]
+        bool Force;
+
+        [StringParameter("mountpath", Position = 0, Mandatory = true,
+                         HelpMessage = "Filesystem to unmount.")]
+        string MountPath;
+
+        reflective internal UnmountCommand();
+
+        internal int AppMain()
+        {
+            int status = -1;
+
+            FatControlContract.Imp imp = Utilities.ConnectToManager();
+            if (imp != null) {
+                try {
+                    status = Unmount(imp);
+                }
+                finally {
+                    delete imp;
+                }
+            }
+            return status;
+        }
+
+        private int Unmount(FatControlContract.Imp! imp)
+        {
+            int status = -1;
+
+            imp.SendUnmount(Bitter.FromString2((!)this.MountPath), this.Force);
+            switch receive {
+                case imp.Success():
+                    status = 0;
+                    break;
+
+                case imp.Fail(error):
+                    Utilities.DisplayError(error);
+                    break;
+
+                case imp.ChannelClosed():
+                    Utilities.DisplayChannelClosedError();
+                    break;
+            }
+            return status;
+        }
+    }
+}

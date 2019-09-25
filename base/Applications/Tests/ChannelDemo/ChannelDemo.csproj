@@ -1,0 +1,34 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   Tests channel I/O
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>ChannelDemo</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="ChannelDemo.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Declare references to the projects you need, for example: -->
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />    
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+</Project>

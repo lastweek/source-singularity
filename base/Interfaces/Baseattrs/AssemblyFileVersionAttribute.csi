@@ -1,0 +1,27 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//============================================================
+//
+// Class:  AssemblyFileVersionAttribute
+//
+// Purpose: Instructs a compiler to use a particular
+//          file version number for this assembly.
+//
+//===========================================================  
+
+using System;
+
+namespace System.Reflection
+{
+
+    //| <include file='doc\AssemblyFileVersionAttribute.uex' path='docs/doc[@for="AssemblyFileVersionAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyFileVersionAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyFileVersionAttribute.uex' path='docs/doc[@for="AssemblyFileVersionAttribute.AssemblyFileVersionAttribute"]/*' />
+        public AssemblyFileVersionAttribute(String version);
+    }
+}

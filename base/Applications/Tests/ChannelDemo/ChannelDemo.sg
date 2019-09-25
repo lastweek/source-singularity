@@ -1,0 +1,155 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+using System;
+using System.Threading;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return ChannelDemo.AppMain(this);
+        }
+    }
+
+    public class ChannelDemo
+    {
+        public contract ChannelTest {
+            in message Hi(int x);
+            out message Ack();
+
+            state Start: Hi? -> Ack! -> Start;
+        }
+
+        private static TRef<ChannelTest.Exp:Start>! endpoint1;
+        private static TRef<ChannelTest.Imp:Start>! endpoint2;
+
+
+        public static void ChannelThread1()
+        {
+            ChannelTest.Exp e1 = endpoint1.Acquire();
+
+            for (int i = 1; i <= 3; i++) {
+                Console.WriteLine("Thread 1 receiving message {0}...", i);
+                DebugStub.Print("Thread 1 receiving message {0}...\n", __arglist(i));
+
+                int len;
+                e1.RecvHi(out len);
+                e1.SendAck();
+
+                Console.WriteLine("Thread 1 received Hi message {0}.", len);
+                DebugStub.Print("Thread 1 received Hi message {0}.\n", __arglist(len));
+            }
+
+            delete e1;
+        }
+
+        public static void ChannelThread2()
+        {
+            ChannelTest.Imp e2 = endpoint2.Acquire();
+            Console.WriteLine("Thread 2 sending message 1...");
+            DebugStub.Print("Thread 2 sending message 1...\n");
+            e2.SendHi(1);
+            e2.RecvAck();
+
+            Thread.Yield();
+
+            Console.WriteLine("Thread 2 sending message 2...");
+            DebugStub.Print("Thread 2 sending message 2...\n");
+            e2.SendHi(2);
+            e2.RecvAck();
+
+            Console.WriteLine("Thread 2 sending message 3...");
+            DebugStub.Print("Thread 2 sending message 3...\n");
+            e2.SendHi(3);
+            e2.RecvAck();
+
+            delete e2;
+        }
+
+        static TimeSpan TwoSecondTimeout = new TimeSpan(0, 0, 0, 2);
+
+        public static void TimeoutDemo() {
+            ChannelTest.Exp! exp;
+            ChannelTest.Imp! imp;
+            ChannelTest.NewChannel(out imp, out exp);
+
+            Console.WriteLine("Timeout test");
+            Console.WriteLine("Time now: {0}", DateTime.Now);
+            Console.WriteLine("Timeout: {0}", TwoSecondTimeout);
+
+            switch receive {
+            case exp.Hi(x):
+                Console.WriteLine("Got Hi, but shouldn't have");
+                DebugService.Break();
+                break;
+
+            case timeout(TwoSecondTimeout):
+                Console.WriteLine("Got timeout");
+                Console.WriteLine("Time now: {0}", DateTime.Now);
+                break;
+            }
+            delete exp;
+            delete imp;
+        }
+
+        
+        //[ShellCommand("channel", "Run channel demo")]
+        internal static int AppMain(Parameters! config)
+        {
+            // Now test timeout feature
+            TimeoutDemo();
+
+            // Make a new channel.
+            ChannelTest.Imp! e2;
+            ChannelTest.Exp! e1;
+
+            ChannelTest.NewChannel(out e2, out e1);
+
+            // Endpoints are initially owned by the creating thread.
+            // We're going to transfer ownership to other threads, so
+            // we release them here.
+            endpoint1 = new TRef<ChannelTest.Exp:Start>(e1);
+            endpoint2 = new TRef<ChannelTest.Imp:Start>(e2);
+
+            // Create our two threads.
+            Thread t1 = new Thread(new ThreadStart(ChannelThread1));
+            t1.Start();
+
+            Thread t2 = new Thread(new ThreadStart(ChannelThread2));
+            t2.Start();
+
+            // Yield a bunch of times to give our threads a chance to
+            // do their work.
+            for (int i = 0; i < 10; i++) {
+                Thread.Yield();
+            }
+
+            return 0;
+        }
+    }
+}
+

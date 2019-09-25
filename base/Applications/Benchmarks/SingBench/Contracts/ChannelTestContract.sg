@@ -1,0 +1,43 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for the memory diagnostic module
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity.Extending;
+
+namespace Microsoft.Singularity.Applications.Singbench
+{
+    public contract SendTestContract : ExtensionContract
+    {
+        in  message Req(int x);
+        out message Resp(int x);
+
+        out message TestReady();
+
+        override state Start : TestReady! -> ReadyState;
+        state ReadyState : Req? -> Resp! -> ReadyState;
+    }
+
+    public contract BufferTestContract : ExtensionContract
+    {
+        in  message Req(int remain, byte[]! in ExHeap buffer);
+        out message Resp(byte[]! in ExHeap buffer);
+
+        out message BufferReady();
+
+        override state Start : BufferReady! -> ReadyState;
+        state ReadyState : Req? -> Resp! -> ReadyState;
+    }
+}

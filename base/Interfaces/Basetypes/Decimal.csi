@@ -1,0 +1,111 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Globalization;
+
+namespace System
+{
+    public struct Decimal : IFormattable, IComparable
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public const Decimal Zero;
+        public const Decimal One;
+        public const Decimal MinusOne;
+        public const Decimal MaxValue;
+        public const Decimal MinValue;
+
+        public Decimal(int value);
+        public Decimal(uint value);
+        public Decimal(long value);
+        public Decimal(ulong value);
+        public Decimal(float value);
+        public Decimal(double value);
+        public Decimal(int[] bits);
+        public Decimal(int lo, int mid, int hi, bool isNegative, byte scale);
+
+        public static long ToOACurrency(Decimal value);
+        public static Decimal FromOACurrency(long cy);
+
+        public static int Compare(Decimal d1, Decimal d2);
+
+        public int CompareTo(Object value);
+
+        public static bool Equals(Decimal d1, Decimal d2);
+        public override bool Equals(Object value);
+
+        public override int GetHashCode();
+        public override String ToString();
+
+        public String ToString(String format);
+        public static Decimal Parse(String s);
+
+        public static int[] GetBits(Decimal d);
+
+        public static Decimal Add(Decimal d1, Decimal d2);
+        public static Decimal Divide(Decimal d1, Decimal d2);
+        public static Decimal Floor(Decimal d);
+        public static Decimal Remainder(Decimal d1, Decimal d2);
+        public static Decimal Multiply(Decimal d1, Decimal d2);
+        public static Decimal Negate(Decimal d);
+        public static Decimal Round(Decimal d1, int decimals);
+        public static Decimal Subtract(Decimal d1, Decimal d2);
+        public static Decimal Truncate(Decimal d);
+
+        public static byte ToByte(Decimal value);
+        public static sbyte ToSByte(Decimal value);
+        public static short ToInt16(Decimal value);
+        public static double ToDouble(Decimal d);
+        public static int ToInt32(Decimal d);
+        public static long ToInt64(Decimal d);
+        public static ushort ToUInt16(Decimal value);
+        public static uint ToUInt32(Decimal d);
+        public static ulong ToUInt64(Decimal d);
+        public static float ToSingle(Decimal d);
+
+        public static implicit operator Decimal(byte value);
+        public static implicit operator Decimal(sbyte value);
+        public static implicit operator Decimal(short value);
+        public static implicit operator Decimal(ushort value);
+        public static implicit operator Decimal(char value);
+        public static implicit operator Decimal(int value);
+        public static implicit operator Decimal(uint value);
+        public static implicit operator Decimal(long value);
+        public static implicit operator Decimal(ulong value);
+        public static explicit operator Decimal(float value);
+        public static explicit operator Decimal(double value);
+
+        public static explicit operator byte(Decimal value);
+        public static explicit operator sbyte(Decimal value);
+        public static explicit operator char(Decimal value);
+        public static explicit operator short(Decimal value);
+        public static explicit operator ushort(Decimal value);
+        public static explicit operator int(Decimal value);
+        public static explicit operator uint(Decimal value);
+        public static explicit operator long(Decimal value);
+        public static explicit operator ulong(Decimal value);
+        public static explicit operator float(Decimal value);
+        public static explicit operator double(Decimal value);
+
+        public static Decimal operator +(Decimal d);
+        public static Decimal operator -(Decimal d);
+        public static Decimal operator ++(Decimal d);
+        public static Decimal operator --(Decimal d);
+        public static Decimal operator +(Decimal d1, Decimal d2);
+        public static Decimal operator -(Decimal d1, Decimal d2);
+        public static Decimal operator *(Decimal d1, Decimal d2);
+        public static Decimal operator /(Decimal d1, Decimal d2);
+        public static Decimal operator %(Decimal d1, Decimal d2);
+
+        public static bool operator ==(Decimal d1, Decimal d2);
+        public static bool operator !=(Decimal d1, Decimal d2);
+        public static bool operator <(Decimal d1, Decimal d2);
+        public static bool operator <=(Decimal d1, Decimal d2);
+        public static bool operator >(Decimal d1, Decimal d2);
+        public static bool operator >=(Decimal d1, Decimal d2);
+    }
+}

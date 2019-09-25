@@ -1,0 +1,35 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\Loader\Loader.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>Loader</AssemblyName>
+    <OutputType>Library</OutputType>
+    <OutputPath>$(KERNEL_IL_DIR)</OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoStdlib>true</NoStdlib>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Binder.csi" />
+    <Compile Include="Loader.csi" />
+    <Compile Include="Manifest.csi" />
+    <ProjectReference Include="..\Kernel\Kernel.csproj"><Alias>kernel</Alias></ProjectReference>
+
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\InterfaceAssembly.targets" />
+</Project>

@@ -1,0 +1,32 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>FatService</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <ProjectGuid>{61F133AD-D03A-4006-BD53-FA65411ECFEB}</ProjectGuid>
+    <ServiceActivationMode>Demand</ServiceActivationMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="FatClientManager.sg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Services\Fat\Contracts\FatContracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Security\Security.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\ServiceManager.Contracts\ServiceManager.Contracts.csproj" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ServiceCategory.targets" />
+</Project>

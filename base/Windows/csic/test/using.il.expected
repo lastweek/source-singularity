@@ -1,0 +1,128 @@
+.assembly 'using' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.assembly extern 'system.drawing' {
+.ver 1:0:5000:0
+.publickeytoken = ( b0 3f 5f 7f 11 d5 0a 3a )
+}
+.class public 'test'
+	extends [mscorlib]System.Object
+{
+.method hidebysig public static void 'Main'() {
+.entrypoint
+newobj instance void 'test'::.ctor()
+call instance void 'test'::'print'()
+ret
+.maxstack 1
+} // end of method test.Main
+.method hidebysig specialname rtspecialname private void .ctor() {
+ldarg.0
+ldc.i4 4
+ldc.i4 4
+newobj instance void value class [system.drawing]System.Drawing.Point[0...,0...]::.ctor(int32,int32)
+stfld value class [system.drawing]System.Drawing.Point[0...,0...] 'test'::'x'
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+.locals init ([0]int32 't0')
+ldc.i4 0
+stloc 0 // i
+br $4
+$1:
+.locals init ([1]int32 't1')
+ldc.i4 0
+stloc 1 // j
+br $8
+$5:
+ldarg.0
+ldfld value class [system.drawing]System.Drawing.Point[0...,0...] 'test'::'x'
+ldloc 0 // i
+ldloc 1 // j
+call instance value class [system.drawing]System.Drawing.Point & value class [system.drawing]System.Drawing.Point[0...,0...]::Address(int32,int32)
+.locals init ([2]value class [system.drawing]System.Drawing.Point 't2')
+ldloca 2 // t2
+ldloc 0 // i
+ldloc 1 // j
+call instance void [system.drawing]System.Drawing.Point::.ctor(int32,int32)
+ldloc 2 // t2
+stobj value class [system.drawing]System.Drawing.Point
+$6:
+ldloc 1 // j
+ldc.i4.1
+add
+.locals init ([3]int32 't3')
+stloc 3 // t3
+ldloc 3 // t3
+stloc 1 // j
+$8:
+ldloc 1 // j
+ldarg.0
+ldfld value class [system.drawing]System.Drawing.Point[0...,0...] 'test'::'x'
+ldc.i4 1
+call instance int32 [mscorlib]System.Array::'GetUpperBound'(int32)
+blt $5
+$7:
+$2:
+ldloc 0 // i
+ldc.i4.1
+add
+.locals init ([4]int32 't4')
+stloc 4 // t4
+ldloc 4 // t4
+stloc 0 // i
+$4:
+ldloc 0 // i
+ldarg.0
+ldfld value class [system.drawing]System.Drawing.Point[0...,0...] 'test'::'x'
+ldc.i4 0
+call instance int32 [mscorlib]System.Array::'GetUpperBound'(int32)
+ble $1
+$3:
+ret
+.maxstack 4
+} // end of constructor test.test
+.method hidebysig private instance void 'print'() {
+.locals init ([0]value class [system.drawing]System.Drawing.Point 't0')
+.locals init ([1]class [mscorlib]System.Collections.IEnumerator 't1')
+ldarg.0
+ldfld value class [system.drawing]System.Drawing.Point[0...,0...] 'test'::'x'
+callvirt instance class [mscorlib]System.Collections.IEnumerator [mscorlib]System.Array::'GetEnumerator'()
+stloc 1 // t1
+.try {
+br $2
+$1:
+ldloc 1 // t1
+callvirt instance object [mscorlib]System.Collections.IEnumerator::'get_Current'()
+unbox value class [system.drawing]System.Drawing.Point
+ldobj value class [system.drawing]System.Drawing.Point
+stloc 0 // p
+ldloc 0 // p
+box value class [system.drawing]System.Drawing.Point
+call  void [mscorlib]System.Console::'WriteLine'(object)
+$2:
+ldloc 1 // t1
+callvirt instance bool [mscorlib]System.Collections.IEnumerator::'MoveNext'()
+brtrue $1
+$3:
+leave $5
+}
+finally {
+ldloc 1 // t1
+.locals init ([2]class [mscorlib]System.IDisposable 't2')
+isinst class [mscorlib]System.IDisposable
+stloc 2 // t2
+ldloc 2 // t2
+brfalse $6
+ldloc 2 // t2
+callvirt instance void [mscorlib]System.IDisposable::'Dispose'()
+$6:
+endfinally
+} // end .try
+$5:
+$4:
+ret
+.maxstack 1
+} // end of method test.print
+.field private value class [system.drawing]System.Drawing.Point[0...,0...] 'x'
+} // end of class test

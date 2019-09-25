@@ -1,0 +1,65 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   This is the template for a basic console app.
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!--
+  Provide the relative walk-up path to $(SINGULARITY_ROOT)\Paths.targets.
+  This is annoying, but is necessary in order to get VS builds to work,
+  without requiring that you set environment variables for VS.
+  -->
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>Bartok</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <DefineConstants>ON_SINGULARITY</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Bartok.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Declare references to the projects you need, for example: -->
+
+    <Reference Include="msil\Bartok.Analysis.dll"/>
+    <Reference Include="msil\Bartok.Backend.dll"/>
+    <Reference Include="msil\Bartok.CfgUtil.dll"/>
+    <Reference Include="msil\Bartok.Coff.dll"/>
+    <Reference Include="msil\Bartok.Convert.dll"/>
+    <Reference Include="msil\Bartok.Datatype.dll"/>
+    <Reference Include="msil\Bartok.DebugInfo.dll"/>
+    <Reference Include="msil\Bartok.Encode.dll"/>
+    <Reference Include="msil\Bartok.Ir.dll"/>
+    <Reference Include="msil\Bartok.Lir.dll"/>
+    <Reference Include="msil\Bartok.Mangle.dll"/>
+    <Reference Include="msil\Bartok.MSIL.dll"/>
+    <Reference Include="msil\Bartok.Opt.dll"/>
+    <Reference Include="msil\Bartok.Profile.dll"/>
+    <Reference Include="msil\Bartok.Regalloc.dll"/>
+    <Reference Include="msil\Bartok.Tables.dll"/>
+    <Reference Include="msil\Bartok.Utility.dll"/>
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Security\Security.csproj"/>
+
+    <!-- Include all of the MSIL assemblies needed to build the kernel -->
+    <Content Include="Kernel\Kernel.exe"/>
+    <Content Include="Kernel\*.dll"/>
+    <Content Include="Kernel\*.pdb"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+</Project>

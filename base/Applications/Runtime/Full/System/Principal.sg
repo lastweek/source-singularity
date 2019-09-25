@@ -1,0 +1,71 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using Microsoft.Singularity.V1.Security;
+    using Microsoft.Singularity.Channels;
+
+    /// <summary>
+    /// A Principal struct is a representation of a principal.
+    /// There are methods here to retrieve the Principal of a process
+    /// and to resolve the principal name of a Principal.
+    /// See the security library for methods to evaluate whether
+    /// Principals satisfy ACLs.
+    /// </summary>
+
+    // This is the process library version of Principal.sg.  The
+    // kernel side is similar, but has additional methods and constructors.
+
+    // This struct layers PrincipalHandle to hide the ABI type from clients.
+
+    public struct Principal
+    {
+        private readonly PrincipalHandle handle;
+
+        internal Principal(PrincipalHandle h)
+        {
+            this.handle = h;
+        }
+
+        public Principal(Endpoint*! in ExHeap ep)
+        {
+            this.handle = ep->PeerPrincipalHandle;
+        }
+
+        public static Principal Self()
+        {
+            return new Principal(PrincipalHandle.SelfPrincipalHandle());
+        }
+
+        public static Principal EndpointPeer(Endpoint*! in ExHeap ep)
+        {
+            return new Principal(ep->PeerPrincipalHandle);
+        }
+
+        public static Principal EndpointOwner(Endpoint*! in ExHeap ep)
+        {
+            return new Principal(ep->OwnerPrincipalHandle);
+        }
+
+        public static string ExpandAclIndirection (string! name)
+        {
+            return PrincipalHandle.ExpandAclIndirection(name);
+        }
+
+        public ulong Val { get { return this.handle.val; } }
+
+        public bool Equal(Principal p) { return (this.Val == p.Val); }
+
+        public string! GetName()
+        {
+            return (!)PrincipalHandle.GetPrincipalName(this.handle);
+        }
+    }
+}
+
+

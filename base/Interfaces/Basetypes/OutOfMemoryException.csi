@@ -1,0 +1,15 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+
+    public class OutOfMemoryException : SystemException {
+        public OutOfMemoryException();
+        public OutOfMemoryException(String message);
+        public OutOfMemoryException(String message, Exception innerException);
+    }
+}

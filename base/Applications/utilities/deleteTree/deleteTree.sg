@@ -1,0 +1,209 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using FileSystem.Utils;
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="delete entire tree **warning** this deletes an entire tree!  Only deletes directories and files", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "filename", Mandatory=true, Position=0, HelpMessage="Name of directory at top of tree.")]
+        internal string fileName;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return FsDeleteTree.AppMain(this);
+        }
+    }
+
+    public class FsDeleteTree
+    {
+        internal static bool DeleteFile(string! fileName, DirectoryServiceContract.Imp! ds)
+        {
+            ErrorCode error;
+            FileUtils.DeleteFile(fileName, ds, out error);
+            bool ok = (error == ErrorCode.NoError);
+            if (!ok) {
+                Console.WriteLine(" File ({0}) delete failed. reason:{1}",
+                    fileName, SdsUtils.ErrorCodeToString(error) );
+            }
+            return ok;
+        }
+
+        internal static bool DeleteLink(string! fileName, DirectoryServiceContract.Imp! ds)
+        {
+            ErrorCode error;
+            bool ok = SdsUtils.DeleteLink(fileName, ds, out error);
+            if (!ok) {
+                Console.WriteLine(" Symbolic Link ({0}) delete failed. reason:{1}",
+                    fileName, SdsUtils.ErrorCodeToString(error) );
+            }
+#if DEBUG
+            else {
+                DebugStub.Break();
+            }
+#endif
+            return ok;
+        }
+
+        //Sometimes Sing# has to catch and when we delete a direcotry immiediately after
+        //we close the channel, the channel will still be open on the other side
+        //and the directory service will think that the directory is still open.
+        internal static bool DeleteDirectory(string! fileName, DirectoryServiceContract.Imp! ds)
+        {
+            ErrorCode error;
+            bool ok = false;
+            int retry = 0;
+            while ((ok == false) && (retry < 3)) {
+               ok = SdsUtils.DeleteDirectory(fileName, ds, out error);
+               if (!ok) {
+                   Console.WriteLine("Delete of directory ({0})  failed. reason:{1}",
+                                     fileName, SdsUtils.ErrorCodeToString(error) );
+                   //sleep for a second
+                   Thread.Sleep(TimeSpan.FromSeconds(1));
+               }
+               retry++;
+            }
+            if (ok == false) {
+                Console.WriteLine("Delete failed even after wait and retry cycle\n");
+            }
+            return ok;
+        }
+
+        internal static void RecursiveDelete(string parentName, DirectoryServiceContract.Imp!:Ready dirClient)
+        {
+
+            EnumerationRecords[] in ExHeap responses = null;
+            ErrorCode errorOut;
+            bool isDir;
+            responses = SdsUtils.EnumerateDirectory(dirClient, out errorOut);
+
+            if (null == responses) {
+                Console.WriteLine("RecursiveDelete: Enumerate directory failed.  Error {0}\n",
+                                  SdsUtils.ErrorCodeToString(errorOut));
+                return;
+            }
+            else {
+                for (int i = 0; i < responses.Length; i++) {
+                    string displayName;
+                    string name;
+
+                    expose (responses[i]) {
+                        name = Bitter.ToString2(responses[i].Path);
+                        displayName = parentName + name;
+
+                        //Mirror the dirs from the kernel
+                        if (responses[i].Type == NodeType.Directory) {
+                            displayName = displayName + "/";
+                            ErrorCode error;
+
+
+                            DirectoryServiceContract.Imp! subDirClient;
+                            DirectoryServiceContract.Exp! subDirServer;
+                            DirectoryServiceContract.NewChannel(out subDirClient, out subDirServer);
+
+                            if(!SdsUtils.Bind(name, dirClient, subDirServer, out error)) {
+                                DebugStub.WriteLine("Bind to '{0}' failed. reason: {1}",
+                                                    __arglist(dirClient, SdsUtils.ErrorCodeToString(error)));
+                                delete subDirClient;
+                                break;
+                            }
+                            subDirClient.RecvSuccess();
+                            RecursiveDelete(displayName, subDirClient);
+                            delete subDirClient;
+                            Console.WriteLine("Deleting directory {0}\n", displayName);
+                            DeleteDirectory(name, dirClient);
+                        }
+                        else if (responses[i].Type == NodeType.File) {
+                            Console.WriteLine("Deleting file {0}\n", displayName);
+                            DeleteFile(name, dirClient);
+                        }
+                    }
+                }
+                delete responses;
+            }
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+
+            ds.RecvSuccess();
+
+            // see what kind of entity the path points to.
+            ErrorCode error;
+            FileAttributesRecord fileAttributes;
+            bool ok  = SdsUtils.GetAttributes((!)config.fileName, ds, out fileAttributes, out  error);
+
+            if (!ok) {
+                Console.WriteLine(" File ({0}) not found. reason:{1}",
+                    config.fileName, SdsUtils.ErrorCodeToString(error) );
+#if DEBUG
+                DebugStub.Break();
+#endif
+                delete ds;
+                return -1;
+            }
+
+            if (fileAttributes.Type != NodeType.Directory) {
+                Console.WriteLine("Can only use delete tree with a root directory\n");
+                delete ds;
+                return -1;
+            }
+
+            Console.WriteLine("Deleting tree beginning at {0}\n", config.fileName);
+            DirectoryServiceContract.Imp! subDirClient;
+            DirectoryServiceContract.Exp! subDirServer;
+            DirectoryServiceContract.NewChannel(out subDirClient, out subDirServer);
+
+            if(!SdsUtils.Bind(config.fileName, ds, subDirServer, out error)) {
+                DebugStub.WriteLine("Bind to '{0}' failed. reason: {1}",
+                                    __arglist(config.fileName, SdsUtils.ErrorCodeToString(error)));
+                delete subDirClient;
+                delete ds;
+                return -1;
+            }
+            subDirClient.RecvSuccess();
+            RecursiveDelete(config.fileName, subDirClient);
+
+            delete subDirClient;
+            delete ds;
+            return 0;
+        }
+    }
+}

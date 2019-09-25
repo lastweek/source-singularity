@@ -1,0 +1,36 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:   This project builds the copy of System.Runtime.Compiler.dll
+#           that applications use (executables outside of the kernel).
+#
+#
+##############################################################################
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>System.Compiler.Runtime</AssemblyName>
+    <OutputType>Library</OutputType>
+    <Language>C#</Language>
+    <DefineConstants>ENDPOINT_STRUCT;SINGULARITY;SINGULARITY_PROCESS;PTR_SIZE_32;_NEW_CLASSLOADER;NODEFAULTLIB;NoData;NOOWNERSHIPCHECK</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(SingSharpSrcDir)\System.Compiler.Runtime\AssemblyInfo.cs"/>
+    <Compile Include="$(SingSharpSrcDir)\System.Compiler.Runtime\Classes.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Singularity.V1\Singularity.V1.App.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\AppRuntime.targets"/>
+
+</Project>

@@ -1,0 +1,27 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+
+  <ItemGroup>
+    <ProjectReference Include="BlastServer\BlastServer.csproj"/>
+    <ProjectReference Include="HostName\HostName.csproj"/>
+    <ProjectReference Include="IPConfig\IPConfig.csproj"/>
+    <ProjectReference Include="MonNet\MonNet.csproj"/>
+    <ProjectReference Include="Route\Route.csproj"/>
+    <ProjectReference Include="TcpBlast\TcpBlast.csproj"/>
+    <ProjectReference Include="TcpGulp\TcpGulp.csproj"/>
+    <ProjectReference Include="UdpBlast\UdpBlast.csproj"/>
+    <ProjectReference Include="UdpGulp\UdpGulp.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets"/>
+
+</Project>

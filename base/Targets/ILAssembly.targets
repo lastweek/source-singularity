@@ -1,0 +1,112 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Targets\ILAssembly.targets
+
+Projects that import this file can set the following properties:
+
+  AssemblyName                Name of assembly, excluding file extension
+  OutputType                  'Exe' or 'Library'
+  NoStrongName                'true' to turn off assembly strong name signing
+  OutputPath                  Specifies output path for the assembly. Default is $(APPILLSDIR).
+
+Projects can declare the following items:
+
+  Compile                     Source file (.cs or .sg, etc.)
+
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- Supply defaults. -->
+  <PropertyGroup>
+    <NoStrongName Condition="'$(NoStrongName)'==''">false</NoStrongName>
+    <OutputPath Condition="'$(OutputPath)'==''">$(APPILLSDIR)</OutputPath>
+  </PropertyGroup>
+
+
+  <!-- Build the command line for the ilasm compiler. -->
+  <PropertyGroup>
+    <CompilerFlags>/nologo /pdb /quiet</CompilerFlags>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="'$(OutputType)'=='Exe'">
+      <PropertyGroup>
+        <AssemblyExt Condition="'$(AssemblyExt)'==''">.exe</AssemblyExt>
+        <CompilerFlags>$(CompilerFlags) /exe</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(OutputType)'=='Library'">
+      <PropertyGroup>
+        <AssemblyExt Condition="'$(AssemblyExt)'==''">.dll</AssemblyExt>
+        <CompilerFlags>$(CompilerFlags) /dll</CompilerFlags>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup>
+        <Error Include="The value '$(OutputType)' is not valid for the 'OutputType' property."/>
+      </ItemGroup>
+    </Otherwise>
+  </Choose>
+  
+
+  <PropertyGroup>
+    <AssemblyFileName>$(AssemblyName)$(AssemblyExt)</AssemblyFileName>
+    <OutputAssemblyPath>$(OutputPath)\$(AssemblyFileName)</OutputAssemblyPath>
+    <CompilerFlags>$(CompilerFlags) /output=$(OutputAssemblyPath)</CompilerFlags>
+    <CompilerFlags Condition="'$(NoStrongName)'!='true'">$(CompilerFlags) /key=$(OutputPath)\public.snk</CompilerFlags>
+  </PropertyGroup>
+  
+
+  <!-- TARGETS -->
+  
+  <Target Name="CreateStrongName" Condition="'$(NoStrongName)'!='true'">
+    <MSBuild Projects="$(SINGULARITY_ROOT)\Build\BuildKey.proj"/>
+  </Target>
+
+  
+  <Target Name="CheckErrors">
+    <Error Condition="'@(Error)'!=''" Text="%(Error.Identity)"/>
+    <Error Condition="'$(AssemblyName)'==''" Text="The 'AssemblyName' property is required."/>
+    <Error Condition="'$(OutputPath)'==''" Text="The 'OutputPath' property is required."/>
+    <Error Condition="'$(OutputType)'==''" Text="The 'OutputType' property is required."/>
+  </Target>
+
+  <Target Name="ShowDebugInfo" DependsOnTargets="CheckErrors">
+    <Message Text="Projects: @(ProjectReference,' ')"/>
+    <Message Text="Dependent project: %(ProjectReference.Identity)"/>
+    <Message Text="_aliased_refs: %(_aliased_refs.Identity)"/>
+    <Message Text="Reference: %(Reference.Identity) alias %(Reference.Alias)"/>
+  </Target>
+  
+  <Target Name="BuildAssembly"
+          Inputs="@(Compile);$(MSBuildProjectFullPath)"
+          Outputs="$(OutputAssemblyPath)"
+          DependsOnTargets="CheckErrors;CreateStrongName">
+
+    <Message Text="Compiling IL assembly - $(AssemblyName)$(AssemblyExt)"/>
+    <MakeDir Directories="$(OutputPath)"/>
+    <Exec Command="$(ILASM) $(CompilerFlags) @(Compile,' ')"/>
+  </Target>
+
+  <Target Name="Build"
+          Outputs="$(OutputAssemblyPath)"
+          DependsOnTargets="BuildAssembly">
+  </Target>
+  
+  <Target Name="Rebuild" DependsOnTargets="BuildAssembly">
+  </Target>
+  
+  <Target Name="ShowCommands">
+    <Message Text="$(ILASM) $(CompilerFlags) @(Compile,' ')"/>
+  </Target>
+
+  <Target Name="GetContentItems" Outputs="@(Content)" />
+
+</Project>
+

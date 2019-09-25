@@ -1,0 +1,90 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+////////////////////////////////////////////////////////////////////////////////
+
+using System;
+
+namespace System.Runtime.InteropServices
+{
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="GuidAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Assembly |
+                    AttributeTargets.Interface |
+                    AttributeTargets.Class |
+                    AttributeTargets.Enum |
+                    AttributeTargets.Struct |
+                    AttributeTargets.Delegate, Inherited = false)]
+    public sealed class GuidAttribute : Attribute
+    {
+        public GuidAttribute(String guid);
+    }
+
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="InAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
+    public sealed class InAttribute : Attribute
+    {
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="InAttribute.InAttribute"]/*' />
+        public InAttribute();
+    }
+
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="OutAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
+    public sealed class OutAttribute : Attribute
+    {
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="OutAttribute.OutAttribute"]/*' />
+        public OutAttribute();
+    }
+
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="OptionalAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
+    public sealed class OptionalAttribute : Attribute
+    {
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="OptionalAttribute.OptionalAttribute"]/*' />
+        public OptionalAttribute();
+    }
+
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="StructLayoutAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Class |
+                    AttributeTargets.Struct, Inherited = false)]
+    public sealed class StructLayoutAttribute : Attribute
+    {
+        public StructLayoutAttribute(LayoutKind layoutKind);
+
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="StructLayoutAttribute.StructLayoutAttribute1"]/*' />
+        public StructLayoutAttribute(short layoutKind);
+
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="StructLayoutAttribute.Pack"]/*' />
+        public int  Pack;
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="StructLayoutAttribute.Size"]/*' />
+        public int  Size;
+    }
+
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="FieldOffsetAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Field, Inherited = false)]
+    public sealed class FieldOffsetAttribute : Attribute
+    {
+        public FieldOffsetAttribute(int offset);
+    }
+
+    //| <include file='doc\Attributes.uex' path='docs/doc[@for="ComCompatibleVersionAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Assembly, Inherited = false)]
+    public sealed class ComCompatibleVersionAttribute : Attribute
+    {
+        //| <include file='doc\Attributes.uex' path='docs/doc[@for="ComCompatibleVersionAttribute.ComCompatibleVersionAttribute"]/*' />
+        public ComCompatibleVersionAttribute(int major, int minor, int build, int revision);
+    }
+
+    public enum GCOption {
+        NONE = 0,
+        GCFRIEND = 1,
+        NOGC = 2,
+        NOSTGC = 3,
+    }
+
+    [AttributeUsage(AttributeTargets.Method, Inherited = false)]
+    public sealed class GCAnnotationAttribute : Attribute {
+        public GCAnnotationAttribute(GCOption options );
+    }
+}

@@ -1,0 +1,39 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Contracts\Directory.Contract\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets"/>
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Directory.Contracts</AssemblyName>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+    <GenerateContractMap>true</GenerateContractMap>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg"/>
+    <Compile Include="DummyInstantiations.sg"/>
+    <Compile Include="ExtensionContract.sg"/>
+    <Compile Include="DirectoryServiceContract.sg"/>
+    <Compile Include="NotifyContract.sg"/>
+    <Compile Include="ServiceContract.sg"/>
+    <Compile Include="ServiceProviderContract.sg"/>
+    <Compile Include="FileContract.sg"/>
+    <Compile Include="DirectoryServiceFeederContract.sg"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Singularity.V1\Singularity.V1.App.csproj"/>
+    <DependentProject Include="$(AppRuntimeSrcDir)\Microsoft.SingSharp.Runtime.App.csproj"/>
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets"/>
+</Project>

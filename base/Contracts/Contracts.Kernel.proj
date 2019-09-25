@@ -1,0 +1,26 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets"/>
+
+  <ItemGroup>
+    <ProjectReference Include="Directory.Contracts\Directory.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="Diagnostics.Contracts\Diagnostics.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="FileSystem.Contracts\FileSystem.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="Io.Contracts\Io.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="NetStack.Contracts\NetStack.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="Security.Contracts\Security.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="Stress.Contracts\Stress.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="WebApps.Contracts\WebApps.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="Test.Contracts\kernel.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets"/>
+
+</Project>

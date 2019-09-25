@@ -1,0 +1,156 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/CredentialsManager/Collections.sg
+//
+//  Note:	Type-safe collection wrappers
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Security.CredentialsManager
+{
+    class CredentialsCollection
+    {
+        public CredentialsCollection()
+        {
+        }
+        
+        private readonly Hashtable/*<CredentialsId, Credentials!>*/! _table = new Hashtable();
+        
+        public void Add(CredentialsId! key, Credentials! value)
+        {
+            _table.Add(key, value);
+        }
+        
+        public Credentials! this[CredentialsId! key]
+        {
+            set { _table[key] = value; }
+            get {
+                object untyped_value = _table[key] as string;
+                if (untyped_value == null)
+                    throw new Exception("Key not found in table.");
+                return (Credentials)untyped_value;
+            }
+        }
+        
+        public int Count
+        {
+            get { return _table.Count; }
+        }
+        
+        public bool TryGetValue(CredentialsId! key, out Credentials value)
+        {
+            object untyped_value = _table[key];
+            if (untyped_value == null) {
+                value = null;
+                return false;
+            }
+            else {
+                value = (Credentials)untyped_value;
+                return true;
+            }				
+        }
+        
+        public bool ContainsKey(CredentialsId! key)
+        {
+            return _table[key] != null;
+        }
+        
+        public void Remove(CredentialsId! key)
+        {
+            _table.Remove(key);
+        }
+        
+        public void Clear()
+        {
+            _table.Clear();
+        }
+        
+        public ICollection Keys
+        {
+            get { return _table.Keys; }
+        }
+        
+        public ICollection Values
+        {
+            get { return _table.Values; }
+        }
+    }
+    
+    
+    // This is roughly Dictionary<ProtocolTuple, CredentialsId>.
+    class ProtocolMappingCollection
+    {
+        readonly private Hashtable! _table = new Hashtable();
+        
+        public ProtocolMappingCollection()
+        {
+        }
+        
+        public void Add(ProtocolTuple! key, CredentialsId! value)
+        {
+            _table.Add(key, value);
+        }
+        
+        public CredentialsId this[ProtocolTuple! key]
+        {
+            set { _table[key] = value; }
+            get {
+                object untyped_value = _table[key];
+                if (untyped_value == null)
+                    throw new Exception("Key not found in table");
+                return (CredentialsId)untyped_value;
+            }
+        }
+        
+        public bool TryGetValue(ProtocolTuple! key, out CredentialsId value)
+        {
+            object untyped_value = _table[key];
+            if (untyped_value == null) {
+                value = null;
+                return false;
+            }
+            else {
+                value = (CredentialsId)untyped_value;
+                return true;
+            }
+        }
+        
+        public int Count
+        {
+            get { return _table.Count; }
+        }
+        
+        public void Clear()
+        {
+            _table.Clear();
+        }
+        
+        public bool ContainsKey(ProtocolTuple! key)
+        {
+            return _table[key] != null;
+        }
+        
+        public void Remove(ProtocolTuple! key)
+        {
+            _table.Remove(key);
+        }
+        
+        public IEnumerator/*<DictionaryEntry>*/ GetEnumerator()
+        {
+            return _table.GetEnumerator();
+        }
+    }
+}

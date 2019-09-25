@@ -1,0 +1,50 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Loader
+{
+    public class DataItem
+    {
+        private string ns;
+        private string name;
+        private string value;
+
+        public DataItem(string ns, string name, string value)
+        {
+            this.ns = ns;
+            this.name = name;
+            this.value = value;
+        }
+
+        public string Directory
+        {
+            get
+            {
+                return ns;
+            }
+        }
+
+        public string Name
+        {
+            get
+            {
+                return name;
+            }
+        }
+
+        public string Value
+        {
+            get
+            {
+                return value;
+            }
+            set
+            {
+                this.value = value;
+            }
+        }
+    }
+}

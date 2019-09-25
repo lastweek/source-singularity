@@ -1,0 +1,350 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Utils;
+
+namespace Smb.Protocol
+{
+	#region SMB Requests
+	// This region contains structures that define many of the SMB requests that we use,
+	// and the responses that we will receive from servers.  Each request begins with
+	// an instance of SmbHeader.
+	
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbNegotiateRequest
+    {
+		public SmbHeader Header;
+		public ushort ByteCount;
+		// repeated sets of dialect strings follow
+    }
+    
+    public static class SmbDialect
+    {
+        public const string PcNetworkProgram = "PC NETWORK PROGRAM 1.0";
+        public const string Lanman1 = "LANMAN1.0";
+        public const string WindowsForWorkgroups = "Windows for Workgroups 3.1a";
+        public const string LM1_2x002 = "LM1.2X002";
+        public const string NTLM012 = "NT LM 0.12";
+    }
+
+    [Flags]
+    public enum SmbNegotiateSecurityMode : byte
+    {
+        SupportsUserShareLevel = (1 << 0),
+        SupportsChallengeResponseAuthentication = (1 << 1),
+        SecuritySignaturesEnabled = (1 << 2),
+        SignaturesRequired = (1 << 3),
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbNegotiateResponse17
+    {
+		public SmbHeader Header;
+		public ushort DialectIndex;
+		public byte SecurityMode;
+		public ushort MaxMpxCount;
+		public ushort MaxNumberVcs;
+		public uint MaxBufferSize;
+		public uint MaxRawSize;
+		public uint SessionKey;
+		public uint Capabilities;
+		public uint SystemTimeLow;
+		public uint SystemTimeHigh;
+		public ushort ServerTimeZone;
+		public byte EncryptionKeyLength;
+		
+		// this field is not included in the parameter count
+		public ushort ByteCount;
+		
+		// If the negotiate response is NOT using extended security, then the
+		// following variable-length fields come next:
+		//
+		// char OemDomainName[]
+    }
+    
+    
+  //  
+//typedef struct _REQ_SESSION_SETUP_ANDX {
+  //UCHAR WordCount;                    // Count of parameter words = 10
+  //UCHAR AndXCommand;                  // Secondary (X) command; 0xFF = none
+  //UCHAR AndXReserved;                 // Reserved (must be 0)
+  //_USHORT( AndXOffset );              // Offset to next command WordCount
+  //_USHORT( MaxBufferSize );           // Consumer's maximum buffer size
+  //_USHORT( MaxMpxCount );             // Actual maximum multiplexed pending requests
+  //_USHORT( VcNumber );                // 0 = first (only), nonzero=additional VC number
+  //_ULONG( SessionKey );               // Session key (valid iff VcNumber != 0)
+  //_USHORT( PasswordLength );          // Account password size
+  //_ULONG( Reserved );
+  //_USHORT( ByteCount );               // Count of data bytes; min = 0
+  //UCHAR Buffer[1];                    // Buffer containing:
+  ////UCHAR AccountPassword[];          //  Account Password
+  ////UCHAR AccountName[];              //  Account Name
+  ////UCHAR PrimaryDomain[];            //  Client's primary domain
+  ////UCHAR NativeOS[];                 //  Client's native operating system
+  ////UCHAR NativeLanMan[];             //  Client's native LAN Manager type
+//} REQ_SESSION_SETUP_ANDX;
+//typedef REQ_SESSION_SETUP_ANDX SMB_UNALIGNED *PREQ_SESSION_SETUP_ANDX;
+//
+//
+//This is the "old school" SessionSetupAndX.  Length of parameter block is 11.
+  //
+    [StructLayout(LayoutKind.Explicit, Size=22, Pack=1)]
+    pointerfree struct SessionSetupAndX_Old
+    {
+		// Parameter block, including the AndX data
+		[FieldOffset(0)] public byte AndXCommand;
+		[FieldOffset(1)] public byte AndXPadding;
+		[FieldOffset(2)] public ushort AndXOffset;
+		[FieldOffset(4)] public ushort MaxBufferSize;
+		[FieldOffset(6)] public ushort MaxMpxCount;
+		[FieldOffset(8)] public ushort VcNumber;
+		[FieldOffset(10)] public ushort SessionKey0;
+		[FieldOffset(12)] public ushort SessionKey1;
+		[FieldOffset(14)] public ushort PasswordLength;
+		[FieldOffset(16)] public ushort Reserved0;
+		[FieldOffset(18)] public ushort Reserved1;
+		[FieldOffset(20)] public ushort ByteCount;
+		// variable-length data follows
+		
+		public const int SizeOf = 22;
+		// public const int ParameterCount = 10;
+    }
+    
+  //  
+//Client Request
+//==============================	Description
+//=====================================
+//UCHAR WordCount;	Count of parameter words = 12
+//UCHAR AndXCommand;	Secondary (X) command;  0xFF = none
+//UCHAR AndXReserved;	Reserved (must be 0)
+//USHORT AndXOffset;	Offset to next command WordCount
+//USHORT MaxBufferSize;	Client's maximum buffer size
+//USHORT MaxMpxCount;	Actual maximum multiplexed pending requests
+//USHORT VcNumber;	0 = first (only), nonzero=additional VC number
+//ULONG SessionKey;	Session key (valid iff VcNumber != 0)
+//USHORT SecurityBlobLength;	Length of opaque security blob
+//ULONG Reserved;	must be 0
+//ULONG Capabilities;	Client capabilities
+//USHORT ByteCount;	Count of data bytes;    min = 0
+//UCHAR SecurityBlob[]	The opaque security blob
+//STRING NativeOS[];	Client's native operating system, Unicode
+//STRING NativeLanMan[];	Client's native LAN Manager type, Unicode
+//
+//
+//NetMon interprets this as the payload being NTLMSSP
+//
+//
+  //
+
+	[StructLayout(LayoutKind.Explicit, Size=22, Pack=1)]
+	pointerfree struct SessionSetupAndX_12
+	{
+		// Parameter block, including the AndX data
+		[FieldOffset(0)] public byte AndXCommand;
+		[FieldOffset(1)] public byte AndXPadding;
+		[FieldOffset(2)] public ushort AndXOffset;
+		
+		[FieldOffset(4)] public ushort MaxBufferSize;
+		[FieldOffset(6)] public ushort MaxMpxCount;
+		
+		[FieldOffset(8)] public ushort VcNumber;
+		[FieldOffset(10)] public ushort SessionKey0;
+		
+		[FieldOffset(12)] public ushort SessionKey1;
+		[FieldOffset(14)] public ushort SecurityBlobLength;
+		
+		[FieldOffset(16)] public ushort Reserved0;
+		[FieldOffset(18)] public ushort Reserved1;
+		
+		[FieldOffset(20)] public uint Capabilities;
+
+		[FieldOffset(24)] public ushort ByteCount;
+		
+		// variable-length data follows
+		// byte[] SecurityBlob;
+		// char[] NativeOS;					// in Unicode
+		// char[] NativeLanMan;				// in Unicode
+		
+		
+		public const int SizeOf = 26;
+		public const int ParameterCount = 12;
+	}
+
+
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbSessionSetupAndXResponse
+	{
+		public SmbHeader Header;
+		public byte AndXCommand;
+		public byte AndXReserved;
+		public ushort AndXOffset;
+		public ushort Action;
+		public ushort ByteCount;
+		// string NativeOS
+		// string NativeLanMan
+		// string PrimaryDomain		
+	}
+
+	//
+	//
+	//This structure is used with the "NT LM 0.12" dialect.
+	//It indicates that the client wants to setup a session, and does not want to use "extended security".
+	//Extended security uses SPNEGO, which is a general security token exchange mechanism, described in
+	//RFC 2478.  This SESSION SETUP message can either use cleartext passwords (bad!), or can use NTLM
+	//challenge/response messages.  The LM hash response is stored in the CaseInsensitivePassword field,
+	//and the NT hash response (marginally more secure) is stored in the CaseSensitivePassword field.
+	//
+	//
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbSessionSetupAndXRequest13
+	{
+		public SmbHeader Header;
+	
+		// Parameter block, including the AndX data
+		public byte AndXCommand;
+		public byte AndXPadding;
+		public ushort AndXOffset;
+		public ushort MaxBufferSize;
+		public ushort MaxMpxCount;
+		public ushort VcNumber;
+		public uint SessionKey;
+		public ushort CaseInsensitivePasswordLength;
+		public ushort CaseSensitivePasswordLength;
+		public uint Reserved;
+		public uint Capabilities;
+		public ushort ByteCount;
+		
+		// byte zero padding; // this is here to pad Unicode to 2-byte boundary if necessary
+		// STRING AccountName;
+		// STRING PrimaryDomain;
+		// STRING NativeOS;
+		// STRING NativeLanMan;
+
+		
+		// variable-length data follows
+		// byte[] SecurityBlob;
+		// char[] NativeOS;					// in Unicode
+		// char[] NativeLanMan;				// in Unicode
+		
+		public const int ParameterCount = 13;
+	}
+
+
+
+    
+    
+//
+//typedef struct _REQ_NT_SESSION_SETUP_ANDX {
+//  UCHAR WordCount;                    // Count of parameter words = 13
+//  UCHAR AndXCommand;                  // Secondary (X) command; 0xFF = none
+//  UCHAR AndXReserved;                 // Reserved (must be 0)
+//  _USHORT( AndXOffset );              // Offset to next command WordCount
+//  _USHORT( MaxBufferSize );           // Consumer's maximum buffer size
+//  _USHORT( MaxMpxCount );             // Actual maximum multiplexed pending requests
+//  _USHORT( VcNumber );                // 0 = first (only), nonzero=additional VC number
+//  _ULONG( SessionKey );               // Session key (valid iff VcNumber != 0)
+//  _USHORT( CaseInsensitivePasswordLength );      // Account password size, ANSI
+//  _USHORT( CaseSensitivePasswordLength );        // Account password size, Unicode
+//  _ULONG( Reserved);
+//  _ULONG( Capabilities );             // Client capabilities
+//  _USHORT( ByteCount );               // Count of data bytes; min = 0
+//  UCHAR Buffer[1];                    // Buffer containing:
+//  //UCHAR CaseInsensitivePassword[];  //  Account Password, ANSI
+//  //UCHAR CaseSensitivePassword[];    //  Account Password, Unicode
+//  //UCHAR AccountName[];              //  Account Name
+//  //UCHAR PrimaryDomain[];            //  Client's primary domain
+//  //UCHAR NativeOS[];                 //  Client's native operating system
+//  //UCHAR NativeLanMan[];             //  Client's native LAN Manager type
+//} REQ_NT_SESSION_SETUP_ANDX;
+//typedef REQ_NT_SESSION_SETUP_ANDX SMB_UNALIGNED *PREQ_NT_SESSION_SETUP_ANDX;
+//    
+#if false
+	[StructLayout(LayoutKind.Explicit, Size=26, Pack=1)]
+	pointerfree struct SessionSetupAndX_Nt
+	{
+		// Parameter block, including the AndX data
+		[FieldOffset(0)] public byte AndXCommand;
+		[FieldOffset(1)] public byte AndXPadding;
+		[FieldOffset(2)] public ushort AndXOffset;
+		[FieldOffset(4)] public ushort MaxBufferSize;
+		[FieldOffset(6)] public ushort MaxMpxCount;
+		[FieldOffset(8)] public ushort VcNumber;
+		[FieldOffset(10)] public ushort SessionKey0;
+		[FieldOffset(12)] public ushort SessionKey1;
+		[FieldOffset(14)] public ushort CaseInsensitivePasswordLength;
+		[FieldOffset(16)] public ushort CaseSensensitivePasswordLength;
+		[FieldOffset(18)] public ushort Reserved0;
+		[FieldOffset(20)] public ushort Reserved1;
+		[FieldOffset(22)] public ushort Capabilities0;
+		[FieldOffset(24)] public ushort Capabilities1;
+		[FieldOffset(26)] public ushort ByteCount;
+		// variable-length data follows
+		
+		public const int SizeOf = 26;
+		public const int ParameterCount = 13;
+	}
+#endif
+
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbTreeConnectAndX
+    {
+		public SmbHeader Header;
+		public byte AndXCommand;
+		public byte AndXReserved;
+		public ushort AndXOffset;
+		public ushort Flags;
+		public ushort PasswordLength;
+		public ushort ByteCount;
+		// byte Password[];
+		// string Path;
+		// string Service;
+    }
+
+	[StructLayout(LayoutKind.Sequential)]
+    pointerfree struct AndXParameterBlock
+    {
+		public byte NextCommand;
+		public byte Padding0;
+		public ushort NextCommandOffset;
+		
+		public AndXParameterBlock(SmbCommand command, ushort offset)
+		{
+			NextCommand = (byte)command;
+			NextCommandOffset = offset;
+			Padding0 = 0;
+		}
+    }
+    
+	[Flags]
+	enum SmbCapability
+	{
+		RawMode = 0x0001,
+		MpxMode = 0x0002,
+		Unicode = 0x0004,
+		LargeFiles = 0x0008,
+		NtSmbs = 0x0010,
+		RpcRemoteApis = 0x0020,
+		NtStatus = 0x0040,
+		Level2Oplocks = 0x0080,
+		LockAndRead = 0x0100,
+		NtFind = 0x0200,
+		Dfs = 0x1000,							// This server is DFS aware
+		InfolevelPassthru = 0x2000,				// NT information level requests can pass through
+		LargeReadx = 0x4000,					// Server supports oversized READ&X on files
+		LargeWritex = 0x8000,
+	}
+	
+	
+	#endregion
+}

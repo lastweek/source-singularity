@@ -1,0 +1,54 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+
+
+  <ItemGroup>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AcpiChecksum.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AcpiTables.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Dsdt.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Fadt.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Gas.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Madt.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\PMTimer.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Rsdp.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Rsdt.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Ssdt.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\Srat.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\SystemTableHeader.cs"/>
+
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AcpiNamespace.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AcpiObject.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AmlInterpreter.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AmlLoader.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AmlParser.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AmlParserNodeVisitor.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AmlStackIR.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\ReservedObjects.cs"/>
+    <HAL_ACPI_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\ResourceDataType.cs"/>
+    <CsUnionFile Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Acpi\AmlInterpreter\AmlParser.csunion">
+      <Namespace>Microsoft.Singularity.Hal.Acpi.AmlParserUnions</Namespace>
+    </CsUnionFile>
+
+    <HAL_COMMON_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Common\AssemblyInfo.cs"/>
+    <HAL_COMMON_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Common\HalDevicesFactory.cs"/>
+    <HAL_COMMON_SOURCES Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Common\HalMemorySrat.cs"/>
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.Kernel.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\IoSystem\IoSystem.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Console\Console.Kernel.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Kernel\System.Compiler.Runtime\System.Compiler.Runtime.Kernel.csproj"/>
+  </ItemGroup>
+</Project>

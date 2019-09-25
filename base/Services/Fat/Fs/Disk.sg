@@ -1,0 +1,470 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Disk.sg
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <summary>
+    /// Class responsible for performing low-level disk I/O.
+    /// </summary>
+    internal class DiskEndpoint
+    {
+        internal TRef<DiskDeviceContract.Imp:Ready> epTRef;
+
+        internal DiskEndpoint([Claims] DiskDeviceContract.Imp:Ready! diskImp)
+        {
+            epTRef = new TRef<DiskDeviceContract.Imp:Ready>(diskImp);
+        }
+
+        internal byte[] in ExHeap Read(ulong                      sectorId,
+                                       [Claims] byte[]! in ExHeap data)
+
+        {
+            DiskDeviceContract.Imp:Ready! imp = epTRef.Acquire();
+            ulong dataLength = (ulong)data.Length;
+            imp.SendRead(data, 0, dataLength, sectorId);
+            switch receive {
+                case imp.RecvAckRead(outBuffer):
+                    epTRef.Release(imp);
+                    return outBuffer;
+                    break;
+                case imp.RecvNakRead():
+                    epTRef.Release(imp);
+                    return null;
+                    break;
+                case imp.ChannelClosed():
+                    delete imp;
+                    throw new ChannelClosedException();
+                    break;
+            }
+        }
+
+        internal byte[] in ExHeap Write(ulong                      sectorId,
+                                        [Claims] byte[]! in ExHeap data)
+        {
+            return Write(sectorId, data, 0, (uint)data.Length);
+        }
+
+        internal byte[] in ExHeap
+        Write(ulong                      sectorId,
+              [Claims] byte[]! in ExHeap data,
+              uint                       dataStart,
+              uint                       dataBytesToWrite)
+        {
+            DiskDeviceContract.Imp:Ready! imp = epTRef.Acquire();
+            imp.SendWrite(data, dataStart, (ulong)dataBytesToWrite, sectorId);
+            switch receive {
+                case imp.RecvAckWrite(outBuffer):
+                    epTRef.Release(imp);
+                    return outBuffer;
+                    break;
+                case imp.RecvNakWrite():
+                    epTRef.Release(imp);
+                    Tracing.Log(Tracing.Warning,
+                                "FatFs received disk NakWrite for sector {0}.",
+                                sectorId);
+                    return null;
+                    break;
+                case imp.ChannelClosed():
+                    delete imp;
+                    throw new ChannelClosedException();
+                    break;
+            }
+        }
+    } // end class Endpoint
+
+    /// <summary>
+    /// Class responsible for maintaining pool of disk endpoints.
+    /// </summary>
+    internal class DiskEndpointPool
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Fields
+
+        DiskEndpoint[] endpoints;
+        int available;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Invariants
+
+        // invariant available >= 0 && available <= endpoints.Length;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal DiskEndpointPool(int capacity)
+        {
+            endpoints = new DiskEndpoint[capacity];
+            available = 0;
+        }
+
+        internal int Capacity { get { return endpoints.Length; } }
+
+        /// <summary>
+        /// Takes DiskEndpoint from the Pool for use.
+        /// <para>This method takes an endpoint from the pool.
+        ///  If no endpoints are available, this method blocks.</para>
+        /// </summary>
+        internal DiskEndpoint! Get()
+        {
+            Monitor.Enter(this);
+            try {
+                for (;;) {
+                    if (available > 0) {
+                        // Programmer error missed
+                        // the return statement here.  The compiler generated
+                        // no warning and obviously locked the application.
+                        return InternalGet();
+                    }
+                    Monitor.Wait(this);
+                }
+            }
+            finally {
+                Monitor.Exit(this);
+            }
+        }
+
+        /// <summary>
+        /// Places DiskEndpoint in the pool for potential use by others.
+        /// </summary>
+        internal void Add(DiskEndpoint! endpoint)
+        {
+            Monitor.Enter(this);
+            try {
+                InternalAdd(endpoint);
+                Monitor.Pulse(this);
+            }
+            finally {
+                Monitor.Exit(this);
+            }
+        }
+
+        private DiskEndpoint! InternalGet()
+            // requires monitor held
+            requires available > 0;
+            ensures available == old(available) - 1;
+        {
+            return (!) endpoints[--available];
+        }
+
+        private void InternalAdd(DiskEndpoint! endpoint)
+            // requires monitor held
+            requires available < endpoints.Length;
+            ensures  available == old(available) + 1;
+        {
+            endpoints[available++] = endpoint;
+        }
+    }
+
+    internal class Disk
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        internal const int BytesPerSector = 512;
+        internal const ushort NoSystemId  = 0xffff;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Members
+
+        string!           name;
+        DiskEndpointPool! endpoints;
+        ulong             startSector;
+        ulong             totalSectors;
+        ushort            systemId;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        private Disk(string!           diskName,
+                     DiskEndpointPool! diskEndpoints,
+                     ulong             diskStartSector,
+                     ulong             diskSectorCount,
+                     ushort            diskSystemId)
+        {
+            name         = diskName;
+            endpoints    = diskEndpoints;
+            startSector  = diskStartSector;
+            totalSectors = diskSectorCount;
+            systemId     = diskSystemId;
+
+            base();
+        }
+
+        internal string! Name           { get { return name;} }
+        internal ulong   StartSector    { get { return startSector; } }
+        internal ulong   TotalSectors   { get { return totalSectors; } }
+        internal int     MaxConnections { get { return endpoints.Capacity; } }
+
+        internal DiskAttributes DiskAttributes
+        {
+            get {
+                return 0;
+            }
+        }
+
+        internal bool GetSystemId(out byte sysId)
+        {
+            if (systemId != NoSystemId) {
+                sysId = (byte)(systemId & 0xff);
+                return true;
+            }
+            sysId = 0;
+            return false;
+        }
+
+        internal byte[] in ExHeap
+        Read(ulong sectorId, ulong length)
+            requires sectorId < TotalSectors;
+        {
+            byte[]! in ExHeap data = new [ExHeap] byte[length];
+            return Read(sectorId, data);
+        }
+
+        internal byte[] in ExHeap
+        Read(ulong sectorId, [Claims] byte[]! in ExHeap data)
+            requires sectorId < TotalSectors;
+            requires (data.Length % BytesPerSector) == 0;
+        {
+            DiskEndpoint ep = endpoints.Get();
+            try {
+                return ep.Read(sectorId, data);
+            }
+            finally {
+                endpoints.Add(ep);
+            }
+        }
+
+        internal byte[] in ExHeap
+        Write(ulong sectorId, [Claims] byte[]! in ExHeap data)
+            requires sectorId < TotalSectors;
+            requires (data.Length % BytesPerSector) == 0;
+        {
+            DiskEndpoint ep = endpoints.Get();
+            try {
+                return ep.Write(sectorId, data);
+            }
+            finally {
+                endpoints.Add(ep);
+            }
+        }
+
+        internal byte[] in ExHeap
+        Write(ulong sectorId,
+              [Claims] byte[]! in ExHeap data,
+              uint dataStart,
+              uint dataBytesToWrite)
+            requires sectorId < TotalSectors;
+            requires (data.Length % BytesPerSector) == 0;
+            requires dataStart <= data.Length;
+            requires dataStart + dataBytesToWrite <= data.Length;
+        {
+            DiskEndpoint ep = endpoints.Get();
+            try {
+                return ep.Write(sectorId, data, dataStart, dataBytesToWrite);
+            }
+            finally {
+                endpoints.Add(ep);
+            }
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        // Static construction methods
+
+        static private bool
+        GetDiskStartSector(DiskDeviceContract.Imp:Ready! diskImp,
+                           out ulong startSector)
+        {
+            diskImp.SendGetStartSector();
+            switch receive {
+                case diskImp.RecvAckGetStartSector(sectors):
+                    startSector = sectors;
+                    return true;
+                    break;
+                case diskImp.ChannelClosed():
+                    startSector = 0;
+                    return false;
+                    break;
+            }
+        }
+
+        static private bool
+        GetDiskSectorCount(DiskDeviceContract.Imp:Ready! diskImp,
+                           out ulong sectorCount)
+        {
+            diskImp.SendGetSectorCount();
+            switch receive {
+                case diskImp.RecvAckGetSectorCount(sectors):
+                    sectorCount = sectors;
+                    return true;
+                    break;
+                case diskImp.ChannelClosed():
+                    sectorCount = 0;
+                    return false;
+                    break;
+            }
+        }
+
+        static private bool
+        GetDiskSystemId(DiskDeviceContract.Imp:Ready! diskImp,
+                        out ushort systemId)
+        {
+            diskImp.SendGetSystemId();
+            switch receive {
+                case diskImp.RecvSystemId(theSystemId):
+                    systemId = theSystemId;
+                    return true;
+                    break;
+                case diskImp.RecvNoSystemId():
+                    systemId = NoSystemId;
+                    return true;
+                    break;
+                case diskImp.ChannelClosed():
+                    systemId = 0;
+                    return false;
+                    break;
+            }
+        }
+
+        static private bool
+        GetDiskAttributes(DiskDeviceContract.Imp:Ready! diskImp,
+                          out DiskAttributes da)
+        {
+            diskImp.SendGetDiskAttributes();
+            switch receive {
+                case diskImp.RecvAckGetDiskAttributes(theAttributes):
+                    da = theAttributes;
+                    return true;
+                case diskImp.ChannelClosed():
+                    da = 0;
+                    return false;
+            }
+        }
+
+        static private DiskDeviceContract.Imp:Ready
+        ValidatedDiskEndpoint([Claims] DiskDeviceContract.Imp:Start! diskImp)
+        {
+            switch receive {
+                case diskImp.RecvSuccess():
+                    return diskImp;
+                    break;
+                case diskImp.RecvContractNotSupported():
+                    delete diskImp;
+                    return null;
+                    break;
+                case diskImp.ChannelClosed():
+                    // Log "Disk {0} closed channel unexpectedly."
+                    delete diskImp;
+                    return null;
+                    break;
+            }
+        }
+
+        static private DiskDeviceContract.Imp:Ready
+        OpenDevice(DirectoryServiceContract.Imp:Ready! nsImp,
+                   string!                             deviceName)
+        {
+            if (deviceName.Length == 0) {
+                DebugStub.WriteLine("FatFs: Cannot open device; device name is empty.");
+                DebugStub.Break();
+                return null;
+            }
+        
+            DiskDeviceContract.Exp! diskExp;
+            DiskDeviceContract.Imp! diskImp;
+            DiskDeviceContract.NewChannel(out diskImp, out diskExp);
+
+            ErrorCode error;
+            if (!SdsUtils.Bind(deviceName, nsImp, diskExp, out error)) {
+                delete diskImp;
+                string! errorText = SdsUtils.ErrorCodeToString(error);
+                DebugStub.WriteLine(String.Format("FatFs: Failed to open disk '{0}': {1}", deviceName, errorText));
+                return null;
+            }
+            
+            return ValidatedDiskEndpoint(diskImp);
+        }
+
+        static internal Disk
+        Create(DirectoryServiceContract.Imp:Ready! nsImp,
+               string!                             deviceName,
+               int                                 channelCount)
+            requires channelCount >= 1;
+        {
+            //
+            // Create first connection to disk
+            //
+            DiskDeviceContract.Imp diskImp = OpenDevice(nsImp, deviceName);
+            if (diskImp == null) {
+                DebugStub.WriteLine("Could not establish a connection to {0}\n",
+                                  __arglist(deviceName));
+                return null;
+            }
+
+            //
+            // Retrieve cacheable disk information
+            //
+            ulong startSector;
+            if (GetDiskStartSector(diskImp, out startSector) == false) {
+                DebugStub.WriteLine("Lost connection to {0}.\n", __arglist(deviceName));
+                delete diskImp;
+                return null;
+            }
+
+            ulong totalSectors;
+            if (GetDiskSectorCount(diskImp, out totalSectors) == false) {
+                DebugStub.WriteLine("Lost connection to {0}.\n", __arglist(deviceName));
+                delete diskImp;
+                return null;
+            }
+
+            ushort systemId;
+            if (GetDiskSystemId(diskImp, out systemId) == false) {
+                DebugStub.WriteLine("Lost connection to {0}.\n", __arglist(deviceName));
+                delete diskImp;
+                return null;
+            }
+
+            DiskAttributes da;
+            if (GetDiskAttributes(diskImp, out da) == false) {
+                DebugStub.WriteLine("Lost connection to {0}.\n", __arglist(deviceName));
+                delete diskImp;
+                return null;
+            }
+
+            //
+            // Initialize endpoints for handling concurrent I/O requests
+            //
+            DiskEndpointPool pool = new DiskEndpointPool(channelCount);
+            pool.Add(new DiskEndpoint(diskImp));
+
+            for (int i = 1; i < channelCount; i++) {
+                diskImp = OpenDevice(nsImp, deviceName);
+                if (diskImp == null) {
+                    DebugStub.WriteLine("Failed establishing connection {0} to {1}.\n", __arglist(i, deviceName));
+                    return null;
+                }
+                pool.Add(new DiskEndpoint(diskImp));
+            }
+
+            //
+            // Construct and return Disk object
+            //
+            return new Disk(deviceName, pool,
+                            startSector, totalSectors, systemId);
+        }
+    }
+}

@@ -1,0 +1,47 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Contracts/CredentialsManager.Contracts/NtlmSupplicantContract.sg
+//
+//  Note:	Defines the contract for using the NTLM authentication protocol,
+//			in "legacy" mode.
+//
+
+using System;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Security
+{
+	// This contract models an NTLM (legacy, not NTLMSSP) supplicant.
+	public contract NtlmSupplicantContract : ServiceContract
+	{
+		in message GetResponse(byte[]! in ExHeap challenge, NtlmResponseType type);
+		out message Response(byte[]! in ExHeap response);
+		out message RequestFailed(CredError error);
+		
+		override state Start : one
+		{
+			Success! -> Ready;
+		}
+		
+		out message Success();
+		
+		state Ready : one
+		{
+			GetResponse? -> (Response! or RequestFailed!) -> Ready;
+		}
+	}
+	
+	public enum NtlmResponseType
+	{
+		LanMan,
+		WindowsNt,
+	}
+}

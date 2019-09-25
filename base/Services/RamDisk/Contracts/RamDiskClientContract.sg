@@ -1,0 +1,48 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RamDiskClientContract.sg
+//
+//  Note: Contract between the RAM disk client manager and a single RAM disk device.
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.RamDisk.Contracts
+{
+    public contract RamDiskClientContract
+    {
+        in message Create(char []! in ExHeap diskName, ulong diskSizeBytes);
+        out message Success();
+        out message Fail(RamDiskContractErrorCode reason);
+
+        in message Destroy(bool force);
+    
+        state Start : one {
+            Create? -> CreatePending;
+        }
+
+        state CreatePending : one {
+            Success! -> Running;
+            Fail! -> Done;
+        }
+
+        state Running : one {
+            Destroy? -> DestroyPending;
+        }
+
+        state DestroyPending : one {
+            Fail! -> Running;
+            Success! -> Done;
+        }
+
+        state Done : one {
+        }
+    }
+}

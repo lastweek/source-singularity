@@ -1,0 +1,24 @@
+﻿<!--
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <AssemblyName>Console.App</AssemblyName>
+    <OutputType>Library</OutputType>
+    <ProjectGuid>{B5509415-64BD-4BF6-A357-8FDA736D96A5}</ProjectGuid>
+    <NoNullCheck>true</NoNullCheck>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="Console.cs" />
+    <Compile Include="ConsoleInput.sg" />
+    <Compile Include="ConsoleOutput.sg" />
+    <Compile Include="RuntimeConsoleMixin.sg" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

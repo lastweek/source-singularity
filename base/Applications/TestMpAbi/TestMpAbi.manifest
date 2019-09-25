@@ -1,0 +1,4 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<application name="TestMpAbi" processes="1" runtime="Full">
+  <process id="0" main="true" path="TestMpAbi.x86" cache="TestMpAbi.x86" categories="0"/>
+</application>

@@ -1,0 +1,35 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ExtensionContract.sg
+//
+
+// This is the base contract to be used, and overridden by, every
+// system extension loaded as a child process.
+
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Extending
+{
+    public contract ExtensionContract : ServiceContract
+    {
+        in message Shutdown();     // Shutdown the extension gracefully.
+        out message AckShutdown();
+        out message NakShutdown();
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one
+        {
+            Shutdown? -> (AckShutdown! or NakShutdown!) -> Ready;
+            // AckShutdown should really go to done.
+        }
+    }
+}

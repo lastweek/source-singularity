@@ -1,0 +1,33 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>NetStack.Channels.Nic</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="NicFactory.sg" />
+    <Compile Include="Nic.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetStackLib.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Net.Contracts\Io.Net.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Drivers.Net\Drivers.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net\System.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>

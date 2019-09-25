@@ -1,0 +1,98 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            Test.AppMain(this);
+            return 0;
+        }
+    }
+    
+    class Test
+    {
+
+        const int NUM = 21;
+
+        internal static void AppMain(Parameters! config) {
+
+            VectorQueue<int> vq1 = new VectorQueue<int>();
+            VectorQueue<int> vq2 = new VectorQueue<int>();
+
+            for (int i = 0; i <= Test.NUM; i++) {
+                int[] in ExHeap v = new[ExHeap] int[i];
+                vq1.AddTail(v);
+            }
+
+            Console.WriteLine("0..{0}", Test.NUM);
+
+            while (!vq1.Empty) {
+                int[] in ExHeap v = (!)vq1.ExtractHead();
+                Console.Write("  {0}", v.Length);
+                vq2.AddHead(v);
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("{0}..0", Test.NUM);
+
+            while (!vq2.Empty) {
+                int[] in ExHeap v = (!)vq2.ExtractHead();
+                Console.Write("  {0}", v.Length);
+                vq1.AddTail(v);
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("0..{0}", Test.NUM);
+
+            while (!vq1.Empty) {
+                int[] in ExHeap v = (!)vq1.ExtractTail();
+                Console.Write("  {0}", v.Length);
+                vq2.AddHead(v);
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("0..{0}", Test.NUM);
+
+            while (!vq2.Empty) {
+                int[] in ExHeap v = (!)vq2.ExtractTail();
+                Console.Write("  {0}", v.Length);
+                delete v;
+            }
+
+            TContainer<VectorQueue<int>> tc1 = new TContainer<VectorQueue<int>>(vq1);
+
+            vq2.Dispose();
+
+            ThrowAway(tc1);
+        }
+
+        private static void ThrowAway(TContainer<VectorQueue<int>>! tc) {
+
+            VectorQueue<int> vq = tc.Acquire();
+
+            vq.Dispose();
+        }
+    }
+}

@@ -1,0 +1,98 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Bartok.Options;
+using Microsoft.Bartok.Runtime;
+
+using Microsoft.Singularity.Directory;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Test;
+using Microsoft.Singularity.UnitTest;
+
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Contracts;
+using Microsoft.Singularity.Test.Contracts;
+
+//[assembly: Transform(typeof(TestTransform))]
+namespace Microsoft.Singularity
+{
+
+    internal class ShellTest_Jig : SuiteJig
+    {
+        TContainer<PipeMultiplexer> m_outputMux;
+        private TestLog! Expect;
+
+        public ShellTest_Jig(TestLog! log) {
+            Expect = log;
+        }
+
+        override public void Initialize()
+        {
+            m_outputMux = new TContainer<PipeMultiplexer>(MuxOut());
+            Expect.NotNull(m_outputMux, "Got output multiplexer");
+        }
+
+        override public void Cleanup()
+        {
+            PipeMultiplexer outputMux = ((!) m_outputMux).Acquire();
+            outputMux.Dispose();
+            m_outputMux = null;
+        }
+
+        // Special test implementation:
+        // take any test requested an dispatch a shell to execute it
+        // as a command
+        override public void DoTest(string! test)
+        {
+            string[] args = new string[] {"shell", "@single", test};
+            PipeMultiplexer outputMux = ((!) m_outputMux).Acquire();
+            DirectoryServiceContract.Imp ds = DirectoryService.NewClientEndpoint();
+            try {
+                Manifest manifest;
+                Process child = Binder.CreateProcess(ds, args, outputMux, out manifest);
+                Expect.NotNull(child, "Spawned shell for requested test");
+                Process! proc = (!) child;
+                proc.Start();
+                proc.Join();
+                Expect.Equal(proc.ExitCode, 0, "Spawned shell exited without errors");
+            }
+            finally {
+                delete ds;
+                m_outputMux.Release(outputMux);
+            }
+        }
+
+        // Redirect our standard output into a multiplexer so we can interleave
+        // output from child processes
+        private PipeMultiplexer! MuxOut()
+        {
+            // Swap our real stdOut with a newly created one
+            UnicodePipeContract.Exp! newOutputExp;
+            UnicodePipeContract.Imp! newOutputImp;
+            UnicodePipeContract.NewChannel(out newOutputImp, out newOutputExp);
+            UnicodePipeContract.Imp stdOut = ConsoleOutput.Swap(newOutputImp);
+            Expect.True(stdOut != null, "Got stdout pipe");
+            // Use a mux to splice our own output together with the child
+            // processes we will run.
+            return PipeMultiplexer.Start((!)stdOut, newOutputExp);
+        }
+    }
+
+}

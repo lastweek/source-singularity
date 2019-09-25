@@ -1,0 +1,157 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StressService.sg
+//  Note:   Kernel diagnostics (testing and debugging)
+//
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Stress.Contracts;
+using Microsoft.Singularity.Directory;
+using System;
+
+namespace Microsoft.Singularity.Stress
+{
+    public class StressService
+    {
+        private void Run()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels.
+            DirectoryServiceContract.Imp! epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(StressContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the Stress Diagnostic module.\n");
+                        delete rejectedEP;
+                        delete nsExp;
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<StressContract.Exp:ReadyState> epSet = new ESet<StressContract.Exp:ReadyState>();
+
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newServiceEp) : {
+                            // We expect people to give us StressContract.Exp instances
+                            StressContract.Exp newEp = newServiceEp as StressContract.Exp;
+
+                            if (newEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newServiceEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newEp.SendReady();
+                                epSet.Add(newEp);
+                            }
+                        }
+                        break;
+
+                    // ------------------------------- Requests on existing connections
+                    //
+                    // Don't forget that we're selecting endpoints
+                    // from the epSet endpoint-set. In each case that we
+                    // receive a message from one of those endpoints, we
+                    // need to remember to put the endpoint back into epSet
+                    // if we want to keep listening to it.
+                    //
+                    case ep.GcStress() in epSet :
+                        {
+                            // Use existing thread.
+                            // Block any other stress tests while GcStress runs.
+                            TRef<StressContract.Exp:GcStressState>! epRef =
+                                new TRef<StressContract.Exp:GcStressState>(ep);
+
+                            try {
+                                new GcStressDiagnostic(epRef).Run();
+                            }
+                            finally {
+                                ep = epRef.Acquire();
+                                ep.SendGcStressDone();
+                                epSet.Add(ep);
+                            }
+                        }
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        // ep is no longer in epSet; delete it.
+                        delete ep;
+                        break;
+
+                    case unsatisfiable :
+                        // (This should only be reached if ns is closed and epSet is empty.)
+                        // Exit this thread.
+                        delete nsExp;
+                        epSet.Dispose();
+                        return;
+                }
+            }
+        }
+
+        public static void Initialize()
+        {
+            StressService! module = new StressService();
+            Thread thread = Thread.CreateThread(null, new ThreadStart(module.Run));
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+    }
+
+    class GcStressDiagnostic : GcStress
+    {
+        TRef<StressContract.Exp:GcStressState>! epRef;
+
+        internal GcStressDiagnostic(TRef<StressContract.Exp:GcStressState>! epRef)
+        {
+            this.epRef = epRef;
+            base();
+        }
+
+        override protected void Print(string! s)
+        {
+            // Send a Print message to the client containing s.
+            StressContract.Exp! ep = epRef.Acquire();
+            try {
+                ep.SendPrint(Bitter.FromString(s));
+                switch receive {
+                    case ep.AckPrint() :
+                        break;
+                }
+            }
+            finally {
+                epRef.Release(ep);
+            }
+        }
+    }
+}

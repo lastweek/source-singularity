@@ -1,0 +1,49 @@
+#
+# A script for automated specweb99 testing.
+#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+#
+
+# Wait just to be sure netstack has spun up.  This script is most likely
+# run from boot.
+sleep 5
+
+mkfs '/dev/vol0.1'
+if (!($? == 0)) {
+   decho 'mkfs failed.'
+   exit
+}
+
+fsmount '/dev/vol0.1' '/fs'
+if (!($? == 0)) {
+   decho 'fsmount failed.'
+   exit
+}
+
+wafgen99 70 '/fs'
+if (!($? == 0)) {
+   decho 'wafgen99 failed.'
+   exit
+}
+
+# Note quotes around non-alphanumeric /dev/nic0
+# Script engine expects alphanumerics or quoted values for external
+# commands.
+ipconfig '/dev/nic0' dhcp start
+decho 'ipconfig returned ' $?
+
+# Start cassini in foreground.  It should
+# block until it receives a quit URL.
+cassini '-quitURL' '-app:SPECWeb99WebApp'
+decho 'cassini returned ' $?
+
+ipconfig '/dev/nic0' dhcp stop
+
+# Magic exit code to shut machine down,
+# taken from Kernel\Singularity\BootInfo.cs:
+#
+# 0x1fff (8191) = EXIT_AND_RESTART
+# 0x1ffe (8190) = EXIT_AND_SHUTDOWN
+# 0x1ffd (8189) = EXIT_AND_WARMBOOT
+# 0x1ffc (8188) = EXIT_AND_HALT
+exit 8188

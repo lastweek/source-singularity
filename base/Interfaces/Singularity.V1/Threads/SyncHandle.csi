@@ -1,0 +1,62 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SyncHandle.csi
+//
+//  Note:   Common synchronization handle (ala WaitHandle in runtime)
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Threads
+{
+    public struct SyncHandle // : public WaitHandle
+    {
+        public readonly UIntPtr id; // could be moved to WaitHandle
+
+        //////////////////////////////////////////////////////////////////////
+        //
+        // Conversion operators
+        //
+
+        [NoHeapAllocation]
+        public static implicit operator SyncHandle(MutexHandle handle);
+        [NoHeapAllocation]
+        public static implicit operator SyncHandle(AutoResetEventHandle handle);
+        [NoHeapAllocation]
+        public static implicit operator SyncHandle(ManualResetEventHandle handle);
+
+        //////////////////////////////////////////////////////////////////////
+        //
+        // The following methods could be moved to WaitHandle if we had
+        // struct inheritance.
+        //
+        [NoHeapAllocation]
+        public static bool WaitOne(SyncHandle handle);
+        [NoHeapAllocation]
+        public static bool WaitOne(SyncHandle handle,
+                                   TimeSpan timeout);
+        [NoHeapAllocation]
+        public static bool WaitOne(SyncHandle handle,
+                                   SchedulerTime stop);
+
+        [NoHeapAllocation]
+        public static bool WaitOneNoGC(SyncHandle handle);
+
+        [NoHeapAllocation]
+        public static int WaitAny(SyncHandle * handles,
+                                  int handleCount);
+        [NoHeapAllocation]
+        public static int WaitAny(SyncHandle * handles,
+                                  int handleCount,
+                                  TimeSpan timeout);
+        [NoHeapAllocation]
+        public static int WaitAny(SyncHandle * handles,
+                                  int handleCount,
+                                  SchedulerTime stop);
+    }
+}

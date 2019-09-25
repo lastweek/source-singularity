@@ -1,0 +1,60 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+
+Projects that are test console apps should import this targets file.
+
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Test.Contracts\app.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\UnitTest\UnitTestLib.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\UnitTest\UnitTestTemplate.csproj">
+        <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Transform\Transform.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Applications\Transforms\AppTransforms.csproj">
+        <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Console\Console.App.csproj"/>
+  </ItemGroup>
+
+  <!-- this wires the test profile generation into the target dependency graph -->
+  <PropertyGroup>
+      <UseMsilRewrite>true</UseMsilRewrite>
+      <BuildDependsOn>$(BuildDependsOn);MakeTestProfile</BuildDependsOn>
+      <MsilRewrite>GenerateTestJig</MsilRewrite><!-- todo: allow for multiple -->
+      <ApplicationCategory>Test</ApplicationCategory>
+      <REGSVR32 Condition="'$(PROCESSOR_ARCHITECTURE)'=='x86'">$(BUILDDIR)\x86_any\regsvr32.exe</REGSVR32>
+      <REGSVR32 Condition="'$(PROCESSOR_ARCHITECTURE)'=='AMD64'">$(BUILDDIR)\x64_any\regsvr32.exe</REGSVR32>
+  </PropertyGroup>
+
+  <!-- include source file with AppMain -->
+  <ItemGroup>
+    <Compile Include="$(SINGULARITY_ROOT)\Libraries\UnitTest\TestApplication.sg"/>
+  </ItemGroup>
+
+  <Target Name="MakeTestProfile"
+          DependsOnTargets="BuildPrelimAssembly"
+          Inputs="$(PreSourceAssemblyPath)"
+          Outputs="$(OutputPath)\$(AssemblyName).tst"
+          >
+      <Exec Command="&quot;$(BUILDDIR)\mktests.exe&quot; /out:&quot;$(OutputPath)\$(AssemblyName).tst&quot; &quot;$(PreSourceAssemblyPath)&quot; "/>
+  </Target>
+
+  <Target Name="GenerateTestJig"
+          DependsOnTargets="BuildPrelimAssembly"
+          Inputs="$(PreRewriteAssemblyPath);$(LIBSDIR)\UnitTestTemplate.dll"
+          Outputs="$(OutputAssemblyPath)"
+          >
+      <Exec Command="&quot;$(BUILDDIR)\transform\transform.exe&quot; $(TRANSFORM_FLAGS) -t &quot;$(LIBSDIR)\UnitTestTemplate.dll&quot; -o &quot;$(OutputAssemblyPath)&quot; -d &quot;$(OutputAssemblySymbolPath)&quot; &quot;$(PreRewriteAssemblyPath)&quot; > &quot;$(OutputAssemblyPath).log&quot;"/>
+  </Target>
+
+  <Import Project="App.targets"/>
+
+</Project>

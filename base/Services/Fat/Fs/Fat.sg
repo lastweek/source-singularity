@@ -1,0 +1,79 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Fat.sg
+//
+//  TODO: Block allocation for sequential cluster groups.  This
+//  would entail less buffer cache lock operations.
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+using System;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal abstract class Fat
+    {
+        /// <summary> Largest number of clusters that can be allocated
+        /// at a time.
+        /// </summary>
+        public const int MaxAllocationLength = Bitmap.MaxAllocationLength;
+
+        /// <summary> Allocate cluster chain. The allocation is
+        /// no guaranteed to be contiguous</summary>
+        /// <returns> true if some of the requested clusters
+        /// have been allocated, false if there were no free
+        /// clusters available.  </returns>
+        internal abstract bool AllocateChain(int hintClusterArea,
+                                             int targetLength,
+                                             out int allocStart,
+                                             out int allocLength);
+
+        /// <summary> Frees the chain starting at specified offset </summary>
+        internal abstract void FreeChain(int startCluster);
+
+        /// <summary> Grow an existing cluster chain. The allocation is
+        /// not guaranteed to be contiguous.</summary>
+        /// <returns> true if some of the requested clusters
+        /// have been allocated, false if there were no free
+        /// clusters available.  </returns>
+        internal abstract bool GrowChain(BlockIndex! index,
+                                         int         requestedExtensionLength,
+                                         out int     actualExtensionLength);
+
+        /// <summary> Truncates chain past specified new tail
+        /// cluster. </summary>
+        internal abstract void TruncateChain(BlockIndex! index,
+                                             int         lengthInClusters);
+
+        /// <summary> Populates BlockIndex with clusters from chain.
+        /// </summary>
+        internal abstract void PopulateIndex(BlockIndex! index,
+                                             int         firstCluster);
+
+        /// <summary> Property for clean shutdown bit held in FAT.
+        /// <para> This property has no physical meaning on FAT12. </para>
+        ///</summary>
+        internal abstract bool CleanShutdown    { get; set; }
+
+        /// <summary> Property for hard error bit held in FAT.
+        /// <para> This property has no physical meaning on FAT12. </para>
+        ///</summary>
+        internal abstract bool HardError        { get; set; }
+
+        /// <summary> Value representing total number of clusters. </summary>
+        internal abstract int TotalClusters     { get; }
+
+        /// <summary> Value representing end of cluster chain. </summary>
+        internal abstract int EndOfChain        { get; }
+
+        /// <summary> Value representing of bad cluster. </summary>
+        internal abstract int BadCluster        { get; }
+    }
+}

@@ -1,0 +1,31 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Kernel\YourLibrary\YourLibrary.csproj
+
+Note:   This is the template for a kernel-mode assembly.
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <AssemblyName>Singularity.KdFiles</AssemblyName>
+    <OutputType>Library</OutputType>
+    <ProjectGuid>{2D9FDD08-D37F-47DB-BEB0-C7721C644D44}</ProjectGuid>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="KdFilesNamespace.sg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Kernel\Singularity.Directory\Directory.csproj" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+</Project>

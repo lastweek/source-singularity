@@ -1,0 +1,106 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>mkasm</AssemblyName>
+    <TARGET_CC>$(BUILDDIR)\x86_x86\cl.exe</TARGET_CC>
+    <TARGET_LINK>$(BUILDDIR)\x86_x86\link.exe</TARGET_LINK>
+    <WINDOWS_SDK_PATH>$(SINGULARITY_ROOT)\Windows\Lib\x86</WINDOWS_SDK_PATH>
+    <TargetArchitecture>x86</TargetArchitecture>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetName>$(AssemblyName)</TargetName>
+    <TargetExt>.exe</TargetExt>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Source Include="mkasm.cpp"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Libraries Include="$(WINDOWS_SDK_PATH)\kernel32.lib"/>
+    <Libraries Include="$(WINDOWS_SDK_PATH)\libcmt.lib"/>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetDir>$(WINDOWSDIR)</TargetDir>
+    <ObjDir>$(WINDOWSDIR)\obj\$(Machine)\$(TargetName)</ObjDir>
+    <ObjPdbPath>$(ObjDir)\mkasm.pdb</ObjPdbPath>
+    <TargetPath>$(TargetDir)\$(TargetName)$(TargetExt)</TargetPath>
+    <TargetPdbPath>$(TargetDir)\$(TargetName).pdb</TargetPdbPath>
+    <CFLAGS>$(CFLAGS) /DWIN32 /DNT /Oi- /Zi /I$(SINGULARITY_ROOT)\Windows\inc /D_CRT_SECURE_NO_DEPRECATE</CFLAGS>
+  </PropertyGroup>
+
+  <Target Name="Build"
+          DependsOnTargets="Link"/>
+
+  <Target Name="CreateDirs" DependsOnTargets="CheckRequirements">
+    <MakeDir Directories="
+             $(TargetDir);
+             $(ObjDir);
+             "/>
+  </Target>
+
+  <Target Name="CheckRequirements">
+    <Error Condition="'$(TARGET_LINK)'==''" Text="The TARGET_LINK property is required, but no value is set."/>
+    <Error Condition="'$(TARGET_CC)'==''" Text="The TARGET_CC property is required, but no value is set."/>
+    <Error Condition="'$(TargetArchitecture)'!='$(Machine)'" Text="The target architecture '$(TargetArchitecture)' does not match the current build environment settings, because Machine='$(Machine)'."/>
+  </Target>
+
+  <Target Name="CompileSources"
+          Inputs="
+          @(Source);
+          $(MSBuildProjectFullPath);
+          "
+          Outputs="$(ObjDir)\%(Source.filename).obj"
+          DependsOnTargets="CreateDirs">
+    <Exec Command="$(TARGET_CC) $(CFLAGS) /c /Fd$(ObjPdbPath) /Fo$(ObjDir)\%(Source.filename).obj %(Source.CompilerFlags) %(Source.identity)"/>
+  </Target>
+
+  <Target Name="Link"
+          Inputs="
+            @(Source->'$(ObjDir)\%(filename).obj');
+            $(ModuleDefinitionFile);
+          "
+          Outputs="$(TargetPath)"
+          DependsOnTargets="CreateDirs;CompileSources">
+    <Exec Command="$(TARGET_LINK) /nologo /machine:$(MACHINE) /nod /fixed:no /DEBUG /out:$(TargetPath) /pdb:$(TargetPdbPath) /incremental:no @(Source->'$(ObjDir)\%(filename).obj',' ') @(Libraries,' ')"/>
+  </Target>
+
+  <Target Name="Install"
+          DependsOnTargets="Build;CheckOut;CopyToInstallDir"/>
+
+  <Target Name="CopyToInstallDir"
+          DependsOnTargets="Build">
+    <Copy SourceFiles="$(TargetPath);$(TargetPdbPath)" DestinationFolder="$(SINGULARITY_ROOT)\build"/>
+  </Target>
+
+  <Target Name="CheckOut">
+    <Exec Command="$(BUILDDIR)\internal\sd.exe edit $(TargetName)$(TargetExt) $(TargetName).pdb" WorkingDirectory="$(SINGULARITY_ROOT)\build"/>
+  </Target>
+
+
+
+  <Target Name="Clean">
+    <Delete Files="
+            $(ObjPdbPath);
+            $(TargetPdbPath);
+            $(TargetPath);
+            $(ObjDir)\%(Source.filename).obj;
+            $(TargetDir)\$(TargetName).exp;
+            $(TargetDir)\$(TargetName).lib;
+            "/>
+
+  </Target>
+
+</Project>

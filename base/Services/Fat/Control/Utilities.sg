@@ -1,0 +1,112 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Fat\Control\Utilities.sg
+//
+//  Note:
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+namespace Microsoft.Singularity.Services.Fat.FatControl
+{
+    internal class Utilities
+    {
+        internal static FatControlContract.Imp ConnectToManager()
+        {
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+
+            try {
+                FatControlContract.Imp! service_imp;
+                FatControlContract.Exp! service_exp;
+                FatControlContract.NewChannel(out service_imp, out service_exp);
+
+                ErrorCode error;
+                if (!SdsUtils.Bind(FatControlContract.ManagerControlPath, rootds, service_exp, out error)) {
+                    Console.WriteLine("Failed to connect to service path '{0}'.  Error: {1}",
+                        FatControlContract.ManagerControlPath,
+                        SdsUtils.ErrorCodeToString(error));
+                    delete service_imp;
+                    return null;
+                }
+
+                service_imp.RecvSuccess();
+                return service_imp;
+            }
+            finally {
+                delete rootds;
+            }
+        }
+
+        internal static void DisplayError(FatContractErrorCode e)
+        {
+            string message = "unknown";
+            switch (e) {
+                case FatContractErrorCode.NoError:
+                    message = "no error";
+                    break;
+                case FatContractErrorCode.DiskUnavailable:
+                    message = "disk unavailable";
+                    break;
+                case FatContractErrorCode.PathUnavailable:
+                    message = "path unavailable";
+                    break;
+                case FatContractErrorCode.Busy:
+                    message = "filesystem busy";
+                    break;
+                case FatContractErrorCode.NotMounted:
+                    message = "path not mounted";
+                    break;
+                case FatContractErrorCode.InternalError:
+                    message = "internal error";
+                    break;
+                case FatContractErrorCode.NotFatPartition:
+                    message = "not a FAT partition";
+                    break;
+                case FatContractErrorCode.ReadFailed:
+                    message = "read error";
+                    break;
+                case FatContractErrorCode.BadBPB:
+                    message = "bad boot parameter block";
+                    break;
+                case FatContractErrorCode.ReadOnlyDisk:
+                    message = "read only disk";
+                    break;
+                case FatContractErrorCode.InvalidStartSector:
+                    message = "invalid start sector";
+                    break;
+                case FatContractErrorCode.InvalidSectorCount:
+                    message = "invalid sector count";
+                    break;
+                case FatContractErrorCode.InvalidFormatSettings:
+                    message = "invalid format settings";
+                    break;
+                case FatContractErrorCode.InvalidVolumeLabel:
+                    message = "invalid volume label";
+                    break;
+            }
+            Console.WriteLine("Failed: {0}.", message);
+        }
+
+        internal static void DisplayChannelClosedError()
+        {
+            Console.WriteLine(
+                "Failed: Channel to FAT client manager closed unexpectedly."
+                );
+        }
+    }
+}

@@ -1,0 +1,314 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TulipRxRingBuffer.cs
+//
+//  Notes:
+//
+//  Because the Tulip requires the receive packet length be a
+//  multiple of 4-bytes and there is no way to communicate this
+//  back to the network stack, packets are received into a temporary
+//  memory region and then copied out.
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.V1.Services;
+using System;
+
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    internal class TulipRxRingBuffer
+    {
+        internal const int MaxFragmentBytes    = 2047;
+        internal const int DescriptorBytes     = 16;
+        internal const int DescriptorAlignment = 4;
+        internal const int PadBytes            = 8; // FCS + round up to 4 byte boundary + 4 byte aligned
+
+        private ExRef<PacketFifo>! rxPackets;
+
+        private IoMemory! descRegion;
+        private IoMemory! padRegion;
+
+        private readonly int capacity;
+        int head;
+        int count;
+
+        internal TulipRxRingBuffer(int maxPackets)
+            requires maxPackets > 0 && IsPowerOf2(maxPackets);
+        {
+            this.descRegion =
+                (!)IoMemory.AllocatePhysical(
+                    new UIntPtr(maxPackets * DescriptorBytes),
+                    DescriptorAlignment
+                    );
+
+            this.padRegion =
+                (!)IoMemory.AllocatePhysical(
+                    new UIntPtr(maxPackets * PadBytes), 0
+                    );
+
+            this.rxPackets = new ExRef<PacketFifo>(
+                new [ExHeap] PacketFifo(maxPackets), true
+                );
+
+            this.capacity   = maxPackets;
+            this.head       = 0;
+            this.count      = 0;
+        }
+
+        internal void Reset()
+            requires this.Count == 0;
+        {
+            this.head = 0;
+            for (int i = 0; i < capacity; i++) {
+                int descBase = i * DescriptorBytes;
+                this.descRegion.Write32(descBase, 0);
+            }
+        }
+
+        private void PushPacket(PacketFifo*! in ExHeap      rxFifo,
+                                [Claims] Packet*! in ExHeap packet)
+            requires packet->FragmentCount == 1;
+            requires packet->GetLength() <= MaxFragmentBytes;
+            ensures this.Count == old(this.Count) + 1;
+            ensures this.Head == (old(this.Head) + 1) % this.Capacity;
+
+        {
+            UIntPtr fragmentVA;
+            int     length;
+
+            packet->GetFragmentRange(0, out fragmentVA, out length);
+
+            // Round down buffer length to multiple of 4 bytes
+            uint rdes1 = ((uint)length & ~0x03u);
+            uint rdes2 = (uint)GetPhysicalAddress(fragmentVA);
+            uint rdes3 = ((uint)this.padRegion.PhysicalAddress.Value +
+                          (uint)(this.head * PadBytes));
+
+            rdes1 |= (PadBytes << RDES1.RBS2_ROLL);
+            if (this.head == this.Capacity - 1) {
+                rdes1 |= RDES1.RER;
+            }
+
+            int offset = this.head * DescriptorBytes;
+            this.descRegion.Write32(offset + 12, rdes3);
+            this.descRegion.Write32(offset +  8, rdes2);
+            this.descRegion.Write32(offset +  4, rdes1);
+            this.descRegion.Write32(offset +  0, RDES0.OWN);
+
+            this.head = (this.head + 1) & (this.Capacity - 1);
+            this.count++;
+
+            rxFifo->Push(packet);
+        }
+
+        internal void Push(PacketFifo*! in ExHeap incoming)
+            requires this.Count + incoming->Count <= this.Capacity;
+            ensures  this.Count == old(this.Count) + old(incoming->Count);
+            ensures  (this.Head ==
+                      (old(this.Head) + old(incoming->Count)) % this.Capacity);
+        {
+            DumpOwnership("+RX Push()");
+            PacketFifo*! in ExHeap rxFifo = this.rxPackets.Acquire();
+            try {
+                while (incoming->Count > 0) {
+                    Packet*! in ExHeap packet = incoming->Pop();
+                    packet->UnsetFragmentLengths();
+                    PushPacket(rxFifo, packet);
+                }
+            }
+            finally {
+                this.rxPackets.Release(rxFifo);
+            }
+            DumpOwnership("-RX Push()");
+        }
+
+        private Packet* in ExHeap PopPacket(PacketFifo*! in ExHeap rxFifo)
+            ensures (this.Count == old(this.Count) - 1 ||
+                     this.Count == old(this.Count));
+        {
+            int descBase = this.Tail * DescriptorBytes;
+            uint rdes0 = this.descRegion.Read32(descBase);
+            if ((rdes0 & RDES0.OWN) == RDES0.OWN) {
+                return null;
+            }
+
+            Packet*! in ExHeap packet = rxFifo->Pop();
+
+            // Length is less FCS that is passed up to anyone
+            uint length = ((rdes0 >> RDES0.FL_ROLL) & RDES0.FL_MASK) - 4;
+            int  packetCapacity = packet->GetLength();
+            if ((packetCapacity % 3) != 0) {
+                // We may have data in second buffer because
+                // packet size was not a multiple of 4.
+                if (length >= (packetCapacity & ~0x3)) {
+                    packet->SetFragmentLength(0, packetCapacity & ~0x3);
+                    int todo = ((int)length - (packetCapacity & ~0x3)) & 0x3;
+                    for (int i = 0; i < todo; i++) {
+                        int srcOffset = this.Tail * PadBytes + i;
+                        packet->AppendToFragment(0, this.padRegion[srcOffset]);
+                    }
+                }
+            }
+
+            bool cropped   = false;
+            uint maxLength = (uint)packet->GetLength();
+            if (length > maxLength) {
+                TulipDebug.Print("RX Packet cropped ({0} > {1})\n",
+                                 __arglist(length, maxLength));
+                cropped = true;
+                length = maxLength;
+            }
+
+            if ((rdes0 & RDES0.ES) != 0) {
+                TulipDebug.Print("RX Error RDES0 = {0:x8}\n",
+                                 __arglist(rdes0));
+                packet->FromDeviceFlags = FromDeviceFlags.ReceiveError;
+            }
+            else if (cropped) {
+                packet->FromDeviceFlags = FromDeviceFlags.ReceiveError;
+            }
+            else {
+                packet->FromDeviceFlags = FromDeviceFlags.ReceiveSuccess;
+            }
+
+            this.count--;
+            return packet;
+        }
+
+        internal void Pop(PacketFifo*! in ExHeap outgoing)
+            ensures this.Count == old(this.Count) - outgoing->Count;
+        {
+            DumpOwnership("+RX Pop");
+            PacketFifo*! in ExHeap rxFifo = this.rxPackets.Acquire();
+            try {
+                while (rxFifo->Count > 0) {
+                    Packet* in ExHeap popped = PopPacket(rxFifo);
+                    if (popped == null)
+                        break;
+                    outgoing->Push(popped);
+                }
+            }
+            finally {
+                this.rxPackets.Release(rxFifo);
+            }
+            DumpOwnership("-RX Pop");
+        }
+
+        private static UIntPtr GetPhysicalAddress(UIntPtr va)
+        {
+            UIntPtr pa;         // Physical address
+            UIntPtr paLeft;     // Bytes remaining on physical page
+            if (!DeviceService.GetDmaPhysicalAddress(va, out pa, out paLeft) ||
+                pa == UIntPtr.Zero ||
+                paLeft < Tulip.MtuBytes) {
+                throw new ApplicationException("Bad DMA pointer");
+            }
+            return pa;
+        }
+
+        internal UIntPtr BaseAddress
+        {
+            get { return this.descRegion.PhysicalAddress.Value; }
+        }
+
+        [Pure]
+        internal int Capacity { get { return this.capacity; } }
+
+        [Pure]
+        internal int Count { get { return this.count; } }
+
+        [Pure]
+        internal int Free { get { return this.capacity - this.count; } }
+
+        [Pure]
+        internal int Head { get { return this.head; } }
+
+        [Pure]
+        internal int Tail
+        {
+            get {
+                return ((this.capacity + this.head - this.count) %
+                        this.capacity);
+            }
+        }
+
+        [Pure]
+        private static bool IsPowerOf2(int n)
+        {
+            return (n > 0) && ((n & (n - 1)) == 0);
+        }
+
+        [Pure]
+        private static bool IsMultipleOf4(int n)
+        {
+            return (n % 4) == 0;
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG_TULIP") ]
+        private static void DumpOwnership(int start, int end, bool owned)
+        {
+            TulipDebug.Print(
+                "{0:4}-{1:4} {2}\n",
+                __arglist(start, end, owned ? "OWNED" : "UNOWNED")
+                );
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG_TULIP") ]
+        internal void DumpOwnership(string title)
+        {
+            TulipDebug.Print("{0}\n", __arglist(title));
+            PacketFifo*! in ExHeap fifo = this.rxPackets.Acquire();
+            try {
+                assert fifo->Count == this.Count;
+                TulipDebug.Print("Head = {0} Tail = {1} PacketCount = {2}\n",
+                                 __arglist(this.Head, this.Tail,
+                                           fifo->Count));
+
+                bool errorsFound = false;
+
+                uint lastRdes0 = this.descRegion.Read32(0) & RDES0.OWN;
+                int lastStart = 0;
+                for (int i = 1; i < this.Capacity; i++) {
+                    uint rdes0 = this.descRegion.Read32(i * DescriptorBytes);
+                    errorsFound = ((rdes0 & RDES0.ES) != 0);
+
+                    if ((rdes0 & RDES0.OWN) != lastRdes0) {
+                        DumpOwnership(lastStart, i - 1,
+                                      lastRdes0 == RDES0.OWN);
+                        lastStart = i;
+                        lastRdes0 = rdes0 & RDES0.OWN;
+                    }
+                }
+                DumpOwnership(lastStart, this.Capacity - 1,
+                              (lastRdes0 & RDES0.OWN) == RDES0.OWN);
+
+                if (errorsFound) {
+                    for (int i = 0; i < this.Capacity; i++) {
+                        uint rdes0, rdes1, rdes2, rdes3;
+                        rdes0 = this.descRegion.Read32(i * DescriptorBytes);
+                        rdes1 = this.descRegion.Read32(i * DescriptorBytes + 4);
+                        rdes2 = this.descRegion.Read32(i * DescriptorBytes + 8);
+                        rdes3 = this.descRegion.Read32(i * DescriptorBytes + 12);
+                        TulipDebug.Print(
+                            "{0:x4} {1}{2} FL = {3:4} RDES [0]={4:x8} [1]={5:x8} [2]={6:x8} [3]={7:x8}\n",
+                            __arglist(i,
+                                      (rdes0 & RDES0.OWN) != 0 ? "O" : "U",
+                                      (rdes0 & RDES0.ES)  != 0 ? "E" : "0",
+                                      (rdes0 >> RDES0.FL_ROLL) & RDES0.FL_MASK,
+                                      rdes0, rdes1, rdes2, rdes3));
+                    }
+                }
+            }
+            finally {
+                this.rxPackets.Release(fifo);
+            }
+        }
+    }
+}

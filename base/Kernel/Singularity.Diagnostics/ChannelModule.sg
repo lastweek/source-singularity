@@ -1,0 +1,191 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Channel diagnostic module
+//
+
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Directory;
+using System;
+
+namespace Microsoft.Singularity.Diagnostics
+{
+    using SystemType = Microsoft.Singularity.V1.Types.SystemType;
+
+    public class ChannelModule
+    {
+        private void Run()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels.
+            DirectoryServiceContract.Imp! epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(ChannelContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, ErrorCode error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the Channel Diagnostic module.\n");
+                        if (rejectedEP != null) {
+                            delete rejectedEP;
+                        }
+                        delete nsExp;
+                        return;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Here is the set of client channels we service
+            ESet<ChannelContract.Exp:ReadyState> epSet = new ESet<ChannelContract.Exp:ReadyState>();
+            while (true) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people top give us ChannelContract.Exp instances
+                            ChannelContract.Exp newDiagEp = newEp as ChannelContract.Exp;
+
+                            if (newDiagEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newDiagEp.SendReady();
+                                epSet.Add(newDiagEp);
+                            }
+                        }
+                        break;
+
+                    // ------------------------------- Requests on existing connections
+                    //
+
+                    /// TODO: Move this to the Channel specific contract once we get there.
+                    case ep.GetChannels() in epSet :
+                        {
+                            ChannelInfo[]! in ExHeap channels = ChannelModule.GetChannelInfo();
+                            ep.SendChannels(channels);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.GetChannelStats() in epSet :
+                        {
+                            long msgs  = PerfCounters.MsgsSent; 
+                            long bytes = PerfCounters.BytesSent; 
+                            long chan  = PerfCounters.ChannelsCreated; 
+                            ep.SendChannelStats(msgs, bytes, chan);
+                            epSet.Add(ep);
+                        }
+                        break;
+
+                    case ep.ChannelClosed() in epSet :
+                        {
+                            delete ep;
+                        }
+                        break;
+
+                    case epSet.Empty() && nsExp.ChannelClosed():
+                        // Exit this thread
+                        delete nsExp;
+                        epSet.Dispose();
+                        return;
+                }
+            }
+        }
+
+        private class ChannelInfoAccumulator
+        {
+            unsafe private ChannelInfo[]! in ExHeap infoVector;
+            private int used = 0;
+
+            [NotDelayed]
+            private ChannelInfoAccumulator()
+            {
+                this.infoVector = new[ExHeap] ChannelInfo[EndpointCore.OpenChannelCount];
+                base();
+                ((!)SharedHeap.KernelSharedHeap).EndpointOwnerId.Iterate(
+                    new SharedHeap.AllocationVisitor(this.Accumulate));
+
+            }
+
+            public static ChannelInfo[]! in ExHeap GetChannels() {
+                ChannelInfoAccumulator acc = new ChannelInfoAccumulator();
+                return acc.infoVector;
+            }
+
+            private unsafe void Accumulate(SharedHeap.Allocation* alloc)
+            {
+                SystemType endpointType = typeof(Endpoint).GetSystemType();
+
+                ChannelInfo[]! in ExHeap infoVector = this.infoVector;
+
+                if (SystemType.IsSubtype(alloc, endpointType)) {
+                    unsafe {
+                        // Note that we use Unchecked access here, since we don't
+                        // actually own this data.
+                        //
+                        UIntPtr data = SharedHeap.Allocation.GetDataUnchecked(alloc);
+                        EndpointCore*! ep = (!)(EndpointCore*)data;
+                        int id = ep->ChannelId;
+                        if (id > 0) {
+                            int index = this.used++;
+                            if (index >= infoVector.Length) {
+                                // more channels materialized after we allocated vector
+                                // skip the remaining ones
+
+                                // suck back ownership
+                                this.infoVector = infoVector;
+                                return;
+                            }
+                            infoVector[index].ChannelId = id;
+                            infoVector[index].ExpProcessId = ep->ProcessId;
+                            infoVector[index].ImpProcessId = ep->PeerProcessId;
+                            infoVector[index].MessagesDeliveredToExp = ep->ReceiveCount;
+                            infoVector[index].MessagesDeliveredToImp = ep->PeerReceiveCount;
+                        }
+                    }
+                }
+            }
+        }
+
+
+        public static ChannelInfo[]! in ExHeap GetChannelInfo() {
+            return ChannelInfoAccumulator.GetChannels();
+        }
+
+        internal static void Initialize()
+        {
+            ChannelModule module = new ChannelModule();
+            Thread thread = Thread.CreateThread(Thread.CurrentProcess,
+                                                new ThreadStart(module.Run));
+            if (thread != null) {
+                thread.Start();
+            }
+        }
+    }
+}

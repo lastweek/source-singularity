@@ -1,0 +1,171 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+// Verified mark-sweep garbage collector
+// Includes Spec/NucleusInvMarkSweep_i.bpl
+// Includes Spec/Gc_i.bpl
+
+var $color:[int]int;
+var StackTop:int;
+var $fs:[int]int; // size of free block
+var $fn:[int]int; // next free block
+var CachePtr:int;
+var CacheSize:int;
+var ColorBase:int;
+var HeapLo:int;
+var HeapHi:int;
+var ReserveMin:int; // wilderness marker
+var $freshAbs:int;
+
+var GcVars @ {
+  CurrentStack:int, $gcSlice:[int]int, $color:[int]int, StackTop:int, $fs:[int]int, $fn:[int]int, CachePtr:int, CacheSize:int,
+  ColorBase:int, HeapLo:int, HeapHi:int, ReserveMin:int
+}
+
+var AllGcVars @ {GcVars:_, $stackState:[int]StackState, $r1:[int]int, $r2:[int]int, $freshAbs:int, $Time:Time}
+
+var $FrameVars @ {
+  $FrameCounts:[int]int, $FrameAddrs:[int][int]int, $FrameLayouts:[int][int]$FrameLayout,
+  $FrameSlices:[int][int]int, $FrameAbss:[int][int][int]int, $FrameOffsets:[int][int]int
+}
+
+axiom (forall $s:int::StackHi($s) == ?fLo + $s * ?FSize + ?FSize);
+axiom (forall $s:int::StackLo($s) == ?fLo + $s * ?FSize);
+
+procedure InitializeGc();
+  requires SMemRequireRA(104, $sMem, esp, $RET);
+  requires MemInv($MemVars);
+  requires IoInv($IoVars, $pciMem);
+  requires CurrentStack == $S;
+  requires (forall $s:int::{TStk($s)} TStk($s) ==> isStack($s) ==> IsEmpty($StackState[$s]));
+  requires (forall $s:int::{TStk($s)} TStk($s) ==> isStack($s) ==> StackTag($s, $tMems) == ?STACK_EMPTY);
+  requires (forall i:int::{TV(i)} $toAbs[i] == NO_ABS);
+  modifies $Eip, $RET, eax, ebx, ecx, edx, esi, edi, ebp, esp;
+  modifies AllGcVars, $MemVars;
+  ensures  SMemEnsure($sMem, old($sMem), esp, old(esp));
+  ensures  MemInv($MemVars);
+  ensures  NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  ebp == old(ebp);
+  ensures  WellFormed($toAbs);
+
+procedure revealInv1($s:int, $_stackState:[int]StackState);
+  requires isStack($s);
+  requires NucleusInv($S, $_stackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  $S == CurrentStack;
+  ensures  MemInv($MemVars);
+  ensures  IoInv($IoVars, $pciMem);
+  ensures  StackStateTag($_stackState[$s]) == StackTag($s, $tMems);
+  ensures  IsYielded($_stackState[$s]) ==>
+            $_stackState[$s] == StackYielded(StackEbp($s, $tMems), StackEsp($s, $tMems) + 4, StackRA($s, $tMems, $fMems));
+
+procedure updateInv1($oldPciConfigState:[int]int, $oldPciMem:[int]int, $oldMem:[int]int);
+  requires NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $oldMem,
+            $sMem, $dMem, $oldPciMem, $tMems, $fMems, $gcMem,
+            MemVars, $FrameVars, $IoMmuEnabled, $oldPciConfigState, DmaAddr);
+  requires MemInv($MemVars);
+  requires IoInv($IoVars, $pciMem);
+  ensures  NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+
+procedure setStackEmpty($s:int);
+  requires Aligned(eax);
+  requires eax == ?tLo + $s * ?TSize;
+  requires isStack($s);
+  requires NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  modifies $Eip;
+  modifies $Mem, $fMems, $tMems, $stackState;
+  ensures  NucleusInv($S, $StackState[$s := StackEmpty], $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  $Mem == old($Mem)[eax := ?STACK_EMPTY];
+
+procedure setStackYielded();
+  requires Aligned(esp);
+  requires fAddr($S, esp);
+  requires Aligned(eax);
+  requires eax == ?tLo + $S * ?TSize;
+  requires word(ebp) && word(esp);
+  requires isStack($S) && $StackState[$S] == StackRunning;
+  requires NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  requires ScanStackInv($S, $Mem, $FrameVars, $Mem[esp], esp, ebp);
+  modifies $Eip;
+  modifies $Mem, $fMems, $tMems, $stackState;
+  ensures  NucleusInv($S, $StackState[$S := StackYielded(ebp, esp + 4, $Mem[esp])], $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  MemInv($MemVars);
+  ensures  $Mem == old($Mem)[eax := ?STACK_YIELDED][eax + 4 := esp][eax + 8 := ebp];
+
+procedure setStackInterrupted();
+  requires word(eax) && word(ebx) && word(ecx) && word(edx) && word(esi) && word(edi) && word(ebp);
+  requires Aligned(esp);
+  requires fAddr($S, esp) && fAddr($S, esp + 8);
+  requires word(ebp) && word(esp);
+  requires isStack($S) && $StackState[$S] == StackRunning;
+  requires NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  modifies $Eip, eax, edx;
+  modifies $Mem, $fMems, $tMems, $stackState;
+  ensures  NucleusInv($S,
+              $StackState[$S := StackInterrupted(old(eax), ebx, ecx, old(edx), esi, edi, ebp, esp + 12,
+                old($Mem)[esp], old($Mem)[esp + 4], old($Mem)[esp + 8])],
+              $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  MemInv($MemVars);
+
+procedure setStackRunning1($s:int);
+  requires isStack($s);
+  requires Aligned(esp);
+  requires Aligned(esp + 4);
+  requires Aligned(edi);
+  requires esp == StackHi($s) - 8;
+  requires edi == ?tLo + $s * ?TSize;
+  requires word(ecx);
+  requires NucleusInv($S, $StackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  requires $FrameCounts[$s] == 0;
+  modifies $Eip;
+  modifies $Mem, $fMems, $tMems;
+  ensures  $Mem[esp + 0] == ecx;
+  ensures  NucleusInv($S, $StackState[$s := StackRunning], $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+
+procedure setStackRunning2($s:int, $_stackState:[int]StackState);
+  requires ecx == $s;
+  requires isStack($s);
+  requires Aligned(esp);
+  requires Aligned(esp + 4);
+  requires Aligned(edi);
+  requires esp == StackHi($s) - 8;
+  requires edi == ?tLo + $s * ?TSize;
+  requires word(eax);
+  requires NucleusInv($S, $_stackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  requires $FrameCounts[$s] == 0;
+  modifies $Eip;
+  modifies $Mem, $fMems, $tMems, CurrentStack;
+  ensures  $Mem[esp + 0] == eax;
+  ensures  NucleusInv($s, $_stackState[$s := StackRunning], $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+
+procedure setStackRunning3($s:int, $_stackState:[int]StackState, $ebp:int, $esp:int, $eip:int);
+  requires ecx == $s;
+  requires isStack($s) && $_stackState[$s] == StackYielded($ebp, $esp, $eip);
+  requires Aligned(edi);
+  requires edi == ?tLo + $s * ?TSize;
+  requires NucleusInv($S, $_stackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp, esp;
+  modifies $Mem, $fMems, $tMems, CurrentStack;
+  ensures  NucleusInv($s, $_stackState[$s := StackRunning], $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  esp == $esp - 4;
+  ensures  ebp == $ebp;
+  ensures  Aligned(esp);
+  ensures  $Mem[$esp - 4] == $eip;
+
+procedure setStackRunning4($s:int, $_stackState:[int]StackState,
+    $eax:int, $ebx:int, $ecx:int, $edx:int, $esi:int, $edi:int, $ebp:int, $esp:int, $eip:int, $cs:int, $efl:int);
+  requires ecx == $s;
+  requires isStack($s) && $_stackState[$s] == StackInterrupted($eax, $ebx, $ecx, $edx, $esi, $edi, $ebp, $esp, $eip, $cs, $efl);
+  requires Aligned(edi);
+  requires edi == ?tLo + $s * ?TSize;
+  requires NucleusInv($S, $_stackState, $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  modifies $Eip, eax, ebx, ecx, edx, esi, edi, ebp, esp;
+  modifies $Mem, $fMems, $tMems, CurrentStack;
+  ensures  NucleusInv($s, $_stackState[$s := StackRunning], $toAbs, $AbsMem, GcVars, $MemVars, $FrameVars, $IoVars);
+  ensures  esp == $esp - 12;
+  ensures  eax == $eax && ebx == $ebx && ecx == $ecx && edx == $edx && esi == $esi && edi == $edi && ebp == $ebp;
+  ensures  Aligned(esp);
+  ensures  $Mem[$esp - 4] == $efl;
+  ensures  $Mem[$esp - 8] == $cs;
+  ensures  $Mem[$esp - 12] == $eip;
+

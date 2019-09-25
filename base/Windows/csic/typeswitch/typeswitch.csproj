@@ -1,0 +1,135 @@
+<VisualStudioProject>
+    <CSHARP
+        ProjectType = "Local"
+        ProductVersion = "7.0.9466"
+        SchemaVersion = "1.0"
+        ProjectGuid = "{8EFFD424-0210-44AA-B208-7643A347C7A2}"
+    >
+        <Build>
+            <Settings
+                ApplicationIcon = ""
+                AssemblyKeyContainerName = ""
+                AssemblyName = "typeswitch"
+                AssemblyOriginatorKeyFile = ""
+                DefaultClientScript = "JScript"
+                DefaultHTMLPageLayout = "Grid"
+                DefaultTargetSchema = "IE50"
+                DelaySign = "false"
+                OutputType = "Library"
+                RootNamespace = "typeswitch"
+                StartupObject = ""
+            >
+                <Config
+                    Name = "Debug"
+                    AllowUnsafeBlocks = "false"
+                    BaseAddress = "285212672"
+                    CheckForOverflowUnderflow = "false"
+                    ConfigurationOverrideFile = ""
+                    DefineConstants = ""
+                    DocumentationFile = ""
+                    DebugSymbols = "true"
+                    FileAlignment = "4096"
+                    IncrementalBuild = "true"
+                    Optimize = "false"
+                    OutputPath = ".\"
+                    RegisterForComInterop = "false"
+                    RemoveIntegerChecks = "false"
+                    TreatWarningsAsErrors = "false"
+                    WarningLevel = "1"
+                />
+                <Config
+                    Name = "Release"
+                    AllowUnsafeBlocks = "false"
+                    BaseAddress = "285212672"
+                    CheckForOverflowUnderflow = "false"
+                    ConfigurationOverrideFile = ""
+                    DefineConstants = ""
+                    DocumentationFile = ""
+                    DebugSymbols = "false"
+                    FileAlignment = "4096"
+                    IncrementalBuild = "true"
+                    Optimize = "false"
+                    OutputPath = "bin\"
+                    RegisterForComInterop = "false"
+                    RemoveIntegerChecks = "false"
+                    TreatWarningsAsErrors = "false"
+                    WarningLevel = "1"
+                />
+            </Settings>
+            <References>
+                <Reference
+                    Name = "bind"
+                    AssemblyName = "bind"
+                    HintPath = "..\bind\bind.dll"
+                    Private = "False"
+                />
+                <Reference
+                    Name = "base"
+                    AssemblyName = "base"
+                    HintPath = "..\base\base.dll"
+                    Private = "False"
+                />
+                <Reference
+                    Name = "parser"
+                    AssemblyName = "parser"
+                    HintPath = "..\parser\parser.dll"
+                    Private = "False"
+                />
+                <Reference
+                    Name = "typecheck"
+                    AssemblyName = "typecheck"
+                    HintPath = "..\typecheck\typecheck.dll"
+                    Private = "False"
+                />
+                <Reference
+                    Name = "ilgen"
+                    AssemblyName = "ilgen"
+                    HintPath = "..\ilgen\ilgen.dll"
+                    Private = "False"
+                />
+                <Reference
+                    Name = "rewrite"
+                    AssemblyName = "rewrite"
+                    HintPath = "..\rewrite\rewrite.dll"
+                    Private = "False"
+                />
+                <Reference
+                    Name = "source"
+                    AssemblyName = "source"
+                    HintPath = "..\source\source.dll"
+                    Private = "False"
+                />
+            </References>
+        </Build>
+        <Files>
+            <Include>
+                <File
+                    RelPath = "typeswitch-bind.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+                <File
+                    RelPath = "typeswitch-ilgen.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+                <File
+                    RelPath = "typeswitch-rewrite.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+                <File
+                    RelPath = "typeswitch-source.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+                <File
+                    RelPath = "typeswitch-typecheck.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+            </Include>
+        </Files>
+    </CSHARP>
+</VisualStudioProject>
+

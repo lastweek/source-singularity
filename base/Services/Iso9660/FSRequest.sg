@@ -1,0 +1,97 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+
+using Iso9660;
+
+namespace Microsoft.Singularity.FileSystem
+{
+
+    public enum FSRequestAction
+        {Read, GetAttributes,
+        BeginEnumeration, Bind}
+
+    public delegate void FSThreadPoolCallback(FSRequestInfo);
+
+    public class FSRequestInfo {
+        public FSRequestAction action;
+
+        protected FSRequestInfo(
+            FSRequestAction requestAction) {
+            action = requestAction;
+        }
+    }
+
+    public class FSFileRequestInfo : FSRequestInfo {
+        public TRef<FileContract.Exp:Ready> endpointT;
+        public ByteContainer buf;
+        public Iso9660FileStream fileStream;
+        public long bufOffset;
+        public long fileOffset;
+        public long maxLength;
+
+        public FSFileRequestInfo(
+            FSRequestAction action,
+            TRef<FileContract.Exp:Ready> newEndpointT,
+            ByteContainer newBuf,
+            Iso9660FileStream newFileStream,
+            long newBufOffset,
+            long newFileOffset,
+            long newMaxLength) : base(action) {
+
+            endpointT = newEndpointT;
+            buf = newBuf;
+            fileStream = newFileStream;
+            bufOffset = newBufOffset;
+            fileOffset = newFileOffset;
+            maxLength = newMaxLength;
+       }
+    }
+
+    public class FSDirectoryRequestInfo : FSRequestInfo {
+        public TRef<DirectoryServiceContract.Exp:Ready> endpointT;
+        public Iso9660DirectoryInfo dir;
+        public string name;
+
+        public FSDirectoryRequestInfo(
+            FSRequestAction action,
+            TRef<DirectoryServiceContract.Exp:Ready> newEndpointT,
+            Iso9660DirectoryInfo newDir,
+            string newName) : base(action) {
+
+            endpointT = newEndpointT;
+            dir = newDir;
+            name = newName;
+       }
+    }
+
+    public class FSBindRequestInfo : FSRequestInfo {
+        public TRef<DirectoryServiceContract.Exp:Ready> endpointT;
+        public TRef<ServiceContract.Exp:Start> bindEndpointT;
+        public Iso9660DirectoryInfo startingDir;
+        public string path;
+
+        public FSBindRequestInfo(
+            FSRequestAction action,
+            TRef<DirectoryServiceContract.Exp:Ready> newEndpointT,
+            TRef<ServiceContract.Exp:Start> newBindEndpointT,
+            Iso9660DirectoryInfo newStartingDir,
+            string newPath) : base(action) {
+
+            endpointT = newEndpointT;
+            bindEndpointT = newBindEndpointT;
+            startingDir = newStartingDir;
+            path = newPath;
+       }
+    }
+}
+

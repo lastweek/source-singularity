@@ -1,0 +1,93 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+This targets file is for defining custom build tools used to process special input
+files, typically producing source files for further processing. Just following the
+model of the existing examples below to add a new one.
+
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <SingularityCustomBuildToolsIncluded>true</SingularityCustomBuildToolsIncluded>
+  </PropertyGroup>
+
+  <Target Name="RunCustomBuildTools"
+          DependsOnTargets="CreateLanguageCompileItems;
+                            CreateCsUnionCompileItems;
+                            "/>
+
+  <!--
+  This target allows projects to include language files (.lang), which are processed by the SPG tool.
+  Each .lang input file creates a single output file (source code), and that output file is added
+  to the list of source files to compile into the assembly.  To use this, add 'LanguageFile' items
+  to your project.  You must provide Namespace and ClassName metadata for each LanguageFile item.
+  For example:
+
+      <ItemGroup>
+        <LanguageFile Include="script.lang">
+          <ClassName>ScriptParser</ClassName>
+          <Namespace>Microsoft.Singularity.Applications</Namespace>
+        </LanguageFile>
+      </ItemGroup>
+
+  -->
+  <Target Name="BuildLanguageFiles"
+          Inputs="%(LanguageFile.Identity)"
+          Outputs="$(OutputPath)\%(LanguageFile.filename)_language.sg">
+    <Error Condition="'%(LanguageFile.Identity)'!='' and '%(LanguageFile.Namespace)'==''" Text="All LanguageFile items require that the Namespace metadata be provided."/>
+    <Error Condition="'%(LanguageFile.Identity)'!='' and '%(LanguageFile.ClassName)'==''" Text="All LanguageFile items require that the ClassName metadata be provided."/>
+
+    <Message Text="Building languages"/>
+    <MakeDir Directories="$(OutputPath)"/>
+    <Exec Command="&quot;$(BUILDDIR)\spg&quot; &quot;%(LanguageFile.Identity)&quot; %(LanguageFile.Namespace) %(LanguageFile.ClassName) &quot;$(OutputPath)\%(LanguageFile.filename)_language.sg&quot;"/>
+  </Target>
+
+  <!-- Generate 'Compile' items so that the BuildAssembly target will include the output of this target. -->
+  <Target Name="CreateLanguageCompileItems" DependsOnTargets="BuildLanguageFiles">
+    <CreateItem Include="@(LanguageFile->'$(OutputPath)\%(filename)_language.sg')">
+      <Output TaskParameter="Include" ItemName="Compile"/>
+    </CreateItem>
+  </Target>
+
+  <!--
+  This target allows you to generate C# classes for disjoint unions, similar to ML datatypes. See
+  the mkunion documentation for details. It runs csunion files (.csunion) through the mkunion tool.
+  Each .csunion input file creates a single .cs output file (source code), and that output file is added
+  to the list of source files to compile into the assembly.  To use this, add 'CsUnionFile' items
+  to your project.  You must provide Namespace metadata for each CsUnionFile item.
+  For example:
+
+      <ItemGroup>
+        <CsUnionFile Include="MyUnions.csunion">
+          <Namespace>Microsoft.Singularity.Applications</Namespace>
+        </CsUnionFile>
+      </ItemGroup>
+
+  -->
+  <Target Name="BuildCsUnionFiles"
+          Inputs="%(CsUnionFile.identity)"
+          Outputs="$(OutputPath)\%(CsUnionFile.filename)_csunion.cs">
+    <Error Condition="'%(CsUnionFile.identity)'!='' and '%(CsUnionFile.Namespace)'==''" Text="All CsUnionFile items require that the Namespace metadata be provided."/>
+
+    <Message Text="Building CsUnion files"/>
+    <MakeDir Directories="$(OutputPath)"/>
+    <Exec Command="&quot;$(BUILDDIR)\mkunion&quot; &quot;%(CsUnionFile.Identity)&quot; %(CsUnionFile.Namespace) &quot;$(OutputPath)\%(CsUnionFile.filename)_csunion.cs&quot;"/>
+  </Target>
+
+  <!-- Generate 'Compile' items so that the BuildAssembly target will include the output of this target. -->
+  <Target Name="CreateCsUnionCompileItems" DependsOnTargets="BuildCsUnionFiles">
+    <CreateItem Include="@(CsUnionFile->'$(OutputPath)\%(filename)_csunion.cs')">
+      <Output TaskParameter="Include" ItemName="Compile"/>
+    </CreateItem>
+  </Target>
+
+</Project>

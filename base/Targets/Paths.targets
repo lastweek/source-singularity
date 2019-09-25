@@ -1,0 +1,511 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Makefile.inc
+#
+#   Note:
+#
+#   This top-level file is included by all Makefile's in the project and
+#   contains all configurable options.  All options are overrideable
+#   through environment variables.
+#
+#   Configuration Options
+#       BARTOK     - Specify a particular bartok compiler
+#       Configuration  - Specify build type (Debug|Release|Prototype)
+#       COLLECTOR_KERNEL  - Specify garbage collector for kernel
+#                              (Concurrent|MarkSweep|Semispace|Null)
+#       COLLECTOR_APP     - Specify garbage collector for applications
+#                              (Concurrent|MarkSweep|Semispace|Null)
+#       Platform   - Specify host platform (ApicPC|ApicMP|Apic64)
+#       SCHEDULER  - Specify scheduler type (Affinity|Rialto|Min|Robin|Laxity)
+#       OBJROOT    - Specify directory in which to place objects (optional)
+#       PAGING     - Specify page translation (On|Off)
+#
+#   Resulting NMAKE macros passed to Makefiles
+#       OBJRELDIR  - relative path of full qualify object directory
+#       OBJKRNDIR  - relative path of full qualify object directory for kernel
+#       OBJDIR     - relative path of object directory from source directory
+#       CSFLAGS    - flags passed to c# compilers
+#       SGFLAGS    - flags passed to Sing# compilers
+#
+#       BASEDIR    - Root of Singularity source tree
+#       BOOTDIR    - Directory containing compiled boot assemblies.
+#       KERNDIR    - Directory containing compiled kernel assemblies.
+#       KABIDIR    - Directory containing compiled kernel ABI libraries.
+#       DISTDIR    - Directory containing compiled distribution files.
+#       DRIVDIR    - Directory containing compiled driver assemblies.
+#       APPILLSDIR - Directory containing compiled ILL assemblies.
+#       LIBSDIR    - Directory containing compiled library assemblies.
+#       APPSDIR    - Directory containing compiled application assemblies.
+#       SERVDIR    - Directory containing compiled service assemblies.
+#       WINSDIR    - Directory containing compiled Windows assemblies.
+#       OPTSDIR    - Directory containing the system options definitions.
+#       BUILDDIR   - Directory containing the build tools.
+#       WINBINDIR  - Directory containing checked in binaries for Windows.
+#
+##############################################################################
+
+This file is roughly equivalent to Makefile.inc.  It sets up lots of properties that allow apps to
+find frequently-used paths.
+
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- SINGULARITY_ROOT is required. -->
+
+  <!--
+  If you want to build Singularity projects from within VS IDE, you MUST run "setenv /vs".
+  If a build fails at this line, due to a missing Ide.targets, then either you have not
+  run "setenv /vs", or you have the relative path to Paths.targets incorrect in your project.
+  -->
+  <Import Condition="'$(BuildingInsideVisualStudio)'=='true'" Project="Ide.targets"/>
+
+  <Import Condition="'$(SINGULARITY_ROOT)'==''" Project="The_SINGULARITY_ROOT_property_is_not_defined!"/>
+
+  <Import Project="DistroPaths.targets" />
+
+  <PropertyGroup Condition="'$(SINGULARITY_ROOT)'==''">
+    <ERROR Condition="'$(BuildingInsideVisualStudio)'!='true'">The SINGULARITY_ROOT property is not set.  Make sure you have run setenv.cmd.</ERROR>
+    <ERROR Condition="'$(BuildingInsideVisualStudio)'=='true'">To build from within VS, please run 'setenv /vs'.  This creates the Ide.targets file, which the build system needs when building within VS.</ERROR>
+  </PropertyGroup>
+
+
+
+  <Import Condition="'$(SINGULARITY_OBJROOT)'==''" Project="The_SINGULARITY_OBJROOT_property_is_not_defined!"/>
+
+  <PropertyGroup Condition="'$(SINGULARITY_OBJROOT)'==''">
+    <ERROR Condition="'$(BuildingInsideVisualStudio)'!='true'">The SINGULARITY_OBJROOT property is not set.  Make sure you have run setenv.cmd.</ERROR>
+    <ERROR Condition="'$(BuildingInsideVisualStudio)'=='true'">To build from within VS, please run 'setenv /vs'.  This creates the Ide.targets file, which the build system needs when building within VS.</ERROR>
+  </PropertyGroup>
+
+
+  <PropertyGroup>
+
+    <SINGULARITY_PATH>$(SystemRoot)\System32;$(SystemRoot);$(SINGULARITY_ROOT)\build;$(SINGULARITY_ROOT)</SINGULARITY_PATH>
+
+
+    <!--
+    If you build with MSBuild 2.0, you get serial builds.
+    If you build with MSBuild 3.5 (part of Orcas cycle), you can enable parallel builds
+    by passing "/m:NN /tv:3.5" to MSBuild.
+    -->
+    <BuildInParallel Condition="'$(MSBuildToolsVersion)'==''">false</BuildInParallel>
+    <BuildInParallel Condition="'$(BuildInParallel)'=='' and '$(MSBuildToolsVersion)' == '3.5'">true</BuildInParallel>
+    <BuildInParallel Condition="'$(BuildInParallel)'==''">false</BuildInParallel>
+
+    <!-- Absolute paths into source tree -->
+    <BASEDIR>$(SINGULARITY_ROOT)</BASEDIR>
+    <BUILDDIR>$(BASEDIR)\Build</BUILDDIR>
+    <OPTSDIR>$(BASEDIR)\Options</OPTSDIR>
+    <WINBINDIR>$(BASEDIR)\Windows\Bin</WINBINDIR>
+  </PropertyGroup>
+
+  <!-- Imported sources -->
+  <PropertyGroup>
+    <DefaultBartokSrcDir>$(SINGULARITY_ROOT)\Imported\Bartok</DefaultBartokSrcDir>
+    <BartokSrcDir Condition="'$(BartokSrcDir)'==''">$(DefaultBartokSrcDir)</BartokSrcDir>
+    <DefaultSingSharpSrcDir>$(SINGULARITY_ROOT)\Imported\SingSharp</DefaultSingSharpSrcDir>
+    <SingSharpSrcDir Condition="'$(SingSharpSrcDir)'==''">$(DefaultSingSharpSrcDir)</SingSharpSrcDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DEFAULT_ASMP_SYSCALL_BUILDER>MpSyscallBuilder</DEFAULT_ASMP_SYSCALL_BUILDER>
+    <ASMP_SYSCALL_BUILDER Condition="'$(ASMP_SYSCALL_BUILDER)'==''">$(DEFAULT_ASMP_SYSCALL_BUILDER)</ASMP_SYSCALL_BUILDER>
+  </PropertyGroup>
+
+
+  <PropertyGroup>
+    <AFLAGS>$(AFLAGS) /nologo /Zi /Cp /DSINGULARITY=1 </AFLAGS>
+    <CFLAGS>$(CFLAGS) /nologo /W3 /WX /Gy /Zi /GS- /DSINGULARITY=1 $(CC_FLAGS_64) </CFLAGS>
+    <CFLAGS>$(CFLAGS)</CFLAGS>
+    <CPPFLAGS>$(CFLAGS)</CPPFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(ShowFullPaths)'=='true'">
+    <CFLAGS>$(CFLAGS) /FC</CFLAGS>
+  </PropertyGroup>
+
+  <!-- Enable compiler optimizations for Debug and Release builds. -->
+
+  <PropertyGroup Condition="'$(Configuration)'!='Prototype'">
+    <CFLAGS>$(CFLAGS) /O2 /Oy- </CFLAGS>
+  </PropertyGroup>
+
+  <!-- Disable optimizations for Prototype builds. -->
+  <PropertyGroup Condition="'$(Configuration)'=='Prototype'">
+    <CFLAGS>$(CFLAGS) /Od </CFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Prototype' or '$(Configuration)'=='Debug'">
+    <ACFLAGS>$(ACFLAGS) /DDEBUG=1</ACFLAGS>
+  </PropertyGroup>
+
+
+<!--  COLLECTOR_KERNEL|_APP = "AdaptiveCopying" | "Concurrent"* | "MarkSweep" | "Semispace" | "Sliding" | "Null"-->
+  <PropertyGroup>
+    <DEFAULT_COLLECTOR_KERNEL>Concurrent</DEFAULT_COLLECTOR_KERNEL>
+    <DEFAULT_COLLECTOR_APP>MarkSweep</DEFAULT_COLLECTOR_APP>
+    <COLLECTOR_KERNEL Condition="'$(COLLECTOR_KERNEL)'==''">$(DEFAULT_COLLECTOR_KERNEL)</COLLECTOR_KERNEL>
+    <COLLECTOR_APP Condition="'$(COLLECTOR_APP)'==''">$(DEFAULT_COLLECTOR_APP)</COLLECTOR_APP>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="'$(COLLECTOR_KERNEL)'=='AdaptiveCopying'"></When>
+    <When Condition="'$(COLLECTOR_KERNEL)'=='Concurrent'"></When>
+    <When Condition="'$(COLLECTOR_KERNEL)'=='MarkSweep'"></When>
+    <When Condition="'$(COLLECTOR_KERNEL)'=='Semispace'"></When>
+    <When Condition="'$(COLLECTOR_KERNEL)'=='Sliding'"></When>
+    <When Condition="'$(COLLECTOR_KERNEL)'=='Null'"></When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>COLLECTOR_KERNEL must either be unset, or set to one of "AdaptiveCopying" or "Concurrent" or "MarkSweep" or "Semispace" or "Sliding" or "Null"</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+  <Choose>
+    <When Condition="'$(COLLECTOR_APP)'=='AdaptiveCopying'"></When>
+    <When Condition="'$(COLLECTOR_APP)'=='Concurrent'"></When>
+    <When Condition="'$(COLLECTOR_APP)'=='MarkSweep'"></When>
+    <When Condition="'$(COLLECTOR_APP)'=='Semispace'"></When>
+    <When Condition="'$(COLLECTOR_APP)'=='Sliding'"></When>
+    <When Condition="'$(COLLECTOR_APP)'=='Null'"></When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>COLLECTOR_APP must either be unset, or set to one of "AdaptiveCopying" or "Concurrent" or "MarkSweep" or "Semispace" or "Sliding" | "Null"</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+  <!-- Visual Studio looks for conditions on property groups, and parses them,
+       in order to build the list of configurations and platforms.  These empty
+       declarations allow VS to pick up the correct strings for Configuration
+       and Platform.
+  -->
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'"/>
+  <PropertyGroup Condition="'$(Configuration)'=='Prototype'"/>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'"/>
+  <PropertyGroup Condition="'$(Platform)'=='ApicPC'"/>
+  <PropertyGroup Condition="'$(Platform)'=='ApicMP'"/>
+  <PropertyGroup Condition="'$(Platform)'=='Apic64'"/>
+
+  <PropertyGroup>
+    <Platform Condition="'$(Platform)'==''">ApicPC</Platform>
+    <Configuration Condition="'$(Configuration)'==''">Debug</Configuration>
+  </PropertyGroup>
+
+
+
+  <Choose>
+    <When Condition="'$(Platform)'=='ApicPC'">
+      <PropertyGroup>
+        <MAX_CPU>1</MAX_CPU>
+        <MACHINE>x86</MACHINE>
+        <SINGULARITY_MP>false</SINGULARITY_MP>
+      </PropertyGroup>
+    </When>
+
+    <When Condition="'$(Platform)'=='ApicMP'">
+      <PropertyGroup>
+        <MAX_CPU Condition="'$(MAX_CPU)'==''">4</MAX_CPU>
+        <MACHINE>x86</MACHINE>
+        <SINGULARITY_MP>true</SINGULARITY_MP>
+      </PropertyGroup>
+    </When>
+
+    <When Condition="'$(Platform)'=='Apic64'">
+      <PropertyGroup>
+        <MAX_CPU>1</MAX_CPU>
+        <MACHINE>x64</MACHINE>
+        <SINGULARITY_MP>true</SINGULARITY_MP>
+      </PropertyGroup>
+    </When>
+
+    <When Condition="'$(Platform)'=='Omap3430'">
+      <PropertyGroup>
+        <MAX_CPU>1</MAX_CPU>
+        <MACHINE>arm</MACHINE>
+        <SINGULARITY_MP>false</SINGULARITY_MP>
+      </PropertyGroup>
+    </When>
+
+    <When Condition="'$(Platform)'=='Smdk2410'">
+      <PropertyGroup>
+        <MAX_CPU>1</MAX_CPU>
+        <MACHINE>arm</MACHINE>
+        <SINGULARITY_MP>false</SINGULARITY_MP>
+      </PropertyGroup>
+    </When>
+
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>Platform must either be unset, or set to one of "LegacyPC" or "ApicPC" or "ApicMP" or "Omap3430". '$(Platform)' is invalid.</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+  <Choose>
+    <When Condition="'$(Machine)'=='x86' or '$(Machine)'=='x64'">
+      <PropertyGroup>
+        <CODE_GENERATOR Condition="'$(CODE_GENERATOR)'==''">BARTOK</CODE_GENERATOR>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Machine)'=='arm'">
+      <PropertyGroup>
+        <CODE_GENERATOR Condition="'$(CODE_GENERATOR)'==''">PHXBRIDGE</CODE_GENERATOR>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(CODE_GENERATOR)'=='BARTOK'">
+      <PropertyGroup>
+        <CODE_GENERATOR_BUILD Condition="'$(CODE_GENERATOR_BUILD)'==''">DEBUG</CODE_GENERATOR_BUILD>
+        <CODE_GENERATOR_RUNTIME Condition="'$(CODE_GENERATOR_RUNTIME)'==''">CLR</CODE_GENERATOR_RUNTIME>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(CODE_GENERATOR)'=='PHXBRIDGE'">
+      <PropertyGroup>
+        <CODE_GENERATOR_BUILD Condition="'$(CODE_GENERATOR_BUILD)'==''">TEST</CODE_GENERATOR_BUILD>
+        <CODE_GENERATOR_RUNTIME Condition="'$(CODE_GENERATOR_RUNTIME)'==''">CLR</CODE_GENERATOR_RUNTIME>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(Machine)'=='x86'">
+      <PropertyGroup>
+        <DEFAULT_CC>&quot;$(BUILDDIR)\x86_x86\cl.exe&quot;</DEFAULT_CC>
+        <DEFAULT_AS>&quot;$(BUILDDIR)\x86_x86\ml.exe&quot;</DEFAULT_AS>
+        <DEFAULT_BARTOK>&quot;$(BUILDDIR)\x86_x86\$(CODE_GENERATOR)\$(CODE_GENERATOR_BUILD)\$(CODE_GENERATOR_RUNTIME)\bartok.exe&quot;</DEFAULT_BARTOK>
+        <DEFAULT_LINK>&quot;$(BUILDDIR)\x86_x86\link.exe&quot;</DEFAULT_LINK>
+        <DEFAULT_LIB>&quot;$(BUILDDIR)\x86_x86\lib.exe&quot;</DEFAULT_LIB>
+        <DEFAULT_DUMPBIN>&quot;$(BUILDDIR)\x86_x86\dumpbin.exe&quot;</DEFAULT_DUMPBIN>
+        <TARGET_PROCESSOR_BYTEORDER>LITTLE_ENDIAN</TARGET_PROCESSOR_BYTEORDER>
+        <SING_DEF_FILE>Singularity.V1.def</SING_DEF_FILE>
+        <AFLAGS>$(AFLAGS) /Zi /Cp /DISA_IX86=1 /DPTR_SIZE_32=1 /DSINGULARITY=1</AFLAGS>
+        <CFLAGS>$(CFLAGS) /DISA_IX=1 /DISA_IX86=1 /DPTR_SIZE_32=1</CFLAGS>
+        <LINKFLAGS>$(LINKFLAGS) /machine:x86 /nologo</LINKFLAGS>
+        <LIBFLAGS>$(LIBFLAGS) /machine:x86 /nologo</LIBFLAGS>
+        <DUMPFLAGS>$(DUMPFLAGS) /nologo</DUMPFLAGS>
+        <BARTOK_MACHINE>x86</BARTOK_MACHINE>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Machine)'=='x64'">
+      <PropertyGroup>
+        <DEFAULT_CC>&quot;$(BUILDDIR)\x86_x64\cl.exe&quot;</DEFAULT_CC>
+        <DEFAULT_AS>&quot;$(BUILDDIR)\x86_x64\ml64.exe&quot;</DEFAULT_AS>
+        <DEFAULT_BARTOK>&quot;$(BUILDDIR)\x86_x64\$(CODE_GENERATOR)\$(CODE_GENERATOR_BUILD)\$(CODE_GENERATOR_RUNTIME)\bartok.exe&quot;</DEFAULT_BARTOK>
+        <DEFAULT_LINK>&quot;$(BUILDDIR)\x86_x64\link.exe&quot; </DEFAULT_LINK>
+        <DEFAULT_LIB>&quot;$(BUILDDIR)\x86_x64\lib.exe&quot;</DEFAULT_LIB>
+        <DEFAULT_DUMPBIN>&quot;$(BUILDDIR)\x86_x64\dumpbin.exe&quot;</DEFAULT_DUMPBIN>
+        <TARGET_PROCESSOR_BYTEORDER>LITTLE_ENDIAN</TARGET_PROCESSOR_BYTEORDER>
+        <AFLAGS>$(AFLAGS) /Zi /Cp /DISA_IX=1 /DISA_IX64=1 /DSINGULARITY=1</AFLAGS>
+        <ACFLAGS>$(ACFLAGS) /DISA_IX64=1 /DPTR_SIZE_64=1 /DUSE_64=1</ACFLAGS>
+        <CFLAGS>$(CFLAGS) /DISA_IX=1 /DISA_IX64=1 /DPTR_SIZE_64=1</CFLAGS>
+        <LINKFLAGS>$(LINKFLAGS) /machine:x64 /nologo</LINKFLAGS>
+        <LIBFLAGS>$(LIBFLAGS) /machine:x64 /nologo</LIBFLAGS>
+        <DUMPFLAGS>$(DUMPFLAGS) /nologo</DUMPFLAGS>
+        <SING_DEF_FILE>Singularity.V1.def</SING_DEF_FILE>
+        <BARTOK_MACHINE>amd64</BARTOK_MACHINE>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Machine)'=='arm'">
+      <PropertyGroup>
+        <DEFAULT_CC>&quot;$(BUILDDIR)\x86_arm\cl.exe&quot;</DEFAULT_CC>
+        <DEFAULT_AS>&quot;$(BUILDDIR)\x86_arm\mlarm.exe&quot;</DEFAULT_AS>
+        <DEFAULT_BARTOK>&quot;$(BUILDDIR)\x86_arm\$(CODE_GENERATOR)\$(CODE_GENERATOR_BUILD)\$(CODE_GENERATOR_RUNTIME)\bartok.exe&quot;</DEFAULT_BARTOK>
+        <DEFAULT_LINK>&quot;$(BUILDDIR)\x86_arm\link.exe&quot;</DEFAULT_LINK>
+        <DEFAULT_LIB>&quot;$(BUILDDIR)\x86_arm\lib.exe&quot;</DEFAULT_LIB>
+        <DEFAULT_DUMPBIN>&quot;$(BUILDDIR)\x86_arm\dumpbin.exe&quot; /nologo</DEFAULT_DUMPBIN>
+        <TARGET_PROCESSOR_BYTEORDER>LITTLE_ENDIAN</TARGET_PROCESSOR_BYTEORDER>
+        <SING_DEF_FILE>Singularity.V1.def</SING_DEF_FILE>
+        <AFLAGS>$(AFLAGS) /QRarch5</AFLAGS>
+        <CFLAGS>$(CFLAGS) /DISA_ARM=1 /DISA_XSCALE=1 /DPTR_SIZE_32=1 /QRarch5</CFLAGS>
+        <LINKFLAGS>$(LINKFLAGS) /machine:arm /nologo</LINKFLAGS>
+        <LIBFLAGS>$(LIBFLAGS) /machine:arm /nologo</LIBFLAGS>
+        <DUMPFLAGS>$(DUMPFLAGS) /nologo</DUMPFLAGS>
+        <BARTOK_MACHINE>arm</BARTOK_MACHINE>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+<!-- # Workaround for bug in Bartok drop @5063
+  <PropertyGroup>
+    <BARTOK_FLAGS>$(BARTOK_FLAGS) /IrPeepholeNull=false</BARTOK_FLAGS>
+  </PropertyGroup>
+-->
+
+<!-- Handle SCHEDULER -->
+
+<!-- SCHEDULER = "Affinity" | "Rialto"* | "Robin" | "Laxity" | "Min" -->
+
+  <PropertyGroup>
+    <DEFAULT_SCHEDULER>Min</DEFAULT_SCHEDULER>
+    <SCHEDULER Condition="'$(SCHEDULER)'==''">$(DEFAULT_SCHEDULER)</SCHEDULER>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="'$(SCHEDULER)'=='Affinity'">
+      <PropertyGroup>
+        <CSFLAGS>$(CSFLAGS) /D:AFFINITY_SCHEDULER</CSFLAGS>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(SCHEDULER)'=='Rialto'"></When>
+    <When Condition="'$(SCHEDULER)'=='Robin'"></When>
+    <When Condition="'$(SCHEDULER)'=='Laxity'"></When>
+    <When Condition="'$(SCHEDULER)'=='Min'"></When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>SCHEDULER must either be unset, or set to one of "Affinity", "Rialto", "Robin", "Laxity", or "Min".</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+  <PropertyGroup>
+    <DEFAULT_PAGING_FLAG></DEFAULT_PAGING_FLAG>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <LINKFLAGS>$(LINKFLAGS) /NOLOGO /INCREMENTAL:NO /debug /debugtype:cv</LINKFLAGS>
+  </PropertyGroup>
+
+
+  <!-- #### THREAD_TIME_ACCOUNTING = 1 -->
+  <PropertyGroup Condition="'$(THREAD_TIME_ACCOUNTING)'!=''">
+    <AFLAGS>$(AFLAGS) /DTHREAD_TIME_ACCOUNTING=1</AFLAGS>
+    <CFLAGS>$(CFLAGS) /DTHREAD_TIME_ACCOUNTING=1</CFLAGS>
+    <CPPFLAGS>$(CPPFLAGS) /DTHREAD_TIME_ACCOUNTING=1</CPPFLAGS>
+    <CSFLAGS>$(CSFLAGS) /d:THREAD_TIME_ACCOUNTING</CSFLAGS>
+  </PropertyGroup>
+
+
+  <PropertyGroup Condition="'$(SAMPLE_PC)'!=''">
+    <CSFLAGS>$(CSFLAGS) /d:SAMPLE_PC</CSFLAGS>
+    <SGFLAGS>$(SGFLAGS) /d:SAMPLE_PC</SGFLAGS>
+  </PropertyGroup>
+
+
+  <Choose>
+    <When Condition="'$(PAGING)'=='On'">
+      <PropertyGroup>
+        <PAGING_FLAG>.Paging</PAGING_FLAG>
+        <AFLAGS>$(AFLAGS) /DPAGING=1</AFLAGS>
+        <CFLAGS>$(CFLAGS) /DPAGING</CFLAGS>
+        <CPPFLAGS>$(CPPFLAGS) /DPAGING</CPPFLAGS>
+        <CSFLAGS>$(CSFLAGS) /d:PAGING</CSFLAGS>
+        <SGFLAGS>$(SGFLAGS) /d:PAGING</SGFLAGS>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <PAGING_FLAG></PAGING_FLAG>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <Choose>
+    <When Condition="'$(Platform)'=='Omap3430'">
+      <PropertyGroup>
+        <AFLAGS>$(AFLAGS) /DOMAP3430=1</AFLAGS>
+        <CFLAGS>$(CFLAGS) /DOMAP3430</CFLAGS>
+        <CPPFLAGS>$(CPPFLAGS) /DOMAP3430</CPPFLAGS>
+        <CSFLAGS>$(CSFLAGS) /d:OMAP3430</CSFLAGS>
+        <SGFLAGS>$(SGFLAGS) /d:OMAP3430</SGFLAGS>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+<!--
+  ###############################################################################
+  # Directories for publishing and retrieving compiled assemblies.
+-->
+  <PropertyGroup Condition="'$(SINGULARITY_ROOT)'!=''">
+    <!-- SINGULARITY_OUTPUT is intended to be imported from the user's environment. -->
+    <OBJROOT>$(SINGULARITY_OBJROOT)</OBJROOT>
+
+
+    <!-- Object dir name pieces -->
+    <OBJKRNDIR>$(Configuration).$(MACHINE).$(PLATFORM).$(SCHEDULER).$(COLLECTOR_KERNEL)$(PAGING_FLAG)</OBJKRNDIR>
+    <OBJRELRUNTIMEDIR>$(Configuration).$(MACHINE).$(COLLECTOR_APP)$(PAGING_FLAG)</OBJRELRUNTIMEDIR>
+    <OBJRELDIR>$(Configuration).$(MACHINE).$(COLLECTOR_APP)$(PAGING_FLAG)</OBJRELDIR>
+    <OBJMACHINERELDIR>$(Configuration).$(MACHINE)$(PAGING_FLAG)</OBJMACHINERELDIR>
+    <OBJOPT>$(Configuration).$(COLLECTOR_APP)</OBJOPT>
+
+
+    <!--
+    Absolute paths into object tree.
+    Note that some of these paths have different sensitivities to different build properties.
+    -->
+    <BOOTDIR>$(SINGULARITY_OBJROOT)\Boot\$(Configuration).$(Machine).$(Platform)</BOOTDIR>
+    <DRIVDIR>$(SINGULARITY_OBJROOT)\Drivers\$(OBJRELDIR)</DRIVDIR>
+    <LIBSDIR>$(SINGULARITY_OBJROOT)\Libraries\$(OBJRELDIR)</LIBSDIR>
+    <APPSDIR>$(SINGULARITY_OBJROOT)\Apps\$(OBJRELDIR)</APPSDIR>
+    <KERNEL_IL_DIR>$(SINGULARITY_OBJROOT)\Kernel\$(OBJKRNDIR).msil</KERNEL_IL_DIR>
+    <KERNEL_NATIVE_DIR>$(SINGULARITY_OBJROOT)\Kernel\$(OBJKRNDIR).native</KERNEL_NATIVE_DIR>
+
+    <!--
+    All interface assemblies are platform-neutral and configuration-neutral.  So their object
+    directory does not vary over any build variables; there is only one interface output
+    directory.
+    -->
+    <APPILLSDIR>$(SINGULARITY_OBJROOT)\Interfaces</APPILLSDIR>
+
+    <WINSDIR Condition="false">$(SINGULARITY_OBJROOT)\Windows\obj\$(OBJRELDIR)</WINSDIR>
+    <WINSDIR>$(BASEDIR)\Windows\obj\$(OBJRELDIR)</WINSDIR>
+    <WINDOWSDIR>$(SINGULARITY_OBJROOT)\Windows\$(OBJRELDIR)</WINDOWSDIR>
+
+    <!-- OUTPUT_ROOT is the root of all of the files that are built by the Singularity projects. -->
+    <OUTPUT_ROOT>$(SINGULARITY_OUTPUT)\$(Configuration).$(MACHINE).$(Platform)</OUTPUT_ROOT>
+
+    <!-- Paths for distribution outputs -->
+    <DISTRO_LIB_DIR>$(SINGULARITY_OBJROOT)\nib.libcache\$(OBJRELRUNTIMEDIR)</DISTRO_LIB_DIR>
+    <DISTRO_TEMP_DIR>$(SINGULARITY_OBJROOT)\AppNativeObj\$(OBJRELRUNTIMEDIR)</DISTRO_TEMP_DIR>
+    <APPS_NATIVE_IMAGE_DIR>$(SINGULARITY_OBJROOT)\AppNativeImage\$(OBJRELRUNTIMEDIR)</APPS_NATIVE_IMAGE_DIR>
+    <DISTRO_CACHE_DIR>$(SINGULARITY_OBJROOT)</DISTRO_CACHE_DIR>
+
+    <!-- Paths for building internal tools -->
+    <TOOLSDIR>$(SINGULARITY_OBJROOT)\Tools</TOOLSDIR>
+
+  </PropertyGroup>
+
+
+  <!-- Set properties for the build tools.  You can override any of these. -->
+  <PropertyGroup>
+    <CSC Condition="'$(CSC)'==''">&quot;$(BUILDDIR)\csc.exe&quot;</CSC>
+    <SGC Condition="'$(SGC)'==''">&quot;$(BUILDDIR)\sgc.exe&quot;</SGC>
+    <CC Condition="'$(CC)'==''">$(DEFAULT_CC)</CC>
+    <AS Condition="'$(AS)'==''">$(DEFAULT_AS)</AS>
+    <ILASM Condition="'$(ILASM)'==''">&quot;$(BUILDDIR)\ilasm\ilasm.exe&quot;</ILASM>
+    <ILDASM Condition="'$(ILDASM)'==''">&quot;$(BUILDDIR)\ildasm.exe&quot;</ILDASM>
+    <LINK Condition="'$(LINK)'==''">$(DEFAULT_LINK)</LINK>
+    <LIB Condition="'$(LIB)'==''">$(DEFAULT_LIB)</LIB>
+    <DUMPBIN Condition="'$(DUMPBIN)'==''">$(DEFAULT_DUMPBIN)</DUMPBIN>
+    <NIB Condition="'$(NIB)'==''">&quot;$(BUILDDIR)\nib.exe&quot;</NIB>
+    <BARTOK Condition="'$(BARTOK)'==''">$(DEFAULT_BARTOK)</BARTOK>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- <PATH>$(SystemRoot)\system32;$(SystemRoot);$(BUILDDIR)</PATH> -->
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- This makes sure that Singularity.targets doesn't import this .targets file if it already has been included. -->
+    <SingularityPathsIncluded>true</SingularityPathsIncluded>
+  </PropertyGroup>
+
+  <Target Name="CheckProject">
+    <Exec Command="chkproj $(MSBuildProjectFullPath)"/>
+  </Target>
+
+</Project>
+

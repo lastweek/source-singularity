@@ -1,0 +1,2250 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using DirectoryService.Utils;
+using DirectoryServices.Utils;
+using FileSystem.Utils;
+using Keyboard = Microsoft.Singularity.Io.Keyboard;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity;
+using System.Collections;
+using System.Diagnostics;
+using System.GC;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Remoting;
+using System.Text;
+using System.Threading;
+using System;
+using Tty = Microsoft.Singularity.Io.Tty;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Shell", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringArrayParameter( "filename", HelpMessage="the bucket")]
+        internal string[] args;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Shell.AppMain(this);
+        }
+    }
+
+    [ConsoleCategory(HelpMessage="Run a single shell command, then exit", Action="single")]
+    internal class SingleParameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringParameter("commandLine", Mandatory=true, Position=0, HelpMessage="Command string to execute")]
+        internal string commandLine;
+
+        reflective internal SingleParameters();
+
+        internal int AppMain() {
+            return Shell.SingleMain(this);
+        }
+    }
+
+    // See WaitForChildThread below
+    internal contract WaitForChildContract {
+        out message Finish();
+        state Start: one {Finish! -> Done;}
+        state Done: one {}
+    }
+
+    public enum ShellEvent : ushort
+    {
+        RunCommand = 1
+    }
+
+    internal class Dir
+    {
+        private static TRef<DirectoryServiceContract.Imp:Ready>       m_epNS = null;
+
+        public static DirectoryServiceContract.Imp:Ready! GetDirectoryServiceContract()
+        {
+            if (m_epNS == null) {
+                m_epNS = new TRef<DirectoryServiceContract.Imp:Ready>(DirectoryService.NewClientEndpoint());
+            }
+
+            return m_epNS.Acquire();
+        }
+
+        public static void ReleaseDirectoryServiceContract([Claims] DirectoryServiceContract.Imp:Ready! imp)
+        {
+                m_epNS.Release(imp);
+        }
+    }
+
+    public class InvalidPathException : Exception
+    {
+        public InvalidPathException(string! message)
+            : base(message)
+        {}
+    }
+
+    public class Ls
+    {
+        private static bool debugEcho = false; //support "-d" to copy to debug window
+ 
+        internal static void SplitPath(string! filePath,
+                                       out string! dirPath,
+                                       out string! fileName)
+        {
+            string[] parts = filePath.Split('/');
+            if ((parts == null) || (parts.Length == 0)) {
+                // Not even a leading slash? Bah!
+                throw new InvalidPathException(String.Format("The path '{0}' is invalid.", filePath));
+            }
+
+            // The previous implementation allowed "dir hardware" to be interpreted as "dir /hardware".
+            if (parts.Length == 1) {
+                dirPath = "/";
+                fileName = (!)parts[0];
+                return;
+            }
+
+            fileName = (!)parts[parts.Length-1];
+
+            // The directory path is the full path minus
+            // the trailing leaf part
+            // TODO: need to special case Directory Service root. Need to return "/" as dirPath
+            int len = (filePath.Length - fileName.Length - 1) > 0? filePath.Length - fileName.Length - 1 : 1;
+            dirPath = filePath.Substring(0, len);
+        }
+
+        private static int Find(string! path, string! pattern, DirectoryServiceContract.Imp:Start! ds)
+        {
+            try {
+                ErrorCode errorOut;
+                EnumerationRecords[] in ExHeap responses =
+                    SdsUtils.EnumerateDirectory(ds, out errorOut);
+                if (null == responses) {
+                    Console.WriteLine("Find ({0}) failed. reason:{1}",
+                        "/", SdsUtils.ErrorCodeToString(errorOut));
+                    if (Ls.debugEcho) {
+                        DebugStub.WriteLine("Find ({0}) failed. reason:{1}",
+                            __arglist("/", SdsUtils.ErrorCodeToString(errorOut)));
+                    }
+                    return -1;
+                }
+                else {
+                    for (int i = 0; i < responses.Length; i++) {
+                        string displayName;
+                        expose (responses[i]) {
+                            string name = Bitter.ToString2(responses[i].Path);
+                            if (!SdsUtils.IsMatch(name, pattern)) {
+                                continue;
+                            }
+
+                            displayName = name;
+                            string type;
+                            switch (responses[i].Type) {
+                                case NodeType.Directory :
+                                    type = "<dir> ";
+                                    break;
+                                case NodeType.File :
+                                    type = "<file>";
+                                    break;
+                                case NodeType.IoMemory :
+                                    type = "<mem> ";
+                                    break;
+                                case NodeType.ServiceProvider :
+                                    type = "<chan>";
+                                    break;
+                                case NodeType.SymLink :
+                                    type = "<link>";
+                                    break;
+                                case NodeType.BadNode :
+                                    type = "<bad> ";
+                                    break;
+                                default:
+                                    type = "<none>";
+                                    break;
+                            }
+                            if (responses[i].Type == NodeType.Directory) {
+                                displayName = displayName + "/";
+                            }
+                            else if (responses[i].Type == NodeType.SymLink) {
+                                // If it's a symbolic link, show the destination.
+                                displayName = displayName + "@";
+                                ErrorCode linkErrorCode;
+                                string linkValue;
+                                if (SdsUtils.GetLinkValue(name, ds, out linkValue, out linkErrorCode)) {
+                                    displayName = displayName.PadRight(16) + " " + linkValue;
+                                }
+                                else {
+                                    Console.WriteLine("Failed to query link '{0}': {1}", name, SdsUtils.ErrorCodeToString(linkErrorCode));
+                                    if (Ls.debugEcho) {
+                                        DebugStub.WriteLine("Failed to query link '{0}': {1}", __arglist(name, SdsUtils.ErrorCodeToString(linkErrorCode)));
+                                    }
+                                }
+                            }
+                            Console.WriteLine(" {0} {1}", type, displayName);
+                            if (Ls.debugEcho) {
+                                DebugStub.WriteLine(" {0} {1}", __arglist(type, displayName));
+                            }
+                        }
+                    }
+                    delete responses;
+                    return 0;
+               }
+            }
+            finally {
+            }
+        }
+
+        public static int ListAndSort(string! path, bool echoToDebug)
+        {
+            string !file;
+            string !dir;
+            string pattern;
+            bool debugSave = Ls.debugEcho;
+            debugEcho = echoToDebug;
+
+            SplitPath(path, out dir, out file);
+
+            if ( file.IndexOf("*") != -1) {
+                pattern = file;
+            }
+            else {
+                dir = path;
+                pattern = "*";
+            }
+            DirectoryServiceContract.Imp epNS = Dir.GetDirectoryServiceContract();
+
+            DirectoryServiceContract.Imp! dirClient;
+            DirectoryServiceContract.Exp! dirServer;
+            DirectoryServiceContract.NewChannel(out dirClient, out dirServer);
+            ErrorCode errorOut;
+
+            bool ok = SdsUtils.Bind((!)dir, epNS, dirServer, out errorOut);
+            if (!ok) {
+                Console.WriteLine("Bind to '{0}' failed. reason: {1}",
+                                  dir, SdsUtils.ErrorCodeToString(errorOut));
+                if (echoToDebug) {
+                    DebugStub.WriteLine("Bind to '{0}' failed. reason: {1}",
+                                        __arglist(dir, SdsUtils.ErrorCodeToString(errorOut)));
+                }
+                delete dirClient;
+                Dir.ReleaseDirectoryServiceContract(epNS);
+                debugEcho = debugSave;
+                return -1;
+            }
+            dirClient.RecvSuccess();
+
+            Find(dir, pattern, dirClient);
+            delete dirClient;
+            Dir.ReleaseDirectoryServiceContract(epNS);
+            debugEcho = debugSave;
+            return 0;
+        }
+    }
+
+    public abstract class Job {
+        private string! commandLine;
+        protected TRef<UnicodePipeContract.Imp:READY>! stdinCell;
+        public readonly int Id;
+
+        private static int IdGenerator = 0;
+
+        public string Name {
+            get { return commandLine; }
+        }
+
+        protected Job(string! command, [Claims] UnicodePipeContract.Imp:READY! stdin) {
+            this.commandLine = command;
+            this.stdinCell = new TRef<UnicodePipeContract.Imp:READY>(stdin);
+            this.Id = IdGenerator++;
+        }
+
+        public UnicodePipeContract.Imp:READY! AcquireStdin() {
+            return this.stdinCell.Acquire();
+        }
+
+        public void ReleaseStdin([Claims] UnicodePipeContract.Imp:READY! stdin) {
+            this.stdinCell.Release(stdin);
+        }
+
+
+        public string StatusName {
+            get {
+                switch (this.Status) {
+                case ProcessState.Stopped:
+                    return "Stopped";
+                case ProcessState.Suspended:
+                    return "Suspended";
+                case ProcessState.Active:
+                    return "Active";
+                default:
+                    return "Unknown";
+                }
+            }
+        }
+
+        public ProcessState Status {
+            get {
+                Process p = this.Process;
+                if (p == null) {
+                    return ProcessState.Stopped;
+                }
+                return p.State;
+            }
+        }
+
+        public int ExitCode {
+            get {
+                Process p = this.Process;
+                if (p == null) {
+                    return 0;
+                }
+                return p.ExitCode;
+            }
+        }
+
+        public virtual void Dispose() {
+        }
+
+        public abstract Process Process { get; }
+
+        public void Stop() {
+            Process p = this.Process;
+            if (p != null) {
+                p.Stop();
+            }
+        }
+
+        public void Suspend() {
+            Process p = this.Process;
+            if (p != null) {
+                p.Suspend(false);
+            }
+        }
+
+        public void Resume() {
+            Process p = this.Process;
+            if (p != null) {
+                p.Resume(false);
+            }
+        }
+    }
+
+    public class SingleProcessJob : Job {
+
+        Process process;
+
+        private static string! CommandLineString(string[]! command)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (string s in command) {
+                sb.Append(s);
+                sb.Append(' ');
+            }
+            return sb.ToString();
+        }
+
+        public SingleProcessJob(string[]! command, Process p,
+                                [Claims] UnicodePipeContract.Imp:READY! stdin)
+            : base(CommandLineString(command), stdin)
+        {
+            this.process = p;
+        }
+
+        public override Process Process {
+            get { return this.process; }
+        }
+
+        public override void Dispose() {
+            Process p = this.process;
+            if (p != null) {
+                p.Dispose(true);
+            }
+            base.Dispose();
+        }
+    }
+
+    public class PipeJob : Job {
+        Process[]! processes ;
+
+        public PipeJob(string! command,
+                       [Claims] UnicodePipeContract.Imp:READY! stdin,
+                       Process[]! processes)
+            : base(command, stdin)
+        {
+            this.processes = processes;
+        }
+
+        public override Process Process {
+            get {
+                int c = processes.Length;
+                if (c <= 0) return null;
+
+                return (Process)this.processes[c-1];
+            }
+        }
+
+        public override void Dispose() {
+            foreach (Process! p in this.processes) {
+                p.Dispose(true);
+            }
+            base.Dispose();
+        }
+    }
+
+    public class ShellControl : ITracked {
+
+        PipeMultiplexer! outputControl;
+        Hashtable! jobs; // maps ints to jobs
+
+        public ShellControl([Claims] PipeMultiplexer! outputControl) {
+            this.outputControl = outputControl;
+            this.jobs = new Hashtable();
+        }
+
+        public UnicodePipeContract.Imp:READY FreshStdout() {
+            expose(this) {
+                return this.outputControl.FreshClient();
+            }
+        }
+
+        private void RemoveStoppedJobs() {
+            ArrayList toRemove = new ArrayList();
+            foreach (int i in jobs.Keys) {
+                Job job = (Job)this.jobs[i];
+                assert job != null;
+                if (job.Status == ProcessState.Stopped) {
+                    job.Dispose();
+                    toRemove.Add(i);
+                }
+            }
+            foreach (int i in toRemove) {
+                Console.WriteLine("[{0}] Done.", i);
+                this.jobs.Remove(i);
+            }
+        }
+        /// <summary>
+        /// Provides enumeration of non-exited jobs
+        /// </summary>
+        public IEnumerator GetEnumerator() {
+            RemoveStoppedJobs();
+            return this.jobs.Keys.GetEnumerator();
+        }
+
+        public Job this[int i] {
+            get {
+                return (Job)this.jobs[i];
+            }
+        }
+
+        public void Add(Job! job) {
+            jobs[job.Id] = job;
+        }
+
+        public void Dispose()
+        {
+            this.outputControl.Dispose();
+        }
+
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+    }
+
+    public class Shell
+    {
+        // Exit Codes:
+        internal const int EXIT_AND_RESTART     = 0x1fff;
+        internal const int EXIT_AND_SHUTDOWN    = 0x1ffe;
+        internal const int EXIT_AND_WARMBOOT    = 0x1ffd;
+        internal const int EXIT_AND_HALT        = 0x1ffc;
+
+        private static Terminal         terminal;
+        private static ParameterProcessor       parameters;
+        private static ArrayList localPackages = null;
+        private static bool done = false;
+        private static bool             insertMode      = true;
+        private static int              curpos          = 0;
+        private static int              totalChars      = 0;
+        private static StringBuilder    buildString;
+        private static TRef<ProcessContract.Imp:ReadyState> processRef;
+
+        private class BackgroundProcess
+        {
+            internal readonly int ProcessID;
+            internal readonly string ProcessName;
+            internal readonly Process! ProcessInstance;
+
+            internal BackgroundProcess(int id, string name, Process! instance)
+            {
+                this.ProcessID = id;
+                this.ProcessName = name;
+                this.ProcessInstance = instance;
+            }
+        }
+        private static ArrayList backgroundProcesses = new ArrayList();
+
+        private class ShellCommand
+        {
+            public string Name;
+            public string Description;
+            public CommandStart Run;
+
+            public ShellCommand(string name, string description, CommandStart run)
+            {
+                Name = name;
+                Description = description;
+                Run = run;
+            }
+
+            override public string! ToString()
+            {
+                return "[ShellCommand(" + Name + ", " + Description + "]";
+            }
+        }
+
+        ////////////////////////////////////////////////////// Shell Commands.
+        //
+        private delegate int CommandStart(ShellControl! shellControl, string[]! args);
+
+        private static ShellCommand[] commands =
+        {
+            // Please insert new commands in alphabetical order!
+            //
+            new ShellCommand("bg", "Background a stopped job",
+                             new CommandStart(DoBg)),
+            new ShellCommand("break", "Break into the kernel debugger",
+                             new CommandStart(DoBreak)),
+            new ShellCommand("clear", "Clear screen",
+                             new CommandStart(DoClear)),
+            new ShellCommand("date", "Display date and time",
+                             new CommandStart(DoDate)),
+            new ShellCommand("decho", "Echo inputs to debugger",
+                             new CommandStart(DoDecho)),
+            new ShellCommand("dir", "Display contents of name space",
+                             new CommandStart(DoDir)),
+            new ShellCommand("echo", "Echo inputs to console",
+                             new CommandStart(DoEcho)),
+            new ShellCommand("exit", "Exit shell",
+                             new CommandStart(DoShutdown)),
+            new ShellCommand("fg", "Foreground a stopped or background job",
+                             new CommandStart(DoFg)),
+            new ShellCommand("_gcstress", "Stress garbage collector",
+                             new CommandStart(DoGcStress)),
+            new ShellCommand("help", "Display help message",
+                             new CommandStart(DoHelp)),
+            new ShellCommand("jobs", "List jobs",
+                             new CommandStart(DoJobs)),
+            new ShellCommand("reboot", "Reboot computer",
+                             new CommandStart(DoReboot)),
+            new ShellCommand("script", "Run script file",
+                             new CommandStart(DoScript)),
+            new ShellCommand("shutdown", "Shut down computer",
+                             new CommandStart(DoShutdown)),
+            new ShellCommand("start", helpTextStart,
+                             new CommandStart(DoStart)),
+            new ShellCommand("testscript","Test scripting engine",
+                             new CommandStart(DoTestScript)),
+            new ShellCommand("waitfor", "Wait for namespace entity to appear",
+                             new CommandStart(DoWaitFor)),
+            new ShellCommand("warmboot", "Warm reboot computer",
+                             new CommandStart(DoWarmBoot)),
+            new ShellCommand("kill", "Kill a background process",
+                             new CommandStart(DoKill)),
+            //
+            // Please insert new commands in alphabetical order!
+        };
+
+        private const string helpTextStart =
+            "Start process to run either in foregroud or background \n" +
+            "            and specify scheduling policy. Syntax: \n" +
+            "     start [-scheduler=[min|affinity|bvt(weight,warp,unwarpRequirement)]]\n" +
+            "           [-wait] command\n\n" +
+            "     -wait to run the command in foreground (default is background)";
+
+        public static int DoBreak(ShellControl! shellControl, string[]! args)
+        {
+            Console.WriteLine("Breaking into kernel debugger.");
+            if (args.Length == 2 && args[1] == "-w") {
+                Breaker.Break(2);
+            }
+            else if (args.Length == 2 && args[1] == "-r") {
+                Breaker.Break(1);
+            }
+            else if (args.Length == 2 && args[1] == "-b") {
+                Breaker.Break(01);
+            }
+            else {
+                DebugStub.WriteLine("About to break into kernel debugger");
+                DebugStub.Break();
+            }
+
+            Console.WriteLine("First line after break.");
+            Console.WriteLine("Second line after break.");
+            Console.WriteLine("Third line after break.");
+
+            return 0;
+        }
+
+        public static int DoClear(ShellControl! shellControl, string[]! args)
+        {
+            terminal.GenerateAndSendEscapeSequence(Tty.EscapeCodes.CLEAR_SCREEN);
+            return 0;
+        }
+
+        private static void ConsoleWriteDateTime(string preamble, DateTime dt)
+        {
+            Console.WriteLine("{0}{1:d4}/{2:d2}/{3:d2} {4:d2}:{5:d2}:{6:d2}.{7:d3}",
+                              preamble, dt.Year, dt.Month, dt.Day,
+                              dt.Hour, dt.Minute, dt.Second, dt.Millisecond);
+        }
+
+        private static void ConsoleWriteDateTime(string preamble, TimeSpan sp)
+        {
+            Console.WriteLine("{0}{1}", preamble, sp.ToString());
+
+        }
+
+
+        public static int DoDate(ShellControl! shellControl, string[]! args)
+        {
+            ConsoleWriteDateTime("Kernel: ", ProcessService.GetUpTime());
+            ConsoleWriteDateTime("UTC:    ", DateTime.UtcNow);
+            return 0;
+        }
+
+        private static String Concat(String[]! args, int startIndex) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = startIndex; i < args.Length; ++i) {
+                sb.Append(args[i] + (i == (args.Length - 1) ? "" : " "));
+            }
+            return sb.ToString();
+        }
+
+        public static int DoDecho(ShellControl! shellControl, string[]! args)
+        {
+            DebugStub.WriteLine("{0}", __arglist(Concat(args, 1)));
+            return 0;
+        }
+
+        public static int DoDir(ShellControl! shellControl, string[]! args)
+        {
+            int ret = 0;
+
+            int startArgIndex = 1;
+            bool debug = false;
+
+            if ((1 < args.Length) && ("-d" == ((!)args[1]).Trim().ToLower())) {
+                DebugStub.WriteLine("Console: {0}", __arglist(String.Join(" ", args)));
+                debug = true;
+                startArgIndex++;
+            }
+            if (args.Length == startArgIndex) {
+                ret = Ls.ListAndSort("/", debug);
+            }
+            else {
+                for (int arg = startArgIndex; arg < args.Length; arg++) {
+                    ret = Ls.ListAndSort((!)args[arg], debug);
+                    if (ret != 0) {
+                        Console.WriteLine("Returned: {0}", ret);
+                        if (debug) {
+                            DebugStub.WriteLine("Returned: {0}", __arglist(ret));
+                        }
+                        break;
+                    }
+                }
+            }
+            return ret;
+        }
+
+        public static int DoEcho(ShellControl! shellControl, string[]! args)
+        {
+            Console.WriteLine(Concat(args, 1));
+            return 0;
+        }
+
+        public static int DoScript(ShellControl! shellControl, string[]! args)
+        {
+            int exitCode = 0;
+            FileContract.Imp file;
+            ErrorCode errorOut;
+            FileAttributesRecord fileAttributes;
+
+            if (args.Length < 2) {
+                Console.WriteLine("usage: script <filename>");
+                return -1;
+            }
+
+            DirectoryServiceContract.Imp! rootNS = Dir.GetDirectoryServiceContract();
+            bool ok  = FileUtils.GetAttributes((!)args[1], rootNS,
+                                               out fileAttributes, out  errorOut);
+            if (!ok) {
+                Console.WriteLine("File not found.");
+                Dir.ReleaseDirectoryServiceContract(rootNS);
+                return 1;
+            }
+            file = FileUtils.OpenFile((!)args[1], rootNS);
+            Dir.ReleaseDirectoryServiceContract(rootNS);
+            if (file == null) {
+                return -1;
+            }
+
+            byte* opt(ExHeap[]) buf = new [ExHeap] byte[fileAttributes.FileSize];
+            file.SendRead(buf, 0, 0, fileAttributes.FileSize);
+
+            switch receive{
+            case file.AckRead(_buf, bytesRead, error):
+                buf = _buf;
+                break;
+            case file.ChannelClosed():
+                Console.WriteLine("Could not read file.");
+                delete file;
+                return 1;
+            }
+            delete file;
+
+            String script = Bitter.ToString2(buf);
+#if DUMP_SCRIPT_CONTENTS_TO_SCREEN
+            Console.WriteLine("Script===============================");
+            Console.WriteLine(script);
+            Console.WriteLine("============================EndScript");
+#endif
+            exitCode = ScriptEngine.Run(script, shellControl,
+                                        new ScriptEngine.CommandLineRunner(RunCommand));
+            delete buf;
+            return exitCode;
+        }
+
+        public static int DoStart(ShellControl! shellControl, string[]! args)
+        {
+            bool foreground = false;
+            SchedulerOptions schedulerOptions = new SchedulerOptions();
+
+            int commandIndex = -1;
+            if (args.Length > 1) {
+                for (int i = 1; i < args.Length; i++) {
+                    string arg = args[i];
+                    if (arg == null || arg.Length < 2 || arg[0] != '-') {
+                        commandIndex = i;
+                        break;
+                    }
+
+                    const string schedulerPrefix = "scheduler=";
+                    arg = arg.Substring(1);
+                    if (string.Compare(arg, "wait", true) == 0) {
+                        foreground = true;
+                    }
+                    else if (arg.Length > schedulerPrefix.Length
+                        && string.Compare(arg.Substring(0, schedulerPrefix.Length),
+                                          schedulerPrefix, true) == 0) {
+                        arg = arg.Substring(10);
+                        if (string.Compare(arg, "min", true) == 0) {
+                            schedulerOptions.Type = SchedulerType.Min;
+                        }
+                        else if (string.Compare(arg, "affinity", true) == 0) {
+                            schedulerOptions.Type = SchedulerType.Affinity;
+                        }
+                        else if (arg.Length > 5 && arg[arg.Length - 1] == ')'
+                            && string.Compare(arg.Substring(0,4), "bvt(", true) == 0) {
+                            schedulerOptions.Type = SchedulerType.BVT;
+                            arg = arg.Substring(4, arg.Length - 5);
+                            string[] tokens = arg.Split(new char[1] { ',' });
+                            if (tokens == null || tokens.Length != 3) {
+                                Console.WriteLine("Incorrect parameters for BVT scheduler");
+                                return -1;
+                            }
+                            if (! TryParseInt(tokens[0], out schedulerOptions.BVTWeight)
+                                || ! TryParseInt(tokens[1], out schedulerOptions.BVTWarp)
+                                || ! TryParseInt(tokens[2], out schedulerOptions.BVTUnwarpRequirement)) {
+                                Console.WriteLine("Incorrect parameters for BVT scheduler");
+                                return -1;
+                            }
+                        }
+                        else {
+                            Console.WriteLine("Invalid scheduler type");
+                            return -1;
+                        }
+                    }
+                    else {
+                        Console.WriteLine("Invalid start arguments");
+                        return -1;
+                    }
+                }
+            }
+
+            if (commandIndex < 0) {
+                Console.WriteLine("Missing command in start");
+                return -1;
+            }
+
+            String[] commandLine = new String[args.Length - commandIndex];
+            Array.Copy(args, commandIndex, commandLine, 0, commandLine.Length);
+            return RunCommand(shellControl, commandLine, ! foreground, schedulerOptions);
+        }
+
+        ///<summary>
+        /// Try to parse an integer, return true if successful.
+        ///</summary>
+        private static bool TryParseInt(string input, out int value)
+        {
+            try {
+                value = int.Parse(input);
+                return true;
+            }
+            catch(FormatException) {
+                value = 0;
+                return false;
+            }
+            catch(OverflowException) {
+                value = 0;
+                return false;
+            }
+        }
+
+        public static int DoTestScript(ShellControl! shellControl, string[]! args){
+             String script =
+                @"
+                echo $2 #echo second argument
+                decho $2
+                echo number of arguments '=' $#
+                decho number of arguments '=' $#
+
+                echo last command exit code '=' $?
+                decho last command exit code '=' $?
+
+                type &
+                echo appear before type output
+
+                if (true) {
+                    variable = false
+                    if ($variable) {
+                        var2 = true
+                        echo broken conditional
+                        decho broken conditional
+                    }
+                    else {
+                        var2 = true
+                        output1 = ""bet${variable}ween""
+                        echo $output1
+                        decho $output1
+                    }
+                    #some comments #
+                    #
+                    decho var2 is $var2
+                    add = -2 + 4
+                    echo '-2 + 4 =' $add
+                    decho '-2 + 4 =' $add
+
+                    mod = 6 % 5
+                    echo '6 % 5 =' $mod
+                    decho '6 % 5 =' $mod
+
+                    div = 10 / 5
+                    echo '10 / 5 =' $div
+                    decho '10 / 5 =' $div
+
+                    mult = 2 * 5
+                    echo '2 * 5=' $mult
+                    decho '2 * 5=' $mult
+
+                    var1 = 5
+                    var2 = 6
+
+                    if ($var1 < $var2) {
+                        echo $var1 is less than $var2
+                        decho $var1 is less than $var2
+                        two = 1
+                        power = 10
+                        echo starting loop
+                        decho starting loop
+                        while ($power > 0) {
+                            two = $(two) * 2
+                            power = $power - 1
+                        }
+                        output2 = ""2^10 = $two""
+                        echo $output2
+                        decho $output2
+                    }
+                    if ($var1 > $var2) {
+                        echo $var2 is less than $var1
+                        decho $var2 is less than $var1
+                    }
+                    else {
+                        output3 = 'var1' . "" is "" . $var1
+                        echo $output3
+                        decho $output3
+                    }
+                    var = ""test""
+                    if (""test"" == $var) {
+                        echo string compare success
+                        decho string compare success
+                    }
+                    exit
+                }
+                echo should not display
+                decho should not display
+                exit -1
+                ";
+
+            return ScriptEngine.Run(
+                    script,
+                    shellControl,
+                    new ScriptEngine.CommandLineRunner(RunCommand),
+                    new String[] {"script", "testscript", "arg"}
+            );
+
+        }
+
+        public static int DoWaitFor(ShellControl! shellControl, string[]! args)
+        {
+            if (args.Length != 2) {
+                Console.WriteLine("waitfor <name> - wait for name to appear in namespace.");
+            }
+
+            FileAttributesRecord far;
+            ErrorCode            ec;
+
+            int attempt = 0;
+            int announce = 2;
+
+            DirectoryServiceContract.Imp! ds = Dir.GetDirectoryServiceContract();
+            try {
+                while (SdsUtils.GetAttributes((!)args[1], ds, out far, out ec) == false) {
+                    Thread.Sleep(500);
+
+                    if (attempt++ > announce) {
+                        announce *= 2;
+                        Console.WriteLine("Waiting for {0} ({1})",
+                                          args[1],
+                                          SdsUtils.ErrorCodeToString(ec)
+                                          );
+                    }
+                }
+            }
+            finally {
+                Dir.ReleaseDirectoryServiceContract(ds);
+            }
+
+            Console.WriteLine("{0} present ({1})",
+                              args[1],
+                              SdsUtils.NodeTypeToString(far.Type));
+            return 0;
+        }
+
+        private static void GcStressVariableSizeObjects()
+        {
+            const uint maxItemBytes = 65535;
+            const uint maxAllocatedBytes = 1000000;
+            byte dummy = 0;
+
+            Console.Write("Running variable size object test.");
+
+            DateTime start     = DateTime.Now;
+            TimeSpan duration  = TimeSpan.FromSeconds(10);
+            TimeSpan oneSecond = TimeSpan.FromSeconds(1);
+
+            Queue q = new Queue();
+            while (DateTime.Now - start < duration) {
+                DateTime roundStart = DateTime.Now;
+                uint iterations = 0;
+                while (DateTime.Now - roundStart < oneSecond) {
+                    uint allocatedBytes = 0;
+                    uint i = 17u * iterations;
+                    while (allocatedBytes < maxAllocatedBytes) {
+                        uint itemBytes = 1u + (uint)((433777u * i) % maxItemBytes);
+                        allocatedBytes += itemBytes;
+                        i++;
+                        byte [] data = new byte[itemBytes];
+                        data[0] = 0xff;
+                        q.Enqueue(data);
+                    }
+
+                    while (q.Count != 0) {
+                        byte [] data = (byte []!) q.Dequeue();
+                        dummy ^= data[0];
+                    }
+                    iterations ++;
+                }
+                Console.Write(" {0}", iterations, dummy);
+            }
+            Console.Write("\n");
+        }
+
+        private static void GcStressFixedSizeObjects()
+        {
+            const int itemCount = 1024;
+            const int itemBytes = 1024;
+
+            Console.Write("Running fixed size object test.");
+
+            byte dummy = 0;
+
+            DateTime start     = DateTime.Now;
+            TimeSpan duration  = TimeSpan.FromSeconds(10);
+            TimeSpan oneSecond = TimeSpan.FromSeconds(1);
+            Queue q = new Queue();
+            while (DateTime.Now - start < duration) {
+                DateTime roundStart = DateTime.Now;
+                int iterations = 0;
+                while (DateTime.Now - roundStart < oneSecond) {
+                    for (int i = 0; i < itemCount; i++) {
+                        byte [] data = new byte[itemBytes];
+                        // Debug.Assert(data[0] == 0);
+                        data[0] = 0xff;
+                        q.Enqueue(data);
+                    }
+
+                    for (int i = 0; i < itemCount; i++) {
+                        byte [] data = (byte []!) q.Dequeue();
+                        // Debug.Assert(data[0] == 0xff);
+                        dummy ^= data[0];
+                    }
+                    iterations ++;
+                }
+                Console.Write(" {0}", iterations, dummy);
+            }
+            Console.Write("\n");
+        }
+
+        public static int DoGcStress(ShellControl! shellControl, string[]! args)
+        {
+            GcStressFixedSizeObjects();
+            GcStressVariableSizeObjects();
+            return 0;
+        }
+
+        public static int DoHelp(ShellControl! shellControl, string[]! args)
+        {
+            Console.WriteLine("Singularity shell commands:");
+
+            int max = 0;
+            foreach (ShellCommand! command in commands) {
+                int length = command.Name.Length;
+                if (length > max) {
+                    max = length;
+                }
+            }
+
+            foreach (ShellCommand! command in commands) {
+                Console.Write("  {0}", command.Name);
+                for (int i = command.Name.Length; i < max; i++) {
+                    Console.Write(" ");
+                }
+                Console.WriteLine(" - {0}", command.Description);
+            }
+            return 0;
+        }
+
+        public static int DoJobs(ShellControl! shellControl, string[]! args)
+        {
+            foreach (int i in shellControl) {
+                Job job = shellControl[i];
+                assert job != null;
+                string status = job.StatusName;
+                Console.WriteLine("[{0}] {1,10} {2,40}", i, status, job.Name);
+            }
+            return 0;
+        }
+
+        public static int DoFg(ShellControl! shellControl, string[]! args)
+        {
+            if (args == null || args.Length != 2) {
+                Console.WriteLine("Usage: fg <jobnumber>");
+                return 1;
+            }
+            int jobnum = Int32.Parse(args[1]);
+
+            Job job = shellControl[jobnum];
+
+            if (job == null) {
+                Console.WriteLine("Nonexistent job {0}", jobnum);
+                return 1;
+            }
+            if (job.Status == ProcessState.Suspended) {
+                job.Resume();
+            }
+            return WaitForJob(job);
+        }
+
+        public static int DoBg(ShellControl! shellControl, string[]! args)
+        {
+            if (args == null || args.Length != 2) {
+                Console.WriteLine("Usage: bg <jobnumber>");
+                return 1;
+            }
+            int jobnum = Int32.Parse(args[1]);
+
+            Job job = shellControl[jobnum];
+
+            if (job == null) {
+                Console.WriteLine("Nonexistent job {0}", jobnum);
+                return 1;
+            }
+            job.Resume();
+            return 0;
+        }
+
+        public static int DoReboot(ShellControl! shellControl, string[]! args)
+        {
+            DebugStub.WriteLine("Shell rebooting.");
+            done = true;
+            return EXIT_AND_RESTART;
+        }
+
+        public static int DoShutdown(ShellControl! shellControl, string[]! args)
+        {
+            DebugStub.WriteLine("Shell shutting down.");
+            done = true;
+            return EXIT_AND_SHUTDOWN;
+        }
+
+        public static int DoWarmBoot(ShellControl! shellControl, string[]! args)
+        {
+            DebugStub.WriteLine("Shell restarting for warm boot.");
+            done = true;
+            return EXIT_AND_WARMBOOT;
+        }
+
+        ///<summary>
+        /// implement the kill command to terminate background processes specified by args
+        ///</summary>
+        private static int DoKill(ShellControl! shellControl, string[]! args)
+        {
+            if (args == null || args.Length != 2) {
+                Console.WriteLine("Usage: kill processId    or    kill processName");
+                return 1;
+            }
+
+            // flag to determine kill by ID or by name
+            bool killByID = false;
+            string processName = args[1];
+            int processID = -1;
+            try {
+                processID = int.Parse(processName);
+                killByID = true;
+            }
+            catch (FormatException) {
+
+            }
+            catch (OverflowException) {
+
+            }
+
+            // loop through all background processes and match either by ID or name
+            bool found = false;
+            for (int i = 0; i < backgroundProcesses.Count; i++) {
+                BackgroundProcess bp = (BackgroundProcess)(!)backgroundProcesses[i];
+                if ((killByID && processID == bp.ProcessID) ||
+                    (!killByID && string.Compare(processName, bp.ProcessName, true)==0)) {
+                    if (bp.ProcessInstance.State != ProcessState.Stopped) {
+                        Console.WriteLine("Killing process ID={0} Name={1}",
+                                          bp.ProcessID, bp.ProcessName);
+                        bp.ProcessInstance.Stop();
+                        found = true;
+                        if (killByID) {
+                            // at most one match if kill by ID, break the loop
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // print error message if we didn't find a matching process
+            if (!found) {
+                if (killByID) {
+                    Console.WriteLine("Cannot find active process ID={0}", processID);
+                }
+                else {
+                    Console.WriteLine("Cannot find active process Name={0}", processName);
+                }
+            }
+
+            CleanBackgroundProcesses();
+            return 0;
+        }
+
+        //////////////////////////////////////////////////////////////////////
+        public static void ReplaceOldCommandString(string! newCommand, int oldCommandLength)
+        {
+            // erase the old string
+            while (oldCommandLength-- > 0) {
+                Console.Write("\b");
+            }
+            terminal.GenerateAndSendEscapeSequence(Tty.EscapeCodes.ERASE_FROM_CURSOR);
+
+            // and draw the new one
+            Console.Write(newCommand);
+            curpos = newCommand.Length;
+            totalChars = newCommand.Length;
+        }
+
+
+        private static ArrayList! StringToCharArrayList(string! s)
+        {
+            ArrayList al = new ArrayList();
+
+            for (int i = 0; i < s.Length; i++) {
+                al.Add(s[i]);
+            }
+            return al;
+        }
+
+        private static String! CharArrayToString(ArrayList arr)
+        {
+            if (arr == null) return "";
+            return CharArrayToString(arr, 0, arr.Count);
+        }
+
+        private static String! CharArrayToString(ArrayList arr, int start, int len)
+        {
+            if (arr == null) return "";
+
+            assert start >= 0;
+            assert start+len <= arr.Count;
+
+            if (buildString == null) {
+                buildString = new StringBuilder(1024);
+            }
+
+            buildString.Length = 0;
+            for (int i = start; i < start + len; i++) {
+                buildString.Append((char)(!)arr[i]);
+            }
+            return buildString.ToString();
+        }
+
+        private static bool IncrementCurpos()
+        {
+            if (++curpos > totalChars) {
+                curpos = totalChars;
+                return false;
+            }
+            return true;
+        }
+
+        private static bool DecrementCurpos()
+        {
+            if (--curpos < 0) {
+                curpos = 0;
+                return false;
+            }
+            return true;
+        }
+
+
+        private static void DecrementTotalChars()
+        {
+            if (--totalChars < 0) {
+                totalChars = 0;
+            }
+                }
+
+        private static void ShowHistory(ArrayList! a) {
+            DebugStub.WriteLine("showHistory: count={0}", __arglist(a.Count));
+            if (a.Count == 0) return;
+
+            for (int i = 0; i < a.Count; i++) {
+                DebugStub.WriteLine(CharArrayToString((ArrayList)a[i]));
+            }
+        }
+
+        public static String! GetCommand(String prompt, ArrayList! history)
+        {
+            int     key                     = 0;
+            bool    inEscapeSequence        = false;
+            ArrayList historyWorkingCopy    = new ArrayList();
+            ArrayList command               = new ArrayList();
+            Tty.EscapeCodes code;
+            int repeat;
+
+            // need to make a deep copy of the history now that the elements are
+            // array lists
+            for (int i = 0; i < history.Count; i++) {
+                historyWorkingCopy.Add(new ArrayList((ArrayList!) history[i]));
+            }
+
+            historyWorkingCopy.Add(command);
+            int historyCurrentSpot = historyWorkingCopy.Count - 1;
+            curpos      = 0;
+            totalChars  = 0;
+
+            Console.WriteLine();
+            Console.Write(prompt);
+
+            for (;;) {
+                key = Console.Read();
+                if (key == -1) {
+                    Console.WriteLine("tty EOF reached!");
+                    return "";
+                }
+
+                char c = (char)key;
+                //DebugStub.WriteLine("key={0:x}, char={1}",__arglist(key, c));
+                if (c == (char) 0x1b) {
+                     inEscapeSequence = true;
+                     terminal.Reset();
+                     continue;
+                        }
+                if (inEscapeSequence) {
+                    inEscapeSequence = terminal.ProcessEscape(c, out code, out repeat);
+                    if (inEscapeSequence) continue;
+
+                    if (code == Tty.EscapeCodes.UP) {
+                        if (history.Count == 0) {
+                            continue;
+                        }
+                        if (historyCurrentSpot == 0) {
+                            continue;
+                        }
+
+                        // now we can move up one row in the history
+                        ArrayList al = (ArrayList!)historyWorkingCopy[historyCurrentSpot];
+                        int count = al.Count;
+                        historyCurrentSpot--;
+                        ArrayList alNew = (ArrayList)historyWorkingCopy[historyCurrentSpot];
+                        string s = CharArrayToString(alNew);
+                        ReplaceOldCommandString(s, count);
+                    }
+                    else if (code == Tty.EscapeCodes.DOWN) {
+                        // if we're at the bottom of the history, don't move, but
+                        // otherwise, move down one
+                        if (history.Count == 0) {
+                            continue;
+                        }
+                        if (historyCurrentSpot == historyWorkingCopy.Count - 1) {
+                            continue;
+                        }
+
+                        // now we can move down one row in the history
+                        int count = ((ArrayList!)historyWorkingCopy[historyCurrentSpot]).Count;
+                        historyCurrentSpot++;
+                        ReplaceOldCommandString(CharArrayToString((ArrayList)historyWorkingCopy[historyCurrentSpot]), count);
+                    }
+                    else if (code == Tty.EscapeCodes.LEFT) {
+                        // adjust the cursor
+                        if (DecrementCurpos()) {
+                            terminal.GenerateAndSendEscapeSequence(Tty.EscapeCodes.LEFT);
+                        }
+                    }
+                    else if (code == Tty.EscapeCodes.RIGHT) {
+                        if (IncrementCurpos()) {
+                            terminal.GenerateAndSendEscapeSequence(Tty.EscapeCodes.RIGHT);
+                    }
+                    }
+                    else if (code == Tty.EscapeCodes.INSERT) {
+                        //toggle insert mode
+                        if (insertMode == true) {
+                            insertMode = false;
+                            terminal.SetCursorSize('2');
+                        }
+                        else {
+                            insertMode = true;
+                            terminal.SetCursorSize('1');
+                        }
+                        DebugStub.WriteLine("Insert mode: {0}",__arglist(insertMode));
+                    }
+                } // escape sequence
+
+                else if (c == '\b') {
+                    int len = ((ArrayList!)historyWorkingCopy[historyCurrentSpot]).Count;
+                    if (len > 0 && curpos > 0) {
+                        len = len -1;
+                        DecrementCurpos();
+                        DecrementTotalChars();
+                        ((ArrayList!)historyWorkingCopy[historyCurrentSpot]).RemoveAt(curpos);
+                        Console.Write(c);
+                        // re-write any chars after the deleted one
+                        int num = len - curpos;
+                        if (num > 0) {
+                            string rest =
+                                CharArrayToString((ArrayList)historyWorkingCopy[historyCurrentSpot],
+                                                  curpos, num);
+                            Console.Write(rest);
+                            terminal.GenerateAndSendEscapeSequence(Tty.EscapeCodes.ERASE_FROM_CURSOR);
+                            buildString.Length = 0;
+                            for (int i = 0; i < num; i++) {
+                                buildString.Append('\b');
+                        }
+                            Console.Write(buildString.ToString());
+                    }
+                        else {
+                            terminal.GenerateAndSendEscapeSequence(Tty.EscapeCodes.ERASE_FROM_CURSOR);
+                }
+                    }
+                }
+                else if (c == '\n') {
+                    Console.WriteLine();
+
+                    if (((ArrayList!)historyWorkingCopy[historyCurrentSpot]).Count != 0) {
+                        return CharArrayToString((ArrayList!)historyWorkingCopy[historyCurrentSpot]);
+                    }
+                    Console.Write(prompt);
+                }
+                else {
+                    // Only use the character if it's in the printable ASCII range
+                    if ((c >= 32) && (c <= 126)) // SPACE to "~"
+                    {
+
+                        if (insertMode) {
+                            ArrayList a = (ArrayList!)historyWorkingCopy[historyCurrentSpot];
+                            string s = CharArrayToString(a, curpos, a.Count - curpos);
+                            a.Insert(curpos, c);
+                            Console.Write(c);
+                            Console.Write(s);
+                            string x = "";
+                            for (int i = 0; i < s.Length; i++) {
+                                x = x + '\b';
+                            }
+                            Console.Write(x);
+                            totalChars++;
+                            curpos++;
+                            //curpos++;
+                        }
+                        else {
+                            if (curpos < totalChars) {
+                                ((ArrayList!)historyWorkingCopy[historyCurrentSpot])[curpos++] = c;
+                            }
+                            else {
+                                ((ArrayList!)historyWorkingCopy[historyCurrentSpot]).Insert(curpos++, c);
+                                totalChars++;
+                            }
+                        Console.Write(c);
+                        }
+
+                    }
+                    // else ignore it
+                }
+            }
+        }
+
+        private static ShellCommand FindCommand(string input)
+        {
+            foreach (ShellCommand! command in commands) {
+                if (command.Name == input) {
+                    return command;
+                }
+            }
+            return null;
+        }
+
+        private static bool IsScript(string name, out string scriptName)
+        {
+            ErrorCode errorOut;
+            FileAttributesRecord fileAttributes;
+
+            if (name == null) {
+                scriptName = null;
+                return false;
+            }
+            DirectoryServiceContract.Imp! ds = Dir.GetDirectoryServiceContract();
+            scriptName = "/init/"+name+".script";
+            bool ok = SdsUtils.GetAttributes(scriptName, ds, out fileAttributes, out errorOut);
+            Dir.ReleaseDirectoryServiceContract(ds);
+            return ok;
+        }
+
+        ///<summary>
+        /// Execute the commandLine.
+        ///</summary>
+        private static int RunCommand(ShellControl! shellControl,
+                                     String[] commandLine,
+                                     bool isBackground)
+        {
+            return RunCommand(shellControl, commandLine, isBackground, null);
+        }
+        ///<summary>
+        /// Execute the commandLine.
+        ///</summary>
+        private static int RunCommand(ShellControl! shellControl,
+                                     String[] commandLine,
+                                     bool isBackground,
+                                     SchedulerOptions schedulerOptions)
+        {
+            int exitCode = 0;
+            string path;
+            if (commandLine == null || commandLine.Length == 0) {
+                return exitCode;
+            }
+            ShellCommand command = FindCommand(commandLine[0]);
+            if (command != null) {
+                try {
+                    exitCode = command.Run(shellControl, commandLine);
+                }
+                catch (Exception ex) {
+                    Console.WriteLine("Exception: " + ex.Message);
+                    exitCode = -1;
+                }
+            }
+            else if (IsScript(commandLine[0], out path)) {
+                String[]! scriptArgs = new String[commandLine.Length + 1];
+                Array.Copy(commandLine, 0, scriptArgs, 1, commandLine.Length);
+                scriptArgs[0] = "script";
+                scriptArgs[1] = path;
+                exitCode = DoScript(shellControl, scriptArgs);
+            }
+            else {
+                try {
+                    Manifest manifest;
+                    string action;
+                    DirectoryServiceContract.Imp ds = Dir.GetDirectoryServiceContract();
+                    Process process = Binder.CreateProcess(null, ds, commandLine, out manifest, out action);
+                    Dir.ReleaseDirectoryServiceContract(ds);
+                    if (process == null) {
+                        return -1;
+                    }
+
+                    UnicodePipeContract.Imp:READY childStdout = shellControl.FreshStdout();
+                    if (childStdout == null) {
+                        // output multiplexer dead (which means that we shouldn't use Console.WriteLine
+                        DebugStub.WriteLine("-- Can't get new output pipe");
+                        return -1;
+                    }
+
+                    UnicodePipeContract.Imp! stdinImp;
+                    UnicodePipeContract.Exp! stdinExp;
+                    UnicodePipeContract.NewChannel(out stdinImp, out stdinExp);
+
+                    SingleProcessJob job = new SingleProcessJob(commandLine, process, stdinImp);
+
+                    if (manifest != null && manifest.HasParameters()) {
+                        int stdinIndex = manifest.GetInputPipeIndex(action, "data");
+
+                        if (stdinIndex == -1) {
+                            Console.WriteLine(" no stdin data pipe specified in manifest");
+                            delete stdinExp;
+                        }
+                        else {
+                            process.SetStartupEndpoint(stdinIndex, (Endpoint * in ExHeap) stdinExp);
+                        }
+
+                        int stdoutIndex = manifest.GetOutputPipeIndex(action, "data");
+
+                        if (stdoutIndex == -1) {
+                            Console.WriteLine(" no stdout data pipe specified in manifest");
+                            delete childStdout;
+                        }
+                        else {
+                            process.SetStartupEndpoint(stdoutIndex, (Endpoint * in ExHeap) childStdout);
+                        }
+                    }
+                    else {
+                        process.SetStartupEndpoint(0, (Endpoint * in ExHeap) stdinExp);
+                        process.SetStartupEndpoint(1, (Endpoint * in ExHeap) childStdout);
+                    }
+                    shellControl.Add(job);
+
+                    process.Start();
+                    if (!isBackground) {
+                        exitCode = WaitForJob(job);
+                        if (exitCode != 0) {
+                            Console.WriteLine("-- Exit code: {0}", exitCode);
+                        }
+                    }
+                    else {
+                        CleanBackgroundProcesses();
+                        string processName = GetProcessNameFromID(process.Id);
+                        backgroundProcesses.Add(new BackgroundProcess(process.Id, processName, process));
+                    }
+                }
+                catch (ProcessCreateException) {
+                    Console.Write("Unsupported command: {0}", commandLine[0]);
+                }
+                catch (Exception e) {
+                    Console.Write("Can't start {0}: Exception '{1}' caught.", commandLine[0], e.Message);
+                }
+            }
+            return exitCode;
+        }
+
+        ///<summary>
+        /// Walk through the backgroundProcesses list and remove the ones that are already stopped.
+        ///</summary>
+        private static void CleanBackgroundProcesses()
+        {
+            ArrayList listToRemove = new ArrayList();
+            for (int i = 0; i < backgroundProcesses.Count; i++) {
+                BackgroundProcess bp = (BackgroundProcess)(!)backgroundProcesses[i];
+                if (bp.ProcessInstance.State == ProcessState.Stopped) {
+                    listToRemove.Add(i);
+                }
+            }
+
+            for (int i = listToRemove.Count - 1; i >= 0; i--) {
+                backgroundProcesses.RemoveAt((int)(!)listToRemove[i]);
+            }
+        }
+
+        ///<summary>
+        /// Get the process name from the given ID. This can be used to kill processes by name.
+        ///</summary>
+        private static string GetProcessNameFromID(int processID)
+        {
+            // lazy initialize processRef
+            if (processRef == null)
+                processRef = new TRef<ProcessContract.Imp:ReadyState>(BindToProcessContract());
+
+            ProcessContract.Imp imp = processRef.Acquire();
+            if (imp == null) {
+                throw new ApplicationException("Unable to acquire ProcessContract");
+            }
+
+            string processName = null;
+            imp.SendGetProcessName(processID);
+            switch receive {
+                case imp.NotFound() :
+                    break;
+
+                case imp.ProcessName(char[]! in ExHeap procName) :
+                    processName = Bitter.ToString(procName);
+                    delete procName;
+                    break;
+
+                case imp.ChannelClosed() :
+                    break;
+            }
+
+            processRef.Release(imp);
+            return processName;
+        }
+
+        ///<summary>
+        /// Use DirectoryService to bind to the ProcessContract.
+        ///</summary>
+        private static ProcessContract.Imp! BindToProcessContract()
+        {
+            ProcessContract.Exp! exp;
+            ProcessContract.Imp! imp;
+            ProcessContract.NewChannel(out imp, out exp);
+            DirectoryServiceContract.Imp nameServer;
+
+            nameServer = DirectoryService.NewClientEndpoint();
+            try {
+                const string name = ProcessContract.ModuleName;
+                ErrorCode error;
+                bool success = SdsUtils.Bind(name, nameServer, exp, out error);
+                if (!success) {
+                    throw new ApplicationException("Unable to bind to ProcessContract");
+                }
+                switch receive {
+                    case imp.Ready():
+                        return imp;
+                    case imp.ContractNotSupported():
+                        throw new ApplicationException("Unable to bind to ProcessContract");
+                    case imp.ChannelClosed():
+                        throw new ApplicationException("Unable to bind to ProcessContract");
+                }
+            }
+            finally {
+                delete nameServer;
+            }
+        }
+
+        private static int WaitForIOJob(Job! job, PipeLookAhead! cinput)
+        {
+            WaitForChildContract.Imp! imp;
+            WaitForChildContract.Exp! exp;
+            WaitForChildContract.NewChannel(out imp, out exp);
+
+            UnicodePipeContract.Imp! childStdIn = job.AcquireStdin();
+
+            ESet<UnicodePipeContract.Imp:ACK> childStdInAck =
+                new ESet<UnicodePipeContract.Imp:ACK>();
+            ESet<UnicodePipeContract.Imp:READY> childStdInReady =
+                new ESet<UnicodePipeContract.Imp:READY>();
+
+            char[] in ExHeap exChar = new [ExHeap] char[1];
+            try {
+                WaitForChildThread.StartWaiting(job.Process,
+                                                new TRef<WaitForChildContract.Exp:Start>(exp));
+
+                childStdInReady.Add(childStdIn);
+
+                while (true) {
+                    // invariant exChar != null && childStdInReady.Head(ep) ||
+                    //           exChar == null && childStdInReady.Empty
+                    switch receive {
+
+                        case cinput.ControlC():
+                            job.Stop();
+                            job.Dispose();
+                            return 0;
+
+                        case cinput.ControlZ() && childStdInReady.Head(ep):
+                            job.Suspend();
+                            job.ReleaseStdin(ep);
+                            return 0;
+
+                        case cinput.Char(ch) && childStdInReady.Head(ep):
+                            // we have a char and childStdin is ready
+                            assert exChar != null;
+                            // echo character
+                            Console.Write(ch);
+                            exChar[0] = (char) ch;
+                            ep.SendWrite(exChar,0,1);
+                            exChar = null;
+                            childStdInAck.Add(ep);
+                            continue;
+
+                        case ep.AckWrite(buffer) in childStdInAck:
+                            assert exChar == null;
+                            exChar = buffer;
+                            childStdInReady.Add(ep);
+                            continue;
+
+                        case imp.Finish():
+                            //Console.WriteLine("finish");
+                            int exitCode = job.ExitCode;
+                            job.Dispose();
+                            return exitCode;
+
+                        case ep.ChannelClosed() in childStdInAck:
+                            delete ep;
+                            continue;
+                    }
+                }
+            }
+            finally {
+                childStdInReady.Dispose();
+                childStdInAck.Dispose();
+                delete imp;
+                delete exChar;
+            }
+        }
+
+        /// <summary>
+        /// Copy and echo characters from shell stdin to job stdin.
+        /// Wait for either the job to exit gracefully, or for the user
+        /// to press control-c or control-z.
+        ///
+        /// Known limitation: if the child process opens
+        /// its own keyboard channel, the shell may never see the control-c
+        /// message.
+        /// </summary>
+        private static int WaitForJob(Job! job)
+        {
+            PipeLookAhead cinput = ConsoleInput.AcquireInput();
+            try {
+                if (cinput.IsClosed) {
+                    return WaitForSimple(job);
+                }
+                else {
+                    return WaitForIOJob(job, cinput);
+                }
+            }
+            finally {
+                ConsoleInput.ReleaseInput(cinput);
+            }
+         }
+
+        private static int WaitForSimple(Job! job)
+        {
+            UnicodePipeContract.Imp! childStdIn = job.AcquireStdin();
+            delete childStdIn;
+
+            WaitForChildContract.Imp! imp;
+            WaitForChildContract.Exp! exp;
+            WaitForChildContract.NewChannel(out imp, out exp);
+            try {
+                WaitForChildThread.StartWaiting(job.Process,
+                                                new TRef<WaitForChildContract.Exp:Start>(exp));
+                switch receive {
+                    case imp.Finish():
+                        //Console.WriteLine("finish");
+                        int exitCode = job.ExitCode;
+                        job.Dispose();
+                        return exitCode;
+                }
+            }
+            finally {
+                delete imp;
+            }
+        }
+
+        // TODO: better ways to wait on a child process
+        private class WaitForChildThread
+        {
+            private Process! process;
+            private TRef<WaitForChildContract.Exp:Start>! expRef;
+
+            private WaitForChildThread(Process! process,
+                                       TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                this.process = process;
+                this.expRef = expRef;
+                base();
+            }
+
+            public static void StartWaiting(Process process,
+                                            TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                if (process == null) {
+                    WaitForChildContract.Exp exp = expRef.Acquire();
+                    exp.SendFinish();
+                    delete exp;
+                    return;
+                }
+
+                WaitForChildThread wft = new WaitForChildThread(process, expRef);
+                Thread t = new Thread(new ThreadStart(wft.Wait));
+                t.Start();
+            }
+
+            private void Wait()
+            {
+                process.Join();
+                WaitForChildContract.Exp exp = expRef.Acquire();
+                exp.SendFinish();
+                delete exp;
+            }
+        }
+
+
+        // kinda dumb...
+        private static bool CommandLineSyntaxCheck(string! commandLine)
+        {
+            int quoteCount = 0;
+            for (int i = 0; i < commandLine.Length; i++) {
+                if (commandLine[i] == '\'') {
+                    quoteCount++;
+                }
+            }
+
+            return (quoteCount % 2 == 0);
+        }
+
+        private static bool InSeparators(char c, char []! separators)
+        {
+            for (int i = 0; i < separators.Length; i++) {
+                if (separators[i] == c)
+                    return true;
+            }
+            return false;
+        }
+
+        private static ArrayList! Tokenize(string! input, int last,
+                                           char []! separators)
+        {
+            ArrayList tokens = new ArrayList();
+
+            for (int i = 0; i <= last;) {
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to slurp word
+                int start = i;
+                while (i <= last &&
+                       !InSeparators(input[i], separators) &&
+                       input[i] != '\'')
+                {
+                    i++;
+                }
+                if (i != start) {
+                    tokens.Add(input.Substring(start, i - start));
+                }
+
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to quoted slurp word
+                if (input[i] == '\'') {
+                    start = i;
+                    i++;
+                    while (i <= last && input[i] != '\'') {
+                        i++;
+                    }
+
+                    if (i <= last && input[i] == '\'') {
+                        tokens.Add(input.Substring(start + 1, i - start - 1));
+                        i++;
+                    }
+                    else {
+                        tokens.Add(input.Substring(start, i - start));
+                        i++;
+                    }
+                }
+            } // end for
+
+            return tokens;
+        }
+
+        private static void BreakCommandLine(string!       input,
+                                             char []!      separators,
+                                             out string    command,
+                                             out string[]! commandArguments,
+                                             out bool      isBackground)
+        {
+            isBackground = false;
+
+            if (!CommandLineSyntaxCheck(input)) {
+                command = "";
+                commandArguments = new string[0];
+                return;
+            }
+
+            // Scan for trailing ampersand first
+            int last = input.Length - 1;
+            while (last > 0 && InSeparators(input[last], separators)) {
+                last--;
+            }
+
+            if (input[last] == '&') {
+                isBackground = true;
+                last--;
+            }
+
+            ArrayList tokens = Tokenize(input, last, separators);
+
+            if (tokens.Count == 0) {
+                command = "";
+                commandArguments = new string[0];
+                isBackground = false;
+                return;
+            }
+
+            command = (string) tokens[0];
+            commandArguments = new string [tokens.Count];
+            for (int i = 0; i < tokens.Count; i++) {
+                commandArguments[i] = (string) tokens[i];
+            }
+        }
+
+        public static int RunPipe(ShellControl! shellControl, string! input)
+        {
+            int last = input.Length - 1;
+            ArrayList tokens = Tokenize(input, last, new char[] {'|'});
+            string [] commands = new string [tokens.Count];
+            for (int i = 0; i < tokens.Count; i++) {
+                commands[i] = (string) tokens[i];
+                DebugStub.WriteLine("Command : {0}",__arglist(commands[i]));
+            }
+
+            UnicodePipeContract.Imp! pipeStdin;
+            UnicodePipeContract.Exp! nonNullNextStdin;
+
+            UnicodePipeContract.NewChannel(out pipeStdin, out nonNullNextStdin);
+
+            UnicodePipeContract.Exp nextStdin = nonNullNextStdin;
+
+            Process[] processes = new Process[tokens.Count];
+            // Start up each link process.
+
+            string commandName;
+            string[]! commandArguments;
+            bool isBackground = false;
+
+            for (int i = 0; i < tokens.Count; i++) {
+                if (commands[i] != null) {
+
+                    UnicodePipeContract.Imp childStdout;
+                    UnicodePipeContract.Exp childStdoutExp;
+
+                    if (i == tokens.Count - 1) {
+                        // last process, hook up to output multiplexer
+                        childStdout = shellControl.FreshStdout();
+                        childStdoutExp = null;
+                    }
+                    else {
+                        UnicodePipeContract.Imp! nonNullChildImp;
+                        UnicodePipeContract.Exp! nonNullChildExp;
+                        UnicodePipeContract.NewChannel(out nonNullChildImp, out nonNullChildExp);
+                        childStdout = nonNullChildImp;
+                        childStdoutExp = nonNullChildExp;
+                    }
+
+                    BreakCommandLine((!)commands[i], new char[] {' '},
+                                    out commandName, out commandArguments,
+                                    out isBackground);
+
+                    try {
+                        Manifest manifest;
+                        string action = null;;
+                        DirectoryServiceContract.Imp ds = Dir.GetDirectoryServiceContract();
+                        Process process = Binder.CreateProcess(null, ds, commandArguments, out manifest, out action);
+                        Dir.ReleaseDirectoryServiceContract(ds);
+                        if (process == null) {
+
+                            delete childStdout;
+                            delete childStdoutExp;
+                            delete pipeStdin;
+                            delete nextStdin;
+                            return -1;
+                        }
+                        assert manifest != null;
+
+                        processes[i] = process;
+                        int stdinIndex = manifest.GetInputPipeIndex(action, "data");
+                        if (stdinIndex == -1) {
+                            Console.WriteLine(" no stdin data pipe specified in manifest");
+                            delete nextStdin;
+                        }
+                        else {
+                            process.SetStartupEndpoint(stdinIndex, (Endpoint * in ExHeap) nextStdin);
+                        }
+
+                        int stdoutIndex = manifest.GetOutputPipeIndex(action, "data");
+                        if (stdoutIndex == -1) {
+                            Console.WriteLine(" no stdout data pipe specified in manifest");
+                            delete childStdout;
+                        }
+                        else {
+                            process.SetStartupEndpoint(stdoutIndex, (Endpoint * in ExHeap) childStdout);
+                        }
+
+                        process.Start();
+                    }
+                    catch (ProcessCreateException) {
+                        Console.Write("Unsupported command: {0}", commandArguments);
+                        delete nextStdin;
+                        delete childStdout;
+                        delete childStdoutExp;
+                        delete pipeStdin;
+                        return -1;
+                    }
+                    catch (Exception e) {
+                        Console.Write("Can't start {0}: Exception '{1}' caught.", commandArguments,
+                                      e.Message);
+                        delete nextStdin;
+                        delete childStdout;
+                        delete childStdoutExp;
+                        delete pipeStdin;
+                        return -1;
+                    }
+
+                    nextStdin = childStdoutExp;
+                }
+            }
+            assert nextStdin == null;
+
+            PipeJob job = new PipeJob(input, pipeStdin, processes);
+            shellControl.Add(job);
+
+            int exitCode;
+            if (job.Process != null && !isBackground) {
+                exitCode = WaitForJob(job);
+                // DebugStub.WriteLine("pipe: wait ended");
+
+                if (exitCode != 0) {
+                    Console.WriteLine("-- Exit code: {0}",
+                                                exitCode);
+                }
+                return exitCode;
+            }
+            else {
+                return 0;
+            }
+        }
+
+
+        private static bool HasPipes(string! input)
+        {
+            if (input.IndexOf('|',0) == -1) return false;
+            else {
+                return true;
+            }
+        }
+
+        private static ShellControl! StartOutputPipeThread() {
+            UnicodePipeContract.Exp! newOutputExp;
+            UnicodePipeContract.Imp! newOutputImp;
+            UnicodePipeContract.NewChannel(out newOutputImp, out newOutputExp);
+
+            UnicodePipeContract.Imp stdOut = ConsoleOutput.Swap(newOutputImp);
+            if (stdOut == null) {
+                DebugStub.WriteLine("Shell not connected to a pipe output!");
+                throw new ApplicationException("Can't go on");
+            }
+            PipeMultiplexer pm = PipeMultiplexer.Start(stdOut, newOutputExp);
+            return new ShellControl(pm);
+        }
+        private static bool Compare(ArrayList! al, string! s)
+        {
+            if (al.Count != s.Length) return false;
+            for (int i = 0; i < s.Length; i++) {
+                if ((char)(!)al[i] != s[i]) return false;
+            }
+            return true;
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            int exitCode = 0;
+
+            terminal = new Terminal();
+            Binder.Initialize();
+            parameters = new ParameterProcessor();
+
+            Console.WriteLine("Singularity Shell (PID={0})",
+                              ProcessService.GetCurrentProcessId());
+
+
+            ShellControl! shellControl =
+                StartOutputPipeThread();
+
+            string prompt = "Singularity>";
+            string loginName = Principal.Self().GetName();
+            int i = loginName.IndexOf('+');
+            int j = loginName.IndexOf('@');
+            if (i > 0 && j > 0 && i > j) {
+                prompt = String.Format("Singularity ({0})>", loginName.Substring(j+1, i-(j+1)));
+            }
+
+            try {
+                Console.WriteLine();
+                Console.WriteLine("Type `help' to get a list of valid commands.");
+                ArrayList history = new ArrayList();
+
+                if (config.args != null) {
+                    //String[]! scriptArgs = new String[config.args.Length - 1];
+                    //Array.Copy(config.args, 1, scriptArgs, 0, scriptArgs.Length);
+                    exitCode = RunCommand(shellControl, config.args, false);
+                    if (done) {
+                        // we pretend we didn't connect to the keyboard.
+                    }
+                }
+
+                // At startup, run the script 'startup.script'.
+                DoScript(shellControl, new string[] { "script", "/init/startup.script" });
+
+                while (!done) {
+                    DebugStub.WriteLine("--- Singularity Shell Prompt ---");
+                    Tracing.Log(Tracing.Warning, "--- Singularity Shell Prompt ---");
+                    String inputs = GetCommand(prompt, history);
+                    if (inputs.Length == 0) {
+                        continue;
+                    }
+
+                    Monitoring.Log(Monitoring.Provider.Shell,
+                                   (ushort)ShellEvent.RunCommand,
+                                   inputs);
+
+                    if (history.Count != 0) {
+                        bool same =  Compare ((ArrayList!)history[history.Count - 1], inputs);
+                        if (!same) {
+                            history.Add(StringToCharArrayList(inputs));
+                        }
+                    }
+                    else {
+                            history.Add(StringToCharArrayList(inputs));
+                    }
+                    string commandName;
+                    string[]! commandArguments;
+                    bool isBackground;
+
+                    //Ask for the pipe
+                    if (HasPipes(inputs)) {
+                        RunPipe(shellControl, inputs);
+                    }
+                    else {
+                        BreakCommandLine(inputs, new char[] {' '},
+                                     out commandName, out commandArguments,
+                                     out isBackground);
+                        exitCode = RunCommand(shellControl, commandArguments, isBackground);
+                    }
+
+                }
+            }
+            catch (Exception e) {
+                DebugStub.WriteLine("Shell failed w/ " + e.Message);
+                Console.WriteLine("Caught {0}", e.Message);
+            }
+            finally {
+                shellControl.Dispose();
+            }
+
+            Console.WriteLine("Shell (PID={0}) Terminating w/ 0x{1:x4}.",
+                              ProcessService.GetCurrentProcessId(),
+                              exitCode);
+            DebugStub.WriteLine("Shell exiting w/ {0}.", __arglist(exitCode));
+            return exitCode;
+        }
+
+        internal static int SingleMain(SingleParameters! config)
+        {
+            int exitCode = 0;
+
+            terminal = new Terminal();
+            Binder.Initialize();
+            parameters = new ParameterProcessor();
+
+            string[] args = config.commandLine == null
+                ? new string[0]
+                : config.commandLine.Split(null);
+            Console.WriteLine("Singularity Shell (PID={0})",
+                              ProcessService.GetCurrentProcessId());
+
+            ShellControl! shellControl = StartOutputPipeThread();
+            try {
+                exitCode = RunCommand(shellControl, args, false);
+            }
+            catch (Exception e) {
+                DebugStub.WriteLine("Shell failed w/ " + e.Message);
+                Console.WriteLine("Caught {0}", e.Message);
+            }
+            finally {
+                shellControl.Dispose();
+            }
+            DebugStub.WriteLine("Shell exiting w/ {0}.", __arglist(exitCode));
+            return exitCode;
+        }
+
+        private enum SchedulerType
+        {
+            Unspecified = -1,
+            Min = 0,
+            Affinity = 1,
+            BVT = 2,
+        }
+
+        private class SchedulerOptions
+        {
+            internal SchedulerType Type = SchedulerType.Unspecified;
+            internal int BVTWeight;
+            internal int BVTWarp;
+            internal int BVTUnwarpRequirement;
+        }
+    }
+}

@@ -1,0 +1,312 @@
+﻿///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Anti-virus pattern matcher.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+
+namespace Microsoft.Singularity.Email
+{
+    // FutureTable
+    //
+    // The future table stores a list of patterns that we should try to match
+    // against an upcoming range of bytes in the input.  This range is
+    // indicated by lower and upper bounds (inclusive).
+    //
+    // Callers can add patterns to the table with AddPattern, and they can
+    // match against the patterns in the table by calling Start.
+    //
+    // Internally, the future table stores a list of futures sorted by lower
+    // bound.
+
+    class Future
+    {
+        public Future(Pattern pattern, int lower, int upper)
+        {
+            Pattern = pattern;
+            Lower = lower;
+            Upper = upper;
+        }
+
+        public Pattern Pattern;
+        public int Lower;
+        public int Upper;
+
+        public Future Next;
+    }
+
+    class FutureTable
+    {
+        // AddPattern
+        //
+        // Add a pattern with specified file offset bounds to the table.
+        // We first attempt to consolidate with any overlapping entries for
+        // this pattern that are already in the table.  We then insert the
+        // new future at the appropriate location.
+
+        public void AddPattern(Pattern pattern, int lower, int upper)
+        {
+            Future prev;
+            Future cur;
+
+            // Remove any overlapping ranges for this pattern, updating lower and upper as appropriate.
+            for (prev = null, cur = head;
+                 cur != null && cur.Lower - 1 <= upper;
+                 prev = cur, cur = cur.Next) {
+                // If the new pattern overlaps with an existing one...
+                if (pattern == cur.Pattern && lower - 1 <= cur.Upper) {
+                    // Remove it.
+                    if (prev != null) {
+                        prev.Next = cur.Next;
+                    } else {
+                        head = cur.Next;
+                    }
+                    // Widen the bounds if necessary.
+                    lower = Math.Min(lower, cur.Lower);
+                    upper = Math.Max(upper, cur.Upper);
+                }
+            }
+
+            // Find the location where we should insert this new item.
+            for (prev = null, cur = head;
+                 cur != null && cur.Lower < lower;
+                 prev = cur, cur = cur.Next) {
+                // Do nothing; we're just searching for the insert location.
+            }
+
+            // Insert the item.
+            Future item = new Future(pattern, lower, upper);
+            item.Next = cur;
+            if (prev != null) {
+                prev.Next = item;
+            } else {
+                head = item;
+            }
+        }
+
+        // Start
+        //
+        // Given an input file and an index in that file, try to match all
+        // applicable patterns.  We use the fact that the list of futures
+        // is sorted in order to avoid trying to match against all patterns.
+        // We also discard any patterns that will no longer be matched.
+        //
+        // We assume that the index will increase with each call to Start.
+
+        public void Start(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            ArrayList runnable = new ArrayList();
+
+            for (Future prev = null, cur = head;
+                 cur != null && cur.Lower <= index;
+                 prev = cur, cur = cur.Next) {
+                if (index <= cur.Upper) {
+                    // The index is between lower and upper, so check this pattern.
+                    runnable.Add(cur.Pattern);
+                } else {
+                    // This pattern is no longer relevant; remove it.
+                    if (prev != null) {
+                        prev.Next = cur.Next;
+                    } else {
+                        head = cur.Next;
+                    }
+                }
+            }
+
+            foreach (Pattern! pattern in runnable) {
+                pattern.Match(input, index, enqueue);
+            }
+        }
+
+        public void Clear()
+        {
+            head = null;
+        }
+
+        public int Count()
+        {
+            int i = 0;
+            for (Future cur = head; cur != null; cur = cur.Next) {
+                i += 1;
+            }
+            return i;
+        }
+
+        // List of future patterns to match, sorted by lower bound.
+        private Future head;
+    }
+
+    // OffsetTable
+    //
+    // The offset table stores patterns that should be applied at a particular
+    // offset in the file.  This offset can be positive or negative, where
+    // the latter indicates an offset from the end of the file.
+    //
+    // Callers can add pattersn to the table with AddPattern, and they can
+    // match against patterns in the table with Start.
+
+    class OffsetTable
+    {
+        public void AddPattern(Pattern pattern, int offset)
+        {
+            if (table[offset] == null) {
+                table[offset] = new ArrayList();
+            }
+
+            ArrayList list = (!)(table[offset] as ArrayList);
+            list.Add(pattern);
+        }
+
+        public void Start(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            StartList(table[index] as ArrayList, input, index, enqueue);
+            StartList(table[index - input.Length] as ArrayList, input, index, enqueue);
+        }
+
+        private void StartList(ArrayList list, byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            if (list != null) {
+                foreach (Pattern! pattern in list) {
+                    pattern.Match(input, index, enqueue);
+                }
+            }
+        }
+
+        private Hashtable table = new Hashtable();
+    }
+
+    // StartTable
+    //
+    // The start table stores patterns that should be applied at *any* offset
+    // in the input file.  For efficiency, we construct an n-level table
+    // mapping the first n bytes of the input to the relevant set of patterns.
+    // If a pattern doesn't start with a sequence of n bytes (e.g., it has a
+    // wildcard in front), we'll look for a shorter prefix.
+    //
+    // Callers can add patterns to the table with AddPattern, and they can
+    // match against the patterns in the table with Start.
+
+    class StartTable
+    {
+        public StartTable(int d)
+        {
+            Debug.Assert(d >= 0);
+            depth = d;
+        }
+
+        public void AddPattern(Pattern pattern)
+        {
+            AddPattern(pattern, 0);
+        }
+
+        private void AddPattern(Pattern pattern, int offset)
+        {
+            SeqPattern seq = pattern as SeqPattern;
+            if (depth > 0 && seq != null && offset < seq.Bytes.Length) {
+                byte b = seq.Bytes[offset];
+                if (table == null) {
+                    table = new StartTable[256];
+                }
+                if (table[b] == null) {
+                    table[b] = new StartTable(depth - 1);
+                }
+                StartTable subTable = (!)table[b];
+                subTable.AddPattern(pattern, offset + 1);
+            } else {
+                patterns.Add(pattern);
+            }
+        }
+
+        public void Start(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            Start(input, index, 0, enqueue);
+        }
+
+        private void Start(byte[]! input, int index, int offset, EnqueueDelegate! enqueue)
+        {
+            foreach (Pattern! pattern in patterns) {
+                pattern.Match(input, index, enqueue);
+            }
+
+            if (index + offset < input.Length) {
+                byte b = input[index + offset];
+                if (table != null && table[b] != null) {
+                    StartTable subTable = (!)table[b];
+                    subTable.Start(input, index, offset + 1, enqueue);
+                }
+            }
+        }
+
+        private int depth;
+        private StartTable[] table;
+        private ArrayList patterns = new ArrayList();
+    }
+
+    // PatternMatcher
+    //
+    // The pattern matcher stores one of each of the above tables:
+    //
+    //   FutureTable: Pattern matches in progress.
+    //   OffsetTable: Patterns to be matched at a specific offset.
+    //   StartTable:  Patterns to be matched at every offset.
+    //
+    // We set up the matcher by calling AddPattern, which adds patterns
+    // to the offset table or the start table.  We then call Match to
+    // match an input array against the provided patterns.
+
+    class PatternMatcher
+    {
+        public void AddPattern(Pattern pattern)
+        {
+            startTable.AddPattern(pattern);
+        }
+
+        public void AddPattern(Pattern pattern, int offset)
+        {
+            offsetTable.AddPattern(pattern, offset);
+        }
+
+        public string Match(byte[]! input)
+        {
+            found = null;
+            futureTable.Clear();
+
+            int length = input.Length;
+            for (int index = 0; found == null && index < length; index++) {
+                startTable.Start(input, index, Enqueue);
+                offsetTable.Start(input, index, Enqueue);
+                futureTable.Start(input, index, Enqueue);
+            }
+
+            futureTable.Clear();
+
+            return found;
+        }
+
+        private void Enqueue(Pattern pattern, int lower, int upper)
+        {
+            Debug.Assert(pattern != null);
+
+            if (pattern is EmptyPattern) {
+                found = ((EmptyPattern)pattern).Name;
+            } else {
+                futureTable.AddPattern(pattern, lower, upper);
+            }
+        }
+
+        private string found;
+
+        const int TableDepth = 2;
+        private StartTable startTable = new StartTable(TableDepth);
+        private OffsetTable offsetTable = new OffsetTable();
+        private FutureTable futureTable = new FutureTable();
+    }
+}

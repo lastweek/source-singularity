@@ -1,0 +1,177 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+#pragma warning disable 0618
+
+using System;
+using System.Diagnostics;
+using System.Net;
+using System.Net.IP;
+using System.Net.Sockets;
+using System.Collections;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using NetStack.Contracts;
+using NetStack.Channels.Public;
+
+namespace Smb.Shared
+{
+	class NetUtil
+	{
+		public static TcpContract.Imp:ReadyState! BindTcp()
+		{
+			TcpContract.Imp! tcp_imp;
+			TcpContract.Exp! tcp_exp;
+			TcpContract.NewChannel(out tcp_imp, out tcp_exp);
+			try {
+				DirectoryUtil.BindService(TcpContract.ModuleName, tcp_exp);
+				tcp_imp.RecvReady();
+				return tcp_imp;
+			}
+			catch (Exception ex) {
+				delete tcp_imp;
+				throw ex;
+			}
+		}
+		
+        public static TcpConnectionContract.Imp:ReadyState! CreateTcpConnection()
+        {
+            TcpContract.Imp! tcp = BindTcp();
+            
+            TcpConnectionContract.Imp! connection_imp;
+            TcpConnectionContract.Exp! connection_exp;
+            TcpConnectionContract.NewChannel(out connection_imp, out connection_exp);
+
+            tcp.SendCreateTcpSession(connection_exp);
+            
+            switch receive {
+				case tcp.Ack():
+					delete tcp;
+					connection_imp.RecvReady();
+					// DebugStub.WriteLine("Successfully created TCP connection.");
+					return connection_imp;
+				
+				case tcp.ChannelClosed():
+					delete tcp;
+					throw new Exception("A TCP connection could not be created.  The TCP module closed its channel.");
+					
+				case unsatisfiable:
+					delete tcp;
+					throw new Exception("A TCP connection could not be created.  Unsatisfiable select.");
+            }
+        }
+        
+        public static TcpConnectionContract.Imp:Connected! ConnectAny(string! hostname, int port)
+        {
+			try {
+				IPv4 ip_address;
+				
+				if (IPv4.Parse(hostname, out ip_address)) {
+					// A single address.
+					return Connect((uint)ip_address, port);
+				}
+				IPHostEntry hostentry = Dns.GetHostByName(hostname);
+				
+				if (hostentry == null)
+					throw new Exception("DNS resolution failed.");
+
+				IPAddress[] addresses = hostentry.AddressList;
+				if (addresses == null)
+					throw new Exception("Host entry did not return addresses.");
+				
+				if (addresses.Length == 0)
+					throw new Exception("This hostname does not have any addresses.");
+					
+				if (addresses.Length == 1) {
+					return Connect((uint)((!)addresses[0]).Address, port);
+				}
+				
+				foreach (IPAddress addr in addresses) {	
+					IPAddress address = (!)addr;
+					
+					TcpConnectionContract.Imp:ReadyState! conn = CreateTcpConnection();
+					conn.SendConnect((uint)address.Address, (ushort)port);
+					
+					switch receive {
+						case conn.OK():
+							return conn;
+						
+						case unsatisfiable:
+							delete conn;
+							throw new Exception("Unsatisfiable read");
+							
+						case conn.CouldNotConnect(error):
+							delete conn;
+							continue;
+					}
+				}
+				
+				throw new Exception(String.Format("All attempts to connect to the host failed.  {0} addresses were attempted.", addresses.Length));
+	        
+			}
+			catch (Exception ex) {
+				throw new Exception(String.Format("Failed to connect to hostname '{0}'.", hostname), ex);
+			}
+        }
+        
+        public static TcpConnectionContract.Imp:Connected! Connect(uint ipv4_address, int port)
+        {
+			TcpConnectionContract.Imp:ReadyState! conn = CreateTcpConnection();
+			
+			// The TCP/IP stack currently does not properly handle dynamic client endpoints.
+			// It will will reuse a local TCP port before it ought to.  So if you are attempting
+			// to connect to the same remote address:port as a previous connection, you'll wind 
+			// up with the exact same TCP tuple.  The remote endpoint will either reset the
+			// connection, or will simply not respond.  So, for now, we just pick a random local
+			// port, in the dynamic range.  The right thing to do is to fix the Singularity
+			// TCP/IP service; this is just a temporary work-around.
+			
+			// conn.SendBindLocalEndPoint(0, 0);
+			
+			Random rand = new Random();
+			int localPort = rand.Next(30000) + 1024;
+			conn.SendBindLocalEndPoint(0, (ushort)localPort);
+			
+			
+			switch receive {
+				case conn.OK():
+					// DebugStub.WriteLine("Socket bound");
+					break;
+					
+				case conn.InvalidEndPoint():
+					DebugStub.WriteLine("bind: InvalidEndPoint");
+					throw new Exception("The TCP/IP driver refused the bind request.");
+					
+				case conn.ChannelClosed():
+					throw new Exception("TCP/IP driver closed channel during bind!");
+			}
+			
+			conn.SendConnect(ipv4_address, (ushort)port);
+			
+			IPv4 addr = new IPv4(ipv4_address);
+			
+			switch receive {
+				case conn.OK():
+					return conn;
+				
+				case unsatisfiable:
+					delete conn;
+					throw new Exception(String.Format("Could not connect to TCP destination '{0}'.  Unsatisfiable read.", addr.ToString()));
+					
+				case conn.CouldNotConnect(error):
+					delete conn;
+					throw new Exception(String.Format("Could not connect to TCP destination '{0}:{1}': {2}", addr.ToString(), port.ToString(), TcpException.GetMessageForTcpError(error)));
+			}
+        }
+        
+        
+	}
+}
+
+

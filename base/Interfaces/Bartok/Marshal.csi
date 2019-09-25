@@ -1,0 +1,22 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace System.Runtime.InteropServices
+{
+    public sealed class Marshal
+    {
+        [RequiredByBartok]
+        public static IntPtr AllocHGlobal(int cb);
+        [RequiredByBartok]
+        public static void FreeHGlobal(IntPtr hglobal);
+
+        public static int SizeOf(Object structure);
+        public static int SizeOf(Type t);
+    }
+}

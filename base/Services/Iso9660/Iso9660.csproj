@@ -1,0 +1,50 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>iso9660</AssemblyName>
+    <NoWarn>2614,2637,2638,2613,2639</NoWarn>
+    <ServiceActivationMode>Demand</ServiceActivationMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Main.sg"/>
+    <Compile Include="Iso9660DirectoryInfo.cs"/>
+    <Compile Include="Iso9660FileInfo.cs"/>
+    <Compile Include="Iso9660FileSystemInfo.cs"/>
+    <Compile Include="Iso9660FileStream.cs"/>
+    <Compile Include="SingFSStructs.cs"/>
+    <Compile Include="FSFileInstanceWorker.sg"/>
+    <Compile Include="FSDirectoryInstanceWorker.sg"/>
+    <Compile Include="ByteContainers.sg"/>
+    <Compile Include="FSRequest.sg"/>
+    <Compile Include="FSThreadPool.sg"/>
+    <Compile Include="StdIOSingularity.sg"/>
+    <Compile Include="ByteArray.cs"/>
+    <Compile Include="iso9660.cs"/>
+    <Compile Include="Int.cs"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\ServiceManager.Contracts\ServiceManager.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Security\Security.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Xml\Xml.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ServiceCategory.targets" />
+
+</Project>

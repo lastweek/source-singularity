@@ -1,0 +1,18 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StressService.csi
+//
+//  Note:
+//
+
+namespace Microsoft.Singularity.Stress
+{
+    public class StressService
+    {
+        static public void Initialize();
+    }
+}

@@ -1,0 +1,95 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using FileSystem.Utils;
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Show attributes associated with a file", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "filename", Mandatory=true, Position=0, HelpMessage="Name of file.")]
+        internal string fileName;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return FsAttributes.AppMain(this);
+        }
+    }
+
+    public class FsAttributes
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            long size;
+            NodeType nodeType; 
+
+            DirectoryServiceContract.Imp rootNS = ((!)config.nsRef).Acquire(); 
+            if (rootNS == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+            
+            rootNS.RecvSuccess();
+            
+            FileAttributesRecord fileAttributes;
+            ErrorCode error; 
+            bool ok  = FileUtils.GetAttributes((!)config.fileName, rootNS, out fileAttributes, out  error);
+            delete rootNS; 
+
+            if (ok) {
+                DateTime create  = new DateTime(fileAttributes.CreationTime); 
+                DateTime write  = new DateTime(fileAttributes.LastWriteTime); 
+                DateTime access  = new DateTime(fileAttributes.LastAccessTime); 
+                
+                Console.WriteLine("GetAttributes for " + config.fileName);
+                Console.WriteLine("  Size: " + fileAttributes.FileSize);
+                Console.WriteLine("  NodeType: {0}", SdsUtils.NodeTypeToString(fileAttributes.Type) );
+                Console.WriteLine("  CreationTime: {0}:", create);
+                Console.WriteLine("  LastWriteTime: {0}:", write);
+                Console.WriteLine("  LastAccessTime: {0}:", access);
+                return 0; 
+            }
+            else {
+                Console.WriteLine(" Attr for ({0}) failed. reason:{1}",
+                    config.fileName, SdsUtils.ErrorCodeToString(error) ); 
+            }
+            return -1;
+        }
+
+        private static void Usage()
+        {
+            Console.WriteLine("type <filename>  displays output of file on console.");
+        }
+    } // class Test
+}

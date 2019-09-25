@@ -1,0 +1,68 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity telnet daemon
+//
+
+// TODO:
+// - Graceful server shutdown?
+// - non-null syntax
+// - catch all appropriate exceptions
+// - remove debugging traces
+// - limit the number of simultaneous telnet sessions?
+// - handle "exit" in shell gracefully
+// - handle "client disconnect" gracefully
+
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Telnetd
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Telnetd.AppMain(this);
+        }
+    }
+
+
+    public sealed class Telnetd
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            Console.WriteLine("Singularity Telnet Daemon - starting.");
+            Listener listener = new Listener(23);
+            listener.Start();
+            while (true) {
+                Socket socket = listener.Accept();
+                Console.WriteLine("Singularity Telnet Daemon - accepting connection");
+                Connection connection = new Connection(socket);
+                connection.Start();
+            }
+            Console.WriteLine("Singularity Telnet Daemon - stopping.");
+            return 0;
+        }
+    }
+}

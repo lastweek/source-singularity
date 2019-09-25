@@ -1,0 +1,28 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Globalization;
+
+namespace System
+{
+    public struct SByte : IComparable, IFormattable
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public const sbyte MaxValue;
+        public const sbyte MinValue;
+
+        public int CompareTo(Object obj);
+
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+        public override String ToString();
+
+        public String ToString(String format);
+        public static sbyte Parse(String s);
+    }
+}

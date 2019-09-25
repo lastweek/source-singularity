@@ -1,0 +1,25 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+using System.Runtime.CompilerServices;
+
+namespace System.GCs
+{
+    [RequiredByBartok]
+    internal unsafe class StaticData
+    {
+        [RequiredByBartok]	
+        private static int sectionCount;
+        [RequiredByBartok]
+        private static UIntPtr **dataSectionEnd; // unmanaged uint**[]
+        [RequiredByBartok]
+        private static UIntPtr **dataSectionBase; // unmanaged uint**[]
+        [RequiredByBartok]
+        private static UIntPtr **roDataSectionEnd; // unmanaged uint**[]
+        [RequiredByBartok]
+        private static UIntPtr **roDataSectionBase; // unmanaged uint**[]
+        [RequiredByBartok]
+        private static uint **staticDataPointerBitMap; // unmanaged uint*[]
+    }
+}

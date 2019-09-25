@@ -1,0 +1,28 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>Bug00013</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <NoNullCheck>true</NoNullCheck>
+    <NoWarn>219</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Bug00013.cs"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+</Project>

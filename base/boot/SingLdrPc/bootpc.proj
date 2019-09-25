@@ -1,0 +1,117 @@
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AS16>&quot;$(BUILDDIR)\x86_x86\ml.exe&quot;</AS16>
+    <LINK16>for %%f in (&quot;$(BUILDDIR)\x86_x86\link16.exe&quot;) do %%~sf</LINK16>
+    <AS64>&quot;$(SINGULARITY_ROOT)\build\x86_x64\ml64.exe&quot;</AS64>
+    <CC64>&quot;$(SINGULARITY_ROOT)\build\x86_x64\cl.exe&quot;</CC64>
+    <LINK64>&quot;$(SINGULARITY_ROOT)\build\x86_x64\link.exe&quot;</LINK64>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Machine)'=='x86'">
+    <AS>&quot;$(SINGULARITY_ROOT)\build\x86_x86\ml.exe&quot;</AS>
+    <CC>&quot;$(SINGULARITY_ROOT)\build\x86_x86\cl.exe&quot;</CC>
+    <LINK>&quot;$(SINGULARITY_ROOT)\build\x86_x86\link.exe&quot;</LINK>
+    <BLGEN>&quot;$(SINGULARITY_ROOT)\build\x86_x86\blgen.exe&quot;</BLGEN>
+    <BOOTDEF>/DBOOT_X86</BOOTDEF>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Machine)'=='x64'">
+    <AS>$(AS64)</AS>
+    <CC>$(CC64)</CC>
+    <LINK>$(LINK64)</LINK>
+    <BLGEN>&quot;$(SINGULARITY_ROOT)\build\x86_x64\blgen.exe&quot;</BLGEN>
+    <BOOTDEF>/DBOOT_X64</BOOTDEF>
+  </PropertyGroup>
+
+  <Target Name="BuildHalclass">
+    <MSBuild Projects="$(SINGULARITY_ROOT)\Kernel\Kernel.proj" Targets="BuildNativeIncludes"/>
+  </Target>
+
+  <Target Name="Build"
+          DependsOnTargets="BuildBootLoader"/>
+
+  <Target Name="CreateDirs">
+    <MakeDir Directories="$(BOOTDIR)"/>
+  </Target>
+
+  <Target Name="BuildEntry16"
+          Inputs="blentry16.asm;bl.inc"
+          Outputs="$(BOOTDIR)\blentry16.com"
+          DependsOnTargets="CreateDirs">
+
+    <Exec Command="$(AS16) /nologo $(BOOTDEF) /AT /omf /c /I. &quot;/Fl$(BOOTDIR)\blentry16.lst&quot; &quot;/Fo$(BOOTDIR)\blentry16.obj&quot; blentry16.asm"/>
+    <Exec WorkingDirectory="$(BOOTDIR)"
+          Command="$(LINK16) /nologo /TINY blentry16.obj,blentry16.com,blentry16.map,,,/ONERROR:NOEXE /NOLOGO"/>
+  </Target>
+
+  <ItemGroup>
+    <BootLoaderSource Include="blacpi.cpp"/>
+    <BootLoaderSource Include="blcdrom.cpp"/>
+    <BootLoaderSource Include="blcom.cpp"/>
+    <BootLoaderSource Condition="'$(Machine)'=='x86'" Include="$(Machine)\blcrtasm.asm"/>
+    <BootLoaderSource Include="blentry.cpp"/>
+    <BootLoaderSource Include="blfat.cpp"/>
+    <BootLoaderSource Include="blflash.cpp"/>
+    <BootLoaderSource Include="$(Machine)\blidt.asm"/>
+    <BootLoaderSource Include="$(Machine)\blioport.asm"/>
+    <BootLoaderSource Include="blkd.cpp"/>
+    <BootLoaderSource Include="blkd1394.cpp"/>
+    <BootLoaderSource Include="blkdcom.cpp"/>
+    <BootLoaderSource Include="$(Machine)\bllegacy.asm"/>
+    <BootLoaderSource Include="blmm.cpp"/>
+    <BootLoaderSource Include="blmps.cpp"/>
+    <BootLoaderSource Include="blpci.cpp"/>
+    <BootLoaderSource Include="blpecoff.cpp"/>
+    <BootLoaderSource Include="blpnp.cpp"/>
+    <BootLoaderSource Include="blpool.cpp"/>
+    <BootLoaderSource Include="blpxe.cpp"/>
+    <BootLoaderSource Include="blsingularity.cpp"/>
+    <BootLoaderSource Include="blsmap.cpp"/>
+    <BootLoaderSource Include="blstring.cpp"/>
+    <BootLoaderSource Include="bltrap.cpp"/>
+    <BootLoaderSource Include="blutil.cpp"/>
+    <BootLoaderSource Include="$(Machine)\blutilasm.asm"/>
+    <BootLoaderSource Include="blvesa.cpp"/>
+    <BootLoaderSource Include="blvideo.cpp"/>
+  </ItemGroup>
+
+  <Target Name="BuildEntryFull"
+          Inputs="@(BootLoaderSource);bl.h;blkd1394.h;bl.inc;$(KERNEL_NATIVE_DIR)\halclass.h"
+          Outputs="$(BOOTDIR)\bl.exe"
+          DependsOnTargets="BuildEntry16;BuildHalclass">
+
+    <Exec Condition="'%(BootLoaderSource.Extension)' == '.asm'"
+          Command="$(AS) /nologo /c $(BOOTDEF) /I. &quot;/Fl$(BOOTDIR)\%(BootLoaderSource.FileName).lst&quot; &quot;/Fo$(BOOTDIR)\%(BootLoaderSource.FileName).obj&quot; %(BootLoaderSource.Identity)"/>
+
+    <Exec Condition="'%(BootLoaderSource.Extension)' == '.cpp'"
+          Command="$(CC) /nologo /c $(BOOTDEF) /GF /Gy /Gr /Zi /Os /Oy- /GS- /Gs65536 /FAsc &quot;/Fa$(BOOTDIR)\%(BootLoaderSource.FileName).cod&quot; &quot;/Fo$(BOOTDIR)\%(BootLoaderSource.FileName).obj&quot; &quot;/Fd$(BOOTDIR)\%(BootLoaderSource.FileName).pdb&quot; &quot;/I$(KERNEL_NATIVE_DIR)&quot; %(BootLoaderSource.Identity)"/>
+
+    <Exec Command="$(LINK) /nologo /debug &quot;/out:$(BOOTDIR)\bl.exe&quot; &quot;/pdb:$(BOOTDIR)\bl.pdb&quot; &quot;/map:$(BOOTDIR)\bl.map&quot; @(BootLoaderSource->'&quot;$(BOOTDIR)\%(FileName).obj&quot;',' ') /nodefaultlib /entry:BlEntry /subsystem:native /base:0x40000 /fixed /ignore:4078 /ignore:4254 /merge:.rdata=.data /merge:.data=.text"/>
+  </Target>
+
+  <Target Name="BuildBootLoader"
+          Inputs="$(BOOTDIR)\bl.exe;$(BOOTDIR)\blentry16.com"
+          Outputs="$(BOOTDIR)\Singldr"
+          DependsOnTargets="BuildEntry16;BuildEntryFull">
+    <Message Text="Building $(BOOTDIR)\Singldr"/>
+    <Exec Command="$(BLGEN) &quot;$(BOOTDIR)\blentry16.com&quot; &quot;$(BOOTDIR)\bl.exe&quot; &quot;$(BOOTDIR)\Singldr&quot;"/>
+  </Target>
+
+  <Target Name="Clean">
+    <Delete Files="$(BOOTDIR)\blentry16.com"/>
+    <Delete Files="$(BOOTDIR)\blentry16.lst"/>
+    <Delete Files="$(BOOTDIR)\blentry16.map"/>
+    <Delete Files="$(BOOTDIR)\blentry16.obj"/>
+    <Delete Files="$(BOOTDIR)\%(BootLoaderSource.FileName).cod"/>
+    <Delete Files="$(BOOTDIR)\%(BootLoaderSource.FileName).lst"/>
+    <Delete Files="$(BOOTDIR)\%(BootLoaderSource.FileName).obj"/>
+    <Delete Files="$(BOOTDIR)\%(BootLoaderSource.FileName).pdb"/>
+    <Delete Files="$(BOOTDIR)\bl.exe"/>
+    <Delete Files="$(BOOTDIR)\bl.pdb"/>
+    <Delete Files="$(BOOTDIR)\Singldr"/>
+  </Target>
+
+</Project>

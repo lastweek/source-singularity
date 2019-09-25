@@ -1,0 +1,20 @@
+
+Notes:
+
+    HelloMpAsm depends on HelloMp
+
+
+HelloMp.cpp 
+
+    contains the assembly code that prints "Hi!" to the screen
+    directly (through 0xb800 physical address).
+
+build-hellomp.cmd
+
+    Creates obj/HelloMpAsm.exe in local obj/ directory.
+    
+load-hack.cmd
+
+    After building the entire distribution, run load-hack.cmd so that
+    the standard HelloMp executable (HelloMp.x86 from Applications/HelloMp)
+    will be overwritten with HelloMpAsm.exe, then use network boot.

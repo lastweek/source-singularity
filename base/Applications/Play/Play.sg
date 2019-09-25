@@ -1,0 +1,226 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple audio test program.
+//
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Contracts;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    // Use driver category for now.
+    // Once the appropriate categories have been defined this will need to change
+    // Also waiting for Compile Time reflection to eliminate static constructor etc.
+
+    [ConsoleCategory(DefaultAction=true)]
+    internal  sealed class PlayConfiguration
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<SoundDeviceContract.Imp:Start> ImpRef;
+
+        [StringArrayParameter("wavfiles", Mandatory=false, HelpMessage="A list of waveform (audio) files to play.")]
+        public string[] WaveFileNames;
+
+        [LongParameter("count", Mandatory=false, Default=1, HelpMessage="The number of times to play the wave files; default is once.")]
+        public long LoopCount;
+
+        reflective internal PlayConfiguration();
+
+        internal int AppMain() {
+#if true // HACK FOR BROKEN SHELL SCRIPT INTERPRETER
+            if (WaveFileNames != null && WaveFileNames.Length == 0)
+                WaveFileNames = new string[] { "/init/wav8m.wav", "/init/wav16m.wav", "/init/wav16s.wav" };
+#endif
+            return Play.AppMain(this);
+        }
+    }
+
+    public class Play
+    {
+        private static SoundDeviceContract.Imp:Ready OpenSoundDevice(PlayConfiguration! config)
+        {
+            // extract imp handed in as part of process creation
+            SoundDeviceContract.Imp! imp = ((!)config.ImpRef).Acquire();
+
+            // get it into the ready state
+            Console.WriteLine("[{0}] Waiting for SB channel.", Thread.CurrentThread.GetThreadId());
+            switch receive {
+                case imp.Success():
+                    Console.WriteLine("[{0}] Got SB channel.", Thread.CurrentThread.GetThreadId());
+                    break;
+                case imp.ContractNotSupported():
+                    delete imp;
+                    throw new Exception("Didn't Get SB channel. (ContractNotSupported)");
+                case imp.ChannelClosed():
+                    delete imp;
+                    throw new Exception("Didn't Get SB channel. (Channel closed)");
+            }
+            return imp;
+        }
+
+        internal static int AppMain(PlayConfiguration! config)
+        {
+            // Validate parameters.
+
+            string[] wave_filenames = config.WaveFileNames;
+            if (wave_filenames == null || wave_filenames.Length == 0) {
+                Console.WriteLine("No waveform filenames were provided.");
+                Console.WriteLine("Please specify at least one filename (e.g. /init/wav16s.wav).");
+                return 1;
+            }
+
+            long loop_count = config.LoopCount;
+            if (loop_count < 0) {
+                Console.WriteLine("If you will kindly define looping for a negative number of iterations, I'll try.");
+                return -1;
+            }
+            if (loop_count == 0)
+                return 0;
+
+            // Open the sound device.
+
+            SoundDeviceContract.Imp:Ready audio = OpenSoundDevice(config);
+            if (audio == null) {
+                Console.WriteLine("Failed to open audio device.");
+                return 1;
+            }
+
+            try {
+
+                for (int i = 0; i < loop_count; i++) {
+                    if (loop_count > 1)
+                        Console.WriteLine("Starting iteration {0} of {1}.", i + 1, loop_count);
+
+                    foreach (string wave_filename in wave_filenames) {
+                        if (wave_filename == null)
+                            continue;
+
+                        int result = PlayWaveform(audio, wave_filename);
+                        if (result != 0) {
+                            return result;
+                        }
+                    }
+                }
+
+                return 0;
+            }
+            finally {
+                delete audio;
+            }
+        }
+
+        static int PlayWaveform(SoundDeviceContract.Imp! audio, string! filename)
+        {
+            FileContract.Imp! file_imp;
+            FileContract.Exp! file_exp;
+            long file_length;
+
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+            try {
+
+                ErrorCode error;
+
+                FileAttributesRecord attributes;
+
+                if (!SdsUtils.GetAttributes(filename, rootds, out attributes, out error)) {
+                    Console.WriteLine("Failed to query size of file '{0}'.", filename);
+                    Console.WriteLine("Error: " + SdsUtils.ErrorCodeToString(error));
+                    return 1;
+                }
+
+                file_length = attributes.FileSize;
+
+                FileContract.NewChannel(out file_imp, out file_exp);
+
+                if (!SdsUtils.Bind(filename, rootds, file_exp, out error)) {
+                    delete file_imp;
+                    Console.WriteLine("The file '{0}' could not be opened.", filename);
+                    Console.WriteLine("Error: " + SdsUtils.ErrorCodeToString(error));
+                    return 1;
+                }
+
+                switch receive {
+                    case file_imp.RecvSuccess():
+                        break;
+                }
+
+            }
+            finally {
+                delete rootds;
+            }
+
+            Console.WriteLine("Successfully opened file '{0}'.  Length is {1}.", filename, file_length);
+
+            byte[]! in ExHeap file_contents = new[ExHeap] byte[file_length];
+
+            file_imp.SendRead(file_contents, 0, 0, file_length);
+
+            switch receive {
+                case file_imp.AckRead(byte[]! in ExHeap returned_file_contents, long bytesRead, int error):
+                    file_contents = returned_file_contents;
+                    if (bytesRead < 0) {
+                        Console.WriteLine("Filesystem failed read request.  Error: " + error);
+                        delete file_imp;
+                        delete file_contents;
+                        return 1;
+                    }
+
+                    if (bytesRead < file_length) {
+                        Console.WriteLine("Warning: Filesystem returned fewer bytes than requested ({0} < {1}).", bytesRead, file_length);
+                        file_length = bytesRead;
+                    }
+                    break;
+
+                case file_imp.ChannelClosed():
+                    throw new Exception("Filesystem closed channel without completing read!");
+            }
+
+            delete file_imp;
+
+            return PlayWaveform(audio, file_contents);
+        }
+
+        static int PlayWaveform(SoundDeviceContract.Imp! audio, [Claims]byte[]! in ExHeap waveform_data)
+        {
+            audio.SendPlayWav(waveform_data);
+            switch receive {
+                case audio.RecvAckPlayWav(oldbuffer):
+                    Console.WriteLine("Done playing WAV audio.");
+                delete oldbuffer;
+                return 0;
+
+            case audio.RecvNakPlayWav(oldbuffer):
+                Console.WriteLine("Failed to play WAV audio.");
+                delete oldbuffer;
+                return 1;
+
+            case audio.ChannelClosed():
+                Console.WriteLine("SoundDevice channel closed unexpectedly.");
+                return 1;
+            }
+        }
+    }
+}

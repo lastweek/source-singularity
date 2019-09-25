@@ -1,0 +1,8 @@
+using System.Reflection;
+
+[assembly: AssemblyTitle("Microsoft.Singularity.Io")]
+[assembly: AssemblyProduct("Microsoft Research Singularity IO Contracts")]
+[assembly: AssemblyCompany("Microsoft Corporation")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyKeyFile("public.snk")]
+[assembly: AssemblyDelaySign(true)]

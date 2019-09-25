@@ -1,0 +1,359 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+// #define VERBOSE
+// #define REALLY_VERBOSE
+
+namespace Microsoft.Singularity.Security.AccessControl
+{
+    using System;
+    using System.Text;
+    using System.Text.RegularExpressions;
+    using System.Collections;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity.Security;
+    using Microsoft.Singularity.Channels;
+
+    /// <summary>
+    /// Converts an Access Control List description to a regular expression.
+    /// Caches group expansions for improved performance.
+    /// </summary>
+
+    public class AclConverter
+    {
+        /// <summary>
+        /// Regular expression matching an path fragment
+        /// </summary>
+        protected const string pathfrag = @"[a-zA-Z1-90_]+(\.[a-zA-Z1-90_]+)*";
+        /// <summary>
+        /// Regular expression matching the beginning of a string
+        /// </summary>
+        protected const string start = "^(";
+        /// <summary>
+        /// Regular expression matching the end of a string
+        /// </summary>
+        protected const string end = ")$";
+
+        /// <summary>expression
+        /// The reader of group definitions
+        /// </summary>
+        protected Cache! cache;
+        private IAclCoreSupport support;
+
+        /// <summary>
+        /// Create new converter,
+        /// </summary>
+
+        private const int ExpnCachePrunePercent = 20;
+
+        public AclConverter(IAclCoreSupport _support, int expnCacheMaxEntries, int expnCacheExpirySeconds)
+        {
+            this.support = _support;
+            this.cache = new Cache(expnCacheMaxEntries, expnCacheExpirySeconds,
+                                        ExpnCachePrunePercent, "Expansion Cache: ");
+        }
+
+        /// <summary>
+        /// Convert the specified ACL to a regular expression
+        /// </summary>
+        /// <param name="acl">The access control list</param>
+        /// <returns>An equivalent text regular expression</returns>
+
+        public void DumpStats(StringBuilder! sb)
+        {
+            cache.DumpStats(sb);
+        }
+
+        public void ClearStats()
+        {
+            cache.ResetStats();
+        }
+
+        public void FlushCache()
+        {
+            cache.Prune(true);
+        }
+
+        public string! Convert(string! aclstr, bool bypassCache, out DateTime minExpiry)
+        {
+            StringBuilder! sb = new StringBuilder();
+            Stack! stack = new Stack();
+            int nSubExprs = 0;
+
+            minExpiry = DateTime.MaxValue;
+            sb.Append(start);
+            DoExpand(aclstr, sb, "", stack, bypassCache, ref nSubExprs, ref minExpiry);
+            sb.Append(end);
+            return sb.ToString();
+        }
+
+        public string! ConvertTest(string! aclstr, out int nSubExprs)
+        {
+            DateTime minExpiry = DateTime.MaxValue;
+            StringBuilder! sb = new StringBuilder();
+            Stack! stack = new Stack();
+
+            nSubExprs = 0;
+            sb.Append(start);
+            DoExpand(aclstr, sb, "", stack, false, ref nSubExprs, ref minExpiry);
+            sb.Append(end);
+            return sb.ToString();
+        }
+
+        internal class CacheEntry : ICacheValue
+        {
+            public string! expansion;
+            public bool constant;
+            public int nSubExprs;
+
+            public CacheEntry(Cache! cache, string! expansion, bool constant,
+                                           int nSubExprs, DateTime minExpiry)
+            {
+                base(cache, minExpiry);
+                this.expansion = expansion;
+                this.constant = constant;
+                this.nSubExprs = nSubExprs;
+            }
+        }
+
+        private void DoExpand(string! pattern, StringBuilder! sb, string! ns,
+                               Stack! stack, bool bypassCache, ref int nSubExprs, ref DateTime minExpiry)
+        {
+            AclToken t;
+            AclParser parser = new AclParser(pattern);
+
+            CacheEntry ce = null;
+            int eStart = sb.Length;
+            int eSubExprs = nSubExprs;
+
+            ce = (CacheEntry) cache.GetEntry(pattern);
+            if (ce != null) {
+                if (ce.Expired)
+                    ce = null;
+                else if (!bypassCache || ce.constant) {
+#if VERBOSE
+                    DebugStub.Print("DoExpand: Cache hit {0}\n", __arglist(path));
+#endif
+                    if (ce.expiry < minExpiry)
+                        minExpiry = ce.expiry;
+                    sb.Append(ce.expansion);
+                    nSubExprs += ce.nSubExprs;
+                    return;
+                }
+            }
+
+            while ((t = parser.NextToken()) != null) {
+                switch (t.Type) {
+                    case AclTokenType.Literal:
+#if REALLY_VERBOSE
+                        DebugStub.Print("Literal: {0}\n", __arglist(t.Text));
+#endif
+                        sb.Append(t.Text);
+                        break;
+                    case AclTokenType.Arc:
+#if REALLY_VERBOSE
+                        DebugStub.Print("Arc: {0}\n", __arglist(t.Text));
+#endif
+                        // Arcs need no transformation   
+                        sb.Append(t.Text);
+                        break;
+                    case AclTokenType.Any:
+                        // Any matches any path fragment   
+#if REALLY_VERBOSE
+                        DebugStub.Print("Any: {0}\n", __arglist(t.Text));
+#endif
+                        sb.Append(pathfrag);
+                        break;
+                    case AclTokenType.Escape:
+                        // Reserved regular expression symbol: escape it   
+#if REALLY_VERBOSE
+                        DebugStub.Print("Escape: {0}\n", __arglist(t.Text));
+#endif
+                        sb.AppendFormat("\\{0}", t.Text);
+                        break;
+                    case AclTokenType.GroupName:
+                        //
+                        //A sub-expression can have relative or absolute name.
+                        //We resolve relative names by keeping track of the namespace
+                        //of the last resolution.
+                        //
+                        bool isPath = true;
+                        string path = t.Text;
+                        nSubExprs++;
+                        if (path.Length != 0) {
+                            if (path[0] == '$') {
+                                isPath = false;
+                            }
+                            else {
+                                if (path[0] != '/') {
+                                    // this is a relative path. append the namespace
+                                    path = ns + "/" + path;
+                                }
+
+                                // update the namespace name:
+                                int index = path.LastIndexOf('/');
+                                if (index == -1) {
+                                    ns = String.Empty;
+                                }
+                                else {
+                                    ns = (!)path.Substring(0, index);
+                                }
+                            }
+
+                            string subexpr = ReadSubexpression(path, isPath);
+                            if (subexpr == null) {
+#if VERBOSE
+                                DebugStub.Print("Undefined subexpression: {0}\n", __arglist(t.Text));
+#endif
+                            }
+
+                            if (stack.Contains(path)) {
+                                throw new Exception("Infinite recursion detected while expanding acl.");
+                            }
+
+                            sb.Append('(');
+                            stack.Push(path);
+                            if (subexpr != null && subexpr.Length != 0)
+                                DoExpand(subexpr, sb, ns, stack, bypassCache, ref nSubExprs, ref minExpiry);
+                            stack.Pop();
+                            sb.Append(')');
+                        }
+                        break;
+                    case AclTokenType.Miscellaneous:
+                        DebugStub.Print("Invalid token: {0} Skipping it\n", __arglist(t.Text));
+                        break;
+                }
+            }
+            // cache the results of the expansion at this level
+            string expansion = sb.ToString(eStart, sb.Length-eStart);
+            if (ce == null || expansion != ce.expansion) {
+                ce = new CacheEntry(cache, expansion, false, nSubExprs-eSubExprs, minExpiry);
+                cache.AddEntry(pattern, ce);
+            }
+            else if (ce != null) {
+                // Old expansion was the same, update expiry.
+                ce.ResetExpiry(cache, minExpiry);
+            }
+            if (ce.expiry < minExpiry)
+                minExpiry = ce.expiry;
+        }
+
+        private string ReadSubexpression(string! path, bool isPath)
+        {
+            string result = null;
+            if (isPath) {
+                if (support == null)
+                    DebugStub.Print("ReadSubexpression: AclCoreSupport object missing\n");
+                else
+                    result = support.Expand(path);
+            }
+            else
+                result = Principal.ExpandAclIndirection(path);
+            return result;
+        }
+
+        //
+        //// this code has been moved to the client impl (e.g. DirAclCoreSupport.sg)
+//
+        //private string ReadGroup(string! path)
+        //{
+        //  return support.GetGroupContents(path);
+        //}
+//
+        //// read the file size
+        //  DirectoryServiceContract.Imp:Ready! ns = AcquireNSRoot();
+        //  byte[] result =  ReadFromFile(path, ns);
+        //  ReleaseNSRoot(ns);
+//
+        //  if (result == null)
+        //      return null;
+//
+        //  string! subexpression = (!)encoder.GetString(result);
+        //  return subexpression;
+        //}
+//
+        //private DirectoryServiceContract.Imp:Ready! AcquireNSRoot()
+        //{
+//
+        //  if (cachedRootNS == null)
+        //      cachedRootNS =
+        //          new TRef<DirectoryServiceContract.Imp:Ready>(support.GroupDirectoryRoot());
+        //  return cachedRootNS.Acquire();
+        //}
+//
+        //private void ReleaseNSRoot([Claims] DirectoryServiceContract.Imp:Ready! ns)
+        //{
+        //  cachedRootNS.Release(ns);
+        //}
+//
+        //private byte[] ReadFromFile(string!path, DirectoryServiceContract.Imp:Ready! ns)
+        //{
+        //  ErrorCode errCode;
+        //  byte[] result;
+        //  long size = 0;
+        //  int readSize = 4096;
+        //  NodeType nodeType;
+//
+//
+        //  try {
+        //      bool temp = SdsUtils.GetAttributes(path, ns, out size, out nodeType, out errCode);
+        //      if (!temp)
+        //          // element does not exist or an error has occurred
+        //          throw new Exception("Cannot get attributes - " + SdsUtils.ErrorCodeToString(errCode));
+//
+        //      result = new byte[size];
+        //      byte[] in ExHeap buf = new[ExHeap] byte[readSize];
+        //      if (result == null || buf == null)
+        //          throw new Exception("Cannot allocate memory");
+//
+        //      FileContract.Imp! fileImp;
+        //      FileContract.Exp! fileExp;
+        //      FileContract.NewChannel(out fileImp, out fileExp);
+        //      bool bindOk = SdsUtils.Bind(path, ns, fileExp, out errCode);
+        //      if (!bindOk) {
+        //          delete fileImp;
+        //          throw new Exception("Can't read group - " + SdsUtils.ErrorCodeToString(errCode));
+        //      }
+        //      fileImp.RecvSuccess();
+//
+        //      long readOffset = 0;
+        //      while (true) {
+        //          fileImp.SendRead(buf, 0, readOffset, readSize);
+        //          switch receive {
+        //              case fileImp.AckRead(localbuf,  bytesRead,  error) :
+        //                  // move the memory
+        //                  Bitter.ToByteArray(localbuf, 0, (int)bytesRead, result, (int)readOffset);
+        //                  if (bytesRead == readSize) {
+        //                      // see if there is more
+        //                      readOffset += bytesRead;
+        //                      buf = localbuf;
+        //                      continue;
+        //                  }
+        //                  delete localbuf;
+        //                  break;
+        //              case fileImp.ChannelClosed() :
+        //                  break;
+        //              case unsatisfiable :
+        //                  break;
+        //          }
+        //          break;
+        //      }
+        //      delete fileImp;
+        //  }
+        //  catch (Exception e) {
+        //      DebugStub.Print("An exception occurred while reading group definition: {0}\n",
+        //                      __arglist(path));
+        //      DebugStub.Print("Message: {0}\n", __arglist(e.Message));
+        //      return null;
+        //  }
+        //  return result;
+        //}
+        //
+
+    }
+}
+
+

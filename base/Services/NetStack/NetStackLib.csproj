@@ -1,0 +1,75 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>NetStackLib</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <ProjectGuid>{B6CFF343-105B-4668-8F94-F0D373068088}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Common\IAdapter.cs" />
+    <Compile Include="Common\IBuffer.cs" />
+    <Compile Include="Common\NetPacket.cs" />
+    <Compile Include="Common\SimpleBuffer.cs" />
+    <Compile Include="Protocol\ARPFmt.cs" />
+    <Compile Include="Protocol\DhcpFmt.cs" />
+    <Compile Include="Protocol\DhcpOptions.cs" />
+    <Compile Include="Protocol\DnsFmt.cs" />
+    <Compile Include="Protocol\EtherFmt.cs" />
+    <Compile Include="Protocol\ICMPFmt.cs" />
+    <Compile Include="Protocol\IPFmt.cs" />
+    <Compile Include="Protocol\TCPFmt.cs" />
+    <Compile Include="Protocol\UDPFmt.cs" />
+    <Compile Include="Runtime\AdapterInfo.cs" />
+    <Compile Include="Runtime\ARPModule.cs" />
+    <Compile Include="Runtime\Core.cs" />
+    <Compile Include="Runtime\DeMux.cs" />
+    <Compile Include="Runtime\DhcpClientFSM.cs" />
+    <Compile Include="Runtime\DhcpClient.cs" />
+    <Compile Include="Runtime\Dispatcher.cs" />
+    <Compile Include="Runtime\DnsClient.cs" />
+    <Compile Include="Runtime\HostConfiguration.cs" />
+    <Compile Include="Runtime\ICMPModule.cs" />
+    <Compile Include="Runtime\ICMPSession.cs" />
+    <Compile Include="Runtime\INetModule.cs" />
+    <Compile Include="Runtime\IPModule.cs" />
+    <Compile Include="Runtime\IProtocol.cs" />
+    <Compile Include="Runtime\Mux.cs" />
+    <Compile Include="Runtime\NetStatus.cs" />
+    <Compile Include="Runtime\NetstackThreadPool.sg" />
+    <Compile Include="Runtime\PacketTypes.cs" />
+    <Compile Include="Runtime\ProtocolParams.cs" />
+    <Compile Include="Runtime\RoutingTable.cs" />
+    <Compile Include="Runtime\Reservations.cs" />
+    <Compile Include="Runtime\Session.cs" />
+    <Compile Include="Runtime\StaticConfiguration.cs" />
+    <Compile Include="Runtime\TCPFsm.cs" />
+    <Compile Include="Runtime\TCPModule.cs" />
+    <Compile Include="Runtime\TCPSession.cs" />
+    <Compile Include="Runtime\TcpSessionEventLog.cs" />
+    <Compile Include="Runtime\TCPSessionPool.cs" />
+    <Compile Include="Runtime\TimeOut.cs" />
+    <Compile Include="Runtime\Timers.cs" />
+    <Compile Include="Runtime\UDPModule.cs" />
+    <Compile Include="Runtime\UDPSession.cs" />
+    <Compile Include="Runtime\StoppableThread.sg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="Events\Events.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Drivers.Net\Drivers.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DebugUtils\DebugUtils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Eventing\Eventing.csproj"/>
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

@@ -1,0 +1,337 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/CredentialsManager/Ntlm.sg
+//
+//  Note:	Contains the code that allows the Credentials Manager to use NTLM.
+//			The NTLM algorithms are not implemented in this file; they're in 
+//			the Libraries/Ntlm.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.Threading;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.SingSharp;
+using NtlmSupplicant = System.Security.Protocols.Ntlm.NtlmSupplicant;
+
+using Ex = Microsoft.Singularity.Security;
+
+namespace Microsoft.Singularity.Security.CredentialsManager
+{
+    class NtlmAuthenticationProtocol : AuthenticationProtocol
+    {
+        public override bool CreateSupplicant([Claims]ServiceContract.Exp! exp, Credentials! credentials, out CredError error)
+        {
+            // The only kind of evidence that NTLM supports is PasswordEvidence.
+            PasswordEvidence pwevidence = credentials.Evidence as PasswordEvidence;
+            if (pwevidence == null) {
+                delete exp;
+                error = CredError.EvidenceTypeNotSupported;
+                return false;
+            }
+            
+            // Parse the username and domain name from the credentials name.
+            
+            string! credentialsName = credentials.Id.CredentialsName;
+            string! username;
+            string! domain;
+            
+            int separator = credentialsName.IndexOf('\\');
+            if (separator != -1) {
+                // Is it "domain\user"?
+                username = credentialsName.Substring(separator + 1);
+                domain = credentialsName.Substring(0, separator);
+            }
+            else {
+                separator = credentialsName.IndexOf('@');
+                if (separator != -1) {
+                    // Is it "user@domain.foo"?
+                    username = credentialsName.Substring(0, separator);
+                    domain = credentialsName.Substring(separator + 1);
+                }
+                else {
+                    // No, and no.  Assume "user", and use a domain of ".", which most implementations
+                    // interpret as meaning "this machine" or "this domain".
+                    username = credentialsName;
+                    domain = ".";
+                }
+            }
+            
+            // Which contract does the client want to use?
+            
+            NtlmSupplicantContract.Exp ntlm_exp = exp as NtlmSupplicantContract.Exp;
+            GssSupplicantContract.Exp gss_exp;
+            
+            if ((ntlm_exp = exp as NtlmSupplicantContract.Exp) != null) {
+                NtlmLegacySupplicantClient.StartServiceThread(ntlm_exp, pwevidence);
+                error = CredError.NoError;
+                return true;
+            }
+            else if ((gss_exp = exp as GssSupplicantContract.Exp) != null) {
+                NtlmGssSupplicantClient.StartServiceThread(gss_exp, username, domain, pwevidence);
+                error = CredError.NoError;
+                return true;
+            }
+            else {
+                delete exp;
+                error = CredError.ContractNotSupported;
+                return false;
+            }
+            
+        }
+    }
+    
+    ///
+    //<summary>
+    //  This class provides raw access to the NTLM supplicant, using NtlmSupplicantContract.
+    //  This is for clients that deal directly with the username, domain name, the NTLM
+    //  challenge, and response, all as discrete fields.
+    //</summary>
+    //
+    class NtlmLegacySupplicantClient
+    {
+        public static void StartServiceThread([Claims]NtlmSupplicantContract.Exp:Start! exp, PasswordEvidence! evidence)
+        {
+            NtlmLegacySupplicantClient client = new NtlmLegacySupplicantClient(exp, evidence);
+            ThreadStart start = new ThreadStart(client.ThreadServiceRoutine);
+            Thread thread = new Thread(start);
+            thread.Start();
+        }
+        
+        private NtlmLegacySupplicantClient([Claims]NtlmSupplicantContract.Exp:Start! exp, PasswordEvidence! evidence)
+        {
+            _exp = new TRef<NtlmSupplicantContract.Exp:Start>(exp);
+            _evidence = evidence;
+        }
+        
+        TRef<NtlmSupplicantContract.Exp:Start>! _exp;
+        
+        readonly PasswordEvidence! _evidence;
+        
+        void ThreadServiceRoutine()
+        {
+            NtlmSupplicantContract.Exp! exp = _exp.Acquire();
+            
+            // DebugLine("Service thread started.");
+            
+            try {
+            
+                exp.SendSuccess();
+            
+                for (;;) {
+                
+                    switch receive {
+                        case exp.ChannelClosed():
+                            // DebugLine("Channel closed.");
+                            return;
+                        
+                        case exp.GetResponse(exchallenge, type):
+                            byte[]! challenge = Bitter.ToByteArray(exchallenge);
+                            delete exchallenge;
+                            
+                            
+                            byte[] response;
+                            switch (type) {
+                                case NtlmResponseType.LanMan:
+                                    // DebugLine("Computing LanMan response");
+                                    response = NtlmSupplicant.ComputeLmResponse(challenge, _evidence.Password);
+                                    break;
+                                    
+                                case NtlmResponseType.WindowsNt:
+                                    // DebugLine("Computing NT response");
+                                    response = NtlmSupplicant.ComputeNtResponse(challenge, _evidence.Password);
+                                    break;
+                                    
+                                default:
+                                    DebugLine("Invalid arguments -- response type not supported");
+                                    response = null;
+                                    break;									
+                            }
+                            
+                            if (response != null) {
+                                byte[]! in ExHeap exresponse = Bitter.FromByteArray(response);
+                                exp.SendResponse(exresponse);
+                            }
+                            else {
+                                exp.SendRequestFailed(CredError.InvalidArguments);
+                            }
+                            break;
+                    }
+                }
+            
+            }
+            catch (Exception ex) {
+                DebugLine("EXCEPTION in NtlmLegacySupplicantClient service thread!");
+                Util.DumpException(ex);
+
+            }
+            finally {
+                delete exp;
+            }
+        }
+        
+        void DebugLine(string! line)
+        {
+            DebugStub.WriteLine("CREDMGR[NtlmLegacy]: " + line);
+        }
+        
+        void DebugLine(string! format, params object[]! args)
+        {
+            DebugLine(String.Format(format, args));
+        }	
+    }
+
+    ///
+    //<summary>
+    //  This class provides access to the NTLM supplicant using GSS.  GSS is a token-exchange model.
+    //  This implementation uses standard NTLMSSP tokens, and is compatible with the Windows NTLM SSP
+    //  implementation.
+    //</summary>
+    //
+    class NtlmGssSupplicantClient
+    {
+        public static void StartServiceThread(
+            [Claims]GssSupplicantContract.Exp:Start! exp,
+            string! username,
+            string! domain,
+            PasswordEvidence! evidence)
+        {
+            NtlmGssSupplicantClient client = new NtlmGssSupplicantClient(exp, username, domain, evidence);
+            ThreadStart start = new ThreadStart(client.ThreadServiceRoutine);
+            Thread thread = new Thread(start);
+            thread.Start();
+        }
+        
+        private NtlmGssSupplicantClient(
+            [Claims]GssSupplicantContract.Exp:Start! exp,
+            string! username,
+            string! domain,
+            PasswordEvidence! evidence)
+        {
+            _exp = new TRef<GssSupplicantContract.Exp:Start>(exp);
+            _evidence = evidence;
+            _workstation = "SINGULARITY";
+            _username = username;
+            _domain = domain;
+        }
+        
+        TRef<GssSupplicantContract.Exp:Start>! _exp;
+        
+        readonly PasswordEvidence! _evidence;
+        readonly string! _username;
+        readonly string! _domain;
+        
+        readonly string! _workstation;
+        
+        void ThreadServiceRoutine()
+        {
+            GssSupplicantContract.Exp! exp = _exp.Acquire();
+            
+            // DebugLine("Service thread started.");
+            
+            try {
+
+                // In NTLM/GSS, the supplicant sends the first message (Negotiate).
+                // This message contains the domain name and hostname of the local computer,
+                // which Singularity doesn't really support right now.  So we'll use fixed values.
+                
+                byte[]! negotiate_token;
+                try {
+                    negotiate_token = NtlmSupplicant.GetNegotiate(
+                        0,
+                        "WORKGROUP",
+                        _workstation);
+                }
+                catch (Exception ex) {
+                    DebugLine("The NTLM supplicant threw an exception while trying to build the Negotiate token.");
+                    Util.DumpException(ex);
+                    return;
+                }
+                
+                // DebugLine("Sending Negotiate token");
+                exp.SendFirstToken(Bitter.FromByteArray(negotiate_token));
+                
+                // The supplicant channel is now in the WaitingForToken state.
+            
+                switch receive {
+                    case exp.ChannelClosed():
+                        // DebugLine("Channel closed.");
+                        return;
+                    
+                    case exp.AcceptToken(byte[]! in ExHeap exchallenge_token):
+                        byte[]! challenge_token = Bitter.ToByteArray(exchallenge_token);
+                        delete exchallenge_token;
+                        // DebugLine("Received Challenge token.");
+                        byte[]! response_token;
+                        try {
+                            response_token = NtlmSupplicant.GetResponse(
+                                challenge_token,
+                                _domain,
+                                _username,
+                                _workstation,
+                                _evidence.Password);
+                        }
+                        catch (Exception ex) {
+                            DebugLine("The NTLM supplicant threw an exception while processing the Challenge token.");
+                            Util.DumpException(ex);
+                            exp.SendAuthenticationFailed(GssErrorCode.InternalError);
+                            goto failed_state;
+                        }
+                        // DebugLine("Sending ContinueNeeded, with the Response token.");
+                        byte[]! in ExHeap ex_response_token = Bitter.FromByteArray(response_token);
+                        exp.SendCompleteWithToken(ex_response_token);
+                        break;
+                }
+                
+                //
+                // At this point, we are in the "succeeded" state.
+                // Which actually resembles the "failed" state, but this state will probably
+                // have some real messages later.
+                //
+                // DebugLine("Authentication is complete, at least from our point of view.");
+                
+                for (;;) {
+                    switch receive {
+                        case exp.ChannelClosed():
+                            return;
+                    }
+                }
+                
+            failed_state:
+                for (;;) {
+                    switch receive {
+                        case exp.ChannelClosed():
+                            return;
+                    }
+                }
+                
+            }
+            catch (Exception ex) {
+                DebugLine("EXCEPTION in NtlmSupplicant service thread!");
+                Util.DumpException(ex);
+            }
+            finally {
+                delete exp;
+            }
+        }
+        
+        void DebugLine(string! line)
+        {
+            DebugStub.WriteLine("CREDMGR[NtlmGss]: " + line);
+        }
+        
+        void DebugLine(string! format, params object[]! args)
+        {
+            DebugLine(String.Format(format, args));
+        }	
+    }
+}

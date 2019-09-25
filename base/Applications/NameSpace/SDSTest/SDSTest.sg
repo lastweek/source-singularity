@@ -1,0 +1,565 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Contracts;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Test SIP-based Directory Service", DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "mountPoint", Mandatory=true, Position=0, HelpMessage="Location of dsp to test")]
+        internal string mountPoint;
+
+        [BoolParameter( "debug", Default=false, HelpMessage="Send results to debugger")]
+        internal bool printDebug;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return DirectoryMain.AppMain(this);
+        }
+    }
+
+
+    public contract Dummy : ServiceContract
+    {
+        out message Garbage();
+
+        override state Start: one
+        {
+            Garbage! -> End;
+        }
+        state End: one {}
+    }
+
+    public class DirectoryServiceTests
+    {
+        public int passCount;
+        public int failCount;
+        private bool nakLoaded;
+        private bool dspLoaded;
+        private bool doDebug; 
+
+        public DirectoryServiceTests (bool nakLoaded, bool dspLoaded, bool doDebug)
+        {
+            failCount = 0;
+            passCount = 0;
+            this.nakLoaded = nakLoaded;
+            this.dspLoaded= dspLoaded;
+            this.doDebug = doDebug;
+        }
+
+        public void CheckError( string! verb, string path, ErrorCode expected, ErrorCode actual, bool ok)
+        {   if (ok){
+                //Console.WriteLine("{0} on {1} was successful.", verb, path);
+            }
+            if (expected != actual) {
+                failCount++;
+                string s = String.Format("FAIL: {0} on {1}. expected={2}, actual={3}. ok={4}",
+                    verb,
+                    path,
+                    SdsUtils.ErrorCodeToString(expected),
+                    SdsUtils.ErrorCodeToString(actual),
+                    ok ? "true" : "false"
+                    );
+                Console.WriteLine(s); 
+                if (doDebug) DebugStub.WriteLine(s); 
+                //DebugStub.Break();
+            }
+            else {
+                passCount++;
+                string s = String.Format("PASS: {0} on {1} ({2}) ok={3}.",
+                    verb,
+                    path,
+                    SdsUtils.ErrorCodeToString(expected),
+                    ok ? "true" : "false"
+                    );
+                Console.WriteLine(s); 
+                if (doDebug) DebugStub.WriteLine(s); 
+            }
+        }
+
+        public void CheckError( string! verb, string path, NodeType expected, NodeType actual, bool ok)
+        {   if (ok){
+                //Console.WriteLine("{0} on {1} was successful.", verb, path);
+            }
+            if (expected != actual) {
+                failCount++;
+                Console.WriteLine("FAIL: {0} on {1}. expected={2}, actual={3}. ok={4}",
+                    verb,
+                    path,
+                    SdsUtils.NodeTypeToString(expected),
+                    SdsUtils.NodeTypeToString(actual),
+                    ok ? "true" : "false"
+                    );
+            }
+            else {
+                passCount++;
+                Console.WriteLine("PASS: {0} on {1} ({2}) ok={3}.",
+                    verb,
+                    path,
+                    SdsUtils.NodeTypeToString(expected),
+                    ok ? "true" : "false"
+                    );
+            }
+        }
+
+        public bool DoCreateDirectory(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.CreateDirectory(path, ds, out errorOut);
+            CheckError("CreateDirectory", path, expected, errorOut, ok);
+            return ok;
+        }
+
+        public void DoDeleteDirectory(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.DeleteDirectory(path, ds, out errorOut);
+            CheckError("DeleteDirectory", path, expected, errorOut, ok);
+        }
+
+        public void DoCreateLink(DirectoryServiceContract.Imp! ds, string! path, string! value, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.CreateLink(path, value, ds, out errorOut);
+            CheckError("CreateLink", path, expected, errorOut, ok);
+        }
+
+        public void DoGetLink(DirectoryServiceContract.Imp! ds, string! path, string expectedValue, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            string linkValue;
+            bool ok = SdsUtils.GetLinkValue(path, ds, out linkValue, out errorOut);
+            CheckError("GetLinkValue", path, expected, errorOut, ok);
+            if (ok) {
+                if (expectedValue != linkValue) {
+                    Console.WriteLine("    expected({0}) got({1})", expectedValue, linkValue);
+                }
+            }
+        }
+
+        public bool DoBind(DirectoryServiceContract.Imp! ds, string! path,
+                           [Claims]ServiceContract.Exp! exp, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            string linkValue;
+            bool ok = SdsUtils.Bind(path, ds, exp, out errorOut);
+            CheckError("Bind", path, expected, errorOut, ok);
+            return ok;
+        }
+
+        //simulate FileOpen in FsUtils
+        public bool  DoBind(string! path,
+                           [Claims]ServiceContract.Exp! exp, ErrorCode expected)
+        {
+
+            DirectoryServiceContract.Imp! ds = DirectoryService.NewClientEndpoint();
+            ErrorCode errorOut;
+            string linkValue;
+            bool ok = SdsUtils.Bind(path, ds, exp, out errorOut);
+            CheckError("Bind", path, expected, errorOut, ok);
+            delete ds;
+            return ok;
+        }
+
+        public void DoDeleteLink(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.DeleteLink(path, ds, out errorOut);
+            CheckError("DeleteLink", path, expected, errorOut, ok);
+        }
+
+        public void DoRegister(DirectoryServiceContract.Imp! ds,
+                               string! path,
+                               [Claims] ServiceProviderContract.Imp! service,
+                               ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Register(path, ds, service, out errorOut);
+            CheckError("Register", path, expected, errorOut, ok);
+        }
+
+        public void DoDeregister(DirectoryServiceContract.Imp! ds, string! path, ErrorCode expected)
+        {
+            ErrorCode errorOut;
+            ServiceProviderContract.Imp:Start  service;
+
+            bool ok = SdsUtils.Deregister(path, ds, out service, out errorOut);
+            CheckError("Deregister", path, expected, errorOut, ok);
+            delete service;
+        }
+
+        public void DoGetAttributes(DirectoryServiceContract.Imp! ds,
+                                    string! path,
+                                    ErrorCode expected,
+                                    NodeType expectedNodeType)
+        {
+            ErrorCode errorOut;
+            long length;
+            NodeType nodeType;
+            FileAttributesRecord fileAttributes;
+
+            bool ok = SdsUtils.GetAttributes(path, ds, out fileAttributes, out errorOut);
+            CheckError("GetAttributes", path, expectedNodeType, fileAttributes.Type, ok);
+            CheckError("GetAttributes", path, expected, errorOut, ok);
+        }
+
+        public void AttributesTests(DirectoryServiceContract.Imp! ds)
+        {
+            DoCreateDirectory(ds, "/d1", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d2", ErrorCode.NoError);
+            DoCreateLink(ds, "/d1/Link1", "/d2", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d1/Link1/d2", ErrorCode.NoError);
+
+            DoGetAttributes(ds, "/d1", ErrorCode.NoError, NodeType.Directory);
+            DoGetAttributes(ds, "/d1/Link1", ErrorCode.NoError, NodeType.SymLink);
+            DoGetAttributes(ds, "/init/testpe/testpe", ErrorCode.NoError, NodeType.IoMemory);
+            DoGetAttributes(ds, "/stress", ErrorCode.NoError, NodeType.ServiceProvider);
+            DoGetAttributes(ds, "/d1/Link1/d2", ErrorCode.NoError, NodeType.Directory);
+            DoGetAttributes(ds, "/d1/garbage", ErrorCode.NotFound, NodeType.BadNode);
+
+            DoDeleteLink(ds, "/d1/Link1",ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d1", ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d2/d2", ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d2", ErrorCode.NoError);
+        }
+
+        public void ProviderTests(DirectoryServiceContract.Imp! ds)
+        {
+
+            ServiceProviderContract.Imp! c1;
+            ServiceProviderContract.Exp! s1;
+            ServiceProviderContract.NewChannel(out c1, out s1);
+
+            ServiceProviderContract.Imp! c2;
+            ServiceProviderContract.Exp! s2;
+            ServiceProviderContract.NewChannel(out c2, out s2);
+
+            ServiceProviderContract.Imp! c3;
+            ServiceProviderContract.Exp! s3;
+            ServiceProviderContract.NewChannel(out c3, out s3);
+
+            DoRegister(ds, "/dev/sp1", c1, ErrorCode.NoError);
+            DoRegister(ds, "/dev/sp1", c2, ErrorCode.AlreadyExists);
+            DoRegister(ds, "/notFound/sp1", c3, ErrorCode.NotFound);
+            DoDeregister(ds, "/dev/sp1", ErrorCode.NoError);
+
+            // manipulate providers within an SDS  provider (DSP)
+            if (dspLoaded) {
+                ServiceProviderContract.Imp! c4;
+                ServiceProviderContract.Exp! s4;
+                ServiceProviderContract.NewChannel(out c4, out s4);
+
+                ServiceProviderContract.Imp! c5;
+                ServiceProviderContract.Exp! s5;
+                ServiceProviderContract.NewChannel(out c5, out s5);
+
+                ServiceProviderContract.Imp! c6;
+                ServiceProviderContract.Exp! s6;
+                ServiceProviderContract.NewChannel(out c6, out s6);
+
+                DoRegister(ds, "/dsp/sp1", c4, ErrorCode.NoError);
+                DoRegister(ds, "/dsp/sp1", c5, ErrorCode.AlreadyExists);
+                DoDeregister(ds, "/dsp/sp1", ErrorCode.NoError);
+                DoCreateDirectory(ds, "/dsp/dir1", ErrorCode.NoError);
+                DoRegister(ds, "/dsp/dir1/sp1", c6, ErrorCode.NoError);
+                DoDeregister(ds, "/dsp/dir1/sp1", ErrorCode.NoError);
+                DoDeleteDirectory(ds, "/dsp/dir1", ErrorCode.NoError);
+                delete s4;
+                delete s5;
+                delete s6;
+            }
+            delete s1;
+            delete s2;
+            delete s3;
+         }
+
+        public int DirectoryTests(DirectoryServiceContract.Imp! ds)
+        {
+            // create and delete directories with and without symbolic links
+
+            //create and delete some directiores
+            DoCreateDirectory(ds, "/d1", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d1", ErrorCode.AlreadyExists);
+            DoCreateDirectory(ds, "/d2", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d1/d1", ErrorCode.NoError);
+
+
+            // add a symbolic link to the mix
+            DoCreateLink(ds, "/d1/Link1", "/d2", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d1/Link1/d2", ErrorCode.NoError);
+
+            DoDeleteDirectory(ds, "/d1/Link1/d2", ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d1/Link1/d2", ErrorCode.NotFound);
+
+            // create a link to a link
+            DoCreateLink(ds, "/d1/LinkToLink", "/d2/Link1", ErrorCode.NoError);
+            DoCreateLink(ds, "/d2/Link1", "/d3", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d3", ErrorCode.NoError);
+            DoCreateDirectory(ds, "/d1/LinkToLink/d3", ErrorCode.NoError);
+
+            // try and delete a non-empty directory
+            DoDeleteDirectory(ds, "/d1", ErrorCode.DirectoryNotEmpty);
+
+            // Attempt to delete non directories
+
+            //service provider
+            DoDeleteDirectory(ds, "/stress", ErrorCode.NotDirectory);
+            //link
+            DoDeleteDirectory(ds, "/d2/Link1", ErrorCode.NotDirectory);
+            //IoMemory
+            DoDeleteDirectory(ds, "/init/testpe/manifest", ErrorCode.NotDirectory);
+
+
+            // clean up residule files
+            DoDeleteDirectory(ds, "/d1/d1", ErrorCode.NoError);
+            DoDeleteLink(ds, "/d1/Link1",ErrorCode.NoError);
+            DoDeleteLink(ds, "/d1/LinkToLink",ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d1", ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d1", ErrorCode.NotFound);
+
+            DoDeleteLink(ds, "/d2/Link1",ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d2", ErrorCode.NoError);
+
+            DoDeleteDirectory(ds, "/d3/d3", ErrorCode.NoError);
+            DoDeleteDirectory(ds, "/d3", ErrorCode.NoError);
+
+            return 0;
+        }
+
+        public void LinkTests(DirectoryServiceContract.Imp! ds)
+        {
+            DoCreateLink(ds, "/d2/Link1", "/d3", ErrorCode.NotFound);  // no /dir1
+            DoCreateDirectory(ds, "/d2", ErrorCode.NoError);
+            DoCreateLink(ds, "/d2/Link1", "/d3", ErrorCode.NoError);
+            DoCreateLink(ds, "/d2/Link1", "/d3", ErrorCode.AlreadyExists);
+
+            DoGetLink(ds, "/d2/Link1", "/d3", ErrorCode.NoError);
+            DoGetLink(ds, "/d2", "", ErrorCode.NotLink);
+            DoDeleteLink(ds, "/d2/Link1",ErrorCode.NoError);
+            DoDeleteLink(ds, "/d2/Link1",ErrorCode.NotFound);
+
+            DoDeleteDirectory(ds, "/d2", ErrorCode.NoError);
+
+            if (dspLoaded) {
+                DoCreateLink(ds, "/dsp/rootlink", "/d2", ErrorCode.NoError);
+                DoCreateLink(ds, "/dsp/rootlink", "/d2", ErrorCode.AlreadyExists);
+                DoCreateDirectory(ds, "/dsp/d1", ErrorCode.NoError);
+                DoCreateLink(ds, "/dsp/d1/Link1", "/d2", ErrorCode.NoError);
+                DoDeleteLink(ds, "/dsp/d1/Link1",ErrorCode.NoError);
+                DoDeleteLink(ds, "/dsp/rootlink",ErrorCode.NoError);
+                DoDeleteDirectory(ds, "dsp/d1", ErrorCode.NoError);
+            }
+        }
+
+         public void BindTests(DirectoryServiceContract.Imp! ds)
+         {
+            // try to bind to the various node types within the root dsp
+
+            FileContract.Imp! fc;
+            FileContract.Exp! fs;
+
+            ServiceProviderContract.Imp! sc;
+            ServiceProviderContract.Exp! ss;
+
+            DirectoryServiceContract.Imp! imp;
+            DirectoryServiceContract.Exp! exp;
+
+            Dummy.Imp! dC;
+            Dummy.Exp! dS;
+
+            FileContract.NewChannel(out fc, out fs);
+            DoBind(ds,"/init/testpe/testpe",fs,ErrorCode.NoError);
+            delete fc;
+
+            Dummy.NewChannel(out dC, out dS);
+            DoBind(ds,"/init/testpe/testpe",dS,ErrorCode.ContractNotSupported);
+            delete dC;
+
+            DirectoryServiceContract.NewChannel(out imp , out exp);
+            DoBind(ds,"/init/testpe/testpe",exp,ErrorCode.ContractNotSupported);
+            delete imp;
+
+            DoCreateLink(ds, "/link", "/init", ErrorCode.NoError);
+            FileContract.NewChannel(out fc, out fs);
+            DoBind(ds,"/link/testpe/testpe",fs,ErrorCode.NoError);
+            delete fc;
+            DoDeleteLink(ds, "/link", ErrorCode.NoError);
+
+            FileContract.NewChannel(out fc, out fs);
+            // bind to dir with File
+            DoBind(ds,"/init",fs,ErrorCode.ContractNotSupported);
+            delete fc;
+
+            FileContract.NewChannel(out fc, out fs);
+            //bind to ServiceProvider with File
+            DoBind(ds,"/FsCtrl",fs,ErrorCode.ContractNotSupported);
+            delete fc;
+
+            FileContract.NewChannel(out fc, out fs);
+
+            delete fc;
+            delete fs;
+
+            //ServiceProvider.NewChannel(out sc, out ss);
+            // try binding to a dir with all the other types
+            // bind through links
+            if (dspLoaded) {
+                DoCreateDirectory(ds, "/dsp/BindTest", ErrorCode.NoError);
+                DoCreateLink(ds, "/dsp/BindTest/link", "/BindTest/d2", ErrorCode.NoError);
+                DoCreateDirectory(ds, "/dsp/BindTest/d1", ErrorCode.NoError);
+                DoCreateDirectory(ds, "/dsp/BindTest/d2", ErrorCode.NoError);
+
+                DirectoryServiceContract.NewChannel(out imp, out exp);
+                DoBind(ds,"/dsp/BindTest/d1",exp,ErrorCode.NoError);
+                delete imp;
+
+                DirectoryServiceContract.NewChannel(out imp, out exp);
+                DoBind(ds,"/dsp/BindTest/link",exp,ErrorCode.NoError);
+                delete imp;
+
+                //DoCreateLink(ds, "/dsp/d1/link", "/d2", ErrorCode.NoError);
+
+
+                DoDeleteLink(ds, "/dsp/BindTest/link",ErrorCode.NoError);
+                //DoDeleteLink(ds, "/dsp/d1/link",ErrorCode.NoError);
+                DoDeleteDirectory(ds, "/dsp/BindTest/d1", ErrorCode.NoError);
+                DoDeleteDirectory(ds, "/dsp/BindTest/d2", ErrorCode.NoError);
+                DoDeleteDirectory(ds, "/dsp/BindTest",ErrorCode.NoError);
+           }
+            if (nakLoaded) {
+                // attempt to bind to nak service
+                // attempt to bind to a closed channel
+            }
+         }
+    }
+
+    public class DirectoryMain
+    {
+        private static Process LoadProcess(string[]! arguments)
+        {
+            try {
+                Process  process = new Process(arguments);
+                if (process == null) {
+                    Console.WriteLine("Unable to create process {0}",arguments[0]);
+                    return null;
+                }
+                else {
+                    process.Start();
+                    return process;
+                }
+            }
+            catch (ProcessCreateException) {
+                    Console.WriteLine("Unable to create process {0}",arguments[0]);
+            }
+            return null;
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            Process dsp = null;
+            ErrorCode errorOut;
+
+            DirectoryServiceContract.Imp ds = config.nsRef.Acquire(); 
+            if (ds == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+
+            ds.RecvSuccess();
+
+            // see if the test DSP is loaded by attempting to bind to it
+            // if not present load it
+
+            bool ok;
+            ///
+            ///  TODO: Fix. SdsUtils FlushCache needs to be re-implemented
+            ///  in order for us to be able to wait for NakService termination
+            ///
+
+            DirectoryServiceContract.Imp! dspImp;
+            DirectoryServiceContract.Exp! dspExp;
+            DirectoryServiceContract.NewChannel(out dspImp, out dspExp);
+
+            string dspMountPoint = config.mountPoint; 
+            ok = SdsUtils.Bind(dspMountPoint, ds, dspExp, out errorOut);
+            delete dspImp;
+
+            bool dspLoaded = false;
+            if (!ok) {
+                Console.WriteLine(" unable to bind to {0}. Reason={1}", 
+                    dspMountPoint, SdsUtils.ErrorCodeToString(errorOut));
+                    delete ds;
+                return 1; 
+            }
+            else dspLoaded = true;
+
+            DirectoryServiceTests t = new DirectoryServiceTests(false ,dspLoaded, config.printDebug);
+
+            try {
+                t.DirectoryTests(ds);
+                t.AttributesTests(ds);
+                t.ProviderTests(ds);
+                t.LinkTests(ds);
+                t.BindTests(ds);
+
+                Console.WriteLine(" pass={0}, fail={1}", t.passCount, t.failCount);
+
+
+                //Thread.Sleep(TimeSpan.FromMilliseconds(1000));
+
+                if (dsp != null) {
+                    t.DoDeregister(ds,dspMountPoint, ErrorCode.NoError);
+                }
+                delete ds;
+
+                //Thread.Sleep(TimeSpan.FromMilliseconds(1000));
+
+                if (dsp != null) {
+                    dsp.Join();
+                }
+            }
+            finally {
+            }
+            return 0;
+        }
+
+        private static void Usage(string name)
+        {
+            Console.WriteLine("{0} <filename> creates a directory.",name);
+        }
+    } // class Test
+}

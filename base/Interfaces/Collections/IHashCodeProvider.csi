@@ -1,0 +1,19 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+
+    // Provides a mechanism for a hash table user to override the default
+    // GetHashCode() function on Objects, providing their own hash function.
+
+    public interface IHashCodeProvider
+    {
+        int GetHashCode(Object obj);
+    }
+}

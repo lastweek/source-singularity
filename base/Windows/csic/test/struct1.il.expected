@@ -1,0 +1,67 @@
+.assembly 'struct1' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class public 'Test'
+	extends [mscorlib]System.Object
+{
+.field static private char 'cs'
+.field public char 'ci'
+.method hidebysig specialname rtspecialname public void .ctor(char 'x') {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ldarg.0
+ldarg 1 // x
+stfld char 'Test'::'ci'
+ret
+.maxstack 2
+} // end of constructor Test.Test
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]char 't0')
+ldc.i4 68
+stloc 0 // c
+ldloc 0 // c
+call  void [mscorlib]System.Console::'WriteLine'(char)
+ldloca 0 // c
+callvirt instance string [mscorlib]System.Char::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+.locals init ([1]char[] 't1')
+ldc.i4 2
+newarr char
+dup
+ldc.i4 0
+ldc.i4 70
+stelem.i2
+dup
+ldc.i4 1
+ldc.i4 72
+stelem.i2
+stloc 1 // ca
+ldloc 1 // ca
+ldc.i4 1
+ldelema char
+callvirt instance string [mscorlib]System.Char::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ldsflda char 'Test'::'cs'
+callvirt instance string [mscorlib]System.Char::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+.locals init ([2]class 'Test' 't2')
+ldc.i4 66
+newobj instance void 'Test'::.ctor(char)
+stloc 2 // t
+ldloc 2 // t
+ldflda char 'Test'::'ci'
+callvirt instance string [mscorlib]System.Char::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 4
+} // end of method Test.Main
+.method hidebysig specialname rtspecialname static private void .cctor() {
+ldc.i4 71
+stsfld char 'Test'::'cs'
+ret
+.maxstack 1
+} // end of constructor Test.Test
+} // end of class Test

@@ -1,0 +1,148 @@
+//------------------------------------------------------------------------------
+//   Copyright (c) Microsoft Corporation. All Rights Reserved.
+//------------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.WebServer
+{
+#if GCPROFILE
+    using Microsoft.Singularity.Diagnostics;
+#endif
+
+    using System;
+    using System.Web;
+    using System.Diagnostics;
+    using System.Globalization;
+
+    // Establish a port and listen on it.  This is the base of the Server.
+
+    public sealed class HttpServer
+    {
+        // using debugMode allows status to be watched in debug window while 
+        // webserver is running in console background, doesn't pollute console
+        private static bool silentMode, debugMode;
+
+        public static int Main(string[]! args)
+        {
+#if GCPROFILE
+            // Before we do anything else, start profiling.  Eventually, the profiler
+            // should be injected by the OS at process launch, based on config.  If
+            // this means compiling a different version of the binary for that purpose,
+            // it should cache the extra binary.
+            CLRProfiler.StartProfiling();
+#endif
+            CommandLine commandLine = new CommandLine(args);
+
+            silentMode = (commandLine.Options["silent"] != null);
+            debugMode  = (commandLine.Options["debug"]  != null);
+
+            if (!silentMode && commandLine.ShowHelp) {
+                ShowUsage();
+                return 0;
+            }
+
+            // The server is started with mapping information from requests
+            // to applications.  Initially, we will ignore the map and
+            // do a default map based on the UriPath.  But eventually this
+            // is where the configuration and appmodel will be introduced.
+
+            // TODO: establish non-default mappings from requests to apps.
+            string mapping = (string)commandLine.Options["mapping"];
+            if (mapping != null) {
+                mapping = mapping.Trim();
+            }
+            if ((mapping == null) || (mapping.Length == 0)) {
+                mapping = "/";
+            }
+            else {
+                // TODO: validate that mapping points somewhere useful.
+            }
+
+            int port = 0;
+            string portText = (string)commandLine.Options["port"];
+            if (portText != null) {
+                portText = portText.Trim();
+            }
+            if ((portText != null) && (portText.Length != 0)) {
+                try {
+                    port = Int32.Parse(portText);
+                    if ((port < 1) || (port > 65535)) {
+                        if (!silentMode) {
+                            ShowUsage();
+                        }
+                        return -1;
+                    }
+                }
+                catch {
+                    if (!silentMode) {
+                        ShowMessage("Invalid port '" + portText + "'");
+                    }
+                    return -3;
+                }
+            }
+            else {
+                port = 80;
+            }
+
+            // clientIP was added so that we could test using Cassini remotely on
+            // lab machines. This now allows the client to be localhost or clientIP.
+            string clientIP = (string)commandLine.Options["client"];
+            if (clientIP != null) {
+                clientIP = clientIP.Trim();
+            }
+            if ((clientIP == null) || (clientIP.Length == 0)) {
+                clientIP = "localhost";
+            }
+
+
+            // ====================
+            // Start listening
+            // ===================
+
+            try {
+                Listener listener = new Listener(port, clientIP, silentMode, debugMode);
+                listener.Start();
+
+                String s1 = String.Format(Environment.NewLine +
+                                          "Running Web Server on port {0}, silent={1},debug={2}." + Environment.NewLine,
+                                           port, silentMode, debugMode);
+                ShowMessage(s1);
+            }
+            catch (Exception ex) {
+                if (!silentMode) {
+                    ShowMessage("Error opening port " + port + ": " + ex.Message);
+                }
+                return -5;
+            }
+
+            return 0;
+
+            // TODO: There is no support for stopping the server, beyond process
+            // death.  Do we need a more orderly notion, or should all the different
+            // processes observe disconnected channels and do their own thing?
+            // 
+            // Add support for this server to stop listening and terminate its
+            // process; assume that no additional protocol is required.
+        }
+
+        private static void ShowUsage()
+        {
+            string usageString;
+
+            usageString = "Invalid usage.\n\n";
+            usageString += "WebServer [options]\n";
+            usageString += "Options:\n";
+            usageString += "  [-port:<port>]\n";
+            usageString += "  [-silent]\n";
+            usageString += "  [-mapping:<mappingInformation>]\n";
+            usageString += "  [-client:<clientIP>]\n";
+            usageString += "  [-debug]\n";
+
+            ShowMessage(usageString);
+        }
+
+        private static void ShowMessage(String msg)
+        {
+            Console.WriteLine("Singularity Web Server:\n" + msg);
+        }
+    }
+}

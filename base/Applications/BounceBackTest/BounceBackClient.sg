@@ -1,0 +1,66 @@
+using System;
+using Microsoft.Singularity.V1;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity;
+
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Applications
+{
+    public class BounceBackClient
+    {
+        public static int Main(String[] args)
+        {
+            DirectoryServiceContract.Imp! dirImp;
+
+            dirImp = DirectoryService.NewClientEndpoint();
+            string bindPath = "/BounceBackServer";
+
+            CalculatorContract.Imp! calculatorImp;
+            CalculatorContract.Exp! calculatorExp;
+            CalculatorContract.NewChannel(out calculatorImp, out calculatorExp);
+
+            ErrorCode error;
+            if (!SdsUtils.Bind(bindPath, dirImp, calculatorExp, out error)) {
+                DebugStub.WriteLine("Bind to calculator server failed error {0}\n",
+                                    __arglist(SdsUtils.ErrorCodeToString(error)));
+                delete dirImp;
+                delete calculatorImp;
+                return -1;
+            }
+
+
+            calculatorImp.RecvSuccess();
+
+            for (int i = 0; i < 5; i++) {
+                DebugStub.WriteLine("Sending add {0} + {1}\n", __arglist(i, (i + 1)));
+                calculatorImp.SendAddInteger(i, i+1);
+                switch receive {
+                    case calculatorImp.IntegerResult(result) :
+                        DebugStub.WriteLine("received {0}\n",
+                                            __arglist(result));
+                        break;
+
+                    case calculatorImp.ChannelClosed() :
+                        DebugStub.WriteLine("calculator channel closed\n");
+                        delete calculatorImp;
+                        delete dirImp;
+                        return -1;
+                        break;
+
+                }
+            }
+
+            delete calculatorImp;
+            delete dirImp;
+
+            return 0;
+        }
+    }
+}

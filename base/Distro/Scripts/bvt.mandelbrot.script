@@ -1,0 +1,9 @@
+msg = '[BVT 2.0] Running mandelbrot test.'
+echo $msg
+decho $msg
+mandelbrot '-bvt' '-time' '10' '-trace'
+
+# msg = '[BVT 2.1] Running shutdown test.'
+# echo $msg
+# decho $msg
+# shutdown

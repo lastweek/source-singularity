@@ -1,0 +1,121 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using System.Threading;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Mount CD device", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "devName", Mandatory=true, Position=0, HelpMessage="Name of device.")]
+        internal string device;
+
+        [StringParameter( "location", Mandatory=true, Position=1, HelpMessage="Mount Location.")]
+        internal string location;
+
+        [BoolParameter( "s", Default=false, HelpMessage="Silent.")]
+        internal bool silent;
+
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return CdMount.AppMain(this);
+        }
+    }
+
+    public class CdMount
+    {
+        public static void WriteLineWrapper(string format, params object[] args) {
+            if (!silent) {
+                Console.WriteLine(format, args);
+            }
+        }
+
+        public static void WriteWrapper(string format, params object[] args) {
+            if (!silent) {
+                Console.Write(format, args);
+            }
+        }
+
+
+        public static bool silent = false;
+        public const string ControlLocation = "/service/services/iso9660";
+
+        internal static int AppMain(Parameters! config)
+        {
+            String! rawDevice;
+            String! location;
+
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+
+            rawDevice = (!)config.device;
+            location  = (!)config.location;
+
+            WriteLineWrapper(" Mounting " + rawDevice + " at " +
+                location);
+
+
+            FileSystemControllerContract.Imp! controlClient;
+            FileSystemControllerContract.Exp! controlServer;
+            FileSystemControllerContract.NewChannel(out controlClient, out controlServer);
+
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Bind(ControlLocation, ds, controlServer, out errorOut);
+            if (!ok) {
+                    Console.WriteLine("Bind failed on " + ControlLocation);
+                    Console.WriteLine("Is iso9660 complied and running?");
+                    delete controlClient;
+                    delete ds;
+                    return 0;
+            }
+            controlClient.RecvSuccess();
+
+            delete ds;
+
+            WriteLineWrapper("Sending mount request...");
+            controlClient.SendMount(Bitter.FromString2(rawDevice), Bitter.FromString2(location));
+
+            switch receive {
+                case controlClient.Ok():
+                    Console.WriteLine("Mount succeeded.");
+                    delete controlClient;
+                    return 0;
+
+                case controlClient.RequestFailed(error):
+                    Console.WriteLine("Mount failed: " + SdsUtils.ErrorCodeToString(error));
+                    delete controlClient;
+                    return -1;
+            }
+        }
+    }
+}

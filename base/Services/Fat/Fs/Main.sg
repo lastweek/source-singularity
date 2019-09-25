@@ -1,0 +1,170 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Main.sg
+//
+//  Note:
+//
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Services;
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+using System;
+
+using MSD = Microsoft.Singularity.Directory;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+[assembly: Transform(typeof(ServiceResourceTransform))]
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    [Category("Service")]
+    public sealed class FsResources
+    {
+        [Endpoint]
+        internal TRef<FatClientContract.Exp:Start> managerTRef;
+
+        reflective private FsResources();
+    }
+
+    internal sealed class Fs
+    {
+        internal static int AppMain(FsResources! resources)
+        {
+            FatClientContract.Exp:Start! managerExp =
+                resources.managerTRef.Acquire();
+
+            bool shutdown = false;
+            while (!shutdown) {
+                switch receive {
+                    case managerExp.Mount(mountSettings):
+                        Mount(managerExp, mountSettings);
+                        return 0;
+                        break;
+
+                    case managerExp.GetPreferredFormatSettings(diskPath):
+                        Format.SendPreferredFormatSettings(managerExp,
+                                                           diskPath);
+                        break;
+
+                    case managerExp.Format(diskPath, label, settings):
+                        Format.DoFormat(managerExp, diskPath, label, settings);
+                        break;
+
+                    case managerExp.ChannelClosed():
+                        shutdown = true;
+                        break;
+                }
+            }
+            delete managerExp;
+
+            return 0;
+        }
+
+        private static ServiceProviderContract.Exp
+        InstallMountPath(string! path)
+        {
+            ServiceProviderContract.Imp! spImp;
+            ServiceProviderContract.Exp! spExp;
+            ServiceProviderContract.NewChannel(out spImp, out spExp);
+
+            DirectoryServiceContract.Imp dsRootImp = DirectoryService.NewClientEndpoint();
+            try {
+                dsRootImp.SendRegister(Bitter.FromString2(path), spImp);
+                switch receive {
+                    case dsRootImp.AckRegister():
+                        return spExp;
+
+                    case dsRootImp.NakRegister(rejected, errorCode):
+                        DebugStub.Print(
+                            "FatFs failed to register {0} reason {1}\n",
+                            __arglist(path,
+                                      SdsUtils.ErrorCodeToString(errorCode))
+                            );
+                        delete rejected;
+                        delete spExp;
+                        break;
+                }
+            }
+            finally {
+                delete dsRootImp;
+            }
+            return null;
+        }
+
+        private static void
+        Mount([Claims] FatClientContract.Exp! managerExp,
+              [Claims] FatMountSettings*! in ExHeap fms)
+        {
+            ServiceProviderContract.Exp spExp;
+
+            try {
+                DebugStub.Print(
+                    "FatFs mount disk path = {0} mount path = {1}",
+                    __arglist(fms->DiskPath, fms->MountPath));
+                spExp = InstallMountPath(fms->MountPath);
+                if (spExp == null) {
+                    managerExp.SendFail(FatContractErrorCode.PathUnavailable);
+                    delete managerExp;
+                    return;
+                }
+
+                // TODO: Check sanity of cache size
+                // and fail if outside valid bounds.
+
+                DebugStub.Print("Starting mount...\n");
+                FatContractErrorCode error =
+                    FatVolume.Mount(fms->DiskPath,
+                                    fms->ReadOnly,
+                                    fms->CacheMB,
+                                    fms->DirectoryCacheSize,
+                                    fms->FileCacheSize,
+                                    fms->WriteQueueSize
+                                    );
+
+                if (error != FatContractErrorCode.NoError) {
+                    managerExp.SendFail(error);
+                    delete managerExp;
+                    delete spExp;
+                    DebugStub.Print("...failed.\n");
+                    return;
+                }
+
+                DebugStub.Print("...completed.\n");
+                DebugStub.Print("SectorBytes = {0}\n",
+                                __arglist(
+                                    FatVolume.BpbSummary.BytesPerSector
+                                    )
+                                );
+                DebugStub.Print("SectorsPerCluster = {0} ({1} bytes)\n",
+                                __arglist(
+                                    FatVolume.BpbSummary.SectorsPerCluster,
+                                    FatVolume.BpbSummary.SectorsPerCluster *
+                                    FatVolume.BpbSummary.BytesPerSector
+                                    )
+                                );
+
+                managerExp.SendSuccess();
+                (new ChannelIo(managerExp, spExp)).Run();
+                FatVolume.Unmount();
+            }
+            finally {
+                delete fms;
+            }
+        }
+    }
+}

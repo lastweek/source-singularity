@@ -1,0 +1,58 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    public abstract class Delegate : ICloneable
+    {
+        protected Delegate(Object target, String method);
+        protected Delegate(Type target, String method);
+
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+
+        public static Delegate Combine(Delegate a, Delegate b);
+        public static Delegate Combine(Delegate[] delegates);
+
+        public virtual Delegate[] GetInvocationList();
+
+        public Object Target { get; }
+
+        public static Delegate Remove(Delegate source, Delegate value);
+        public static Delegate RemoveAll(Delegate source, Delegate value);
+
+        protected virtual Delegate CombineImpl(Delegate d);
+        protected virtual Delegate RemoveImpl(Delegate d);
+
+        public virtual Object Clone();
+
+        public static Delegate CreateDelegate(Type type, Object target, String method);
+        public static Delegate CreateDelegate(Type type, Object target, String method, bool ignoreCase);
+        public static Delegate CreateDelegate(Type type, Type target, String method);
+
+        public static bool operator ==(Delegate d1, Delegate d2);
+        public static bool operator != (Delegate d1, Delegate d2);
+
+#if !DONT_DO_BARTOK
+        [RequiredByBartok]
+        private static IntPtr GetCodePtr(Delegate d,IntPtr callBackStub);
+
+        [RequiredByBartok]
+        private static Delegate IdxToDelegate(int idx);
+
+        [RequiredByBartok]
+        private IntPtr _methodPtr;
+
+        [RequiredByBartok]
+        private Object _target;
+
+        [RequiredByBartok]
+        private IntPtr _methodPtrAux;
+#endif
+    }
+}

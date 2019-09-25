@@ -1,0 +1,90 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+    // Implements a variable-size List that uses an array of objects to store the
+    // elements. A ArrayList has a capacity, which is the allocated length
+    // of the internal array. As elements are added to a ArrayList, the capacity
+    // of the ArrayList is automatically increased as required by reallocating the
+    // internal array.
+    public class ArrayList : IList, ICloneable
+    {
+        public ArrayList();
+        public ArrayList(int capacity);
+        public ArrayList(ICollection c);
+
+        public virtual int Capacity { get; set; }
+        public virtual int Count { get; }
+        public virtual bool IsFixedSize { get; }
+        public virtual bool IsReadOnly { get; }
+        public virtual bool IsSynchronized { get; }
+        public virtual Object SyncRoot { get; }
+        public virtual Object this[int index] { get; set; }
+
+        public static ArrayList Adapter(IList list);
+
+        public static IList FixedSize(IList list);
+        public static ArrayList FixedSize(ArrayList list);
+
+        public static IList ReadOnly(IList list);
+        public static ArrayList ReadOnly(ArrayList list);
+
+        public static IList Synchronized(IList list);
+        public static ArrayList Synchronized(ArrayList list);
+
+        public virtual int Add(Object value);
+        public virtual void AddRange(ICollection c);
+        public virtual int BinarySearch(int index, int count, Object value, IComparer comparer);
+        public virtual int BinarySearch(Object value);
+        public virtual int BinarySearch(Object value, IComparer comparer);
+        public virtual void Clear();
+        public virtual Object Clone();
+        public virtual bool Contains(Object item);
+
+        public virtual void CopyTo(Array array);
+        public virtual void CopyTo(Array array, int arrayIndex);
+        public virtual void CopyTo(int index, Array array, int arrayIndex, int count);
+
+        public virtual IEnumerator GetEnumerator();
+        public virtual IEnumerator GetEnumerator(int index, int count);
+
+        public virtual int IndexOf(Object value);
+        public virtual int IndexOf(Object value, int startIndex);
+        public virtual int IndexOf(Object value, int startIndex, int count);
+
+        public virtual void Insert(int index, Object value);
+        public virtual void InsertRange(int index, ICollection c);
+
+        public virtual int LastIndexOf(Object value);
+        public virtual int LastIndexOf(Object value, int startIndex);
+        public virtual int LastIndexOf(Object value, int startIndex, int count);
+
+        public virtual void Remove(Object obj);
+        public virtual void RemoveAt(int index);
+        public virtual void RemoveRange(int index, int count);
+
+        public static ArrayList Repeat(Object value, int count);
+
+        public virtual void Reverse();
+        public virtual void Reverse(int index, int count);
+
+        public virtual void SetRange(int index, ICollection c);
+
+        public virtual ArrayList GetRange(int index, int count);
+
+        public virtual void Sort();
+        public virtual void Sort(IComparer comparer);
+        public virtual void Sort(int index, int count, IComparer comparer);
+
+        public virtual Object[] ToArray();
+        public virtual Array ToArray(Type type);
+
+        public virtual void TrimToSize();
+    }
+}

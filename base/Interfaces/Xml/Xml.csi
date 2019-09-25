@@ -1,0 +1,57 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Xml.csi
+//
+//  Note:   Interface definition for the Xml classs
+//
+//////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Collections;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Memory;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Xml
+{
+    public class XmlReader
+    {
+        public XmlReader(IoMemory mem);
+
+        public XmlReader(byte[] buffer);
+
+        public ArrayList Parse();
+    }
+
+    public class XmlNode
+    {
+        public string Name {get;}
+        public ArrayList GetNamedChildren(string name);
+        public XmlNode GetNestedChild(ICollection nodeNameList);
+
+        // these are safe accessors to the attributes
+        public string GetAttribute(string attributeName, string defaultValue);
+        public bool   GetAttribute(string attributeName, bool   defaultValue);
+        public string GetAttribute(string attributeName, int    defaultValue);
+
+        // not sure if these should go away
+        public ArrayList Children {get;}
+        public void AddChild(XmlNode node);
+        public XmlNode(string name, int depth);
+
+        // these should go away
+        public int Depth {get;}
+        public void AddText(string text);
+        public string Text {get;}
+        public string this[string attributeName] { get; set; }
+    }
+}

@@ -1,0 +1,50 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>Hal</AssemblyName>
+    <OutputType>Library</OutputType>
+    <OutputPath>$(KERNEL_IL_DIR)\ApicMP</OutputPath>
+    <Language>C#</Language>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>SINGULARITY_MP</DefineConstants>
+  </PropertyGroup>
+
+  <Import Project="Hal.Common.targets" />
+  <ItemGroup>
+    <Compile Include="Singularity.Hal.ApicPc\Apic.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\ApicTimer.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\Calibrate.cs"/>
+    <Compile Include="Singularity.Hal.ApicPC\HalDevices.cs"/>
+    <Compile Include="Singularity.Hal.ApicPC\Hpet.cs"/>
+    <Compile Include="Singularity.Hal.ApicPC\HpetClock.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\IoApic.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\MpHalClock.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\MpResources.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\Pic.cs"/>
+    <Compile Include="Singularity.Hal.ApicPc\PmClock.cs"/>
+    <Compile Include="Singularity.Hal.ApicPC\RTClock.cs"/>
+    <Compile Include="Singularity.Hal.ApicPC\Timer8254.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\CalibrateTimer.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\ClockLogger.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\HalDevices.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\HalScreenDirect.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\Pic.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\RTClock.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\RtcPitState.cs"/>
+    <Compile Include="Singularity.Hal.LegacyPC\Timer8254.cs"/>
+    <Compile Include="@(HAL_ACPI_SOURCES)"/>
+    <Compile Include="@(HAL_COMMON_SOURCES)"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets"/>
+
+</Project>

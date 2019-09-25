@@ -1,0 +1,262 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+//
+//This file contains contracts and structure definitions for use with the SMB client.
+//The most important contract is SmbClientControlContract, which allows processes,
+//such as the SMB status / control tool, to query and display the state of an SMB
+//client process, and to send control requests to the client process.
+//
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Smb.PublicChannels
+{
+    //
+    //  This contract allows control / management tools to communicate with the
+    //  SMB Client Manager service.  The service is a singleton, which manages
+    //  (creates, configures, stops) the SMB client processes (instances of
+    //  SmbClient.exe).  The importer of this contract is usually net.exe.
+    //
+    public contract SmbClientManagerContract : ServiceContract
+    {
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        in message CreateClient(SmbClientConfig config);
+
+        in message StopClient(char[]! in ExHeap clientId);
+
+        in message BindClient(char[]! in ExHeap clientId, ServiceContract.Exp:Start! exp);
+
+        in message EnumClients();
+        out message ClientList(char[][]! in ExHeap clientIdList);
+
+        out message Ok();
+        out message RequestFailed(SmbErrorCode error, char[] in ExHeap errortext);
+
+        in message QueryClientStatus(char[]! in ExHeap clientId);
+        out message ClientStatusReport(SmbClientStatus status);
+
+        in message QueryClientConfig(char[]! in ExHeap clientId);
+        out message ClientConfigReport(SmbClientConfig status);
+
+        state Ready : one
+        {
+            CreateClient? -> CreatingClient;
+            StopClient? -> (Ok! or RequestFailed!) -> Ready;
+            EnumClients? -> (ClientList! or RequestFailed!) -> Ready;
+            BindClient? -> (Ok! or RequestFailed!) -> Ready;
+            QueryClientStatus? -> (ClientStatusReport! or RequestFailed!) -> Ready;
+            QueryClientConfig? -> (ClientConfigReport! or RequestFailed!) -> Ready;
+        }
+
+        state CreatingClient : one {
+            Ok! -> Ready;
+            RequestFailed! -> Ready;
+        }
+
+        public const string ManagerControlPath = "/service/smbfs";
+    }
+
+    public enum SmbErrorCode
+    {
+        Success = 0,
+        MountPathAlreadyExists,         // a client with the same mount path already exists
+        ClientExists,
+        AuthorizationDenied,
+        MountPathNotFound,
+        InternalError,
+        InvalidState,
+
+    }
+
+    // Each instance of the SMB client process (smbclient.exe) registers an instance of this
+    // endpoint, usually as /dev/smb.xxx, where xxx is some arbitrary unique identifier.
+    // This contract allows control / management tools, such as smb.exe, to query and display
+    // information about running SMB clients, to send control requests to them (e.g. reconnect),
+    // and to terminate (unmount) them.
+    //
+    // Note: This contract will be eliminated, and its equivalent control functions will be moved
+    // to SmbClientManagerContract.
+    public contract SmbClientControlContract : ServiceContract
+    {
+    #if false
+        // This method polls the status of the client.  The status can change
+        // over time.
+        in message GetStatus();
+        out message StatusReport(SmbClientStatus status);
+
+        // This method polls the configuration of the client.  The configuration
+        // does not (currently) change over time.
+        in message GetConfig();
+        out message ConfigReport(SmbClientConfig config);
+    #endif
+
+        // This method requests that the client disconnect from the remote
+        // server (if it is connected), terminate all channel service threads,
+        // and terminate the process.
+        in message Terminate();
+        out message AckTerminate();
+
+        // This method disconnects the client from the remote server.
+        // The client does not terminate.  If the client receives any
+        // requests (from local processes), then the client will attempt
+        // to reconnect to the server.
+        in message Disconnect();
+        out message AckDisconnect();
+
+        // This method disconnects the client and attempts to reconnect.
+        in message Reconnect();
+        out message AckReconnect();
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready : one
+        {
+        #if false
+            GetStatus? -> StatusReport! -> Ready;
+            GetConfig? -> ConfigReport! -> Ready;
+        #endif
+            Terminate? -> AckTerminate! -> Terminating;
+            Disconnect? -> AckDisconnect! -> Ready;
+            Reconnect? -> AckReconnect! -> Ready;
+        }
+
+        state Terminating : one
+        {
+        }
+    }
+
+    public enum SmbClientConnectionStatus
+    {
+        Invalid = 0,
+        Disconnected,               // no activity, so we are not connected
+        TransportConnecting,        // we're trying to establish connectivity at the transport level (TCP/IP or NBT)
+        Negotiating,                // transport is connected, now doing SMB negotiation, SESSION SETUP, etc.
+        Authenticating,             //
+        Connected,                  // connected and ready to use
+    }
+
+    public enum SmbReasonDisconnected
+    {
+        Invalid = 0,
+        Idle,                       // no one has asked to connect to the server yet
+        TransportConnectFailed,     // failed to connect
+        NegotiationFailed,          // SMB-level negotiation failed
+        ResourceConnectFailed,      // SMB server rejected TreeConnect
+        AuthenticationFailed,       // failed to prove identity
+        AuthorizationFailed,        // authenticated, but user is not authorized to use resource
+        NoResponse,                 // no response to transport-level messages; assuming server is dead or unreachable
+        ProtocolViolation,          // received invalid SMB messages
+        TransportFailure,           // transport failure of some kind, after successful connection
+    }
+
+    // This structure describes the configuration of the SMB client.
+    // It represents the "goal state" of the client.
+    // The client will attempt to connect and service SMB requests, using
+    // this configuration information.  If any errors occur (TCP-level
+    // connection failures, authentication failures, etc.), then the
+    // client will periodically retry the connection.
+    public rep struct SmbClientConfig : ITracked
+    {
+        public char[]! in ExHeap UncPath;           // UNC of resource, such as \\foo\bar
+        public char[]! in ExHeap MountPath;         // local mount path, e.g. /share, implements DirectoryServiceContract
+        public char[]! in ExHeap ControlPath;       // local path of SmbClientControlContract, e.g. /dev/smb.xxx
+        public char[]! in ExHeap CredentialsName;   // auth principal name, e.g. domain\user, user@domain.com, OPTIONAL
+        public char[]! in ExHeap Tag;               // credentials tag, only set if CredentialsName != null
+    }
+
+    // This structure describes the current status of the SMB client.
+    // The status is always sampled as a single snapshot in time, rather
+    // than having multiple round-trips to query individual fields.
+    public rep struct SmbClientStatus : ITracked
+    {
+        public SmbClientConnectionStatus ConnectionStatus;
+        public SmbReasonDisconnected ReasonDisconnected;
+
+        // If the client successfully connects to the SMB server, then these values
+        // contain information that was received during SMB negotiation.  These values
+        // are useful for status displays.
+        public char[] in ExHeap ServerMachineName;
+        public char[] in ExHeap ServerDomainName;
+        public char[] in ExHeap ServerOperatingSystem;
+        public char[] in ExHeap ActiveCredentialsName;
+    }
+
+    //
+    //This contract is used for communication between the SMB Client Manager service
+    //(SmbClientManager) and instances SMB Client Process (SmbClient).  The SMB Client Manager
+    //service is the only process that creates any instances of the SmbClient executable;
+    //it uses this contract to control the SmbClient processes.  This allows detailed,
+    //typed configuration information to be conveyed to the SmbClient (rather than relying
+    //on command-line parameters), and also control messages (stop, etc.).
+//
+    //The SmbClient process uses Process.GetStartupEndpoint (at index 0) to bind to its instance
+    //of SmbClientControllerContract.Exp.
+//
+    //The importer of this contract is always SmbClientManager.
+    //The exporter of this contract is always SmbClient.
+    //
+    public contract SmbClientControllerContract
+    {
+        in message Configure(SmbClientConfig config);
+
+        in message Bind(ServiceContract.Exp:Start! exp);
+
+        out message Ok();
+        out message RequestFailed(SmbErrorCode error, char[] in ExHeap optionalErrorText);
+
+        state Created : one
+        {
+            Configure? -> Configuring;
+        }
+
+        state Configuring : one
+        {
+            Ok! -> Running;
+            RequestFailed! -> Created;
+        }
+
+        in message Stop();
+
+        state Running : one
+        {
+            Bind? -> (Ok! or RequestFailed!) -> Running;
+            Stop? -> Ok! -> Stopped;
+        }
+
+        state Stopped : one
+        {
+        }
+    }
+
+
+    public contract SmbMuxNotifier
+    {
+        in message StatusChanged(SmbClientStatus muxstate);
+
+        out message Ack();
+
+        state Ready : one
+        {
+            StatusChanged? -> Ack! -> Ready;
+        }
+    }
+
+}

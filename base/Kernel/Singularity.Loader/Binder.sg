@@ -1,0 +1,827 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Binder.cs
+//
+//  Note:
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Text;
+using System.GCs;
+using System.Collections;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Init;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Loader;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Scheduling;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Types;
+using Microsoft.Singularity.Xml;
+using EndpointCoreImplementation = Microsoft.Singularity.Channels.EndpointCore;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Loader
+{
+    [CLSCompliant(false)]
+    public class Binder
+    {
+        private static TRef<DirectoryServiceContract.Imp:Start> nsRootRef;
+        // the nameMap contains our full policy for how to resolve names
+        private static SortedList! nameMap = new SortedList();
+
+        private const int INITIALIZED = 0x42494e44;
+        private static int initialized;
+        private static bool redirectedRootRef;
+
+        // Initialize the binder and naming policy.
+        //
+        // Should be called when still uniprocessor
+        public static void Initialize(XmlNode! config)
+        {
+            if (!Initialized) {
+                nameMap = new SortedList();
+
+                lock (nameMap) {
+                    // parse the namespaceConfig to set up the nameMap
+                    foreach (XmlNode! rule in config.Children) {
+                        if (rule.Name != NameXmlTag) {
+                            continue;
+                        }
+                        string contract =
+                            (!)rule.GetAttribute(ContractXmlAttribute, "");
+                        string nsName =
+                            rule.GetAttribute(NamePrefixXmlAttribute, "");
+                        bool multiple =
+                            rule.GetAttribute(AllowMultipleXmlAttribute, false);
+                        int limit =
+                            rule.GetAttribute(InstanceLimitXmlAttribute, -1);
+
+#if VERBOSE
+                        DebugStub.WriteLine("{0}: {1}", __arglist(contract, nsName));
+#endif
+                        assert nsName != null;
+                        MapEntry e = new MapEntry(contract, nsName, multiple,
+                                                  limit);
+                        nameMap.Add(contract, e);
+                    }
+                }
+
+                // cache a handle to the root name server for directory lookups.
+                DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+                nsRootRef = new TRef<DirectoryServiceContract.Imp:Start>(rootNS);
+                initialized = INITIALIZED;
+
+                DebugStub.Assert(redirectedRootRef == false);
+                redirectedRootRef = false;
+            }
+        }
+
+        //change the cached handle to point to the user-space directory service
+        public static void RedirectRootRef()
+        {
+            DebugStub.Assert(Initialized);
+
+            DebugStub.Print("Redirecting binder root ref\n");
+            if(redirectedRootRef == true) {
+                DebugStub.Print("Calling redirectRootRef twice?\n");
+                DebugStub.Break();
+            }
+
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+            if (nsRootRef != null) {
+                DirectoryServiceContract.Imp:Start oldRootNS = nsRootRef.Acquire();
+                if(oldRootNS != null) {
+                    delete oldRootNS;
+                }
+            }
+            nsRootRef = new TRef<DirectoryServiceContract.Imp:Start>(rootNS);
+            redirectedRootRef = true;
+        }
+
+        public static bool Initialized { get { return initialized == INITIALIZED; } }
+
+        //
+        // FindFileImage Extended.
+        //
+
+        public static IoMemory FindFileImage(string! file,
+                                             DirectoryServiceContract.Imp:Ready! dirClient)
+        {
+            FileAttributesRecord fileAttributes;
+            ErrorCode errorOut;
+
+            long readSize = 1024 * 1024;
+            Kernel.Waypoint(2500);
+
+            bool ok = SdsUtils.GetAttributes(file,
+                                    dirClient,
+                                    out fileAttributes,
+                                    out errorOut );
+            if (!ok) return null;
+
+            Kernel.Waypoint(2504);
+
+            // bind to file
+
+            FileContract.Imp! fileClient;
+            FileContract.Exp! fileServer;
+            FileContract.NewChannel(out fileClient, out fileServer);
+
+            Kernel.Waypoint(2505);
+            ok = SdsUtils.Bind(file,dirClient,fileServer, out errorOut);
+            if (!ok) {
+                delete fileClient;
+                return null;
+            }
+            Kernel.Waypoint(2506);
+            fileClient.RecvSuccess();
+            Kernel.Waypoint(2509);
+
+            //  Now read file
+
+            Kernel.Waypoint(2510);
+
+            if (fileClient != null) {
+                // allocate memory and read file
+                IoMemory region = IoMemory.AllocateRealFixed((UIntPtr) fileAttributes.FileSize);
+                if (region == null) {
+                    delete fileClient;
+                    return null;
+                }
+
+                byte[] in ExHeap buf = new[ExHeap] byte[readSize];
+                long readOffset = 0;
+                Kernel.Waypoint(2511);
+                while (true) {
+                    // invariant: we own the non-null buffer buf at the
+                    //            loop head
+                    //       and  we don't own the buffer at the loop exit.
+                    //
+                    Tracing.Log(Tracing.Debug,"FindImage pre SendRead");
+                    Kernel.Waypoint(2512);
+                    fileClient.SendRead(buf, 0, readOffset, readSize);
+                    Kernel.Waypoint(2513);
+
+                    switch receive {
+                        case fileClient.AckRead(localbuf, bytesRead, error) :
+                            Tracing.Log(Tracing.Debug,"FindImage Post SendRead");
+                            Kernel.Waypoint(2514);
+                            Bitter.ToIoMemory(localbuf, 0, (int)bytesRead,
+                                              region, (int)readOffset);
+                            Kernel.Waypoint(2515);
+                            if (bytesRead == readSize) {
+                                // see if there is more
+                                readOffset += bytesRead;
+                                buf = localbuf;
+                                continue;
+                            }
+                            delete localbuf;
+                            break;
+
+                        case fileClient.ChannelClosed() :
+                            break;
+                        case unsatisfiable :
+                            break;
+                    }
+                    // Get out of loop
+                    break;
+                }
+                Kernel.Waypoint(2516);
+                delete fileClient;
+                Kernel.Waypoint(2517);
+                return region;
+            }
+            return null;
+        }
+
+        private static DirectoryServiceContract.Imp:Ready openDir(string! filePath)
+        {
+            Kernel.Waypoint(2400);
+
+            if (nsRootRef == null) {
+                DebugStub.Break();
+                return null;
+            }
+            DirectoryServiceContract.Imp:Start rootNS = nsRootRef.Acquire();
+            if (rootNS == null) {
+                DebugStub.Break();
+                return null;
+            }
+
+            Kernel.Waypoint(2401);
+            DirectoryServiceContract.Imp! dirClient;
+            DirectoryServiceContract.Exp! dirServer;
+            DirectoryServiceContract.NewChannel(
+                out dirClient, out dirServer);
+
+            ErrorCode errorCode;
+            bool ok = SdsUtils.Bind(filePath, rootNS, dirServer, out errorCode);
+            if (!ok) {
+                nsRootRef.Release(rootNS);
+                delete dirClient;
+                return null;
+            }
+
+            Kernel.Waypoint(2403);
+            dirClient.RecvSuccess();
+            nsRootRef.Release(rootNS);
+            Kernel.Waypoint(2404);
+
+            return dirClient;
+        }
+
+        public static IoMemory GetSystemManifest()
+        {
+            return Resources.GetSystemManifest();
+        }
+
+        private static Manifest GetManifest(string! name,
+                                            DirectoryServiceContract.Imp:Ready! dirEP,
+                                            out string path)
+        {
+            Manifest manifest = null;
+            path =  null;
+
+            Tracing.Log(Tracing.Debug, "Binder.GetManifest: path={0}", name);
+            try {
+                Kernel.Waypoint(2300);
+                IoMemory manifestMemory = FindFileImage(name,dirEP);
+                Kernel.Waypoint(2301);
+                if (manifestMemory != null) {
+                    Kernel.Waypoint(2302);
+                    manifest = new Manifest(manifestMemory);
+                    path = manifest.Path;
+                    Kernel.Waypoint(2303);
+                    // Manifest consumes IoMemory in constructor
+                    // and does not reference it later on.
+                    IoMemory.Release(manifestMemory);
+                    Kernel.Waypoint(2304);
+                }
+                else {
+                    DebugStub.WriteLine(" no manifest! file={0}",__arglist(name));
+                }
+            }
+            catch (Exception e) {
+                DebugStub.WriteLine("Exception in GetManifest: {0}", __arglist(e.Message));
+                Tracing.Log(Tracing.Debug, "Exception in GetManifest: {0}", e.Message);
+            }
+
+            Kernel.Waypoint(2305);
+            return manifest;
+        }
+
+        /// <summary>
+        /// Loads the image of the corresponding application
+        /// path has to be set to the actual path to the manifest
+        /// (after resolution of symlinks)
+        /// </summary>
+        public static IoMemory LoadImage(Process parent,
+                                         String! application,
+                                         out Manifest outManifest)
+        {
+            Kernel.Waypoint(2000);
+            application = (!)application.ToLower();
+            string folderName = application;
+            string appName = application;
+
+            outManifest = null;
+
+            // Open the directory containing the manifest and the executable
+            // remove the ExecutableExtension (e.g. ".x86") if present
+            if (application.EndsWith(DirectoryService.ExecutableExtension)) {
+                const int extensionLength = DirectoryService.ExecutableExtensionLength;
+                folderName =(!)application.Substring(0, application.Length - extensionLength);
+                appName = folderName;
+            }
+
+            if (folderName.Length == 0) {
+                // invalid application name
+                Kernel.Waypoint(2001);
+                return null;
+            }
+
+            // if the first character of the folder name is not "/",
+            // then we will redirect to the init namespace.
+            if (folderName[0] != '/') {
+                appName = folderName;
+
+                string        ns = DirectoryService.ExecutablesNamespace;
+                StringBuilder sb = new StringBuilder(ns.Length +
+                                                     appName.Length + 2);
+                sb.Append("/");
+                sb.Append(ns);
+                sb.Append("/");
+                sb.Append(appName);
+
+                folderName = (!)sb.ToString();
+            }
+            else {
+                // need to strip off all but last part.
+                appName = folderName.Substring(folderName.LastIndexOf('/')+1);
+            }
+
+#if DEBUG
+            DebugStub.WriteLine("Binder.LoadImage: application={0},folder={1},appName={2}",
+                                __arglist (application,folderName,appName));
+#endif
+
+            Kernel.Waypoint(2002);
+            DirectoryServiceContract.Imp:Ready dirEP = openDir(folderName);
+            Kernel.Waypoint(2003);
+
+            if (dirEP == null) {
+                return null;
+            }
+            IoMemory result = null;
+            // read the manifest
+            Kernel.Waypoint(2004);
+            string exePath;
+            Manifest man = GetManifest(appName + DirectoryService.ManifestExtension, dirEP, out exePath);
+            // set manifest out parameter. This is used by ProcessHandle.Create()
+            // to get at the resources
+            outManifest =  man;
+
+            Kernel.Waypoint(2005);
+
+            //DebugStub.Break();
+            if (man != null) {
+                Kernel.Waypoint(2006);
+                if (exePath == null) {
+                    delete dirEP;
+                    return null; // calling contexts don't expect exceptions
+                }
+                // TODO: FIXFIX  the files in "/init" are being created in all lower case.
+                // The files when built and their names in the manifest are case sensitive
+                string exeName = exePath.ToLower();
+                //DebugStub.WriteLine("Binder: path returned via manifest ={0}",
+                //                    __arglist(exeName));
+                result = Binder.FindFileImage(exeName,dirEP);
+                //path = exeName;
+                if (result == null) {
+                    DebugStub.WriteLine("LoadImage not found: {0}",__arglist(exeName));
+                }
+                Kernel.Waypoint(2007);
+            }
+            else {
+                delete dirEP;
+                return null; // calling contexts don't expect exceptions
+            }
+            Kernel.Waypoint(2010);
+            delete dirEP;
+            return result;
+        }
+
+        // currently skips loading manifest, etc.
+        public static IoMemory LoadRawImage(string! folderName,
+                                            string! exeName)
+        {
+            // Open a directory service contract
+            DirectoryServiceContract.Imp:Ready dirEP = openDir(folderName);
+            if (dirEP == null) {
+                DebugStub.WriteLine("LoadRawImage dirEP null [ERROR]");
+                return null;
+            }
+
+            IoMemory result = null;
+
+            // get file image
+            result = Binder.FindFileImage(exeName,dirEP);
+            if (result == null) {
+                DebugStub.WriteLine("LoadRawImage {0} not found",
+                                    __arglist(exeName));
+            }
+            delete dirEP;
+            return result;
+        }
+
+
+        //////////////////////////////////////////////////////// Name Manager.
+        //
+
+        //////////////////////////////////////////////////////////////////////
+        //
+
+        // TODO: The namespace management code is all
+        // below this comment, to include the fields in this
+        // static class that are used.  this should make it much
+        // easier to move this into a different module
+
+        const string NameXmlTag = "name";
+        const string NamePrefixXmlAttribute = "nsName";
+        const string InstanceLimitXmlAttribute = "limit";
+        const string AllowMultipleXmlAttribute = "allowMultiple";
+        const string StartStatedIdXmlAttribute = "startStateId";
+        const string EndpointClassName = "Microsoft.Singularity.Channels.Endpoint";
+        const string ContractXmlAttribute = "contract";
+
+        // we'll only put MapEntry objects in the nameMap; they
+        // will be indexed by contractName
+        private class MapEntry
+        {
+            public string contractName;
+            public string! namespacePrefix;
+            public bool appendInstance;
+            public int instanceLimit;
+            public int numInstances;
+
+            public MapEntry(string contractName, string! namespacePrefix,
+                            bool appendInstance, int instanceLimit)
+            {
+                // if we don't append the instance to the name, then we can't
+                // ever have more than 1 instance.
+                if (!appendInstance) {
+                    this.instanceLimit = 1;
+                }
+                else {
+                    this.instanceLimit = instanceLimit;
+                }
+                this.contractName = contractName;
+                this.namespacePrefix = namespacePrefix;
+                this.appendInstance = appendInstance;
+                this.numInstances = 0;
+            }
+        }
+
+        // to check dependencies, we need to be able to see if a
+        // particular name has more instances than its limit
+        public static bool IsServiceContractStartable(string contract)
+        {
+            // TODO: is this the right policy?  if we
+            // don't understand this contract at all, then fail
+            // by default
+            lock (nameMap) {
+                if (!nameMap.ContainsKey(contract)) {
+                    return false;
+                }
+
+                MapEntry! e = (MapEntry!)nameMap[contract];
+                // (-1 == no limit on the number of instances)
+                return (e.instanceLimit == -1 ||
+                        e.numInstances < e.instanceLimit);
+            }
+        }
+
+        // we also need the ability to verify that an app who
+        // needs a serviceprovider can get it; this lets us
+        // check if the serviceprovider has started and claimed
+        // a name:
+        public static bool IsServiceContractAvailable(string contract)
+        {
+            lock (nameMap) {
+                if (!nameMap.ContainsKey(contract)) {
+                    return false;
+                }
+
+                MapEntry! e = (MapEntry!)nameMap[contract];
+                return (e.numInstances != 0);
+            }
+        }
+
+        private static bool AlreadyExists(string! name)
+        {
+            FileAttributesRecord far;
+            ErrorCode ec;
+            DirectoryServiceContract.Imp imp = DirectoryService.NewClientEndpoint();
+            try {
+                bool success = SdsUtils.GetAttributes(name, imp, out far, out ec);
+                if (!success) {
+                    DebugStub.Assert(ec == ErrorCode.NotFound);
+                }
+                return success;
+            }
+            finally {
+                delete imp;
+            }
+        }
+
+        // TODO: make this private and do the symlinks from this
+        // class:  Warning - must fix VolMgr hack first!
+
+        // This lets the system initializer indicate that a
+        // particular contract instance has been claimed (it
+        // does not create a contract!)  We need to return the
+        // name so that IoSystem can create the symlinks
+        public static string ClaimServiceContract(string contract)
+        {
+            lock (nameMap) {
+                if (IsServiceContractStartable(contract)) {
+                    MapEntry! e = (MapEntry!)nameMap[contract];
+                    string prefix = e.namespacePrefix;
+                    string publicName = prefix;
+
+                    if (e.appendInstance) {
+                        int n = e.numInstances;
+                        publicName = prefix + n.ToString();
+                        while (AlreadyExists(publicName)) {
+                            n++;
+                            publicName = prefix + n.ToString();
+                        }
+
+                        e.numInstances = n;
+                    }
+                    else {
+                        e.numInstances++;
+                    }
+
+                    return publicName;
+                }
+                return null;
+            }
+        }
+
+        // TODO: do we still need this now that we
+        // have the wonderful and more generic method for doing
+        // endpoints?  Attempt to bind a service provider
+        // endpoint to the name nsName
+        public static ServiceProviderContract.Exp!:Start
+        BindServiceProvider(string! contract, string! nsName, out bool success,
+                            out string! publicName)
+        {
+            // Create a ServiceProvider channel
+            ServiceProviderContract.Imp! imp;
+            ServiceProviderContract.Exp! sp;
+            ServiceProviderContract.NewChannel(out imp, out sp);
+
+            // Connect the service provider to the namespace.
+
+            // TODO: can we make nc a static field to avoid
+            // re-allocating nc on every function call?
+            DirectoryServiceContract.Imp nc =
+                DirectoryService.NewClientEndpoint();
+
+            success = false;
+            try {
+                nc.SendRegister((!)Bitter.FromString(nsName), imp);
+                switch receive {
+                    case nc.AckRegister():
+                        success = true;
+                        break;
+                    case nc.NakRegister(rejected, error):
+                        DebugStub.Break();
+                        if (rejected != null) {
+                            delete rejected;
+                        }
+                        break;
+                    case unsatisfiable:
+                        DebugStub.WriteLine("unable to register {0} with Nameservice",
+                                            __arglist(nsName));
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            finally {
+                delete nc;
+            }
+
+            if (success) {
+                publicName = (!)ClaimServiceContract(contract);
+            }
+            else {
+                publicName = "";
+            }
+            return sp;
+        }
+
+        public static void CreatePublicSymlink(string! publicName,
+                                               string! nsName)
+        {
+            // TODO: this reveals a bug: the /dev
+            // namespace isn't guaranteed to exist!  This code
+            // force-creates it anyway:
+            if (redirectedRootRef == true) {
+                DirectoryServiceContract.Imp!:Ready nc = DirectoryService.NewClientEndpoint();
+                ErrorCode error;
+                if(!SdsUtils.CreateLink(publicName, nsName, nc, out error)) {
+                    DebugStub.WriteLine("Binder.CreatePublicSymlink name {0} target {1} redirect==true failed.  Error {2}\n",__arglist(publicName, nsName, SdsUtils.ErrorCodeToString(error)));
+                }
+
+                FileAttributesRecord far;
+                if (!SdsUtils.GetAttributes(publicName, nc, out far, out error)) {
+                    DebugStub.WriteLine("Binder.CreatePublicSymlink name {0} redirect==true failed.  Error {1}\n",__arglist(publicName, SdsUtils.ErrorCodeToString(error)));
+                }
+                else {
+                    DebugStub.Assert(far.Type == NodeType.SymLink);
+                }
+
+                delete nc;
+            } else {
+                int splitpoint = publicName.LastIndexOf('/');
+                string directory =
+                    publicName.Remove(splitpoint, publicName.Length - splitpoint);
+                string endpoint = publicName.Remove(0, splitpoint + 1);
+
+                DirNode! devFolder = (!)DirectoryService.FindDirectory(directory, true);
+                DirectoryService.CreateSymbolicLink(devFolder, endpoint, nsName);
+            }
+        }
+
+        // utility function for getting SystemTypes from strings
+        // in the manifest
+        private static SystemType GetEndpointType(XmlNode! metadata)
+        {
+            // everything must derive from Endpoint
+            SystemType epBaseType = typeof(Channels.Endpoint).GetSystemType();
+
+            // now traverse the metadata to the types, in order:
+            foreach (XmlNode! child in metadata.Children) {
+                string! name = (!)child.GetAttribute(NameXmlTag, "");
+
+                long lower, upper;
+                // TODO: the encoding of types will
+                // change, and when it does, this will need to
+                // change.  Right now, we create the type name
+                // of foo.imp as foo+foo.imp (same for exp)
+                // XXX now types are in line with CLR -- foo+exp
+                if (name.EndsWith(".Exp")) {
+                    name = name.Remove(name.Length - 4, 4) + "+Exp";
+                }
+                else if (name.EndsWith(".Imp")) {
+                    name = name.Remove(name.Length - 4, 4) + "+Imp";
+                }
+
+                // get the hash for this type:
+                System.RuntimeTypeHash.ComputeHash(name, out lower, out upper);
+
+                // If this isn't the base of our derivation, get
+                // the type
+                if (name != EndpointClassName) {
+                    epBaseType = SystemType.Register(name, lower, upper,
+                                                     epBaseType);
+                }
+            }
+            return epBaseType;
+        }
+
+        public static unsafe bool
+        SetEndpoint(Process! process,
+                    int      index,
+                    [Claims] Endpoint * in ExHeap endpoint)
+        {
+            SharedHeap.Allocation * ep = (SharedHeap.Allocation *)endpoint;
+            return process.SetEndpoint(index, ref ep);
+        }
+
+
+        ///
+        /// This is factored into a separate method to limit the exposure of "unsafe" to code
+        /// manipulating other resources, as the ownership checker is not checking methods marked
+        /// unsafe.
+        ///
+        unsafe private static void
+        CreateChannel(out Endpoint*! in ExHeap imp, out Endpoint*! in ExHeap exp, SystemType impType, SystemType expType, int initialState) {
+            // Allocate each EndpointCore, with a default size
+            // of 512 (512 is much bigger than we need, but we
+            // don't have an exact number from the metadata yet)
+
+            Allocation * impCore = (Allocation*)
+                Microsoft.Singularity.V1.Services.EndpointCore.Allocate(
+                    512, impType);
+
+            Allocation *expCore = (Allocation*)
+                Microsoft.Singularity.V1.Services.EndpointCore.Allocate(
+                    512, expType);
+
+            if (impCore == null || expCore == null) {
+                throw new ApplicationException("SharedHeap.Allocate returned null");
+            }
+
+            // set the start state of each endpoint via Initialize()
+            Endpoint*! in ExHeap impEp = (Endpoint* in ExHeap) impCore;
+            Endpoint*! in ExHeap expEp = (Endpoint* in ExHeap) expCore;
+
+            impEp->Initialize(initialState);
+            expEp->Initialize(initialState);
+
+            // connect the endpoints
+            Microsoft.Singularity.Channels.Endpoint.Connect(impEp, expEp);
+
+            // return the endpoints
+            imp = impEp;
+            exp = expEp;
+        }
+
+        public static bool
+        BindToService(Process!   process,
+                      SystemType impType,
+                      SystemType expType,
+                      string     contract,
+                      int        initialState,
+                      int        index)
+        {
+            if (contract == null) return false;
+
+            Endpoint* in ExHeap! impEp;
+            Endpoint* in ExHeap! expEp;
+            CreateChannel(out impEp, out expEp, impType, expType, initialState);
+
+            // Now we need to use policy to get the name for binding the exp,
+            // and we need to cast the exp Endpoint as a ServiceContract
+            ServiceContract.Exp exp = expEp as ServiceContract.Exp;
+            if (exp == null) {
+                // The channel contract does not derive from ServiceContract.
+                // This error can be induced by user-mode apps, so the kernel
+                // needs to guard against it.
+                DebugStub.WriteLine("Binder.BindToService: The channel allocated does not derive from ServiceContract.");
+                DebugStub.WriteLine("Binder.BindToService: The BindToService request will fail.");
+                delete expEp;
+                delete impEp;
+                return false;
+            }
+
+            // TODO: this should be a static field
+            DirectoryServiceContract.Imp nc =
+                DirectoryService.NewClientEndpoint();
+            try {
+                lock (nameMap) {
+                    if (LockedAttachFirstInstance(nc, contract, exp)) {
+                        // TODO: Do the Success hand shake here
+
+                        // Wire the client endpoint directly into
+                        // the target process to simplifies the
+                        // security checks.
+                        SetEndpoint(process, index, impEp);
+                        return true;
+                    }
+                }
+            }
+            finally {
+                delete nc;
+            }
+            delete impEp;
+            return false;
+        }
+
+        // requires nameMap be locked on entry.
+        private static bool
+        LockedAttachFirstInstance(DirectoryServiceContract.Imp! nc,
+                                  string contract,
+                                  [Claims] ServiceContract.Exp! exp)
+        {
+            // TODO: for now, we only attach to the first instance:
+            MapEntry! e;
+            try {
+                e = (MapEntry!)nameMap[contract];
+            }
+            catch (Exception e) {
+                DebugStub.WriteLine("Loader.BindToService tried to index {0}",
+                                    __arglist(contract));
+                DebugStub.WriteLine("Loader.BindToService exception:{0}",
+                                    __arglist(e.Message));
+                return false;
+            }
+
+            string name = e.namespacePrefix;
+            if (e.appendInstance) {
+                name += "0";
+            }
+
+            ErrorCode errorOut;
+            // Do the bind and return the result:
+            if (SdsUtils.Bind(name, nc, exp, out errorOut)) {
+                return true;
+            }
+            DebugStub.WriteLine("Locked instance binding to name {0} failed error {1}\n",
+                                __arglist(name, SdsUtils.ErrorCodeToString(errorOut)));
+            // TODO: FIXFIX what should be done if this bind fails?
+            // should the process even allowed to be started?
+            //DebugStub.Break();
+            return false;
+        }
+
+        // Attempt to bind an endpoint to a service provider.  We are going to
+        // assume that the serviceprovider has already been started
+        // This relies on some clever tricks based on the implementation
+        // of the Sing# compiler.
+        public static bool BindServiceUser(Process! process,
+                                           int index,
+                                           string! contract,
+                                           XmlNode! metadata)
+        {
+            // get the metadata for both sides of the channel
+            XmlNode! impNode = (!)metadata.GetChild("imp");
+            XmlNode! expNode = (!)metadata.GetChild("exp");
+
+            // get the initial state as an integer
+            int initialState = metadata.GetAttribute(StartStatedIdXmlAttribute, 0);
+
+            // now get the SystemType of each endpoint's type (we don't actually
+            // know the type in the kernel, but we can discern it using the
+            // fullname from the metadata)
+            SystemType impType = GetEndpointType(impNode);
+            SystemType expType = GetEndpointType(expNode);
+
+            return BindToService(process, impType, expType, contract, initialState, index);
+        }
+    }
+}

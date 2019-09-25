@@ -1,0 +1,203 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DirectoryUtils.sg
+//
+//  Note:
+//
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+namespace FileSystem.Utils
+{
+    public class DirectoryUtils
+    {
+        // Find the directory that encloses the named file/dir
+        internal static DirectoryServiceContract.Imp:Ready FindDir(string! path)
+        {
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+            try {
+                return FindDir(path, rootNS); 
+            }
+            finally {
+                delete rootNS; 
+            }
+        }
+
+        // Find the directory that encloses the named file/dir
+        internal static DirectoryServiceContract.Imp:Ready FindDir(string! path,  DirectoryServiceContract.Imp! ds)
+        {
+            string dirPath, leafName;
+            PathUtils.SplitPath(path, out dirPath, out leafName);
+
+            if ((dirPath == null) || (dirPath == "")) {
+                // Invalid path; no leading directory component
+                return null;
+            }
+
+            // Ask for just the enclosing directory
+            return OpenDir(dirPath, ds);
+        }
+
+        public static DirectoryServiceContract.Imp:Ready OpenDir(string! dirPath)
+        {
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                return OpenDir(dirPath, rootNS);
+            }
+            finally {
+                delete rootNS;
+            }
+        }
+
+        public static DirectoryServiceContract.Imp:Ready OpenDir(string! dirPath, DirectoryServiceContract.Imp! rootNS)
+        {
+            DirectoryServiceContract.Imp! dirClient;
+            DirectoryServiceContract.Exp! dirServer;
+            DirectoryServiceContract.NewChannel(out dirClient, out dirServer);
+
+            ErrorCode errorOut; 
+            bool ok = SdsUtils.Bind(dirPath, rootNS, dirServer, out errorOut);
+            if (!ok) {
+                delete dirClient; 
+                return null;
+            } 
+            else {
+                dirClient.RecvSuccess();
+                return dirClient;
+            }
+        }
+
+        // 0 is success
+        public static int DeleteDirectory (string! dirPath)
+        {
+            string dirName = PathUtils.FileFromPath(dirPath);
+
+            if (dirName == null) {
+                // No trailing file part
+                return -1;
+            }
+
+            DirectoryServiceContract.Imp dirClient = FindDir(dirPath);
+
+            if (dirClient == null) {
+                // Couldn't open enclosing directory
+                return -1;
+            }
+
+            dirClient.SendDeleteDirectory(Bitter.FromString2(dirName));
+
+            switch receive {
+                case dirClient.NakDeleteDirectory(error):
+                    // Failed; no such directory?
+                    delete dirClient;
+                    return -1;
+
+                case dirClient.AckDeleteDirectory():
+                    break;
+
+                case dirClient.ChannelClosed():
+                    // Unexpected
+                    delete dirClient;
+                    return -1;
+            }
+
+            delete dirClient;
+            return 0;
+        } //DeleteDirectory
+
+#if !REMOVE
+        // REMOVE version that does not have ds endpoint
+        public static int CreateDirectory (string! dirPath)
+        {
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+            try {
+                return CreateDirectory(dirPath, rootNS); 
+            }
+            finally {
+                delete rootNS; 
+            }
+        }
+#endif
+        public static int CreateDirectory (string! dirPath, DirectoryServiceContract.Imp! ds)
+        {
+            string dirName = PathUtils.FileFromPath(dirPath);
+
+            if (dirName == null) {
+                // No trailing file part
+                return -1;
+            }
+
+            DirectoryServiceContract.Imp dirClient = FindDir(dirPath);
+
+            if (dirClient == null) {
+                // Couldn't open enclosing directory
+                return -1;
+            }
+
+            dirClient.SendCreateDirectory(Bitter.FromString2(dirName));
+
+            switch receive {
+                case dirClient.NakCreateDirectory(error):
+                    // Failure
+                    delete dirClient;
+                    return -1;
+
+                case dirClient.AckCreateDirectory():
+                    // Success
+                    break;
+
+                case dirClient.ChannelClosed():
+                    // Unexpected
+                    delete dirClient;
+                    return -1;
+            }
+
+            delete dirClient;
+            return 0;
+        } //CreateDirectory
+
+        // Outparam is only valid if return value is 0 (success)
+        public static int PathIsDirectory(string! dirPath, out bool isDir)
+        {
+            DirectoryServiceContract.Imp! rootNS = DirectoryService.NewClientEndpoint();
+            int ret =  PathIsDirectory(dirPath, rootNS, out isDir); 
+            delete rootNS;
+            return ret;
+        }
+        
+        // Outparam is only valid if return value is 0 (success)
+        public static int PathIsDirectory(string! dirPath, DirectoryServiceContract.Imp! ds, out bool isDir)
+        {
+            isDir = false;
+
+            // Get attributes as though this is a file
+            ErrorCode error;
+            FileAttributesRecord fileAttributes;
+                
+            bool ok  = FileUtils.GetAttributes(dirPath, ds, out fileAttributes, out  error);
+            
+            if (!ok) {
+                return -1;
+            }
+
+            if (fileAttributes.Type == NodeType.Directory) {
+                Debug.Assert(fileAttributes.FileSize == 0);
+                isDir = true;
+            }
+
+            return 0;
+        } //PathIsDirectory
+    }
+}

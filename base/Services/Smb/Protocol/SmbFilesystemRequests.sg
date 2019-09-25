@@ -1,0 +1,376 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Runtime.InteropServices;
+using SmbClient;
+
+namespace Smb.Protocol
+{
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbCloseFileRequest
+	{
+		public SmbHeader Header;
+		public ushort Fid;
+		public uint LastWriteTime;
+		public ushort ByteCount; // = 0
+	}
+
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbNtCreateAndXRequest
+    {
+		public SmbHeader Header;
+		/*[FieldOffset(37)]*/ public byte AndXCommand;
+		/*[FieldOffset(38)]*/ public byte AndXReserved;
+		/*[FieldOffset(39)]*/ public ushort AndXOffset;
+		/*[FieldOffset(41)]*/ public byte Reserved;
+		/*[FieldOffset(42)]*/ public ushort NameLength;
+		/*[FieldOffset(44)]*/ public uint Flags;
+		/*[FieldOffset(48)]*/ public uint RootDirectoryFid;
+		/*[FieldOffset(52)]*/ public uint DesiredAccess;
+		/*[FieldOffset(56)]*/ public ulong AllocationSize;
+		/*[FieldOffset(64)]*/ public uint ExtFileAttributes;
+		/*[FieldOffset(68)]*/ public uint ShareAccess;
+		/*[FieldOffset(72)]*/ public uint CreateDisposition;
+		/*[FieldOffset(76)]*/ public uint CreateOptions;
+		/*[FieldOffset(80)]*/ public uint ImpersonationLevel;
+		/*[FieldOffset(84)]*/ public byte SecurityFlags;
+		/*[FieldOffset(85)]*/ public ushort ByteCount;
+		/*[FieldOffset(86)]*/ public byte Padding;
+		// STRING Name[];
+    }
+    
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbNtCreateAndXResponse
+	{
+		public SmbHeader Header;
+		
+		public byte AndXCommand;			// always 0xff
+		public byte AndXReserved;			// always 0
+		public ushort AndXOffset;			// always 0
+		public byte OplockLevel;
+		public ushort Fid;
+		public uint CreateAction;
+		public FILETIME CreationTime;
+		public FILETIME LastAccessTime;
+		public FILETIME LastWriteTime;
+		public FILETIME ChangeTime;
+		public uint ExtFileAttributes;
+		public long AllocationSize;
+		public long EndOfFile;
+		public ushort FileType;
+		public ushort DeviceState;
+		public bool Directory;
+		public ushort ByteCount; // zero
+	}
+	
+	// This request supports wildcards.   
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbDeleteFileRequest
+	{
+		public SmbHeader Header;
+		public ushort SearchAttributes;
+		public ushort ByteCount;				// length of filename in bytes
+		public byte BufferFormat;				// 4
+		public byte AlignmentPadding;			// for Unicode
+		// STRING FileName;		
+		
+		public const int ParameterCount = 1;
+	}
+	
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbDeleteDirectoryRequest
+	{
+		public SmbHeader Header;
+		public ushort ByteCount;				// length of filename in bytes
+		public byte BufferFormat;				// 4
+		public byte AlignmentPadding;			// for Unicode
+		// STRING DirectoryName;		
+		public const int ParameterCount = 0;
+	}
+	
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbCreateDirectoryRequest
+	{
+		public SmbHeader Header;
+		public SmbTransaction2RequestHeader Transaction;
+		
+		// Header.ParameterCount = 15
+		public uint Reserved;
+		// STRING name[];
+		// byte Data[]; // Ea list, optional
+	}
+	
+	
+	
+	[Flags]
+	public enum SmbFileShareAccess
+	{
+		None = 0,
+		Read = 1,
+		Write = 2,
+		Delete = 4,
+	}
+	
+	public enum SmbCreateDisposition
+	{
+		Supersede = 0,
+		Open = 1,
+		Create = 2,
+		OpenIf = 3,
+		Overwrite = 4,
+		OverwriteIf = 5,
+	}
+	
+    public enum SmbFileCreateActionTaken
+    {
+    }
+
+	public enum SmbFileCreateOptions : uint
+	{
+		None = 0,
+	}
+	
+	[Flags]
+	public enum SmbNtCreateFileFlags : uint
+	{
+		RequestOpLock = 2,
+		RequestBatchOpLock = 4,
+		DirectoryOnly = 8,
+	}
+	
+	public enum SmbImpersonationLevel : uint
+	{
+		Anonymous = 0,
+		Identification = 1,
+		Impersonation = 2,
+		Delegation = 3,
+	}
+	
+	public enum SmbCreateFileSecurityFlags : uint
+	{
+		ContextTracking = 0x40000,
+		EffectiveOnly = 0x80000,
+	}
+
+    [Flags]
+    enum SmbFileAttributes : uint
+    {
+        ReadOnly = 1,
+        Hidden = 2,
+        System = 4,
+        Obsolete_VolumeId = 8,
+        Directory = 0x10,
+        Archive = 0x20,
+        Compressed = 0x800,
+        Temporary = 0x100,
+        Normal = 0x80,
+        
+        WriteThrough = 0x80000000u,
+        NoBuffering =  0x20000000u,
+        RandomAccess = 0x10000000u,
+        SequentialScan = 0x08000000u,
+        DeleteOnClose = 0x04000000,
+        BackupSemantics = 0x02000000u,
+    }
+
+    [Flags]
+    enum SmbFindFirstFlag
+    {
+        CloseSearchAfterThisRequest = 1,
+        CloseSearchIfNoMore = 2,
+        ReturnResumeKeysForAllEntries = 4,
+        ResumeFromPrevious = 8,
+        FindWithBackupIntent = 0x10,
+    }
+
+    enum SmbFindFirstInformationLevel
+    {
+        Standard = 1,
+        QueryEaSize = 2,
+        QueryEasFromList = 3,
+        FileDirectoryInfo = 0x101,
+        FileFullDirectoryInfo = 0x102,
+        FileNamesInfo = 0x103,
+        FileBothDirectoryInfo = 0x104,
+        FileUnix = 0x202,
+    }
+
+	//
+ // pointerfree struct SmbFileInfoStandard
+ // {
+	//	public SmbDate CreationDate;
+	//	public SmbTime CreationTime;
+	//	public SmbDate LastAccessDate;
+	//	public SmbTime LastAccessTime;
+	//	public SmbDate LastWriteDate;
+	//	public SmbTime LastWriteTime;
+	//	public uint DataSize;
+	//	public uint AllocationSize;
+	//	public ushort Attributes; // use SmbFileAttributes
+	//	public byte FileNameLength;
+	//	// STRING FileName;		
+ // }
+ // 
+ // pointerfree struct SmbDate
+ // {
+ // }
+ // 
+ // pointerfree struct SmbTime
+ // {
+ // }
+ // 
+ //   
+    
+    [StructLayout(LayoutKind.Sequential)]
+    pointerfree struct FILETIME
+    {
+		public Int64 Ticks;
+		
+		override public string! ToString()
+		{
+			DateTime t = new DateTime(this.Ticks);
+			// WARNING: DateTime.ToString() is defective.
+			// return (!)t.ToString();
+			return (!)t.ToString("D");
+		}
+		
+		public static implicit operator DateTime(FILETIME t)
+		{
+			return new DateTime(t.Ticks);
+		}
+    }
+    
+    [StructLayout(LayoutKind.Sequential, Size=68)]
+    pointerfree struct SmbFindFileDirectoryInfo
+    {
+		public uint NextEntryOffset;
+		public uint FileIndex;
+		public FILETIME CreationTime;
+		public FILETIME LastAccessTime;
+		public FILETIME LastWriteTime;
+		public FILETIME ChangeTime;
+		public Int64 EndOfFile;
+		public Int64 AllocationSize;
+		public uint ExtFileAttributes;
+		public uint FileNameLength;
+		public uint EaSize;
+		// STRING FileName;
+		
+		public const int SizeOf = 68;
+    }
+    
+    
+    //
+    //This structure describes the SMB ReadAndX request, which reads a block of data from
+    //an open file handle.  There are two variants of this structure; the older variant uses
+    //32-bit file offsets, and so is not appropriate for modern filesystems.  The newer
+    //variant, which this structure describes, is distinguished from the older variant by the
+    //ParameterCount field (of SmbHeader); the newer variant uses a value of 12.
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbReadAndXRequest
+    {
+		public SmbHeader Header;
+		public byte AndXCommand;
+		public byte AndXReserved;
+		public ushort AndXOffset;
+		public ushort Fid;
+		public uint FileOffsetLow;
+		public ushort MaxCount;
+		public ushort MinCount;
+		public uint MaxCountHigh;
+		public ushort Remaining;
+		public uint FileOffsetHigh;
+		public ushort ByteCount;
+		
+		public const int ParameterCount = 12;		
+    }
+    
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbReadAndXResponse
+    {
+		public SmbHeader Header;
+		public byte AndXCommand;
+		public byte AndXReserved;
+		public ushort AndXOffset;
+		public ushort Remaining;			// obsolete, always -1
+		public ushort DataCompactionMode;
+		public ushort Reserved;
+		public ushort DataLength;
+		public ushort DataOffset;
+		public ushort DataLengthHigh;
+		public ushort Reserved0;
+		public ushort Reserved1;
+		public ushort Reserved2;
+		public ushort Reserved3;
+		public ushort ByteCount;
+		// byte padding[];
+		// byte data[DataLength];
+    }
+    
+    //
+    //This structure describes the SMB WriteAndX request, which writes a block of bytes
+    //to an open file handle.  The request has two variants, which are distinguished by
+    //the parameter count.  The older variant uses 32-bit file offsets, and is not
+    //suitable for modern file sizes; this variant is identified by parameter count = 12.
+    //The newer variant, which this structure describes, uses 64-bit file offsets, and
+    //is the variant described by this structure.
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbWriteAndXRequest
+    {
+		public SmbHeader Header;
+		public byte AndXCommand;                // always 0xff
+		public byte AndXReserved;               // zero
+		public ushort AndXOffset;               // zero
+		public ushort Fid;                      // open file id
+		public uint FileOffsetLow;              // bits 0-31 of offset within file
+		public uint Reserved;                   // zero
+		public ushort WriteMode;                // bit 0 = "write through"
+		public ushort Remaining;                // no idea
+		public ushort DataLengthHigh;           // bits 16-31 of length of file data in this message
+		public ushort DataLengthLow;            // bits 0-15 of length of file data in this message
+		public ushort DataOffset;               // offset within SMB message (from beginning of SMB message) of data
+		public uint FileOffsetHigh;             // bits 32-63 of offset within file
+		public ushort ByteCount;                // bytes to transfer; ignored if CAP_LARGE_WRITEX enabled
+		// pad to 4-byte
+		// byte[] data
+		
+		public const int ParameterCount = 14;
+    }
+
+    //
+    //Describes the response to the WriteAndX SMB request.
+    //
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbWriteAndXResponse
+    {
+		public SmbHeader Header;
+		public byte AndXCommand;            // always 0xff, ignore
+		public byte AndXReserved;           // ignore
+		public ushort AndXOffset;           // ignore
+		public ushort Count;                // number of bytes transferred
+		public ushort Remaining;            // obsolete; ignore
+		public uint Reserved;               // ignore
+		public ushort ByteCount;            // number of bytes in data block, always zero
+    }
+    
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbQueryFileInformationRequest
+    {
+		public SmbHeader Header;
+		public SmbTransaction2RequestHeader Transaction;
+		public ushort StupidPaddingSmbMakesMeCrazy;
+		public ushort ByteCount;
+		public ushort InformationLevel;
+		public uint Reserved;
+		public byte Padding;		
+		// path
+    }
+    
+}
+

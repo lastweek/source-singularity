@@ -1,0 +1,14 @@
+#
+# A script for automated disk benchmark.
+#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+#
+
+diskrw '/b:512' '/n:16384' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:1024' '/n:16384' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:2048' '/n:16384' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:4096' '/n:16384' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:8192' '/n:8192' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:16384' '/n:8192' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:32768' '/n:8192' '/g:5' '/r' '/dev/vol0.0'
+diskrw '/b:65536' '/n:8192' '/g:5' '/r' '/dev/vol0.0'

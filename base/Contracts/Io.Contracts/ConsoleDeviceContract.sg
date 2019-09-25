@@ -1,0 +1,91 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ConsoleDeviceContract.sg - Contract between apps and text video devices
+//
+
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public enum CursorSize : byte {
+        Small = 1,
+        Large = 2
+    }
+
+    public contract ConsoleDeviceContract : DeviceContract {
+
+        in message Clear();
+        out message AckClear();
+        out message NakClear();
+
+        in message GetDisplayDimensions();
+        out message DisplayDimensions(int columns, int rows);
+
+        in message GetCursorPosition();
+        out message CursorPosition(int column, int row);
+
+        in message SetCursorPosition(int column, int row);
+        out message AckSetCursorPosition();
+        out message InvalidPosition();
+
+        in message SetCursorSize(CursorSize cursorSize);
+        out message AckSetCursorSize();
+        out message NotSupported();
+
+        in message Write(char[]! in ExHeap buffer, int offset, int count);
+        out message AckWrite(char[]! in ExHeap buffer);
+        out message NakWrite(char[]! in ExHeap buffer);
+
+        in message PutChar(char c);
+        out message AckPutChar();
+
+        in message PutCharAt(char c, int column, int row);
+        out message AckPutCharAt();
+
+        in message ClearCursorToEndOfLine();
+        out message AckClearCursorToEndOfLine();
+
+        in message CursorFlash();
+        out message AckCursorFlash();
+        out message NakCursorFlash();
+
+        in message CursorHide();
+        out message AckCursorHide();
+        out message NakCursorHide();
+
+        in message CursorShow();
+        out message AckCursorShow();
+        out message NakCursorShow();
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one {
+            Clear? -> (AckClear! or NakClear!) -> Ready;
+            GetDisplayDimensions? -> DisplayDimensions! -> Ready;
+            GetCursorPosition? -> CursorPosition! -> Ready;
+            SetCursorPosition? -> (AckSetCursorPosition! or InvalidPosition!) -> Ready;
+            SetCursorSize? -> (AckSetCursorSize! or NotSupported!) -> Ready;
+            Write? -> (AckWrite! or NakWrite!) -> Ready;
+            PutChar? -> AckPutChar! -> Ready;
+            PutCharAt? -> (AckPutCharAt! or InvalidPosition!) -> Ready;
+            ClearCursorToEndOfLine? -> AckClearCursorToEndOfLine! -> Ready;
+            CursorFlash? -> (AckCursorFlash! or NakCursorFlash!) -> Ready;
+            CursorHide? -> (AckCursorHide! or NakCursorHide!) -> Ready;
+            CursorShow? -> (AckCursorShow! or NakCursorShow!) -> Ready;
+        }
+    }
+}

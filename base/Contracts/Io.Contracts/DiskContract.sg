@@ -1,0 +1,154 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IdeDiskContract.cs
+//
+//  Defines Message contracts for communications over channels with the Disk Device Driver
+
+using System;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public enum DiskAttributes : uint {
+        ReadOnly  = 0x01,
+        Removable = 0x02,
+    }
+
+    public contract DiskDeviceContract : DeviceContract
+    {
+            /// <summary>
+            /// Retrieve the device name.
+            /// </summary>
+            in  message GetDeviceName();
+            out message AckGetDeviceName(char* opt(ExHeap[])data);
+
+            /// <summary>
+            /// Retrieve sector offset of first sector on disk or partition.
+            /// </summary>
+            in message GetStartSector();
+            out message AckGetStartSector(ulong startSector);
+
+            /// <summary>
+            /// Retrieve number of sectors available on drive or partition.
+            /// </summary>
+            in  message GetSectorCount();
+            out message AckGetSectorCount(ulong sectorCount);
+
+            /// <summary>
+            /// Query for system identifier from partition table for
+            /// partition.  This method is only applicable to partitioned
+            /// drives.
+            /// </summary>
+            in  message GetSystemId();
+            out message SystemId(byte systemId);
+            out message NoSystemId();
+
+            in  message GetDiskAttributes();
+            out message AckGetDiskAttributes(DiskAttributes flags);
+
+            /// <summary>
+            /// Read data from disk.
+            /// <parameter name="sectorId">Relative sector on disk or partition to read data from. </parameter>
+            /// </summary>
+            in  message Read(byte []! in ExHeap data,
+                             ulong offset,
+                             ulong length,
+                             ulong sectorId);
+            out message AckRead(byte []! in ExHeap data);
+            out message NakRead();
+
+            /// <summary>
+            /// Write data to disk.
+            /// <parameter name="sectorId">Relative sector on disk or partition to write data to. </parameter>
+            /// </summary>
+            in  message Write(byte []! in ExHeap data,
+                              ulong offset,
+                              ulong length,
+                              ulong sectorId);
+            out message AckWrite(byte []! in ExHeap data);
+            out message NakWrite();
+
+            in  message NoOp();
+            out message AckNoOp();
+
+            in  message ReadPerf(int numMB, int chunkSize);
+            out message AckReadPerf(long cycles, long ticks);
+
+            out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one
+        {
+            GetDeviceName?      -> DoGetDeviceName;
+            GetDiskAttributes?  -> DoGetDiskAttributes;
+            GetStartSector?     -> DoGetStartSector;
+            GetSectorCount?     -> DoGetSectorCount;
+            GetSystemId?        -> DoGetSystemId;
+            Read?               -> DoRead;
+            Write?              -> DoWrite;
+            NoOp?               -> DoNoOp;
+            ReadPerf?           -> DoReadPerf;
+        }
+
+        state DoGetDeviceName: one
+        {
+            AckGetDeviceName! -> Ready;
+        }
+
+        state DoGetDiskAttributes: one
+        {
+            AckGetDiskAttributes! -> Ready;
+        }
+
+        state DoGetStartSector: one
+        {
+            AckGetStartSector! -> Ready;
+        }
+
+        state DoGetSectorCount: one
+        {
+            AckGetSectorCount! -> Ready;
+        }
+
+        state DoGetSystemId: one
+        {
+            SystemId!   -> Ready;
+            NoSystemId! -> Ready;
+        }
+
+        state DoRead: one
+        {
+            AckRead! -> Ready;
+            NakRead! -> Ready;
+        }
+        state DoReadPerf: one
+        {
+            AckReadPerf! -> Ready;
+        }
+
+        state DoWrite: one
+        {
+            AckWrite! -> Ready;
+            NakWrite! -> Ready;
+        }
+
+        state DoNoOp: one
+        {
+            AckNoOp! -> Ready;
+        }
+    }
+
+}

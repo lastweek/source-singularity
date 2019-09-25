@@ -1,0 +1,42 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Directory.Contracts</AssemblyName>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+    <GenerateContractMap>true</GenerateContractMap>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="DummyInstantiations.sg" />
+    <Compile Include="ExtensionContract.sg" />
+    <Compile Include="DirectoryServiceContract.sg" />
+    <Compile Include="NotifyContract.sg" />
+    <Compile Include="ServiceContract.sg" />
+    <Compile Include="ServiceProviderContract.sg" />
+    <Compile Include="FileContract.sg" />
+    <Compile Include="DirectoryServiceFeederContract.sg" />
+    <Compile Include="$(SINGULARITY_ROOT)\Applications\BounceBackTest\CalculatorContract.sg" />
+    <Compile Include="$(SINGULARITY_ROOT)\Applications\EmailServer\AntiVirus\AntiVirusContracts.sg" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Kernel\Kernel.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Kernel\SpecSharp.Contracts\Kernel.Contracts.csproj"/>
+    <DependentProject Include="$(SINGULARITY_ROOT)\Kernel\SingSharp.Runtime\Microsoft.SingSharp.Runtime.Kernel.csproj" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelContractsLibrary.targets" />
+</Project>

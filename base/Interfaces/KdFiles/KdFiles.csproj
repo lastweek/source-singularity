@@ -1,0 +1,33 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Interfaces\YourAssembly\YourAssembly.csproj
+
+Note:   This is the template for an interface assembly.
+
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>Singularity.KdFiles</AssemblyName>
+    <OutputType>Library</OutputType>
+    <OutputPath>$(KERNEL_IL_DIR)</OutputPath>
+    <NoStdlib>true</NoStdlib>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="KdFilesNamespace.csi" />
+    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Kernel\Kernel.csproj"><Alias>kernel</Alias></ProjectReference>
+    
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\InterfaceAssembly.targets" />
+</Project>

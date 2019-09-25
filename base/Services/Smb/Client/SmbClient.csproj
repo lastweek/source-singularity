@@ -1,0 +1,67 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SmbClient</AssemblyName>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="DirectoryClient.sg" />
+    <Compile Include="FileExp.sg" />
+    <Compile Include="Main.sg" />
+    <Compile Include="MuxClient.sg" />
+    <Compile Include="MuxTuple.sg" />
+    <Compile Include="SmbProtocolViolationException.sg" />
+    <Compile Include="TraceSwitches.sg" />
+    <Compile Include="Transactor.sg" />
+    <Compile Include="TransactorContract.sg" />
+    <Compile Include="TransportMux.sg" />
+    <Compile Include="TypesafeCollectionWrappers.sg" />
+    <Compile Include="..\Protocol\SmbCommand.sg" />
+    <Compile Include="..\Protocol\SmbError.sg" />
+    <Compile Include="..\Protocol\SmbFlag.sg" />
+    <Compile Include="..\Protocol\SmbFilesystemRequests.sg" />
+    <Compile Include="..\Protocol\SmbHeader.sg" />
+    <Compile Include="..\Protocol\SmbMessages.sg" />
+    <Compile Include="..\Protocol\SmbProtocol.sg" />
+    <Compile Include="..\Protocol\SmbTransaction2.sg" />
+    <Compile Include="..\Shared\Util.sg" />
+    <Compile Include="..\Shared\DirectoryUtils.sg" />
+    <Compile Include="..\Shared\NetUtil.sg" />
+    <Compile Include="..\Shared\ByteReader.sg" />
+    <Compile Include="..\Shared\ByteWriter.sg" />
+    <Compile Include="..\Shared\ArraySpan.sg" />
+    <Compile Include="..\Shared\BufferPool.sg" />
+    <Compile Include="..\Shared\ByteOrder.sg" />
+    <Compile Include="..\Shared\SmbDebug.sg" />
+    <Compile Include="..\Shared\NtAccessMask.sg" />
+    <Compile Include="..\Shared\NtStatus.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="..\PublicContracts\SmbClient.PublicContracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\CredentialsManager.Contracts\CredentialsManager.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net\System.Net.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\CredentialsManager\CredentialsManager.Library.csproj" />    
+  </ItemGroup>  
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

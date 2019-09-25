@@ -1,0 +1,127 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Applications.Singbench
+{
+    public sealed class Child
+    {
+        public static void ReceivePerf(int iterations)
+        {
+            int doit = iterations / 2;
+
+            // Make a new channel.
+            SendTestContract.Imp! childImp;
+            SendTestContract.Exp! childExp;
+            SendTestContract.NewChannel(out childImp, out childExp);
+
+            // Start up our child
+            string[] args = new string[3];
+            args[0] = "BenchChild";
+            args[1] = "-where";
+            args[2] = "!";
+            Process child = new Process(args, (Endpoint * in ExHeap)childExp);
+
+            // set the where parameter to true
+            ParameterCode code;
+            code = child.SetStartupBoolArg(0, true);
+            if (code != ParameterCode.Success) {
+                Console.WriteLine("unable to set bool index 0. error={0}", code);
+                delete childImp;
+                return;
+            }
+
+            child.Start();
+
+            childImp.RecvTestReady();
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                int arg;
+                for (int i = 0; i < doit; i++) {
+                    arg = i;
+                    childImp.SendReq(arg);
+                    childImp.RecvResp(out arg);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            childImp.SendReq(-1);
+            delete childImp;
+            child.Join();
+
+            snap.Display("CHILD S/R");
+        }
+
+        ////////////////////////////// Child send-receive performance test
+        //
+        public static void ReceivePerf2(int iterations, int messageBytes)
+        {
+            // Make a new channel.
+            BufferTestContract.Imp! childImp;
+            BufferTestContract.Exp! childExp;
+            BufferTestContract.NewChannel(out childImp, out childExp);
+
+            // Start up our child
+            string[] args = new string[2];
+            args[0] = "BenchChild";
+            args[1] = "!";
+            Process child = new Process(args, (Endpoint * in ExHeap)childExp);
+            child.Start();
+
+            childImp.RecvBufferReady();
+
+            byte[]! in ExHeap buffer = new [ExHeap] byte[messageBytes];
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    childImp.SendReq(iterations - i - 1, buffer);
+                    childImp.RecvResp(out buffer);
+                }
+            }
+            finally {
+                // Factor of two for one-sided send-receive only
+                snap.Finish(2 * iterations);
+                delete buffer;
+            }
+
+            delete childImp;
+            child.Join();
+
+            if (messageBytes < 1024) {
+                snap.Display(String.Format("Child S/RB-{0}", messageBytes));
+            }
+            else {
+                snap.Display(String.Format("Child S/RB-{0}K",
+                                           messageBytes / 1024));
+            }
+        }
+    }
+}

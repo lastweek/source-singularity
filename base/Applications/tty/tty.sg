@@ -1,0 +1,650 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:  tty Terminal Emulation program 
+//
+using System;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Keyboard = Microsoft.Singularity.Io.Keyboard;
+using Pipe = Microsoft.Singularity.Io.Tty;
+
+namespace Microsoft.Singularity.Applications
+{
+    // See WaitForChildThread below
+    internal contract WaitForChildContract {
+        out message Finish();
+        state Start: one {Finish! -> Done;}
+        state Done: one {}
+    }
+
+    public class Tty
+    {
+        private static TRef<KeyboardDeviceContract.Imp:Ready> keyboardRef; 
+        private static TRef<ConsoleDeviceContract.Imp:Ready> consoleRef; 
+        private static TRef<UnicodePipeContract.Imp:READY> inputEp; 
+        private static TRef<UnicodePipeContract.Exp:READY> outputEp; 
+        private static char[] modTable;
+        private static Process process; 
+        private static Terminal terminal;
+
+        private static void InitModTable()
+        {
+            modTable = new char[8]; 
+            modTable[1] = '1'; 
+            modTable[2] = '2'; 
+            modTable[3] = '3'; 
+            modTable[4] = '4'; 
+            modTable[5] = '5'; 
+            modTable[6] = '6'; 
+            modTable[7] = '7'; 
+        }
+
+        public static KeyboardDeviceContract.Imp OpenKeyboard(string! devName,
+                                                              DirectoryServiceContract.Imp! ns)
+        {
+            // get NS endpoint
+            KeyboardDeviceContract.Exp! exp;
+            KeyboardDeviceContract.Imp! imp;
+            KeyboardDeviceContract.NewChannel(out imp, out exp);
+
+            ErrorCode errorOut; 
+            bool ok = SdsUtils.Bind(devName, ns, exp, out errorOut );
+
+            if (!ok) {
+                DebugStub.WriteLine("Console Input: OpenKeyboard lookup of {0} failed.",
+                                __arglist(devName));
+                if (imp != null) delete imp; 
+                return null;
+            }
+            assert imp != null; 
+            
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    throw new Exception("ConsoleInput: Contract not supported");
+                    break;
+                case imp.ChannelClosed():
+                    throw new Exception("ConsoleInput: Didn't imp.RecvActConnect");
+                    break;
+            }
+            return imp;
+        }
+
+        private static ConsoleDeviceContract.Imp OpenConsole(string! devName,
+                                                             DirectoryServiceContract.Imp! ns)
+        {
+            ConsoleDeviceContract.Exp! exp;
+            ConsoleDeviceContract.Imp! imp;
+            ConsoleDeviceContract.NewChannel(out imp, out exp);
+            ErrorCode errorOut; 
+            
+            bool ok = SdsUtils.Bind(devName, ns, exp, out errorOut); 
+            
+            if (!ok) {
+                DebugStub.WriteLine("Console Input: OpenConsole lookup of {0} failed.",
+                                __arglist(devName));
+                if (imp != null) delete imp; 
+                return null;
+            }
+           
+            if (imp != null) {
+                switch receive {
+                    case imp.Success():
+                        break;
+                    case imp.ContractNotSupported():
+                        throw new Exception("ConsoleOutput: ContractNotSupported");
+                        break;
+                    case imp.ChannelClosed():
+                        throw new Exception("ConsoleOutput: ChannelClosed");
+                        break;
+                }
+            }
+            return imp;
+        }
+      
+        private static char[]!  in ExHeap ProcessKey(uint key, [Claims] char[] in ExHeap buffer, out int len)
+        {
+            len = 0; 
+            if (buffer == null) {
+                buffer = new [ExHeap] char [10]; 
+            }
+            
+            assert buffer.Length != 0; 
+            
+            //Console.WriteLine("processKey:{0:x}",key); 
+            char c = (char)(key & (uint)Keyboard.Qualifiers.KEY_BASE_CODE);
+            if ((key & (uint)Keyboard.Qualifiers.KEY_CTRL) != 0  && (c == 'c')) {
+                        len = 1; 
+                        buffer[0] = (char) Pipe.ControlCodes.CTRL_C;  // ctrl-X
+                        DebugStub.WriteLine("tty: CTRL_C detected");
+                    }
+                    else if ((key & (uint)Keyboard.Qualifiers.KEY_CTRL) != 0  && c == 'z') {
+                        len = 1; 
+                        buffer[0] = (char) Pipe.ControlCodes.CTRL_Z;  // ctrl-X
+                        DebugStub.WriteLine("tty: CTRL_Z detected");
+                    }
+            else if (c == '\b') {
+                len = 1; 
+                buffer[0] = c;
+            }
+            else if (c == '\n') {
+                len = 1; 
+                buffer[0] = c;
+                // echo
+                // Console.WriteLine();
+            }
+            else { 
+                // Only use the character if it's in the printable ASCII range
+                if ((c >= 32) && (c <= 126)) // SPACE to "~"
+                {
+                    //Console.WriteLine("char={0}:{1:x}",c,key);
+                    len = 1; 
+                    buffer[0] = c; 
+                    // echo
+                    // Console.Write(c);
+                }
+                else if ((c >= Keyboard.Keys.PAGE_UP) && (c <= Keyboard.Keys.DELETE)) {
+                    //Console.WriteLine("tty: generating esc sequence for:{0:x}",key); 
+                    buffer[0] = (char) 0x1b;
+                    buffer[1] = '[';
+                    int pos = 2; 
+                    
+                    switch ((int) c) {
+                        case Keyboard.Keys.PAGE_UP: 
+                            buffer[pos++] = '5';
+                            buffer[pos++] = '~';
+                            break; 
+                        case Keyboard.Keys.PAGE_DOWN: 
+                            buffer[pos++] = '6';
+                            buffer[pos++] = '~';
+                            break; 
+                        case Keyboard.Keys.UP_ARROW: 
+                            buffer[pos++] = 'A';
+                            break; 
+                        case Keyboard.Keys.DOWN_ARROW: 
+                            buffer[pos++] = 'B';
+                            break; 
+                        case Keyboard.Keys.LEFT_ARROW: 
+                            buffer[pos++] = 'D';
+                            break; 
+                        case Keyboard.Keys.RIGHT_ARROW: 
+                            buffer[pos++] = 'C';
+                            break; 
+                        case Keyboard.Keys.HOME: 
+                            buffer[pos++] = '1';
+                            buffer[pos++] = '~';
+                            break; 
+                        case Keyboard.Keys.END:
+                            buffer[pos++] = '4';
+                            buffer[pos++] = '~';
+                            break; 
+                        case Keyboard.Keys.INSERT: 
+                            buffer[pos++] = '2';
+                            buffer[pos++] = '~';
+                            break; 
+                        case Keyboard.Keys.DELETE: 
+                            buffer[pos++] = '3';
+                            buffer[pos++] = '~';
+                            break; 
+                    }
+                    len  = pos;
+#if false                    
+                    DebugStub.Write("tty: esc seq ="); 
+                    for (int i = 0; i < len; i++) {
+                        DebugStub.Write(" {0}",__arglist(buffer[i]));
+                    }
+                    DebugStub.WriteLine(""); 
+#endif                     
+                }
+            }
+            
+            return buffer;  
+        }
+
+        private static void InputWorkerThread() 
+        {
+            UnicodePipeContract.Imp! stdinImp =  inputEp.Acquire(); 
+            KeyboardDeviceContract.Imp:Ready! keyboard = keyboardRef.Acquire(); 
+            char[] in ExHeap buffer = new [ExHeap] char [10]; 
+            
+            WaitForChildContract.Imp! imp;
+            WaitForChildContract.Exp! exp;
+            WaitForChildContract.NewChannel(out imp, out exp);
+
+            new Thread(new ThreadStart(new WaitForChildThread(
+                process, new TRef<WaitForChildContract.Exp:Start>(exp))
+                .Wait)).Start();
+
+            uint key = 0;
+            while (true) {
+                keyboard.SendGetKey();
+                switch receive {
+                    case imp.Finish():
+                        delete buffer;
+                        goto done; 
+                    case keyboard.AckKey(ikey):
+                        key = ikey;
+                        break;
+                    case keyboard.NakKey():
+                        break;
+                    case keyboard.ChannelClosed():
+                        Tracing.Log(Tracing.Debug, "Keyboard channel closed");
+                        delete buffer;
+                        goto done;
+
+                }
+                //DebugStub.WriteLine("input:{0:x}",__arglist(key)); 
+
+                // process key
+                if ((key & (uint)Keyboard.Qualifiers.KEY_DOWN) == 0) {
+                    continue;
+                }
+                if ((key & (uint)Keyboard.Qualifiers.KEY_MOUSE) != 0) {
+                    continue;
+                }
+ 
+                int len; 
+                buffer = ProcessKey(key, buffer, out len);
+                
+                if (len > 0) {
+                    stdinImp.SendWrite(buffer,0,len);
+                    
+                    switch receive {
+                    case stdinImp.AckWrite(i_buffer):
+                        buffer = i_buffer; 
+                        break;
+                    case stdinImp.ChannelClosed():
+                        DebugStub.WriteLine("tty: stdin closed");
+                        Tracing.Log(Tracing.Debug, "stdin channel closed");
+                        DebugStub.Break();  //this should not happen! 
+                        goto done;
+                    }
+                }
+                
+            }
+        done:
+            delete stdinImp;
+            delete keyboard;
+            delete imp; 
+        }
+
+        ///////////////////
+        // process escape sequence embedded in output buffer
+        // pos is the index of the escape character in the buffer
+        private static char[] escBuf; 
+        
+        private static int HandleEscape(ConsoleDeviceContract.Imp! console,
+                                         char[]! in ExHeap buffer, int pos, int len)
+        {
+            Pipe.EscapeCodes  code;      
+            int column, row, repeat;
+            
+            int i; 
+            terminal.Reset(); 
+            repeat = 0;
+            
+            code = Pipe.EscapeCodes.NOCODE; 
+            
+            int limit;
+            if (pos + len < buffer.Length) limit = pos + len; 
+            else limit = buffer.Length;
+            for (i = pos; i < limit; i++) {
+                bool more = terminal.ProcessEscape(buffer[i], out code, out repeat); 
+                if (!more) break; 
+            }
+            
+            switch (code) {
+            case Pipe.EscapeCodes.UP:
+                console.SendGetCursorPosition();
+                console.RecvCursorPosition(out column, out row);
+                if (row > 0) {
+					console.SendSetCursorPosition(column, row-1);
+					console.RecvAckSetCursorPosition();
+					//DebugStub.WriteLine("tty: up received. shifting from row {0}, col {1}",__arglist(row, column));
+                }
+                else {
+					DebugStub.WriteLine("tty: cannot move up; already at top");
+                }
+                break;
+            case Pipe.EscapeCodes.LEFT:
+                console.SendGetCursorPosition();
+                console.RecvCursorPosition(out column, out row);
+                if (column > 0) {
+					console.SendSetCursorPosition(column-1, row);
+					console.RecvAckSetCursorPosition();
+					//DebugStub.WriteLine("tty: left received. shifting from row {0}, col {1}",__arglist(row, column));
+                }
+                else if (row > 0) {
+					// Move up one row and to the end.
+					console.SendSetCursorPosition(_console_columns - 1, row - 1);
+					console.RecvAckSetCursorPosition();
+                }
+                else {
+					DebugStub.WriteLine("tty: already at origin, cannot move left");
+                }
+                break;
+            case Pipe.EscapeCodes.RIGHT:
+                //DebugStub.WriteLine("tty: right received");
+                console.SendGetCursorPosition();
+                console.RecvCursorPosition(out column, out row);
+                if (column + 1 < _console_columns) {
+	                console.SendSetCursorPosition(column+1, row);
+		            console.RecvAckSetCursorPosition();
+		        }
+		        else if (row + 1 < _console_rows) {
+					console.SendSetCursorPosition(0, row+1);
+					console.RecvAckSetCursorPosition();
+		        }
+		        else {
+					DebugStub.WriteLine("tty: already at end of screen!");
+				}
+                break;
+            case Pipe.EscapeCodes.ERASE_FROM_CURSOR:
+                //DebugStub.WriteLine("tty: ERASE FROM CURSOR received");
+                console.SendClearCursorToEndOfLine(); 
+                console.RecvAckClearCursorToEndOfLine(); 
+                break; 
+            case Pipe.EscapeCodes.CLEAR_SCREEN:
+                console.SendClear();
+                console.RecvAckClear();
+                break; 
+            case Pipe.EscapeCodes.SET_CURSOR_SIZE:
+                //DebugStub.WriteLine("tty: ERASE FROM CURSOR received");
+                bool ignore = false; 
+                Microsoft.Singularity.Io.CursorSize  size = Microsoft.Singularity.Io.CursorSize.Small; 
+                switch (repeat) {
+                case 1: 
+                    size = Microsoft.Singularity.Io.CursorSize.Small;
+                    break; 
+                case 2:
+                    size = Microsoft.Singularity.Io.CursorSize.Large;
+                    break; 
+                default: 
+                    break; 
+                    ignore = true; 
+                }
+                if (!ignore) {
+                    console.SendSetCursorSize(size); 
+                    switch receive {
+                    case console.AckSetCursorSize():
+                        break; 
+                    case console.NotSupported(): 
+                        break; 
+                    }
+                }
+                break; 
+            case Pipe.EscapeCodes.NOCODE: 
+                break;
+            }
+            return i;
+        }
+        
+        private static void OutputWorkerThread() 
+        {
+            UnicodePipeContract.Exp! stdoutExp = outputEp.Acquire(); 
+            ConsoleDeviceContract.Imp! console = consoleRef.Acquire();
+
+            bool pipeActive  = true; 
+            int pos; 
+            int newPos = 0;
+            
+            try { 
+                while (pipeActive) {
+                    switch receive {
+                        case stdoutExp.Write(buffer, index, count):
+                            // inspect each key looking for escape sequences
+                            // if any are found split up the buffer logically into
+                            // 3 parts (pre, escape, and post). All three will need to be 
+                            // sent separately. 
+                            // Need to ensure the correct buffer gets back to the caller
+                            assert buffer.Length >= (index + count);
+                            for (pos = 0; pos < count; pos++) {
+                                if (buffer[pos + index] == (char) 0x1b) break; 
+                            }
+                            int pre; 
+                            int post; 
+                            if (pos != count) {
+                                if (pos == 0 && count == 1) {
+                                    // ignore single escape char -- should never be sent
+                                    pre = 0; 
+                                    post = 0; 
+                                }
+                                else { 
+                                     newPos = HandleEscape(console,buffer,pos+1, count);  
+                                     pre = pos - index; 
+                                     post = (pos+count-1) - newPos; 
+                                } 
+                                
+                                if (pre != 0) {
+                                    char [] in ExHeap preBuf = new [ExHeap] char [pre]; 
+                                    for (int i = 0; i < pre; i++) {
+                                        preBuf[i] = buffer[index+i];
+                                    }
+                                        // write all chars before 
+                                    console.SendWrite(preBuf, 0, pre);
+                                    
+                                    switch receive {
+                                    case console.AckWrite(localside): 
+                                        // performing a partial write need to save the buffer 
+                                        delete localside;
+                                        break;
+                                        
+                                    case console.NakWrite(localside):
+                                        // Unicode contract has no negative ack
+                                        stdoutExp.SendAckWrite(localside);
+                                        break;
+
+                                    case console.ChannelClosed():
+                                        pipeActive = false; 
+                                        break;
+                                    }
+                                }
+                                
+                                if (post != 0) {
+                                    char [] in ExHeap postBuf = new [ExHeap] char [post]; 
+                                    for (int i = 0; i < post; i++) {
+                                        postBuf[i] = buffer[newPos+i];
+                                    }
+                                    console.SendWrite(postBuf, 0, newPos);
+                                    switch receive {
+                                    case console.AckWrite(localside):
+                                        delete localside;
+                                        break;
+                                        
+                                    case console.NakWrite(localside):
+                                        // Unicode contract has no negative ack
+                                        stdoutExp.SendAckWrite(localside);
+                                        break;
+
+                                    case console.ChannelClosed():
+                                        pipeActive = false; 
+                                        break;
+                                    } 
+                                } 
+                                stdoutExp.SendAckWrite(buffer);
+                            }  // escape sequence 
+
+                            else { 
+                            console.SendWrite(buffer, index, count);
+                            switch receive {
+                            case console.AckWrite(localside):
+                                stdoutExp.SendAckWrite(localside);
+                                break;
+                                
+                            case console.NakWrite(localside):
+                                // Unicode contract has no negative ack
+                                stdoutExp.SendAckWrite(localside);
+                                break;
+
+                            case console.ChannelClosed():
+                                pipeActive = false; 
+                                break;
+                            }                      
+                            }     
+                            break;
+                        case stdoutExp.ChannelClosed():
+                            pipeActive = false; 
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete stdoutExp;
+                delete console;
+            }
+        }
+
+        private static int RunShellProcess(String[] args)
+        {
+            assert args != null; 
+            assert args[0] != null; 
+            
+            DebugStub.WriteLine("Starting {0}, argcount={1}", __arglist( args[0], args.Length));
+            Console.WriteLine("Starting {0}, argcount={1}", args[0], args.Length);
+            // create shell process with stdin/out bound to us
+            //process = new Process(args, null, 2);
+            process = new Process((!)args[0], null, null); 
+         
+            UnicodePipeContract.Imp! stdinImp;
+            UnicodePipeContract.Exp! stdinExp;
+            UnicodePipeContract.NewChannel(out stdinImp, out stdinExp);
+            
+            UnicodePipeContract.Imp! stdoutImp;
+            UnicodePipeContract.Exp! stdoutExp;
+            UnicodePipeContract.NewChannel(out stdoutImp, out stdoutExp);
+
+            process.SetStartupEndpoint(0, (Endpoint * in ExHeap) stdinExp);
+            // hack 
+            process.SetStartupEndpoint(1, (Endpoint * in ExHeap) stdoutImp);
+            
+            // new style pass in args via StringArrayParameter
+            if (args.Length > 1) {
+                    String[]! shellArgs = new String[args.Length - 1];
+                    Array.Copy(args, 1, shellArgs, 0, shellArgs.Length);
+                    process.SetStartupStringArrayArg(0, shellArgs);
+            }
+            
+            process.Start();
+
+            // start our output thread
+            // We need a multiplexer, if we want to echo input characters in tty.
+            UnicodePipeContract.Imp! localStdoutImp;
+            UnicodePipeContract.Exp! localStdoutExp;
+            UnicodePipeContract.NewChannel(out localStdoutImp, out localStdoutExp);
+
+            PipeMultiplexer! pm = PipeMultiplexer.Start(localStdoutImp, stdoutExp);
+            
+            inputEp = new TRef<UnicodePipeContract.Imp:READY> (stdinImp);
+            outputEp = new TRef<UnicodePipeContract.Exp:READY> (localStdoutExp);
+
+            // Connect our own console output to the output multiplexer
+            UnicodePipeContract.Imp ttyStdout = pm.FreshClient();
+            UnicodePipeContract.Imp oldStdout = ConsoleOutput.Swap(ttyStdout);
+            // oldStdout is likely null, because the tty does not get a stdout on startup
+            delete oldStdout;
+
+            // start up output thread to handle input and output 
+           
+            ThreadStart output = new ThreadStart(OutputWorkerThread); 
+            Thread outThread = new Thread(output);
+            outThread.Start();
+
+            // run input copier on this thread
+            InputWorkerThread();
+            // dispose the pipe multiplexer. This should shut down the output thread
+            pm.Dispose();
+
+            outThread.Join();
+            return process.ExitCode; 
+        }
+
+        // TODO: better ways to wait on a child process
+        private class WaitForChildThread
+        {
+            private Process! process;
+            private TRef<WaitForChildContract.Exp:Start>! expRef;
+
+            internal WaitForChildThread(Process! process, TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                this.process = process;
+                this.expRef = expRef;
+                base();
+            }
+
+            internal void Wait()
+            {
+                process.Join();
+                WaitForChildContract.Exp exp = expRef.Acquire();
+                exp.SendFinish();
+                delete exp;
+            }
+        }
+        
+        public static int Main(String[] args)
+        {
+            // TODO: get ns from startup endpoints
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+            // get access to the real keyboard
+            KeyboardDeviceContract.Imp keyboard = OpenKeyboard("/dev/keyboard", ns); 
+            if (keyboard == null) {
+                DebugStub.WriteLine("Console Input: Couldn't open keyboard.");
+                DebugStub.Break(); 
+                delete ns;
+                return -1;
+            } 
+            ConsoleDeviceContract.Imp console;
+            console = OpenConsole("/dev/video-text", ns);
+            if (console == null) {
+                console = OpenConsole("/dev/conout", ns);
+                if (console == null) {
+                    DebugStub.WriteLine("Couldn't open console.\n");
+                    DebugStub.Break(); 
+                    delete keyboard;
+                    delete ns;
+                    return -1;
+                }
+            }
+            delete ns;
+            
+            // Query the size of the display.
+            // This is useful later on.
+            console.SendGetDisplayDimensions();
+            int columns;
+            int rows;
+            console.RecvDisplayDimensions(out columns, out rows);
+            _console_columns = columns;
+            _console_rows = rows;
+            
+            terminal = new Terminal(); 
+            InitModTable(); 
+            keyboardRef = new TRef<KeyboardDeviceContract.Imp:Ready>(keyboard);
+            consoleRef = new TRef<ConsoleDeviceContract.Imp:Ready>(console);
+            
+            string [] shellArgs; 
+            if (args == null || args.Length < 2) { 
+                shellArgs = new string[1]; 
+                shellArgs[0] = "shell"; 
+            }
+            else {
+                shellArgs = new string[args.Length -1];
+                Array.Copy(args, 1, shellArgs, 0, shellArgs.Length);
+            }
+            int code = RunShellProcess(shellArgs); 
+
+            return code; 
+        }
+        
+        static int _console_columns;
+        static int _console_rows;
+    } //Tty
+    
+}//namespace

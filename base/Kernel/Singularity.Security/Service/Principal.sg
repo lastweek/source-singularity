@@ -1,0 +1,63 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using System.Collections;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.V1.Security;
+
+    /// <summary>
+    /// A Principal struct is representation of a principal.
+    /// The security service evaluates ACLs and
+    ///     retrieve names associated with principals.  See the
+    ///     security library.
+    /// </summary>
+
+    /// This is the kernel version of Principal.sg.
+
+    public struct Principal
+    {
+        private readonly ulong val;
+
+        public bool Equal(Principal id) { return (this.Val == id.Val); }
+
+        public static Principal Self()
+        {
+            return PrincipalImpl.Self();
+        }
+
+        public ulong Val { get { return this.val; } }
+
+        public string! GetName()
+        {
+            return PrincipalImpl.GetPrincipalName(this);
+        }
+
+        public static Principal EndpointPeer(Endpoint*! in ExHeap ep)
+        {
+            return new Principal(ep->PeerPrincipalHandle.val);
+        }
+
+        public static string ExpandAclIndirection(string! name)
+        {
+            return PrincipalImpl.ExpandAclIndirection(name);
+        }
+
+        internal Principal(ulong val)
+        {
+            this.val = val;
+        }
+        
+        public ArrayList GetHashes()
+        {
+            return PrincipalImpl.GetPrincipalHashes(this);
+        }
+    }
+}
+
+

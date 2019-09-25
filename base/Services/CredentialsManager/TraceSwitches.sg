@@ -1,0 +1,21 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/CredentialsManager/TraceSwitches.sg
+//
+//  Note:	Booleans that control trace output
+//
+
+using System;
+
+namespace Microsoft.Singularity.Security.CredentialsManager
+{
+    class TraceSwitches
+    {
+        public static bool ShowManagerMessages = false;
+        public static bool ShowWildcardMatching = false;
+    }
+}

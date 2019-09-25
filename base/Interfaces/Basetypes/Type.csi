@@ -1,0 +1,86 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [CCtorIsRunDuringStartup]
+    [RequiredByBartok]
+    public abstract class Type
+    {
+        public static readonly char Delimiter;
+
+        public readonly static Type[] EmptyTypes;
+
+        protected Type();
+
+        public static TypeCode GetTypeCode(Type type);
+        public static Type GetTypeFromHandle(RuntimeTypeHandle handle);
+
+        public abstract String Name { get; }
+        public abstract String FullName { get; }
+        public abstract String Directory { get; }
+
+        public virtual int GetArrayRank();
+
+        public abstract Type BaseType { get; }
+        public abstract Type[] GetInterfaces();
+
+        public bool IsNotPublic { get; }
+        public bool IsPublic { get; }
+        public bool IsNestedPublic { get; }
+        public bool IsNestedPrivate { get; }
+        public bool IsNestedFamily { get; }
+        public bool IsNestedAssembly { get; }
+        public bool IsNestedFamANDAssem { get; }
+        public bool IsNestedFamORAssem{ get; }
+
+        public bool IsAutoLayout { get; }
+        public bool IsLayoutSequential { get; }
+        public bool IsExplicitLayout { get; }
+
+        public bool IsClass { get; }
+        public bool IsInterface { get; }
+        public bool IsValueType { get; }
+
+        public bool IsAbstract { get; }
+        public bool IsSealed { get; }
+        public bool IsEnum { get; }
+        public bool IsSpecialName { get; }
+        public bool IsImport { get; }
+
+        public bool IsAnsiClass { get; }
+        public bool IsUnicodeClass { get; }
+        public bool IsAutoClass { get; }
+
+        public bool IsArray { get; }
+
+        public bool IsPrimitive { get; }
+        public bool HasElementType { get; }
+
+        protected virtual bool IsValueTypeImpl();
+        protected abstract bool IsArrayImpl();
+        protected abstract bool IsPrimitiveImpl();
+
+        public abstract Type GetElementType();
+        protected abstract bool HasElementTypeImpl();
+
+        public abstract Type UnderlyingSystemType { get; }
+
+        public virtual bool IsSubclassOf(Type c);
+
+        public override String ToString();
+
+        public static Type[] GetTypeArray(Object[] args);
+
+        public override bool Equals(Object o);
+
+        public bool Equals(Type o);
+
+        public override int GetHashCode();
+    }
+}

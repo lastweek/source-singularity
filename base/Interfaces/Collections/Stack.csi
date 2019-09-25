@@ -1,0 +1,34 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+    // A simple stack of objects.  Internally it is implemented as an array,
+    // so Push can be O(n).  Pop is O(1).
+
+    public class Stack : ICollection, ICloneable {
+        public Stack();
+        public Stack(int initialCapacity);
+        public Stack(ICollection col);
+
+        public virtual int Count { get; }
+        public virtual bool IsSynchronized { get; }
+        public virtual Object SyncRoot { get; }
+
+        public virtual void Clear();
+        public virtual Object Clone();
+        public virtual bool Contains(Object obj);
+        public virtual void CopyTo(Array array, int index);
+        public virtual IEnumerator GetEnumerator();
+        public virtual Object Peek();
+        public virtual Object Pop();
+        public virtual void Push(Object obj);
+        public static Stack Synchronized(Stack stack);
+        public virtual Object[] ToArray();
+    }
+}

@@ -1,0 +1,39 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\Policy\Policy.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Policy</AssemblyName>
+    <Language>C#</Language>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="Address.cs" />
+    <Compile Include="Area.cs" />
+    <Compile Include="Cell.cs" />
+    <Compile Include="ChoicePoint.cs" />
+    <Compile Include="Environment.cs" />
+    <Compile Include="Functor.cs" />
+    <Compile Include="Instruction.cs" />
+    <Compile Include="Ref.cs" />
+    <Compile Include="Str.cs" />
+    <Compile Include="Wam.cs" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

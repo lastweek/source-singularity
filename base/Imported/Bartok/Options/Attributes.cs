@@ -1,0 +1,232 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+namespace Microsoft.Bartok.Options {
+
+    using System;
+
+#if false
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method|
+                    AttributeTargets.Property)]
+    public sealed class InlineAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method|
+                    AttributeTargets.Property)]
+    public sealed class NoInlineAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class DisableBoundsChecksAttribute: Attribute {
+
+    }
+
+    [AttributeUsage(AttributeTargets.Interface|
+                    AttributeTargets.Class|
+                    AttributeTargets.Struct,
+                    Inherited=false)]
+    public sealed class CCtorIsRunDuringStartupAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Interface|
+                    AttributeTargets.Class|
+                    AttributeTargets.Struct,
+                    Inherited=false)]
+    public sealed class NoCCtorAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Interface|
+                    AttributeTargets.Method|
+                    AttributeTargets.Field,
+                    Inherited=false)]
+    public sealed class AccessedByRuntimeAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Constructor|
+                    AttributeTargets.Method|
+                    AttributeTargets.Property)]
+    public class AccessPointOnlyAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class ExternalStaticDataAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Struct)]
+    public sealed class StructAlignAttribute : Attribute {
+        public StructAlignAttribute(int align) {}
+    }
+
+    [AttributeUsage(AttributeTargets.Method,
+                    Inherited=false)]
+    public sealed class StackBoundAttribute: Attribute {
+        public StackBoundAttribute(int bound) {}
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class StackLinkCheckAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Property|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class NoStackLinkCheckAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Property|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class NoStackOverflowCheckAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Field|
+                    AttributeTargets.Method|
+                    AttributeTargets.Constructor,
+                    Inherited=false)]
+    public sealed class IntrinsicAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class InlineVectorAttribute : Attribute {
+        public InlineVectorAttribute(int numElements) {}
+    }
+
+    // This attribute is used to mark method that needs pushStackMark
+    // and popStackMark around calls to it.
+    [AttributeUsage(AttributeTargets.Method,
+                    Inherited=false)]
+    public sealed class AbiEntryAttribute: Attribute {
+    }
+
+    /// <summary>
+    /// This attribute must be placed on override types that override the class
+    /// constructor.  It is a compile-time error if the attribute is missing
+    /// during an override.  It is also a compile-time error if it exists and
+    /// either the original or the override type does not have a class
+    /// constructor.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Interface)]
+    public sealed class OverrideCctorAttribute : Attribute {
+    }
+
+    /// <summary>
+    /// This attribute is placed on override types to delete the built-in class
+    /// constructor.  Using this is better than overriding with an empty method.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Interface)]
+    public sealed class DeleteCctorAttribute : Attribute {
+    }
+#endif
+
+#if true
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Enum)]
+    public sealed class MixinAttribute : Attribute {
+        internal Type option;
+        public MixinAttribute(Type type) {
+            this.option = type;
+        }
+    }
+
+    [AttributeUsage(AttributeTargets.Class|
+                    AttributeTargets.Struct|
+                    AttributeTargets.Enum,
+                    AllowMultiple=true)]
+    public sealed class MixinConditionalAttribute : Attribute {
+        internal String option;
+        public MixinConditionalAttribute(String option) {
+            this.option = option;
+        }
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Property|
+                    AttributeTargets.Field)]
+    public sealed class MixinOverrideAttribute : Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Property)]
+    public sealed class MixinExtendAttribute : Attribute {
+        internal String option;
+        public MixinExtendAttribute(String option) {
+            this.option = option;
+        }
+    }
+#endif
+
+#if false
+    // There are at least three reasons why one would need to prevent
+    // the automatic insertion of vanilla reference counting (RC) code
+    // into the body of a method, property or constructor:
+    //
+    //     1. To suppress reference counting before a reference to
+    //        the installed GC is set up.
+    //
+    //     2. Methods that directly manipulate reference counts such
+    //        as allocation routines.
+    //
+    //     3. To suppress the insertion of RC code into code bodies
+    //        that may be directly or indirectly invoked from the
+    //        IncrementRefCount or DecrementRefCount methods of the
+    //        reference counting collector.
+    //
+    // The IrRCUpdate compiler phase can be made to skip code bodies for
+    // any of the above reasons by affixing one of two special attributes
+    // to their declarations. Currently, the [PreInitRefCounts] attribute
+    // is used to mark code that could be invoked before the GC gets set
+    // up and that, in its absence, may cause the IrRCUpdate phase to
+    // insert RC increment and decrement code. The [ManualRefCounts]
+    // attribute models cases in which the code writer takes the onus of
+    // maintaining consistent reference counts.
+    //
+    // The reason for separating the preinitialization case from the
+    // other two is because special RC updates, which test for
+    // initialization of the GC before incrementing or decrementing the
+    // reference counts, could still have been inserted into code bodies
+    // marked as [PreInitRefCounts]. However, if the same code body is
+    // called after initialization, such updates may slow down the
+    // common case. This provides an optimization opportunity for the
+    // compiler in which a method f marked with [PreInitRefCounts] could
+    // be cloned into a version f' that contains plain RC code and that
+    // is actually called wherever a non-[PreInitRefCounts] method such
+    // as g calls f.
+    //
+    // If a method h has the [ManualRefCounts] attribute and if reference
+    // counts are directly read or written in h, then the code must either
+    // be also marked as [NoInline] or must only be called from methods
+    // that also have the [ManualRefCounts] attribute. This is because if
+    // h were inlined into a method in which reference counting is on by
+    // default, the injected RC code may cause the reference counts
+    // to become inconsistent.
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Property)]
+    public sealed class PreInitRefCountsAttribute: Attribute {
+    }
+
+    [AttributeUsage(AttributeTargets.Method|
+                    AttributeTargets.Constructor|
+                    AttributeTargets.Property)]
+    public sealed class ManualRefCountsAttribute: Attribute {
+    }
+#endif
+}

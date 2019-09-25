@@ -1,0 +1,72 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Threading;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class HeapTest
+    {
+        // GC threshold is around 8MB.
+        private const  long TotalToAllocate    = 8L * 1024 * 1024 * 1024;
+        private const  int LargeStringLength   = 1023;
+        private const  int SmallStringLength   = 64;
+
+        private static object!   monitor;
+        private static int       threadCount = 0;
+        private static AutoResetEvent! exitEvent;
+        private static int       stringLength;
+        private static int       allocationsPerThread = 0;
+
+        private static void ThreadMain()
+        {
+            lock (HeapTest.monitor) {
+                HeapTest.threadCount++;
+            }
+
+            for (int i = 0; i < HeapTest.allocationsPerThread; i++) {
+                new String('a', HeapTest.stringLength);
+            }
+
+            lock (HeapTest.monitor) {
+                HeapTest.threadCount--;
+                if (HeapTest.threadCount == 0) {
+                    HeapTest.exitEvent.Set();
+                }
+            }
+        }
+
+        private static void Test(int stringLength)
+        {
+            HeapTest.monitor     = new object();
+            HeapTest.exitEvent   = new AutoResetEvent(false);
+            HeapTest.threadCount = 0;
+            HeapTest.stringLength = stringLength;
+            HeapTest.allocationsPerThread = unchecked((int)(TotalToAllocate / (Settings.MaxThreads * stringLength)));
+
+            for (int i = 0; i < Settings.MaxThreads; i++) {
+                Thread t = new Thread(new ThreadStart(ThreadMain));
+                t.Start();
+            }
+            HeapTest.exitEvent.WaitOne();
+        }
+
+        public static void TestLargeAllocs()
+        {
+            Test(LargeStringLength);
+        }
+
+        public static void TestSmallAllocs()
+        {
+            Test(SmallStringLength);
+        }
+    }
+}

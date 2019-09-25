@@ -1,0 +1,127 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+// __RuntimeType is the basic Type object representing classes as found in the
+//      system.  This type is never creatable by users, only by the system itself.
+//      The public structure is known about by the runtime. __RuntimeXXX classes
+//      are created only once per object in the system and support == comparisons.
+//
+
+using Microsoft.Bartok.Runtime;
+using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace System
+{
+
+#if !DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+    [CCtorIsRunDuringStartup]
+    public sealed class RuntimeType : Type, ICloneable
+    {
+        public readonly RuntimeType baseType;
+        public readonly System.RuntimeType[] interfaces;
+        public readonly StructuralType arrayOf;
+        public readonly RuntimeType elementType;
+        public readonly int rank;
+        public readonly VTable classVtable;
+
+        public TypeInitState cctorState;
+
+        // Prevent from begin created
+        public RuntimeType();
+
+        // Given a class handle, this will return the class for that handle.
+        public unsafe static Type GetTypeFromHandleImpl(RuntimeTypeHandle handle);
+
+        // Return the name of the class.  The name does not contain the namespace.
+        public override String Name {
+            get;
+        }
+
+        public override int GetHashCode();
+
+        // Return the name of the class.  The name does not contain the namespace.
+        public override String ToString();
+
+        // Return the fully qualified name.  The name does contain the namespace.
+        public override String FullName {
+            get;
+        }
+
+        // Return the name space.
+        public override String Directory
+        {
+            get;
+        }
+
+        // Returns the base class for a class.  If this is an interface or has
+        // no base class null is returned.  Object is the only Type that does not
+        // have a base class.
+        public override Type BaseType {
+            get;
+        }
+
+
+        public override int GetArrayRank();
+
+        // GetInterfaces
+        // This method will return all of the interfaces implemented by a
+        //  class
+        public override Type[] GetInterfaces();
+
+        ////////////////////////////////////////////////////////////////////////////////
+        //
+        // Attributes
+        //
+        //   The attributes are all treated as read-only properties on a class.  Most of
+        //  these boolean properties have flag values defined in this class and act like
+        //  a bit mask of attributes.  There are also a set of boolean properties that
+        //  relate to the classes relationship to other classes and to the state of the
+        //  class inside the runtime.
+        //
+        ////////////////////////////////////////////////////////////////////////////////
+
+        // Public routine to determine if this class represents an Array
+        protected override bool IsArrayImpl();
+
+        // Public routine to determine if this class represents a primitive type
+        protected override bool IsPrimitiveImpl();
+
+        public bool IsVector {
+            get;
+        }
+
+        public bool IsRectangleArray {
+            get;
+        }
+
+        public override Type GetElementType();
+
+        protected override bool HasElementTypeImpl();
+
+        // Return the underlying Type that represents the IReflect Object.  For expando object,
+        // this is the (Object) IReflectInstance.GetType().  For Type object it is this.
+        public override Type UnderlyingSystemType {
+            get;
+        }
+
+        //
+        // ICloneable Implementation
+        //
+
+        // RuntimeType's are unique in the system, so the only thing that we should do to clone them is
+        // return the current instance.
+        public Object Clone();
+
+        public override bool IsSubclassOf(Type c);
+    }
+#endif
+}

@@ -1,0 +1,19 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+
+    [CCtorIsRunDuringStartup]
+    public sealed class Math {
+
+        public const double PI;
+        public const double E;
+
+    }
+}

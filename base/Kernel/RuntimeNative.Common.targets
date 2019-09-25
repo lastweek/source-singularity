@@ -1,0 +1,53 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- Importing GC.targets gets us GC_ML_DEFS. -->
+  <Import Project="GC.targets"/>
+
+  <PropertyGroup>
+    <AFLAGS>$(AFLAGS) </AFLAGS>
+    <CFLAGS>$(CFLAGS) /Gr /I$(SINGULARITY_ROOT)\boot\include -UDEBUG</CFLAGS>
+    <LFLAGS>$(LINKFLAGS) /OPT:REF /RELEASE /nod /subsystem:native</LFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <CFLAGS>$(CFLAGS) $(GC_ML_DEFS) /I$(OutputPath) /I%(rootdir)%(directory)</CFLAGS>
+    <AFLAGS>$(AFLAGS) $(GC_ML_DEFS) /I$(OutputPath) /INative </AFLAGS>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="'$(Machine)'=='x86' or '$(Machine)'=='x64'">
+      <PropertyGroup>
+        <CFLAGS>$(CFLAGS) /Gr</CFLAGS>
+      </PropertyGroup>
+    </When>
+  </Choose>
+
+  <ItemGroup>
+    <Compile Include="Native\hal.cpp"/>
+    <Compile Include="Native\BootInfo.cpp"/>
+    <Compile Include="Native\Buffer.cpp"/>
+    <Compile Include="Native\Decimal.cpp"/>
+    <!-- <Compile Include="Native\DebugStub.cpp"/> for app rt only -->
+    <Compile Include="Native\IoPort.cpp"/>
+    <Compile Include="Native\Math.cpp"/>
+    <Compile Include="Native\Number.cpp"/>
+    <Compile Include="Native\PEImage.cpp"/>
+    <Compile Include="Native\Processor.cpp"/>
+    <Compile Include="Native\Stacks.cpp"/>
+    <Compile Include="Native\Thread.cpp"/>
+    <Compile Include="Native\Tracing.cpp"/>
+    <Compile Include="Native\Monitoring.cpp"/>
+    <Compile Include="Native\halexn.cpp"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Native.targets"/>
+
+</Project>

@@ -1,0 +1,41 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\Security\Security.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Security</AssemblyName>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessMode.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AclCore.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\Cache.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\AclConverter.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\AclParser.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\AclToken.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\AclTokenType.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\DataReader.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\AccessControl\StringReader.sg" />
+    <Compile Include="..\..\Kernel\Singularity.Security\SDS\SdsAcl.sg"/>
+    <Compile Include="..\..\Kernel\Singularity.Security\SDS\SdsAclImpl.sg"/>
+    <Compile Include="..\..\Kernel\Singularity.Security\SDS\SdsAclPerms.sg"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

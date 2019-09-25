@@ -1,0 +1,54 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace Smb.Protocol
+{
+    [Flags]
+	public enum SmbFlag1 : byte
+	{
+        [Obsolete]LockAndReadOk = (1 << 0),
+        SendNoAck = (1 << 1),
+        Reserved = (1 << 2),
+        CaseInsensitive = (1 << 3),
+        CanonicalizedPaths = (1 << 4),
+        [Obsolete]SupportsOpLocks = (1 << 5),
+        [Obsolete]SupportsOpLockNotify = (1 << 6),
+        IsResponse = (1 << 7),
+	
+	
+	}
+	
+	
+
+    // low byte [0..7] is FLAGS
+    // middle 2 bytes [8..23] is FLAGS2
+    [Flags]
+	public enum SmbFlag2 : ushort
+	{
+        None = 0,
+        
+        // These are what is usually called FLAGS2.
+        // They're packed into the same enumerated type.
+        KnowsLongNames = (1 << 0),
+        KnowsExtendedAttributes = (1 << 1),
+        SupportsSecuritySignature = (1 << 2),
+        // bit 3 is reserved
+        // bit 4 is reserved
+        SecuritySignatureRequired = (1 << 5),
+        AllPathsAreLongNames = (1 << 6),
+        // bit 7 is reserved
+        // bit 8 is reserved
+        // bit 9 is reserved
+        ReparsePath = (1 << 10),
+        AwareOfExtendedSecurity = (1 << 11),
+        DfsNamespace = (1 << 12),
+        PagingIo = (1 << 13),
+        UsingNtStatus = (1 << 14),
+        UnicodeStrings = (1 << 15),
+	}
+}

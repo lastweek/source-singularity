@@ -1,0 +1,67 @@
+#
+# A script for automated asplos protection domain benchmark.
+#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+#
+
+
+i = 0
+while ($i < 10) {
+    clear
+    echo 'xb: singbench-'$i
+    decho 'xb: singbench-'$i
+    perfcnt '-g'
+    singbench
+    i = $i + 1
+}
+
+clear
+echo 'xb: createprocess-1'
+decho 'xb: createprocess-1'
+perfcnt '-g'
+createprocess '-q' '-r:9'
+
+i = 0
+while ($i < 10) {
+    clear
+    echo 'xb: bartok-'$i
+    decho 'xb: bartok-'$i
+    perfcnt '-g'
+    bartok '/Singularity' '/verbosity:PerPhase' '/LinkedStacksRequireExternalBound=true' '/LinkedStacksDumpBounds=true' '/BackEndComments=true' '/GCInlineArrayAllocations=false' '/GCInlineFixedAllocations=false' '/GCIntrinsicFixedAllocations=false' '/GCInlineWriteBarrier=false' '/LinkedStacks=true' '/UseSegmentRegister=true' '/OmitFramePointer=false' '/SymbolicDebug=true' '/DebugInline=true' '/UnnameTracedPtrs=true' '/Warnings=true' '/WholeProgram=true' '/GenCoffLineNumber=false' '/MarkSweepGC' '/minopt' '/IrSimpleInliner=false' '/DumpMethodSizes=false' '/LinkedStacksTrace=false' '/LinkedStacksDumpBounds=false' '/LinkedStacksDumpEntryPointBounds=false' '/out:' '\init\kernel.obj' '/outdir:' '\init' '\init\kernel.exe' '\init\Diagnostics.dll' '\init\Loader.dll' '\init\Directory.dll' '\init\Stress.dll' '\init\IoSystem.dll' '\init\Hal.LegacyPC.dll' '\init\System.Compiler.Runtime.dll' '\init\ILHelpers.dll' '\init\Microsoft.SingSharp.Runtime.dll' '\init\Diagnostics.Contracts.dll' '\init\Directory.Contracts.dll' '\init\FileSystem.Contracts.dll' '\init\Io.Contracts.dll' '\init\Stress.Contracts.dll' '\init\drivers.dll' '\init\Security.Contracts.dll' '\init\Security.dll' '\init\Security.Service.dll'
+    perfcnt
+    i = $i + 1
+}
+
+echo 'xb: finished with bartok'
+decho 'xb: finished with bartok'
+
+clear
+
+echo 'Mounting /dev/vol0.0'
+fatcontrol '@mount' '-r' '/dev/vol0.0' '/fs'
+i = 0
+while ($i < 10) {
+    clear
+    echo 'xb: webfiles-'$i
+    decho 'xb: webfiles-'$i
+    perfcnt '-g'
+    webfiles '-f=50000' '/fs'
+    perfcnt
+    i = $i + 1
+}
+fatcontrol '@unmount' '/fs'
+
+clear
+echo 'xb: finished with webfiles'
+decho 'xb: finished with webfiles'
+
+shutdown
+
+# Magic exit code to shut machine down,
+# taken from Kernel\Singularity\BootInfo.cs:
+#
+# 0x1fff (8191) = EXIT_AND_RESTART
+# 0x1ffe (8190) = EXIT_AND_SHUTDOWN
+# 0x1ffd (8189) = EXIT_AND_WARMBOOT
+# 0x1ffc (8188) = EXIT_AND_HALT
+exit 8188

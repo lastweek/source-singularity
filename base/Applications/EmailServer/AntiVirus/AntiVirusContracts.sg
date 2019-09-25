@@ -1,0 +1,32 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract used by SMTP Agents to talk to storage.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Endpoint;
+
+using Microsoft.Singularity.Extending;
+
+namespace Microsoft.Singularity.Email.Contracts
+{
+    public contract AntiVirusContract : ExtensionContract //ServiceContract
+    {
+        public const string ModuleName = "/service/antivirus";
+
+        out message AntiVirusReady();
+
+        in  message CheckFile(byte[]! in ExHeap buffer);
+        out message FileClean();
+        out message FileContaminated(char[]! in ExHeap virus);
+
+        override state Start : AntiVirusReady! -> ReadyState;
+        state ReadyState : CheckFile? -> (FileClean! or FileContaminated!) -> ReadyState;
+
+    }
+}

@@ -1,0 +1,62 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\System.Net\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>System.Net</AssemblyName>
+    <OutputType>Library</OutputType>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="Dns.cs" />
+    <Compile Include="EndPoint.cs" />
+    <Compile Include="Internal.cs" />
+    <Compile Include="IPAddress.cs" />
+    <Compile Include="IPEndPoint.cs" />
+    <Compile Include="IPHostEntry.cs" />
+    <Compile Include="SocketAddress.cs" />
+    <Compile Include="SocketException.cs" />
+    <Compile Include="Sockets\AddressFamily.cs" />
+    <Compile Include="Sockets\ProtocolFamily.cs" />
+    <Compile Include="Sockets\ProtocolType.cs" />
+    <Compile Include="Sockets\SelectMode.cs" />
+    <Compile Include="Sockets\InternalSocket.cs" />
+    <Compile Include="Sockets\Socket.cs" />
+    <Compile Include="Sockets\SocketErrors.cs" />
+    <Compile Include="Sockets\SocketFlags.cs" />
+    <Compile Include="Sockets\SocketOptionLevel.cs" />
+    <Compile Include="Sockets\SocketOptionName.cs" />
+    <Compile Include="Sockets\SocketShutdown.cs" />
+    <Compile Include="Sockets\SocketType.cs" />
+    <Compile Include="Sockets\TcpSocket.cs" />
+    <Compile Include="Sockets\TrackedBytesBuffer.sg" />
+    <Compile Include="Sockets\UdpSocket.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>
+
+

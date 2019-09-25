@@ -1,0 +1,30 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+#
+##############################################################################
+
+If the 'DefineNativeCompileItems' property is set to true, then this target will define
+'NativeSource' and 'NativeIncludes' items for the C# source code.
+
+-->
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="3.5">
+
+  <ItemGroup Condition="'$(DefineNativeCompileItems)'=='true'">
+    <NativeIncludes Include="$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)\core.inc"/>
+
+    <NativeSource Include="$(BartokSrcDir)\runtime\shared\native\arch\$(BARTOK_MACHINE)\lib.asm"/>
+    <NativeSource Include="$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)\lib.asm"/>
+    <NativeSource Include="$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)\gc.asm"/>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <BartokAsmArgs>$(BartokAsmArgs) /I$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)</BartokAsmArgs>
+  </PropertyGroup>
+
+</Project>

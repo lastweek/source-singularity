@@ -1,0 +1,281 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Provider-side helper for the Routing Channel Contract
+//
+
+using System.Threading;
+using Drivers.Net;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using NetStack.Contracts;
+using NetStack.Runtime;
+using System.Collections;
+using System.Net.IP;
+using NetStack.Contracts;
+using NetStack.Channels.Public;
+
+namespace NetStack.Channels.Private
+{
+    public class RoutingExpManager : StoppableThread
+    {
+        private IPModule! ip;
+        
+        protected override void Run(StopThreadContract.Exp:Ready! terminator)
+        {
+            ServiceProviderContract.Exp nsExp = Register();
+
+            if (nsExp == null) {
+                DebugStub.Print("Failed to register the routing module!");
+                return;
+            }
+            
+            // Here is the set of client channels we service
+            ESet<RoutingContract.Exp:ReadyState> epSet = new ESet<RoutingContract.Exp:ReadyState>();
+
+            bool run = true;
+            
+            while (run) {
+                switch receive {
+                    //
+                    // Don't forget that we're selecting RoutingContract endpoints
+                    // from the epSet endpoint-set. In each case that we
+                    // receive a message from one of those endpoints, we
+                    // need to remember to put the endpoint back into epSet
+                    // if we want to keep listening to it.
+                    //
+                    case ep.GetRoutingTable() in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        NetStack.Contracts.RouteEntry[] in ExHeap retval =
+                            new[ExHeap] NetStack.Contracts.RouteEntry[h.RoutingTable.Count];
+                        int i = 0;
+
+                        foreach (NetStack.Runtime.RouteEntry! r in h.RoutingTable) {
+                            retval[i] = ConvertRouteEntry(r);
+                            i++;
+                        }
+
+                        ep.SendRoutingTable(retval);
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.AddRoute(Network dest, uint gateway, uint ifaddr) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        IPv4Network destination =
+                            new IPv4Network(new IPv4(dest.network),
+                                            new IPv4(dest.netmask));
+
+                        if (h.RoutingTable.AddRoute(
+                                new NetStack.Runtime.RouteEntry(destination,
+                                                                new IPv4(gateway),
+                                                                new IPv4(ifaddr))))
+                        {
+                            ep.SendOK();
+                        }
+                        else {
+                            ep.SendErr();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.FindHostRoute(uint dest) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        NetStack.Runtime.RouteEntry re =
+                            h.RoutingTable.Lookup(new IPv4(dest));
+
+                        if (re != null) {
+                            ep.SendRoute(ConvertRouteEntry(re));
+                        }
+                        else {
+                            ep.SendNoRouteFound();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.FindNetRoute(Network dest) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        IPv4Network nwrk = ChannelUtils.ChannelNetworkToNetwork(dest);
+                        NetStack.Runtime.RouteEntry re =
+                            h.RoutingTable.Lookup(nwrk);
+
+                        if (re != null) {
+                            ep.SendRoute(ConvertRouteEntry(re));
+                        }
+                        else {
+                            ep.SendNoRouteFound();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.FindSpecificHostRoute(uint dest) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        NetStack.Runtime.RouteEntry re =
+                            h.RoutingTable.LookupSpecific(new IPv4(dest));
+
+                        if (re != null) {
+                            ep.SendRoute(ConvertRouteEntry(re));
+                        }
+                        else {
+                            ep.SendNoRouteFound();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.FindSpecificNetRoute(Network dest) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        IPv4Network nwrk = ChannelUtils.ChannelNetworkToNetwork(dest);
+                        NetStack.Runtime.RouteEntry re =
+                            h.RoutingTable.LookupSpecific(nwrk);
+
+                        if (re != null) {
+                            ep.SendRoute(ConvertRouteEntry(re));
+                        }
+                        else {
+                            ep.SendNoRouteFound();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case ep.DeleteRoute(Network dest) in epSet :
+                    {
+                        HostConfiguration h = ip.HostConfiguration;
+                        IPv4Network destNet = ChannelUtils.ChannelNetworkToNetwork(dest);
+                        NetStack.Runtime.RouteEntry re =
+                            h.RoutingTable.LookupSpecific(destNet);
+
+                        if (re == null) {
+                            ep.SendNoRouteFound();
+                        }
+                        else {
+                            h.RoutingTable.DeleteRoute(re);
+                            ep.SendOK();
+                        }
+
+                        epSet.Add(ep);
+                    }
+                    break;
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                    {
+                        // We expect people top give us RoutingContract.Exp instances
+                        //RoutingContract.Exp:Start newTcpEp = newEp as RoutingContract.Exp;
+                        RoutingContract.Exp newTcpEp = newEp as RoutingContract.Exp;
+
+                        if (newTcpEp == null) {
+                            // Invalid contract type. Fail.
+                            nsExp.SendNackConnect(newEp);
+                        }
+                        else {
+                            // Signal ready and start servicing this contract
+                            nsExp.SendAckConnect();
+                            newTcpEp.SendReady();
+                            epSet.Add(newTcpEp);
+                        }
+                    }
+                    break;
+                    
+                    case ep.ChannelClosed() in epSet :
+                        delete ep;
+                        break;
+
+                    case nsExp.ChannelClosed():
+                        run = false;
+                        break;
+                        
+                    case terminator.Terminate():
+                        terminator.SendAckTerminate();
+                        run = false;
+                        break;
+                        
+                    case terminator.ChannelClosed():
+                        run = false;
+                        break;
+                }
+            }
+            
+            delete nsExp;
+            epSet.Dispose();
+        }
+
+        private ServiceProviderContract.Exp Register()
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels. When we become a
+            // process, this will be present automatically,
+            // somehow.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(RoutingContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        return nsExp;
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        delete rejectedEP;
+                        delete nsExp;
+                        return null;
+                        break;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+        }
+
+        private NetStack.Contracts.RouteEntry ConvertRouteEntry(NetStack.Runtime.RouteEntry! r)
+        {
+            // Copy the contents of each RouteEntry into the
+            // channel structure
+            NetStack.Contracts.RouteEntry retval = new NetStack.Contracts.RouteEntry();
+
+            retval.network = new NetStack.Contracts.Network();
+            retval.network.network = (uint)r.Network.Network;
+            retval.network.netmask = (uint)r.Network.NetMask;
+
+            retval.gateway = (uint)r.Gateway;
+            retval.ifaddr = (uint)r.InterfaceAddress;
+            retval.metric = r.Metric;
+            retval.tag = r.Tag;
+
+            return retval;
+        }
+
+        public RoutingExpManager()
+        {
+            ip = (IPModule!)Core.Instance().GetProtocolByName("IP");
+        }
+    }
+}

@@ -1,0 +1,387 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note: Mail storage server.
+//
+
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Email.Contracts;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Security;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Email
+{
+    [ConsoleCategory(HelpMessage="Mail Store Service", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [Endpoint]
+        public readonly TRef<AntiVirusContract.Imp:Start> avRef;
+
+        [StringParameter("accounts", Mandatory=false, Default="/init/accounts",
+                         HelpMessage="File with email accounts.")]
+        internal string accountPath;
+
+        [StringParameter("files", Mandatory=false, Default="/fs/email",
+                         HelpMessage="Directory for email files.")]
+        internal string fileRoot;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Store.AppMain(this);
+        }
+    }
+
+    public class Account
+    {
+        public string address;
+        public string path;
+        public int file;
+
+        public static SortedList accounts;
+
+        public Account(string address, string path)
+        {
+            this.address = address;
+            this.path = path;
+            this.file = 0;
+        }
+
+        public string NextFile()
+        {
+            return this.path + "/" + (this.file++).ToString();
+        }
+
+        public static void ReadAllFromFile(string path)
+        {
+            SortedList list = new SortedList(256);
+            // Open file RO for now
+            FileStream fsInput = new FileStream(path, FileMode.Open, FileAccess.Read);
+            StreamReader srInput = new StreamReader(fsInput);
+            String line;
+
+            while ((line = srInput.ReadLine()) != null) {
+                int colon = line.IndexOf(':');
+                if (colon > 0) {
+                    string address = line.Substring(colon + 1);
+                    string storage = line.Substring(0, colon);
+
+                    if (!list.ContainsKey(address)) {
+                        list.Add(address, new Account(address, storage));
+                    }
+                }
+            }
+            //closing a stream reader will close the file stream under the covers
+            //if you close the file stream afterwards, you will deadlock.
+            srInput.Close();
+            accounts = list;
+        }
+
+        public static string AddressList()
+        {
+            string list = null;
+            foreach (Account account in accounts.Values) {
+                if (account != null) {
+                    if (list != null) {
+                        list = list + ";" + account.address;
+                    }
+                    else {
+                        list = account.address;
+                    }
+                }
+            }
+            return list;
+        }
+    }
+
+    public class Store
+    {
+        public static TRef<AntiVirusContract.Imp:ReadyState> avEp;
+
+        // This function initializes the store, registers with the name service and
+        // starts a new thread per SMTP agent.
+        //
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp ds = (config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+
+            // Here is the channel we use to communicate with the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            try {
+                ds.SendRegister(Bitter.FromString2(MailStoreContract.ModuleName), nsImp);
+
+                switch receive {
+                    case ds.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case ds.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        Console.WriteLine("MailStore: Failed to register as {0}: {1}",
+                                          MailStoreContract.ModuleName, error);
+                        delete nsExp;
+                        delete rejectedEP;
+                        return -1;
+
+                    case ds.ChannelClosed():
+                        Console.WriteLine("mailStore: ds channel closed");
+                        delete nsExp;
+                        return -1;
+                }
+
+                Console.WriteLine("MailStore: Reading account list.");
+                Account.ReadAllFromFile(config.accountPath);
+                // Make sure we have a directory for each account.
+                    {
+                        ErrorCode error;
+                        // Directory.CreateDirectory(config.fileRoot);
+                        if (SdsUtils.CreateDirectory(config.fileRoot, ds, out error)) {
+                            Console.WriteLine("MailStore: Created {0}", config.fileRoot);
+                        }
+                    }
+
+                foreach (Account account in Account.accounts.Values) {
+                    if (account == null || account.path == null) {
+                        continue;
+                    }
+                    account.path = config.fileRoot + "/" + account.path;
+
+                    try {
+                        ErrorCode error;
+                        string path = account.path;
+                        if (SdsUtils.CreateDirectory(path, ds, out error)) {
+                            Console.WriteLine("MailStore: Created {0}", path);
+                        }
+
+                        int count = 0;
+                        for (;;) {
+                            string file = path + "/" + count.ToString();
+                            FileAttributesRecord atr;
+                            if (!SdsUtils.GetAttributes(file, ds, out atr, out error)) {
+                                if (count > 0) {
+                                    Console.WriteLine("MailStore: {0}", file);
+                                }
+                                break;
+                            }
+                            count++;
+                        }
+                        account.file = count;
+                    }
+                    catch (IOException) {
+                    }
+                }
+            }
+            finally {
+                delete ds;
+            }
+
+            Console.WriteLine("MailStore: Connecting to AntiVirus.");
+            AntiVirusContract.Imp! avImp = config.avRef.Acquire();
+            avImp.RecvAntiVirusReady();
+            avEp = new TRef<AntiVirusContract.Imp:ReadyState>(avImp);
+
+            Console.WriteLine("MailStore: Ready at {0}", MailStoreContract.ModuleName);
+
+            // Here is the set of client channels we service
+
+            for (;;) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp):
+                        // We expect people top give us MailStoreContract.Exp instances
+                        MailStoreContract.Exp newClient = newEp as MailStoreContract.Exp;
+
+                        if (newClient == null) {
+                            // Invalid contract type. Fail.
+                            nsExp.SendNackConnect(newEp);
+                        }
+                        else {
+                            // Signal ready and start servicing this contract
+                            nsExp.SendAckConnect();
+
+                            // Launch the thread to handle the incoming requests.
+                            Store child = new Store(newClient);
+                            Thread thread = new Thread(child.Run);
+                            thread.Start();
+                        }
+                        break;
+
+                    case nsExp.ChannelClosed():
+                        // The namespace channel is closed so quit.
+                        delete nsExp;
+                        return -1;
+                }
+            }
+
+            // Close the Anti-Virus Scanner.
+            avImp = avEp.Acquire();
+            if (avImp != null) {
+                delete avImp;
+            }
+
+            return 0;
+        }
+
+        public static string PopNextAddress(ref string content)
+        {
+            if (content == null || content.Length == 0) {
+                return null;
+            }
+
+            int i = content.IndexOf(';');
+            string ret = (i > 0) ? content.Substring(0, i) : content;
+            content = (i > 0) ? content.Substring(i + 1) : "";
+            return ret;
+        }
+
+        //////////////////////////////////////////////////////////////////////////////
+        //
+        public Store([Claims] MailStoreContract.Exp:Start! ep)
+        {
+            epRef = new TRef<MailStoreContract.Exp:Start>(ep);
+        }
+
+        private TRef<MailStoreContract.Exp:Start> epRef;
+
+        public void Run()
+        {
+            MailStoreContract.Exp ep = epRef.Acquire();
+
+            if (ep == null) {
+                return;
+            }
+
+            ep.SendMailStoreReady();
+            int arg;
+
+            for (;;) {
+                switch receive {
+                    case ep.SaveMessage(char[]! in ExHeap boxes, byte[]! in ExHeap buffer):
+                        // Do something with the message.
+                        int error = 0;
+#if false
+                        Console.WriteLine("MailStore: Processing Message");
+#endif
+                        byte[] message = Bitter.ToByteArray(buffer);
+                        string accountList = Bitter.ToString(boxes);
+                        delete boxes;
+
+                        AntiVirusContract.Imp avImp = avEp.Acquire();
+                        avImp.SendCheckFile(buffer);
+                        string virus = null;
+                        switch receive
+                        {
+                            case avImp.FileClean():
+                                break;
+
+                            case avImp.FileContaminated(virusVector):
+                                virus = Bitter.ToString(virusVector);
+                                delete virusVector;
+                                break;
+
+                            case avImp.ChannelClosed():
+                                virus = "**Scanner Failed**";
+                                break;
+                        }
+                        avEp.Release(avImp);
+
+                        if (virus != null) {
+                            // save the message to each of the boxes.
+                            Console.WriteLine("MailStore: "+
+                                              "Discarding message contaminated with {0}.",
+                                              virus);
+                            error = 666;
+                        }
+                        else {
+                            error = 0;
+                            string address;
+                            while ((address = PopNextAddress(ref accountList)) != null) {
+#if false
+                                Console.WriteLine("MailStore: Receive for {0} of {1} bytes",
+                                                  address, message.Length);
+#endif
+                                int key = Account.accounts.IndexOfKey(address);
+                                if (key >= 0) {
+                                    Account! account = (Account!)Account.accounts.GetByIndex(key);
+                                    string path = account.NextFile();
+
+                                    try {
+                                        FileStream! sw = (!)File.Create(path);
+                                        sw.Write(message, 0, message.Length);
+                                        sw.Flush();
+                                        sw.Close();
+                                    }
+                                    catch (IOException) {
+                                        Console.WriteLine("MailStore: Write to {0} failed.", path);
+                                        error = 665;
+                                    }
+                                }
+                                else {
+                                    Console.WriteLine("MailStore: Bad address {0}", address);
+                                }
+                            }
+                        }
+
+                        if (error == 0) {
+                            ep.SendSaveAck();
+                        }
+                        else {
+                            ep.SendSaveNak(error);
+                        }
+                        break;
+
+
+                    case ep.GetAddressList():
+                        Console.WriteLine("MailStore: Providing list of email addresses.");
+                        string list = Account.AddressList();
+                        char[]! in ExHeap buffer = (!)Bitter.FromString(list);
+                        ep.SendGetAck(buffer);
+                        break;
+
+                    case ep.ChannelClosed():
+                        delete ep;
+                        return;
+                }
+            }
+        }
+    }
+}

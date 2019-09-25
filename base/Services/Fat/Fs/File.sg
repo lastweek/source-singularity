@@ -1,0 +1,418 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   File.sg
+//
+//  Note:
+//
+
+using Microsoft.SingSharp;
+
+using Microsoft.Singularity.Channels;
+
+using System;
+
+using MSD = Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    enum FileError : int
+    {
+        NoError         = 0,
+        ReadOnly        = 1,
+        BadBufferOffset = 2,
+        BadFileOffset   = 3,
+        NoSpace         = 4
+    }
+
+    class File : FsObject
+    {
+        private BlockIndex blockIndex;                  // cluster index
+        private byte       attributes;                  // cached attributes
+        private uint       bytes;                       // file size
+
+        private const long MaxFileBytes = 0xffffffff;
+
+        [ Microsoft.Contracts.NotDelayed ]
+        internal File(Directory! parent,
+                      int        shortEntryOffset,
+                      int        firstCluster,
+                      byte       attributes,
+                      uint       fileLength)
+            : base(parent, shortEntryOffset)
+        {
+            this.blockIndex = new BlockIndex();
+            this.attributes = attributes;
+            this.bytes      = fileLength;
+
+            if (firstCluster != 0) {
+                FatVolume.Fat.PopulateIndex(this.blockIndex, firstCluster);
+            }
+        }
+
+        [ Microsoft.Contracts.NotDelayed ]
+        internal File(Directory! parent,
+                      int        shortEntryOffset,
+                      int        firstCluster,
+                      byte       attributes)
+            : this(parent, shortEntryOffset, firstCluster, attributes, 0)
+        {
+        }
+
+        /// <remarks> Close open file. </remarks>
+        internal void Close()
+        {
+            uint expectedClusters =
+                (this.bytes + BytesPerCluster - 1) / BytesPerCluster;
+            DebugStub.Assert(this.blockIndex.Count == expectedClusters);
+            base.CloseInstance();
+        }
+
+        bool IsReadOnly
+        {
+            [ Microsoft.Contracts.Pure ]
+            get {
+                return (this.attributes & DirectoryEntry.AttributeReadOnly) != 0;
+            }
+        }
+
+        private static uint BytesPerCluster
+        {
+            [ Microsoft.Contracts.Pure ]
+            get {
+                return FatVolume.BpbSummary.BytesPerCluster;
+            }
+        }
+
+        internal override int FirstCluster
+        {
+            get {
+                int blockId = 0;
+                if (this.blockIndex.Count != 0) {
+                    bool success = blockIndex.Lookup(0, out blockId);
+                    assert success;
+                }
+                return blockId;
+            }
+        }
+
+        internal FileError Read(byte[]! in ExHeap destBuffer,
+                                int               destOffset,
+                                uint              fileOffset,
+                                int               bytesToRead,
+                                out int           bytesRead)
+            requires bytesToRead >= 0;
+        {
+            bytesRead = 0;
+            if (bytesToRead == 0) {
+                return FileError.NoError;
+            }
+            if (destOffset < 0 || destOffset > destBuffer.Length) {
+                return FileError.BadBufferOffset;
+            }
+            if (fileOffset > this.bytes) {
+                return FileError.BadFileOffset;
+            }
+
+            bytesToRead = Math.Min((int)(this.bytes - fileOffset),
+                                   bytesToRead);
+            bytesToRead = Math.Min(destBuffer.Length - destOffset,
+                                   bytesToRead);
+            bytesRead   = bytesToRead;
+
+            lock (this) {
+                int clusterNumber = (int)(fileOffset / BytesPerCluster);
+                int clusterStart  = (int)(fileOffset % BytesPerCluster);
+                int clusterRemain =
+                    (int)Math.Min(BytesPerCluster - clusterStart, bytesToRead);
+
+                while (bytesToRead != 0) {
+                    byte[]! in ExHeap block = (!)AcquireCluster(clusterNumber);
+                    try {
+                        Bitter.Copy(destBuffer,
+                                    (int)destOffset,
+                                    clusterRemain,
+                                    block,
+                                    clusterStart);
+                    }
+                    finally {
+                        ReleaseCluster(clusterNumber, block, false);
+                    }
+                    destOffset     += clusterRemain;
+                    bytesToRead    -= clusterRemain;
+                    clusterStart    = 0;
+                    clusterRemain   =
+                        (int)Math.Min(BytesPerCluster, bytesToRead);
+                    clusterNumber++;
+                }
+                UpdateLastAccessTime();
+            }
+
+            return FileError.NoError;
+        }
+
+        private bool LockedAllocateFileSpace(uint proposedFileBytes)
+            requires this.bytes == 0;
+        {
+            assert this.blockIndex.Count == 0;
+
+            int newLength = (int)((proposedFileBytes + BytesPerCluster - 1) /
+                                  BytesPerCluster);
+            int currentLength = 0;
+
+            int allocStart;
+            if (!FatVolume.Fat.AllocateChain(0, newLength,
+                                             out allocStart,
+                                             out currentLength)) {
+                return false;
+            }
+            this.blockIndex.Append(allocStart, currentLength);
+
+            this.bytes = Math.Min(proposedFileBytes,
+                                  (uint)(currentLength * BytesPerCluster));
+
+            if (!LockedGrowFileSpace(proposedFileBytes)) {
+                FatVolume.Fat.TruncateChain(this.blockIndex, 0);
+                assert this.blockIndex.Count == 0;
+                this.bytes = 0;
+                return false;
+            }
+            return true;
+        }
+
+        private bool LockedGrowFileSpace(uint proposedFileBytes)
+            requires this.bytes != 0;
+        {
+            int oldChainLength = this.blockIndex.Count;
+            int newChainLength =
+                (int)((proposedFileBytes + BytesPerCluster - 1) /
+                      BytesPerCluster);
+
+            int currentLength = oldChainLength;
+            assert currentLength <= newChainLength;
+            while (currentLength != newChainLength) {
+                int allocLength = Math.Min(Fat.MaxAllocationLength,
+                                           newChainLength - currentLength);
+                int extensionLength;
+                if (FatVolume.Fat.GrowChain(this.blockIndex, allocLength,
+                                            out extensionLength) == true) {
+                    assert extensionLength == allocLength;
+                    currentLength += allocLength;
+                }
+                else {
+                    FatVolume.Fat.TruncateChain(this.blockIndex,
+                                                oldChainLength);
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void LockedZeroFileRegion(uint start, uint length)
+        {
+            int clusterNumber = (int)(start / BytesPerCluster);
+            int clusterStart = (int)(start % BytesPerCluster);
+
+            if (clusterStart != 0) {
+                int trim = Math.Min((int)BytesPerCluster - clusterStart,
+                                    (int)length);
+                byte[]! in ExHeap cluster = (!)AcquireCluster(clusterNumber);
+                Bitter.Zero(cluster, clusterStart, trim);
+                ReleaseCluster(clusterNumber, cluster, true);
+                length      -= (uint)trim;
+                clusterStart = 0;
+                clusterNumber++;
+            }
+
+            while (length >= BytesPerCluster) {
+                ZeroCluster(clusterNumber);
+                length -= BytesPerCluster;
+                clusterNumber++;
+            }
+
+            if (length != 0) {
+                byte[]! in ExHeap cluster = (!)AcquireCluster(clusterNumber);
+                Bitter.Zero(cluster, 0, (int)length);
+                ReleaseCluster(clusterNumber, cluster, true);
+            }
+        }
+
+        private void LockedCopyFileRegion(byte[]! in ExHeap srcBuffer,
+                                          int               srcOffset,
+                                          uint              fileOffset,
+                                          int               length)
+        {
+            int clusterNumber = (int)(fileOffset / BytesPerCluster);
+            int clusterStart  = (int)(fileOffset % BytesPerCluster);
+
+            if (clusterStart != 0) {
+                int toCopy = Math.Min((int)BytesPerCluster - clusterStart,
+                                      length);
+                byte[]! in ExHeap cluster = (!)AcquireCluster(clusterNumber);
+                Bitter.Copy(cluster, clusterStart, toCopy,
+                            srcBuffer, srcOffset);
+                ReleaseCluster(clusterNumber, cluster, true);
+                srcOffset    += toCopy;
+                length       -= toCopy;
+                clusterStart  = 0;
+                clusterNumber++;
+            }
+
+            while (length >= BytesPerCluster) {
+                WriteCluster(clusterNumber, srcBuffer, srcOffset);
+                srcOffset += (int)BytesPerCluster;
+                length    -= (int)BytesPerCluster;
+                clusterNumber++;
+            }
+
+            if (length != 0) {
+                byte[]! in ExHeap cluster2 = (!)AcquireCluster(clusterNumber);
+                Bitter.Copy(cluster2, 0, length, srcBuffer, srcOffset);
+                ReleaseCluster(clusterNumber, cluster2, true);
+            }
+        }
+
+        internal FileError Write(byte[]! in ExHeap srcBuffer,
+                                 int               srcOffset,
+                                 uint              fileOffset,
+                                 int               bytesToWrite,
+                                 out int           bytesWritten)
+        {
+            bytesWritten = 0;
+
+            if (FatVolume.IsReadOnly || this.IsReadOnly) {
+                return FileError.ReadOnly;
+            }
+
+            if (bytesToWrite == 0) {
+                return FileError.NoError;
+            }
+
+            if (srcOffset < 0 || srcOffset > srcBuffer.Length) {
+                return FileError.BadBufferOffset;
+            }
+
+            if (bytesToWrite > srcBuffer.Length ||
+                srcBuffer.Length - srcOffset < bytesToWrite) {
+                return FileError.BadBufferOffset;
+            }
+
+            long writeLimit = (long)fileOffset + bytesToWrite;
+            if (writeLimit > MaxFileBytes) {
+                return FileError.BadFileOffset;
+            }
+
+            lock (this) {
+                uint oldBytes = this.bytes;
+
+                if (writeLimit > this.bytes) {
+                    if (this.blockIndex.Count == 0) {
+                        if (!LockedAllocateFileSpace((uint)writeLimit)) {
+                            return FileError.NoSpace;
+                        }
+                    }
+                    else if (LockedGrowFileSpace((uint)writeLimit) == false) {
+                        return FileError.NoSpace;
+                    }
+
+                    this.bytes = (uint)writeLimit;
+
+                    if (fileOffset > oldBytes) {
+                        // Sparse write, fill space between old end of
+                        // file and pending write offset with zeroes.
+                        LockedZeroFileRegion(oldBytes,
+                                             fileOffset - oldBytes);
+                    }
+                }
+
+                LockedCopyFileRegion(srcBuffer,
+                                     srcOffset,
+                                     fileOffset,
+                                     bytesToWrite);
+
+                bytesWritten = bytesToWrite;
+
+                if (oldBytes == 0u) {
+                    UpdateFirstCluster((uint)this.FirstCluster);
+                }
+                UpdateFileSize(this.bytes);
+            }
+
+            DebugStub.Assert((uint)writeLimit <= this.bytes);
+
+            DebugStub.Assert(
+                this.blockIndex.Count ==
+                (this.bytes + BytesPerCluster - 1) / BytesPerCluster
+                );
+
+            return FileError.NoError;
+        }
+
+        // --------------------------------------------------------------------
+        // Cluster access methods
+
+        [ Microsoft.Contracts.Pure ]
+        private bool ValidClusterNumber(int clusterNumber)
+        {
+            return (clusterNumber >= 0 &&
+                    clusterNumber < this.blockIndex.Count);
+        }
+
+        private byte[] in ExHeap AcquireCluster(int clusterNumber)
+            requires ValidClusterNumber(clusterNumber);
+        {
+            int blockId = -1;
+            if (blockIndex.Lookup(clusterNumber, out blockId)) {
+                BlockCache bc = FatVolume.ClusterCache;
+                byte [] in ExHeap buffer =
+                    bc.BeginQuickBlockOperation((uint)blockId);
+                return buffer;
+            }
+            assert false;
+            return null;
+        }
+
+        private void ReleaseCluster(int                        clusterNumber,
+                                    [Claims] byte[]! in ExHeap buffer,
+                                    bool                       dirty)
+            requires ValidClusterNumber(clusterNumber);
+        {
+            int blockId;
+            if (blockIndex.Lookup(clusterNumber, out blockId)) {
+                BlockCache bc = FatVolume.ClusterCache;
+                bc.EndQuickBlockOperation((uint)blockId, buffer, dirty);
+                return;
+            }
+            assert false;
+        }
+
+        private void WriteCluster(int               clusterNumber,
+                                  byte[]! in ExHeap buffer,
+                                  int               bufferOffset)
+            requires ValidClusterNumber(clusterNumber);
+            requires buffer.Length >= bufferOffset;
+            requires buffer.Length - bufferOffset >= BytesPerCluster;
+        {
+            int blockId;
+            if (blockIndex.Lookup(clusterNumber, out blockId)) {
+                BlockCache bc = FatVolume.ClusterCache;
+                bc.WriteEntireBlock((uint)blockId, buffer, bufferOffset);
+                return;
+            }
+            assert false;
+        }
+
+        private void ZeroCluster(int clusterNumber)
+        {
+            int blockId;
+            if (blockIndex.Lookup(clusterNumber, out blockId)) {
+                FatVolume.ClusterCache.ZeroBlock((uint)blockId);
+                return;
+            }
+            assert false;
+        }
+    }
+}

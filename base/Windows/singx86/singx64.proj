@@ -1,0 +1,23 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets"/>
+
+  <PropertyGroup>
+    <AssemblyName>singx64</AssemblyName>
+    <TARGET_CC>$(BUILDDIR)\x86_x64\cl.exe</TARGET_CC>
+    <TARGET_LINK>$(BUILDDIR)\x86_x64\link.exe</TARGET_LINK>
+    <WINDOWS_SDK_PATH>$(SINGULARITY_ROOT)\Windows\Lib\x64</WINDOWS_SDK_PATH>
+    <CFLAGS>$(CFLAGS) /D_CRT_SECURE_NO_DEPRECATE /DPTR_SIZE_64</CFLAGS>
+    <TargetArchitecture>x64</TargetArchitecture>
+  </PropertyGroup>
+
+  <Import Project="singext.common.proj"/>
+</Project>

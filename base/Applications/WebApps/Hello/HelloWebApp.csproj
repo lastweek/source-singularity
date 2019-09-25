@@ -1,0 +1,26 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>HelloWebApp</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Hello.sg" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.csproj" />
+    <ProjectReference Include="..\Driver\WebAppDriver.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\WebApps\WebAppsLib.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

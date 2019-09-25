@@ -1,0 +1,27 @@
+﻿<!--
+##############################################################################
+#
+# Copyright (c) Microsoft Corporation.   All rights reserved.
+#
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>WebHost</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <!-- TODO: Make null-clean -->
+    <NoWarn>2614,2637,2638,2613,2639</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="WebHost.sg" />
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

@@ -1,0 +1,91 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PathUtils.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+namespace FileSystem.Utils
+{
+    public class PathUtils
+    {
+        const char DirectorySeparatorChar = '/';
+    
+        internal static string FileFromPath(string! filePath)
+        {
+            string dirPath, fileName;
+            SplitPath(filePath, out dirPath, out fileName);
+            return fileName;
+        }
+
+        // Splits a file path into its directory and filename
+        // components
+        internal static void SplitPath(string! filePath,
+                                       out string dirPath,
+                                       out string fileName)
+        {
+            dirPath = String.Empty;
+            fileName = String.Empty;
+
+            string[]! parts = filePath.Split(DirectorySeparatorChar);
+            if ((parts == null) || (parts.Length <= 1)) {
+                // Not even a leading slash? Bah!
+                return;
+            }
+
+            fileName = (!)parts[parts.Length-1];
+
+            // The directory path is the full path minus
+            // the trailing leaf part
+            // need to special case Directory Service root. Need to return "/" as dirPath
+            int len = (filePath.Length - fileName.Length - 1) > 0? filePath.Length - fileName.Length - 1 : 1; 
+            dirPath = filePath.Substring(0, len);
+        }
+
+
+        /// <remarks> Sanitize path string.  This method removes
+        /// trailing separators and repeat sequences of
+        /// separators.  </remarks>
+        public static string! ToPath(string! p)
+        {
+            int length = p.Length;
+
+            if (p.Length > 0 && p.Length - 1 == DirectorySeparatorChar) {
+                length = p.LastIndexOf(DirectorySeparatorChar);
+            }
+
+            StringBuilder sb = new StringBuilder(length);
+
+            bool multi = false;
+            for (int i = 0; i < length; i++) {
+                if (p[i] == DirectorySeparatorChar) {
+                    if (multi) {
+                        continue;
+                    }
+                    else {
+                        sb.Append(p[i]);
+                        multi = true;
+                    }
+                }
+                else {
+                    sb.Append(p[i]);
+                    multi = false;
+                }
+            }
+            return sb.ToString();
+        }
+    }
+}

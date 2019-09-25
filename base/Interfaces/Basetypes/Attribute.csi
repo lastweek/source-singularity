@@ -1,0 +1,25 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//============================================================
+//
+// Class:  Attribute
+//
+// Purpose: The class used as an attribute to denote that
+//          another class can be used as an attribute.
+//
+//===========================================================  
+using System;
+
+namespace System
+{
+
+    //| <include file='doc\Attribute.uex' path='docs/doc[@for="Attribute"]/*' />
+    [AttributeUsageAttribute(AttributeTargets.All, Inherited = true, AllowMultiple=false)] // Base class for all attributes
+    public abstract class Attribute {
+        //| <include file='doc\Attribute.uex' path='docs/doc[@for="Attribute.Attribute"]/*' />
+        protected Attribute();
+    }
+}

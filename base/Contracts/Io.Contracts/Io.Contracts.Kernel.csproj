@@ -1,0 +1,47 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Contracts\Io.Contracts\Io.Contracts.Kernel.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Io.Contracts</AssemblyName>
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <GenerateContractMap>true</GenerateContractMap>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="ConsoleDeviceContract.sg" />
+    <Compile Include="DeviceContract.sg" />
+    <Compile Include="DiskContract.sg" />
+    <Compile Include="KeyboardDeviceContract.sg" />
+    <Compile Include="PnpContract.sg" />
+    <Compile Include="UnicodePipeContract.sg" />
+    <Compile Include="VideoDeviceContract.sg" />
+    <Compile Include="VolumeManagerContract.sg" />
+    <Compile Include="IoTestContract.sg" />
+    <Compile Include="ChannelDeliveryContract.sg" />
+
+<!--    <Compile Include="..\IoSystem.Contracts\IoSystemContracts.sg"/> -->
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Kernel\SingSharp.Runtime\Microsoft.SingSharp.Runtime.Kernel.csproj">
+      <ExcludeFromILReferences>true</ExcludeFromILReferences>
+    </ProjectReference>
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelContractsLibrary.targets" />
+</Project>

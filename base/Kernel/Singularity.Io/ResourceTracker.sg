@@ -1,0 +1,497 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ResourceTracker.cs
+//
+//  Note:   Provides tracking for all IoPorts, IoMemory, IoDma, and IoIrq
+//          that are created by the kernel
+//
+
+// #define DEBUG_PARSING
+// #define VERBOSE
+
+using System;
+using System.Collections;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Hal;
+using Microsoft.Singularity.Loader;
+using Microsoft.Singularity.Memory;
+
+using Microsoft.Singularity.V1.Types;
+
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Io
+{
+    // TODO: this implementation uses an O(n^2) search.  If the
+    // resources were stored in a red-black tree that allowed for duplicate
+    // entries, we could use an Any-Segments-Intersect algorithm to get it down
+    // to O(n log n)
+
+    public class ResourceTracker
+    {
+        // In order to work with the different IoRange objects consistently,
+        // we're going to wrap them in this object before putting them in
+        // array lists:
+        private class ResourceRange
+        {
+            public DeviceNode! owner;
+            public uint    begin;
+            public uint    limit;
+            public bool    shared;
+
+            public ResourceRange(DeviceNode! owner,
+                                 uint begin, uint limit, bool shared)
+            {
+                this.owner = owner;
+                this.begin = begin;
+                this.limit = limit;
+                this.shared = shared;
+                base();
+            }
+
+            public override string! ToString()
+            {
+                return String.Format("[ResRange: owner={0} begin={1,8:x} limit={2,8:x} shared={3}]",
+                    owner.location,
+                    begin,
+                    limit,
+                    shared.ToString());
+            }
+        }
+
+        // we track the four types of IoResources with these lists
+        private static ArrayList ports;
+        private static ArrayList irqs;
+        private static ArrayList dmas;
+        private static ArrayList memory;
+
+        // initialize the logs
+        public static void Initialize()
+        {
+            // configure IoResource tracking:
+            ports = new ArrayList();
+            irqs = new ArrayList();
+            dmas = new ArrayList();
+            memory = new ArrayList();
+        }
+
+        // Find the correct internal list for the give IoRange type.
+        private static ArrayList FindRangeList(IoRange range)
+        {
+            if (range is IoPortRange) {
+                return ports;
+            }
+            else if (range is IoIrqRange) {
+                return irqs;
+            }
+            else if (range is IoDmaRange) {
+                return dmas;
+            }
+            else if (range is IoMemoryRange) {
+                return memory;
+            }
+            else {
+                // Unknown IoRange type.
+                DebugStub.Break();
+                return null;
+            }
+        }
+
+#if VERBOSE
+        private static void DumpIndent(int depth)
+        {
+            for (int i = 0; i < depth; i++) {
+                DebugStub.Write("  ");
+            }
+        }
+
+        private static void DumpNode(int depth, XmlNode! node)
+        {
+            DumpIndent(depth);
+            DebugStub.Write("<{0} {1}", __arglist(node.Name, node.GetAttributes()));
+
+            XmlNode [] children = node.Children;
+            if (children != null && children.Length != 0) {
+                DebugStub.WriteLine(">");
+
+                for (int i = 0; i < children.Length; i++) {
+                    DumpNode(depth + 1, (XmlNode!)children[i]);
+                }
+
+                DumpIndent(depth);
+                DebugStub.WriteLine("</{0}>", __arglist(node.Name));
+            }
+            else {
+                DebugStub.WriteLine("/>");
+            }
+        }
+#endif // VERBOSE
+
+
+        // TODO: what about conflicts within the resourceSet?
+
+        // Test if a particular IoRange satisfies the requirements of its
+        // associated Xml metadata
+        // inefficient O(n) algorithm for finding range overlaps:
+        private static DeviceNode FindRangeConflict(IoRange! range, bool shared)
+        {
+            ArrayList list = FindRangeList(range);
+            uint begin = range.RangeBase;
+            uint limit = range.RangeBase + range.RangeLength;
+
+            // finally, make sure this resource isn't already claimed
+            if (begin >= limit || list == null) {
+                return null;
+            }
+
+            foreach (ResourceRange! r in list) {
+                if ((begin < r.limit && limit > r.begin) ||
+                    (r.begin < limit && r.limit > begin)) {
+                    if (!shared || !r.shared) {
+                        DebugStub.WriteLine("I/O Conflict on {0} with {1}. shared={2}, r.shared={3}",
+                                            __arglist(range.ToString(),
+                                                      r.owner.location,
+                                                      shared,
+                                                      r.shared));
+                        DebugStub.WriteLine(" begin={0:x} limit={1:x}, r.begin={2:x}, r.limit={3:x}",
+                            __arglist(begin, limit, r.begin, r.limit));
+                        return r.owner;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Check if a set of ranges have any conflicts.
+        private static DeviceNode FindRangeConflicts(IoRange []! ranges, XmlNode! ruleSet)
+        {
+            XmlNode[] rules = ruleSet.Children;
+            if (rules == null) {
+                return null;
+            }
+
+            foreach (XmlNode! rule in rules) {
+                int index = rule.GetAttribute(IoSystem.IndexXmlAttribute, -1);
+                bool shared = rule.GetAttribute(IoSystem.SharedXmlAttribute, false);
+
+                DebugStub.Assert(index >= 0);
+
+                if (ranges[index] != null) {
+                    DeviceNode conflict = FindRangeConflict((!)ranges[index], shared);
+                    if (conflict != null) {
+                        return conflict;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static void DescribeResourceConflict(DeviceNode! newDevice,
+                                                     DeviceNode! oldDevice)
+            requires newDevice.driver != null;
+            requires oldDevice.driver != null;
+        {
+            String newName = newDevice.driver.name;
+            String oldName = oldDevice.driver.name;
+
+            if (newName == null) {
+                newName = newDevice.MatchingDeviceId;
+            }
+            if (oldName == null) {
+                oldName = oldDevice.MatchingDeviceId;
+            }
+
+            DebugStub.WriteLine("I/O Conflict between {0} ({1}) and {2} ({3}).n",
+                                __arglist(newDevice.location,
+                                          newName,
+                                          oldDevice.location,
+                                          oldName));
+        }
+
+        // Given an IoConfig object and an Xml blob, we must determine if the
+        // the resources stated in the IoConfig object are already allocated.
+        // If they are, we return the identity of the conflicting device.
+        internal static DeviceNode FindResourceConflicts(DeviceNode! device)
+            requires device.driver != null;
+        {
+            DeviceNode conflict;
+
+            XmlNode fixedRules
+                = device.driver.metadata.GetChild(IoSystem.FixedHardwareSetXmlTag);
+            if (fixedRules != null) {
+                conflict = FindRangeConflicts(device.config.FixedRanges, fixedRules);
+                if (conflict != null) {
+                    DescribeResourceConflict(device, conflict);
+                    return conflict;
+                }
+            }
+
+            XmlNode dynamicRules =
+                device.driver.metadata.GetChild(IoSystem.DynamicHardwareSetXmlTag);
+            if (dynamicRules != null) {
+                conflict = FindRangeConflicts(device.config.DynamicRanges, dynamicRules);
+                if (conflict != null) {
+                    DescribeResourceConflict(device, conflict);
+                    return conflict;
+                }
+            }
+            return null;
+        }
+
+        // Test if an IoRange matches the Xml metadata.
+        private static bool IsRangeValid(IoRange! range, XmlNode! rule)
+        {
+            if (range is IoPortRange) {
+                if (rule.Name != IoSystem.PortRangeXmlTag) {
+                    DebugStub.WriteLine("Bad port range tag");
+                    return false;
+                }
+            }
+            else if (range is IoIrqRange) {
+                if (rule.Name != IoSystem.IrqRangeXmlTag) {
+                    DebugStub.WriteLine("Bad Irq range tag");
+                    return false;
+                }
+            }
+            else if (range is IoDmaRange) {
+                if (rule.Name != IoSystem.DmaRangeXmlTag) {
+                    DebugStub.WriteLine("Bad dma range tag");
+                    return false;
+                }
+            }
+            else if (range is IoMemoryRange) {
+#if false
+                if (rule.Name == IoSystem.RegionXmlTag) {
+                    return true;    // Note we don't check bounds on this one!
+                }
+#endif
+                if (rule.Name != IoSystem.MemoryRangeXmlTag) {
+                    DebugStub.WriteLine("Bad dma range tag");
+                    return false;
+                }
+            }
+            else {
+                // Unknown IoRange type.
+                DebugStub.Break();
+                return false;
+            }
+
+            // now make sure that the range length is >= metadata spec
+            // exclude regions since we always make them ourselves, and
+            // can trust them
+            uint expectedLength =
+                (uint)rule.GetAttribute(IoSystem.RangeLengthXmlAttribute, 1);
+            if (range.RangeLength < expectedLength) {
+                    DebugStub.WriteLine("Bad length {0} < {1}",
+                                        __arglist(range.RangeLength,
+                                                  expectedLength)
+                                        );
+                return false;
+            }
+            return true;
+        }
+
+        // We let the resource list contain null entries, and we only check
+        // those entries that are not null; the metadata doesn't need to know
+        // about holes.
+        private static bool AreResourcesValid(IoRange[]! ranges, XmlNode ruleSet)
+        {
+            if (ruleSet == null) {
+                return true;
+            }
+#if DEBUG_PARSING
+            DebugStub.WriteLine("  AreResourcesValid:");
+            DumpNode(2, ruleSet);
+            DebugStub.WriteLine("  I/O Resources:");
+            if (ranges != null) {
+                for (int i = 0; i < ranges.Length; i++) {
+                    if (ranges[i] != null) {
+                        DebugStub.WriteLine("    {0:d3}: {1}",
+                                            __arglist(i, ((!)ranges[i]).ToString()));
+                    }
+                }
+            }
+#endif
+
+            XmlNode[] rules = ruleSet.Children;
+            if (rules == null) {
+                return true;
+            }
+
+            foreach (XmlNode! rule in rules) {
+                int index = rule.GetAttribute(IoSystem.IndexXmlAttribute, -1);
+                if (index < 0) {
+                    DebugStub.WriteLine("ResourceTracker.AreResourcesValid: An XML rule either did not specify an 'index' attribute, or the value is invalid.");
+                    DebugStub.WriteLine("ResourceTracker.AreResourcesValid: Returning false to indicate that resources are not valid.");
+                    return false;
+                }
+
+                if (index >= ranges.Length) {
+                    DebugStub.WriteLine("ResourceTracker.AreResourcesValid: An XML rule specifies an index (index {0}) that is out of range for this resource range (length {1}).",
+                        __arglist(index, ranges.Length));
+                    DebugStub.WriteLine("ResourceTracker.AreResourcesValid: Returning false to indicate that resources are not valid.");
+                    return false;
+                }
+
+                // Fail if the range doesn't exist.
+                if (ranges[index] == null) {
+                    DebugStub.WriteLine("Resource range[" + index + "] is null!");
+                    return false;
+                }
+
+                if (!IsRangeValid((!)ranges[index], rule)) {
+                    DebugStub.WriteLine("Resource range[" + index + "] is not valid!");
+                    DebugStub.WriteLine(((!)ranges[index]).ToString());
+
+                    DebugStub.Break();
+
+                    IsRangeValid((!)ranges[index], rule);
+                    return false;
+                }
+
+#if false
+                // make sure that the resources are currently available for this driver.
+                bool shared = rule.GetAttribute(IoSystem.SharedXmlAttribute, false);
+                DeviceNode conflict = FindRangeConflict((!)ranges[index], shared);
+                if (conflict != null) {
+                    return false;
+                }
+#endif
+            }
+            return true;
+        }
+
+        // Given an IoConfig object and an Xml blob, determine if the
+        // IoConfig object satisfies the needs expressed as Xml.
+        internal static bool AreResourcesValid(IoConfig! config, XmlNode! metadata)
+        {
+            XmlNode fixedRules
+                = metadata.GetChild(IoSystem.FixedHardwareSetXmlTag);
+            XmlNode dynamicRules
+                = metadata.GetChild(IoSystem.DynamicHardwareSetXmlTag);
+
+            if (!AreResourcesValid(config.FixedRanges, fixedRules)) {
+                DebugStub.WriteLine("AreResourcesValid: config.FixedRanges failed.\n  {0}\n", __arglist(config.ToPrint()));
+                return false;
+            }
+            else if (!AreResourcesValid(config.DynamicRanges, dynamicRules)) {
+                DebugStub.WriteLine("AreResourcesValid: config.DynamicRanges failed.\n  {0}", __arglist(config.ToPrint()));
+                return false;
+            }
+            return true;
+        }
+
+        // add one resource to the accounting logs
+        private static void AddResource(DeviceNode! device,
+                                        IoRange! range,
+                                        XmlNode rule)
+        {
+            ArrayList list = FindRangeList(range);
+            uint begin = range.RangeBase;
+            uint limit = range.RangeBase + range.RangeLength;
+            bool shared = false;
+
+            if (rule != null) {
+                shared = rule.GetAttribute(IoSystem.SharedXmlAttribute, false);
+            }
+
+            if (begin < limit && list != null) {
+                ResourceRange new_range = new ResourceRange(device, begin, limit, shared);
+#if VERBOSE
+                DebugStub.WriteLine("    " + new_range);
+#endif
+                list.Add(new_range);
+            }
+        }
+
+        // add one set of resources (either fixed or dynamic)
+        private static void AddResources(DeviceNode! device,
+                                         IoRange []! ranges,
+                                         XmlNode ruleSet)
+        {
+            if (ranges == null || device == null) {
+                return;
+            }
+
+            if (ruleSet == null) {
+                foreach (IoRange range in ranges) {
+                    if (range != null) {
+                        AddResource(device, range, null);
+                    }
+                }
+                return;
+            }
+
+#if VERBOSE
+            DebugStub.WriteLine("ResourceTracker: Adding resources for device: " + device);
+#endif
+
+            XmlNode[] rules = (!)ruleSet.Children;
+            if(rules.Length == 0) {
+#if VERBOSE
+                DebugStub.Print("Ignoring device with rules list of length 0\n");
+#endif
+                return;
+            }
+#if VERBOSE
+            for (int i = 0; i < rules.Length; i++) {
+                DebugStub.WriteLine(" ruleset[{0}]:", __arglist(i));
+                if (rules[i] != null) {
+                    assert rules[i] != null;
+                    DumpNode(2,(!)rules[i]);
+                }
+            }
+#endif
+            // Construct a rulearray equal in size to the number of ranges.
+            // Fill in elements in the ruleArray based on the id field in the rule metadata.
+            // This ensures that the appropriate metadata is used without there having
+            // to be 1-to-1, ordered mapping with the ranges.
+            XmlNode[] ruleArray = new XmlNode[ranges.Length];
+            assert ruleArray != null;
+            for (int i = 0; i < rules.Length; i++) {
+                XmlNode n = rules[i];
+                assert n !=  null;
+                int index = n.GetAttribute(IoSystem.IndexXmlAttribute, -1);
+                if (index == -1 || index > ruleArray.Length) {
+                    DebugStub.Break();
+                }
+                ruleArray[index] = n;
+            }
+
+            for (int x = 0; x < ranges.Length; x++) {
+                IoRange range = ranges[x];
+                if (range == null) {
+                    continue;
+                }
+                XmlNode rule = ruleArray[x];
+                AddResource(device, range, rule);
+            }
+        }
+
+        // Assume that the resources list is no shorter than the rules list
+        // if the rules list is null, then we assume nothing is shared
+        internal static void AddResources(DeviceNode! device)
+            requires device.driver != null;
+        {
+            XmlNode fixedRules =
+                device.driver.metadata.GetChild(IoSystem.FixedHardwareSetXmlTag);
+            XmlNode dynamicRules =
+                device.driver.metadata.GetChild(IoSystem.DynamicHardwareSetXmlTag);
+
+            AddResources(device, device.config.FixedRanges, fixedRules);
+            AddResources(device, device.config.DynamicRanges, dynamicRules);
+        }
+    }
+}

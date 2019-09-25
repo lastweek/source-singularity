@@ -1,0 +1,44 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SeattleTrafficProxyContract.sg
+//  Note:   Contract definition for the Seattle Traffic service
+//
+
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.SeattleTrafficProxy.Contracts
+{
+    public rep struct TrafficInfo {
+        // There is a lot of traffic data. For now, we'll just provide
+        // the bottlenecks and the approximate lat/long for their center.
+        public int minUntilFree;    // estimate of time until the bottleneck clears
+        public float latitude;
+        public float longitude;
+    }
+
+    public contract SeattleTrafficProxyContract : ServiceContract
+    {
+        public const string ModuleName = "/service/traffic";
+
+        // Signal our identity
+        out message Ready();
+
+        in message GetTraffic();
+        out message Traffic(TrafficInfo[]! in ExHeap trafficInfo);
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            GetTraffic? -> Traffic! -> ReadyState;
+        }
+    }
+}

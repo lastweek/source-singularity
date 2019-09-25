@@ -1,0 +1,57 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\Singularity.V1\Makefile
+#
+#   Note:
+#
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>Singularity.V1.App</AssemblyName>
+    <OutputType>Library</OutputType>
+    <OutputPath>$(APPILLSDIR)</OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoStdLib>true</NoStdLib>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Processes\ProcessHandle.csi"/>
+    <Compile Include="Security\PrincipalHandle.csi"/>
+    <Compile Include="Services\DeliveryHandle.csi"/>
+    <Compile Include="Services\ChannelService.csi"/>
+    <Compile Include="Services\DebugService.csi"/>
+    <Compile Include="Services\DeviceService.csi"/>
+    <Compile Include="Services\PciPortHandle.csi"/>
+    <Compile Include="Services\PageTableService.csi"/>
+    <Compile Include="Services\PlatformService.csi"/>
+    <Compile Include="Services\ProcessService.csi"/>
+    <Compile Include="Services\SharedHeapService.csi"/>
+    <Compile Include="Services\StackService.csi"/>
+    <Compile Include="Services\MemoryInfoService.csi"/>
+    <Compile Include="Services\DiagnosisService.csi"/>
+    <Compile Include="Stress\StressDirect.csi"/>
+    <Compile Include="Threads\AutoResetEventHandle.csi"/>
+    <Compile Include="Threads\ContainerHandle.csi"/>
+    <Compile Include="Threads\InterruptHandle.csi"/>
+    <Compile Include="Threads\ManualResetEventHandle.csi"/>
+    <Compile Include="Threads\MutexHandle.csi"/>
+    <Compile Include="Threads\SyncHandle.csi"/>
+    <Compile Include="Threads\ThreadHandle.csi"/>
+    <Compile Include="Threads\ThreadState.csi"/>
+    <Compile Include="Types\SystemType.csi"/>
+    <Compile Include="Singularity.V1.csi"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Corlib\Corlib.csproj"><Alias>Corlib</Alias></ProjectReference>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\InterfaceAssembly.targets"/>
+
+</Project>

@@ -1,0 +1,129 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Windows XP-like TaskList program.
+//
+using System;
+using System.Collections;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="get a snapshot of channel stats",
+                     DefaultAction=true)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<ChannelContract.Imp:Start> channelRef;
+
+        [LongParameter( "r", Default=-1, HelpMessage="Repeat every <n> seconds")]
+        internal long pauseSeconds;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Perf.AppMain(this);
+        }
+    }
+    public class Perf
+    {
+
+        public struct ChannelStats 
+        {
+            public long msgs; 
+            public long bytes; 
+            public long channelsCreated; 
+        }
+        
+
+        public static ChannelStats GetChannelStats(ChannelContract.Imp! imp)
+        {
+            imp.SendGetChannelStats();
+            ChannelStats c;
+            imp.RecvChannelStats(out c.msgs,  out c.bytes, out c.channelsCreated);
+            return c;
+        }
+
+        /// <summary>
+        /// Use this method to write output to both the screen and the debugger if toDebugger is true.
+        /// </summary>
+        public static void WriteLine(bool toDebugger, string format, params object[] args) {
+            string s = String.Format(format, args);
+            Console.WriteLine(s);
+            if (toDebugger) {
+                DebugStub.WriteLine(s);
+            }
+        } 
+
+        public static void WriteLine(bool toDebugger) {
+            Console.WriteLine();
+            if (toDebugger) {
+                DebugStub.WriteLine();
+            }
+        } 
+
+        internal static int AppMain(Parameters! config)
+        {
+            ChannelStats stats;
+
+            // Set the default options
+            int pauseSeconds = (int) config.pauseSeconds;
+            bool dumpTable = false; 
+
+            ChannelContract.Imp imp = config.channelRef.Acquire(); 
+            imp.RecvReady();
+
+            do
+            {
+                long startSwitchCount;
+                startSwitchCount = ProcessService.GetContextSwitchCount();
+
+                long threadCount = ProcessService.GetThreadsCreatedCount(); 
+                
+                try {
+                    stats = GetChannelStats(imp);
+                }
+                catch (Exception ex) {
+                    Console.WriteLine("Error retrieving channel data.");
+                    Console.WriteLine(ex.ToString());
+                    return 1;
+                }
+
+                // Display the results
+                long avg = stats.bytes / stats.msgs; 
+                Console.WriteLine();
+                WriteLine(dumpTable, "swi= {0}, msgsSent={1}, threadsCreated={2}, bytesSent={3}K, channelsCreated={4}, avg bytes/msg={5}.",
+                     startSwitchCount, stats.msgs, threadCount, stats.bytes/1024, stats.channelsCreated, avg);
+
+                if (pauseSeconds >= 0) Thread.Sleep(pauseSeconds * 1000); 
+                
+          } while (pauseSeconds >= 0);
+            delete imp;
+            return 0;
+        }
+    }
+}

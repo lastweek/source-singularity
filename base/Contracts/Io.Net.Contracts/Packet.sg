@@ -1,0 +1,246 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PacketFragment.sg
+//
+
+namespace Microsoft.Singularity.Io.Net
+{
+    using System;
+    using System.Runtime.InteropServices;
+    using Microsoft.Contracts;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Io;
+    using Microsoft.Singularity.Channels;
+
+    public enum FromDeviceFlags : ushort
+    {
+        TransmitSuccess  = 0x001,
+        TransmitError    = 0x002,
+        ReceiveSuccess   = 0x004,
+        ReceiveError     = 0x008,
+        BadIp4Checksum   = 0x010,
+        BadUdp4Checksum  = 0x020,
+        BadTcp4Checksum  = 0x040,
+        GoodUdp4Checksum = 0x080,
+        GoodTcp4Checksum = 0x100,
+    };
+
+    public enum ToDeviceFlags : ushort
+    {
+        RequestIp4Checksum  = 1,
+        RequestUdp4Checksum = 2,
+        RequestTcp4Checksum = 4,
+    };
+
+    public rep struct Packet : ITracked
+    {
+        private PacketFragment[]! in ExHeap fragments;
+        private ToDeviceFlags   toDeviceFlags;
+        private FromDeviceFlags fromDeviceFlags;
+
+        public Packet(int fragments)
+        {
+            this.toDeviceFlags   = 0;
+            this.fromDeviceFlags = 0;
+
+            this.fragments = new [ExHeap] PacketFragment[fragments];
+        }
+
+        public Packet(byte[]! packetBytes)
+            : this(1)
+        {
+            expose (this.fragments[0]) {
+                this.fragments[0].Set(packetBytes, 0, packetBytes.Length);
+            }
+        }
+
+        public Packet([Claims] byte[]! in ExHeap thePacket)
+            : this(1)
+        {
+            expose (this.fragments[0]) {
+                this.fragments[0].Set(thePacket, 0, thePacket.Length);
+            }
+        }
+
+        public ToDeviceFlags ToDeviceFlags
+        {
+            get { return toDeviceFlags; }
+            set { toDeviceFlags = value; }
+        }
+
+        public FromDeviceFlags FromDeviceFlags
+        {
+            get { return fromDeviceFlags; }
+            set { fromDeviceFlags = value; }
+        }
+
+        [Pure]
+        public int GetLength()
+        {
+            int total = 0;
+            expose (this) {
+                for (int i = 0; i < this.fragments.Length; i++) {
+                    expose (this.fragments[i]) {
+                        total += this.fragments[i].Length;
+                    }
+                }
+            }
+            return total;
+        }
+
+        [Pure]
+        public byte[]! ToByteArray()
+        {
+            byte[]! buffer = new byte[this.GetLength()];
+            this.ToByteArray(buffer);
+            return buffer;
+        }
+
+        public void ToByteArray(byte[]! buffer)
+        {
+            expose (this) {
+                int done = 0;
+                for (int i = 0; i < this.FragmentCount; i++) {
+                    expose (this.fragments[i]) {
+                        done += this.fragments[i].Copy(buffer, done);
+                    }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            delete this.fragments;
+        }
+
+        //        [Pure]
+        public int FragmentCount
+        {
+            get {
+                expose (this) {
+                    return this.fragments.Length;
+                }
+            }
+        }
+
+        //        [Pure]
+        public void GetFragmentRange(int         fragment,
+                                     out UIntPtr virtualAddr,
+                                     out int     lengthBytes)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].GetFragmentRange(out virtualAddr,
+                                                              out lengthBytes);
+                }
+            }
+        }
+
+        public UIntPtr GetFragmentVirtualAddress(int fragment)
+        {
+            UIntPtr virtualAddress;
+            int     length;
+            GetFragmentRange(fragment, out virtualAddress, out length);
+            return virtualAddress;
+        }
+
+        public void SetFragmentLength(int fragment, int length)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    assert (length >= 0 &&
+                            length <= this.fragments[fragment].Capacity);
+                    this.fragments[fragment].Length = length;
+                }
+            }
+        }
+
+        public void UnsetFragmentLength(int fragment)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].Length =
+                        this.fragments[fragment].Capacity;
+                }
+            }
+        }
+
+        public void UnsetFragmentLengths()
+        {
+            expose (this) {
+                for (int i = 0; i < this.FragmentCount; i++) {
+                    UnsetFragmentLength(i);
+                }
+            }
+        }
+
+        public void SetFragment(int fragment,
+                                [Claims] byte []! in ExHeap buffer,
+                                int bufferStart,
+                                int bufferLength)
+            requires fragment >= 0 && fragment <= this.FragmentCount;
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].Set(buffer,
+                                                 bufferStart,
+                                                 bufferLength);
+                }
+            }
+        }
+
+        public void SetFragment(int fragment,
+                                [Claims] byte []! in ExHeap buffer)
+            requires fragment >= 0 && fragment < this.FragmentCount;
+        {
+            SetFragment(fragment, buffer, 0, buffer.Length);
+        }
+
+        public void SetFragment(int fragment, byte []! buffer)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].Set(buffer, 0, buffer.Length);
+                }
+            }
+        }
+
+        public void SetFragment(int      fragment,
+                                byte []! buffer,
+                                int      offset,
+                                int      length)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].Set(buffer, offset, length);
+                }
+            }
+        }
+
+        public void SetFragment(int fragment,
+                                IoMemory! region,
+                                UIntPtr offset,
+                                UIntPtr length)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].Set(region, offset, length);
+                }
+            }
+        }
+
+        public void AppendToFragment(int fragment, byte value)
+        {
+            expose (this) {
+                expose (this.fragments[fragment]) {
+                    this.fragments[fragment].Append(value);
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,654 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+// Ported from SpecWeb99 source code
+//
+
+using FileSystem.Utils;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+
+///////////////////////////////////////
+// Quick and dirty abstraction of file operations
+//////////////////////////////////////
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Generate files for Specweb", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [BoolParameter( "v", Default=false, HelpMessage="verbose")]
+        internal bool doVerbose;
+
+        [BoolParameter( "V", Default=false, HelpMessage="validate only")]
+        internal bool doValidateOnly;
+
+        [BoolParameter( "t", Default=false, HelpMessage="test mode")]
+        internal bool doTestMode;
+
+        [BoolParameter( "p", Default=false, HelpMessage="Purge files on exit")]
+        internal bool doCleanup;
+
+        [LongParameter( "n",  Default=9, HelpMessage="Files per class")]
+        internal long filesPerClass;
+
+        [LongParameter( "c", Default=10, HelpMessage="Number of connections")]
+        internal long connections;
+
+        [StringParameter( "directory", Mandatory=true, Position=0, HelpMessage="directory.")]
+        internal string directory;
+
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            WafGen99.AppMain(this);
+            return 0;
+        }
+    }
+
+    public class FILE
+    {
+        static private VContainer<byte>! workBuffer;
+
+        private TRef<FileContract.Imp:Ready>! connRef;
+        private long filePos;
+        private string! path;
+
+        public static FILE CreateFile(string! path)
+        {
+            if (FileUtils.CreateFile(path) != 0) {
+                return null;
+            }
+
+            return OpenFile(path);
+        }
+
+        public static FILE OpenFile(string! path)
+        {
+            FileContract.Imp conn = FileUtils.OpenFile(path);
+
+            if (conn != null) {
+                return new FILE(conn, path);
+            }
+            else {
+                return null;
+            }
+        }
+
+        static FILE()
+        {
+            workBuffer  = new VContainer<byte>(new [ExHeap] byte[2 * 1024 * 1024]);
+        }
+
+        private FILE([Claims] FileContract.Imp:Ready! conn, string! thePath)
+        {
+            connRef     = new TRef<FileContract.Imp:Ready>(conn);
+            filePos     = 0;
+            path        = thePath;
+            base();
+        }
+
+        public int Write(string! str)
+        {
+            byte[] bytes = Encoding.ASCII.GetBytes(str);
+            return Write(bytes, 0, bytes.Length);
+        }
+
+        public int Write(byte[]! buf, int offset, int length)
+        {
+            FileContract.Imp conn = connRef.Acquire();
+            byte[]! in ExHeap wbuf = workBuffer.Acquire();
+            if (length > wbuf.Length) {
+                DebugStub.Print("workbuf resize {0} -> {1} (write)\n",
+                                __arglist(wbuf.Length, length));
+                delete wbuf;
+                wbuf = new [ExHeap] byte [length];
+            }
+            Bitter.FromByteArray(wbuf, 0, length, buf, offset);
+
+            try {
+                long bytesWritten;
+                int error;
+                conn.SendWrite(wbuf, 0, filePos, length);
+                conn.RecvAckWrite(out wbuf, out bytesWritten, out error);
+                workBuffer.Release(wbuf);
+
+                filePos += bytesWritten;
+                if (error == 0) {
+                    return (int)bytesWritten;
+                }
+                else {
+                    throw new Exception("Write failed");
+                }
+            }
+            finally {
+                connRef.Release(conn);
+            }
+            return 0;
+        }
+
+        public int Read(byte[]! buf, int offset, int length)
+        {
+            FileContract.Imp conn = connRef.Acquire();
+            byte[]! in ExHeap bytes = workBuffer.Acquire();
+
+            if (length > bytes.Length) {
+                DebugStub.Print("workbuf resize {0} -> {1} (read)\n",
+                                __arglist(bytes.Length, length));
+                delete bytes;
+                bytes = new [ExHeap] byte [length];
+            }
+
+            try {
+                long bytesRead;
+                int error;
+                conn.SendRead(bytes, 0, filePos, length);
+                conn.RecvAckRead(out bytes, out bytesRead, out error);
+
+                filePos += bytesRead;
+
+                if (error == 0) {
+                    Bitter.ToByteArray(bytes, 0, length, buf, offset);
+                    workBuffer.Release(bytes);
+                    return (int)bytesRead;
+                }
+                else {
+                    workBuffer.Release(bytes);
+                    throw new Exception("Read failed");
+                    return 0;
+                }
+            }
+            finally {
+                connRef.Release(conn);
+            }
+        }
+
+        public int Size
+        {
+            // TODO
+            get {
+                FileAttributesRecord attr;
+                ErrorCode error;
+
+                bool ok = FileUtils.GetAttributes(path, out attr, out error);
+                if (!ok) {
+                    throw new Exception("Failed to get attributes");
+                }
+                return unchecked((int)attr.FileSize);
+            }
+        }
+
+        public void Close()
+        {
+            FileContract.Imp conn = connRef.Acquire();
+
+            try {
+                conn.SendClose();
+            }
+            finally {
+                connRef.Release(conn);
+            }
+        }
+    }
+
+    ///////////////////////////////////////
+    // The content generator / verifier
+    //////////////////////////////////////
+
+    public class WafGen99
+    {
+        //////////////////////////////////
+        // Constants
+        private const int    MAX_PATH              = 256;
+        private const int    LINESIZE              = 64;
+        private const int    MARKER_FREQ           = 4096;
+        private const int    BUF_SIZE              = 1024*1024; // 1MB   
+        private const string topDirName            = "file_set";
+
+        //////////////////////////////////
+        // Pseudo-constants
+        private static readonly int[]!  CLASS_BASE_SIZE = {1024, 10240, 102400, 1024000};
+        private static readonly int MAX_CLASS_COUNT = CLASS_BASE_SIZE.Length;
+
+        //////////////////////////////////
+        // Instance variables
+        private bool verbose = false;
+        private bool testMode = false;
+        private byte[]! buf;
+        private string baseDir;
+        private readonly int filesPerClass;
+
+        public WafGen99(bool   verb,
+                        bool   test,
+                        string theBase,
+                        int    filesPerClass)
+        {
+            buf = new byte[BUF_SIZE];
+            base();
+            verbose = verb;
+            testMode = test;
+            this.filesPerClass = filesPerClass;
+            baseDir = theBase;
+        }
+
+        private static byte GetTestValue(int index)
+        {
+            string pattern = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            return (byte) pattern[index % pattern.Length];
+        }
+
+        // Returns false on error
+        private bool CreateFile(int classNum, int num, int size, string! name, string! path)
+        {
+            FILE fp;
+
+            int initialSize = size;
+
+            int[] incLocations = new int[MAX_CLASS_COUNT * filesPerClass * 10];
+            int markerCt;
+            int includes;
+            int includeCt;
+            int markersPerInclude;
+
+            if (verbose) {
+                Console.WriteLine("Creating  {0} [ {1} bytes ]", name, size);
+            }
+
+            // Try to open the file
+            fp = FILE.CreateFile(path);
+
+            if (fp == null) {
+                Console.WriteLine("Can't open file '" + path + "'");
+                return false;
+            }
+
+            // Write a header line
+            size -= fp.Write(String.Format("{0,9:d} {1}\n", size, name));
+
+            markerCt = size / MARKER_FREQ + 1;
+            includeCt = size / (4096*4) + 1;
+
+            if (classNum == 0) {
+                includeCt = 0;
+            }
+            else if (classNum == 1) {
+                includeCt = 1;
+            }
+            else if (classNum == 2) {
+                includeCt = 2;
+            }
+            else {
+                includeCt = 0;
+            }
+
+            Random rand = new Random();
+
+            if (includeCt > 0) {
+                markersPerInclude = markerCt / includeCt;
+
+                for (int i = 0; i < includeCt; i++) {
+                    // The replacements can't cover up the implanted validation
+                    //characters -- they will always just after a marker  
+                    incLocations[i] = rand.Next(markersPerInclude * i, markersPerInclude * (i+1) - 1);
+
+                    if (incLocations[i] > markerCt) {
+                        incLocations[i] = markerCt;
+                    }
+                }
+            }
+
+            includes = 0;
+            markerCt = 0;
+
+            int pos = 0;
+            int nameOffset = 0;
+
+            for (int i = 0; i < size; i++) {
+                if (!testMode && (i % MARKER_FREQ == 0)) {
+                    buf[pos++] = ((byte)name[nameOffset++]);
+
+                    if ((includes < includeCt) && (incLocations[includes] == markerCt)) {
+                        includes++;
+                        string markerStr = String.Format("<!WEB99CAD><IMG SRC=\"/file_set/dirNNNNN/classX_Y\"><!/WEB99CAD>\n");
+                        int encodedBytes = Encoding.ASCII.GetBytes(markerStr, 0, markerStr.Length, buf, pos);
+                        i += encodedBytes;
+                        pos += encodedBytes;
+                    }
+
+                    markerCt++;
+
+                    if (nameOffset == name.Length) {
+                        nameOffset = 0;
+                    }
+                }
+                else if (i % LINESIZE == LINESIZE - 1) {
+                    buf[pos++] = (byte)'\n';
+                }
+                else if (testMode) {
+                    buf[pos++] = GetTestValue(i);
+                }
+                else {
+                    buf[pos++] = (byte)rand.Next(33,125);
+                }
+
+                if (pos >= BUF_SIZE) {
+                    fp.Write(buf, 0, pos);
+                    pos = 0;
+                }
+            }
+
+            if (pos > 0) {
+                fp.Write(buf, 0, pos);
+            }
+
+            fp.Close();
+
+            if (!ValidateFile(classNum, num, initialSize, name, path)) {
+                DebugStub.Break();
+                ValidateFile(classNum, num, initialSize, name, path);
+                return false;
+            }
+
+            return true;
+        }
+
+        // returns false on failure
+        bool ValidateFile(int classNum, int fileNum, int size, string! name, string! path)
+        {
+            FILE fp;
+
+            if (verbose) {
+                Console.WriteLine("Verifying {0} [ {1} bytes ]", name, size);
+            }
+
+            fp = FILE.OpenFile(path);
+
+            if (fp == null) {
+                Console.WriteLine("Couldn't open file '" + path + "'");
+                return false;
+            }
+
+            if (fp.Size != size) {
+                Console.WriteLine("{0}: Incorrect file size (expected {1} bytes, have {2} bytes).", name, size, fp.Size);
+                return false;
+            }
+
+            string valString = String.Format("{0,9:d} {1}\n", size, name);
+            int headerSize = valString.Length;
+
+            // Read the file header
+            fp.Read(buf, 0, headerSize);
+            string readString = Encoding.ASCII.GetString(buf, 0, headerSize);
+
+            if (valString != readString) {
+                Console.WriteLine("{0}: Header for file is incorrect", name);
+                return false;
+            }
+
+            int curBufSize = fp.Read(buf, 0, BUF_SIZE);
+            int offset = 0, nameOffset = 0;
+
+            // Examine every byte in the file in this loop
+            for (int i = 0; i < size - headerSize; i++) {
+                if (!testMode && (i % MARKER_FREQ == 0)) {
+                    if (buf[i - offset] != name[nameOffset++]) {
+                        Console.WriteLine("{0}:Validation data incorrect at offset {1}", name, headerSize + offset + i);
+                        fp.Close();
+                        return false;
+                    }
+
+                    if (nameOffset == name.Length) {
+                        nameOffset = 0;
+                    }
+                }
+                else if (i % LINESIZE == LINESIZE - 1) {
+                    if (buf[i - offset] != '\n') {
+                        Console.WriteLine("{0}:Missing newline at offset {1}", name, headerSize + offset + i);
+                        fp.Close();
+                        return false;
+                    }
+                }
+                else if (testMode) {
+                    byte expected = GetTestValue(i);
+                    if (buf[i - offset] != expected) {
+                        Console.WriteLine("{0}:Bad byte value at offset {1} ({2} != {3})", name, headerSize + offset + i, buf[i - offset], expected);
+                        fp.Close();
+                        return false;
+                    }
+                }
+
+                if (i >= curBufSize) {
+                    offset += curBufSize;
+                    curBufSize = fp.Read(buf, 0, BUF_SIZE);
+
+                    if (curBufSize <= 0) {
+                        Console.WriteLine("{0}: Error reading from file", path);
+                        fp.Close();
+                        return false;
+                    }
+                }
+            }
+
+            fp.Close();
+            return true;
+        }
+
+        private struct FileSpec
+        {
+            public string name, fullPath;
+            public int size, classNum, fileNum;
+        }
+
+        private string[]! MakeDirList(int startDir, int endDir)
+        {
+            int numDirs = endDir - startDir;
+            string[] retval = new string[numDirs];
+
+            for (int dir = startDir; dir < endDir; dir++) {
+                retval[dir - startDir] = String.Format("{0}/dir{1}", topDirName, dir.ToString("d05"));
+            }
+
+            return retval;
+        }
+
+        private FileSpec[]! MakeFileList(string[]! dirs)
+        {
+            FileSpec[] retval = new FileSpec[MAX_CLASS_COUNT * filesPerClass * dirs.Length];
+            int idx = 0;
+
+            foreach (string dirName in dirs) {
+                for (int classNum = 0; classNum < MAX_CLASS_COUNT; classNum++) {
+                    for (int num = 0; num < filesPerClass; num++) {
+                        int size = (CLASS_BASE_SIZE[classNum] * (num+1)) / 10;
+
+                        retval[idx] = new FileSpec();
+                        retval[idx].name = String.Format("{0}/class{1,1:d}_{2,1:d}", dirName, classNum, num);
+                        retval[idx].fullPath = String.Format("{0}/{1}", baseDir, retval[idx].name);
+                        retval[idx].classNum = classNum;
+                        retval[idx].fileNum = num;
+                        retval[idx].size = size;
+                        idx++;
+                    }
+                }
+            }
+
+            return retval;
+        }
+
+        // Returns false on failure
+        private bool CreateFiles(int startDir, int endDir)
+        {
+            string topDirectory = String.Format("{0}/{1}", baseDir, topDirName);
+
+            if (DirectoryUtils.CreateDirectory(topDirectory) != 0) {
+                Console.WriteLine("Couldn't mkdir '" + topDirectory + "'");
+                return false;
+            }
+
+            string[]! dirs = MakeDirList(startDir, endDir);
+
+            foreach (string relPath in dirs) {
+                string fullPath = String.Format("{0}/{1}", baseDir, relPath);
+                if (DirectoryUtils.CreateDirectory(fullPath) != 0) {
+                    Console.WriteLine("Couldn't mkdir '" + fullPath + "'");
+                    return false;
+                }
+            }
+
+            FileSpec[]! files = MakeFileList(dirs);
+
+            foreach (FileSpec spec in files) {
+                if (!CreateFile(spec.classNum, spec.fileNum, spec.size, (!)spec.name, (!)spec.fullPath)) {
+                    Console.WriteLine("Couldn't make file '" + spec.fullPath + "'");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // Returns false on failure
+        private bool ValidateFiles(int startDir, int endDir)
+        {
+            string[]! dirs = MakeDirList(startDir, endDir);
+            FileSpec[]! files = MakeFileList(dirs);
+
+            foreach (FileSpec spec in files) {
+                if (!ValidateFile(spec.classNum, spec.fileNum, spec.size, (!)spec.name, (!)spec.fullPath)) {
+                    Console.WriteLine("Validation failed for file '" + spec.fullPath + "'");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private bool Cleanup(int startDir, int endDir)
+        {
+            bool success = true;
+            string[]! dirs = MakeDirList(startDir, endDir);
+
+            FileSpec[]! files = MakeFileList(dirs);
+            foreach (FileSpec spec in files) {
+                int error = FileUtils.DeleteFile((!)spec.fullPath);
+                if (error != 0) {
+                    Console.WriteLine("Failed to delete {0} (error {1})",
+                                      spec.fullPath, error);
+                    success = false;
+                }
+            }
+
+            foreach (string! relPath in dirs) {
+                string fullPath = baseDir + "/" + relPath;
+                int error = DirectoryUtils.DeleteDirectory(fullPath);
+                if (error != 0) {
+                    Console.WriteLine("Failed to delete {0} (error {1})",
+                                      fullPath, error);
+                    success = false;
+                }
+            }
+
+            do {
+                string topDirectory = String.Format("{0}/{1}", baseDir, topDirName);
+                int error = DirectoryUtils.DeleteDirectory(topDirectory);
+                if (error != 0) {
+                    Console.WriteLine("Failed to delete {0} (error {1})",
+                                      topDirectory, error);
+                    success = false;
+                }
+            } while (false);
+
+            return success;
+        }
+
+        private static int ConnectionsToDirectories(int conns)
+        {
+            return ((int) (25 + (((400000.0 / 122000.0) * conns)/5.0)));
+        }
+
+        private static void Usage()
+        {
+            Console.WriteLine("wafgen99: A static-content fileset generator for SpecWEB99");
+            Console.WriteLine("");
+            Console.WriteLine("wafgen99 [-v] [-V] [-t] [connectionCount] targetDir");
+            Console.WriteLine("  -v : Verbose output");
+            Console.WriteLine("  -V : Validate files only (no generation)");
+            Console.WriteLine("  -t : Test mode; no random characters in generated files");
+            Console.WriteLine("  targetDir : Location to hold the fileset");
+        }
+
+        internal static void AppMain(Parameters! config)
+        {
+
+            bool verbose = config.doVerbose;
+            bool testmode = config.doTestMode;
+            bool validateOnly = config.doValidateOnly;
+            string basePath = config.directory;
+
+            int connectionCount = (int)config.connections;
+            int filesPerClass   = (int)config.filesPerClass;
+
+            if (testmode && validateOnly) {
+                Console.WriteLine("Test mode is incompatible with validate-only mode");
+                Usage();
+                return;
+            }
+
+            if (basePath == null) {
+                Console.WriteLine("No target path specified");
+                Usage();
+                return;
+            }
+
+            WafGen99 waf =
+                new WafGen99(verbose, testmode, basePath, filesPerClass);
+
+            int directoryCount = ConnectionsToDirectories(connectionCount);
+            if (!validateOnly) {
+                if (!waf.CreateFiles(0, directoryCount)) {
+                    Console.WriteLine("Failed to create all files.");
+                    return;
+                }
+            }
+
+            if (!waf.ValidateFiles(0, directoryCount)) {
+                Console.WriteLine("Validation failed.");
+                return;
+            }
+
+            if (config.doCleanup && !waf.Cleanup(0, directoryCount)) {
+                Console.WriteLine("Clean up failed.");
+                return;
+            }
+
+            Console.WriteLine("Success.");
+        }
+    }
+}

@@ -1,0 +1,99 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+//
+//
+//Virtual Circuit
+//  TID
+//  PID
+//  FID
+//
+//
+
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using Microsoft.Singularity.Channels;
+using Smb.Shared;
+
+namespace Smb.Protocol
+{
+    public /*static*/ sealed class SmbProtocol
+    {
+		private SmbProtocol() {}
+		
+        public static readonly byte[] SmbSignature = { 0xff, (byte)'S', (byte)'M', (byte)'B' };
+        public const int NativeFileServicePort = 445;
+        public const int NbtVirtualCircuitPort = 139;
+        
+        		
+		public const int SmbHeaderSize = 37; // 0x1d; // sizeof(SmbHeader);
+		
+        /// <summary>
+        /// Facility code for use in NTSTATUS values.
+        /// </summary>
+        public const uint SmbErrorFacilityCode = 0x00980000;
+
+        public static bool IsSuccess(SmbError error)
+        {
+            return ((uint)error & 0x80000000) == 0;
+        }
+
+        public static bool IsError(SmbError error)
+        {
+            return ((uint)error & 0x80000000) != 0;
+        }
+
+        public static SmbError ToSmbError(byte errorClass, ushort code)
+        {
+            switch ((SmbErrorClass)errorClass) {
+                case SmbErrorClass.Success:
+                    return SmbError.Success;
+
+                case SmbErrorClass.FileServer:
+                    return (SmbError)((uint)SmbNtErrorClass.FileServer | code);
+                    
+                case SmbErrorClass.OperatingSystem:
+                    return (SmbError)((uint)SmbNtErrorClass.Dos | code);
+
+                case SmbErrorClass.HardwareError:
+                    return (SmbError)((uint)SmbNtErrorClass.Hardware | code);
+
+                default:
+                    return (SmbError)((uint)SmbNtErrorClass.Unrecognized | code);
+            }
+        }
+
+        public static string! GetErrorText(byte errorClass, int code)
+        {
+			return GetErrorText((SmbErrorClass)errorClass, code);
+        }
+        
+        public static string! GetErrorText(SmbErrorClass errorClass, int code)
+        {
+            switch (errorClass) {
+                case SmbErrorClass.Success:
+                    return "Success." + ((SmbSuccessMessage)code).ToString();
+
+                case SmbErrorClass.OperatingSystem:
+                    return "OperatingSystem." + ((SmbOsError)code).ToString();
+
+                case SmbErrorClass.FileServer:
+                    return "FileServer." + ((SmbFileServerError)code).ToString();
+
+                case SmbErrorClass.Unrecognized:
+                    return "Unrecognized:" + code;
+
+                case SmbErrorClass.HardwareError:
+                    return "Hardware." + ((SmbHardwareError)code).ToString();
+
+                default:
+                    return "UNKNOWN CLASS " + errorClass + " CODE " + code;
+            }
+        }
+    }
+}

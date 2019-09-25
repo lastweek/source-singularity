@@ -1,0 +1,597 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+//
+//This file contains the code for the "kdfiles" directory / namespace.  This namespace
+//allows Singularity processes to transfer files from a kernel debugger to the Singularity
+//machine.  The most common and expected use of this will be to execute app binaries
+//directly from the development machine, rather than rebuilding an OS image and rebooting.
+//
+//WinDbg/KD already supports this, as does the NT kernel.  This file contains the logic
+//for the namespace, but not for the actual mechanism of interacting with the debugger.
+//That logic lives in Kernel\Singularity\KdFiles.cs.
+//
+//When the kernel boots, it calls KdFilesNamespace.StartNamespaceThread().  This method
+//creates the namespace service provider, then creates a service thread and passes that
+//namespace provider to the service thread.  The service thread then allows clients to
+//connect, using DirectoryServiceContract and FileContract.
+//
+//Most requests on DirectoryServiceContract are meaningless for kdfiles, and so are
+//rejected with ErrorCode.NotSupported.  Binding to subdirectories is allowed, and
+//doing so just creates a longer relative path within the namespace.
+//
+//When the service thread receives a Bind request on a directory channel, and the new
+//client channel provided is a FileContract, the service thread attempts to open the
+//file on the debugger.  If the debugger has been properly configured (using the .kdfiles
+//command), and the KD machine can open the file, send back the response, etc., then
+//the Singularity client can then read the contents of the file using FileContract.
+//
+//The kdfiles namespace is registered at /kdfiles.  When a client attempts to bind to
+//a file under this namespace, the kernel will send the portion of the path that is
+//"under" /kdfiles to KD.  For example, if you attempt to open /kdfiles/myapp.x86,
+//KD will see this path as /myapp.x86.  So make sure that you take this into account
+//when writing your kdfiles associations.
+//
+//For more information, read the Debugging Tools for Windows documentation (debugger.chm).
+//Specifically, read the docs on the .kdfiles command.
+//
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.KernelDebugger;
+
+using KdFiles = Microsoft.Singularity.KernelDebugger.KernelDebuggerFiles;
+
+namespace Microsoft.Singularity.KernelDebugger
+{
+    public class KdFilesNamespace
+    {
+        public const string ServiceNamespace = "/service/kdfiles";
+
+        static System.Threading.Thread _namespace_thread;
+
+        public static void StartNamespaceThread()
+        {
+            //
+            // Create the service provider channel to the Directory.
+            // This allows the KdFiles thread to receive requests from apps and from the manifest loader.
+            //
+
+            ServiceProviderContract.Imp! service_provider_imp;
+            ServiceProviderContract.Exp! service_provider_exp;
+            ServiceProviderContract.NewChannel(out service_provider_imp, out service_provider_exp);
+
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+
+            char[]! in ExHeap kdfiles_service_name = Bitter.FromString2(ServiceNamespace);
+            rootds.SendRegister(kdfiles_service_name, service_provider_imp);
+
+            switch receive {
+                case rootds.AckRegister():
+                    Dbg("Successfully registered namespace '{0}'.", ServiceNamespace);
+                    delete rootds;
+                    break;
+
+                case rootds.NakRegister(ServiceProviderContract.Imp:Start rejected_service_provider_imp, ErrorCode error):
+                    Dbg("Failed to register namespace '{0}': error = {1}", ServiceNamespace, SdsUtils.ErrorCodeToString(error));
+                    delete rejected_service_provider_imp;
+                    delete service_provider_exp;
+                    delete rootds;
+                    return;
+
+                case rootds.ChannelClosed():
+                    Dbg("Directory service closed channel before responding!");
+                    delete service_provider_exp;
+                    delete rootds;
+                    return;
+            }
+
+            ServiceThread svc = new ServiceThread(service_provider_exp);
+
+            Thread! thread = Thread.CreateThread(Thread.CurrentProcess, svc.ThreadMain);
+            _namespace_thread = thread;
+
+            thread.Start();
+
+            Dbg("Kernel.Main thread has started service thread.");
+        }
+
+        private class ServiceThread
+        {
+            TRef<ServiceProviderContract.Exp:Start> _service_provider;
+
+            public ServiceThread([Claims]ServiceProviderContract.Exp:Start! service_provider)
+            {
+                _service_provider = new TRef<ServiceProviderContract.Exp:Start>(service_provider);
+            }
+
+            public void ThreadMain()
+            {
+                Dbg("Service thread starting...");
+
+                ServiceProviderContract.Exp:Start! namespace_provider = ((!)_service_provider).Acquire();
+                _service_provider = null;
+
+                EMap<DirectoryServiceContract.Exp:Ready, DirectoryState!> dirs = new EMap<DirectoryServiceContract.Exp:Ready, DirectoryState!>();
+                EMap<FileContract.Exp:Ready, FileState!> files = new EMap<FileContract.Exp:Ready, FileState!>();
+
+                try {
+                    Dbg("Service thread ready.");
+
+                    for (;;) {
+                        Dbg("switch receive");
+                        switch receive {
+                            case namespace_provider.ChannelClosed():
+                                Dbg("Directory has closed service provider channel!  Quitting.");
+                                goto quit;
+
+                            case namespace_provider.Connect(ServiceContract.Exp:Start! client_exp):
+                            {
+                                DirectoryServiceContract.Exp dir_client = client_exp as DirectoryServiceContract.Exp;
+                                if (dir_client != null) {
+                                    Dbg("A client has connected to the kdfiles namespace (at root).");
+                                    DirectoryState new_dir_state = new DirectoryState("/");
+                                    dir_client.SendSuccess();
+                                    dirs.Add(dir_client, new_dir_state);
+                                    namespace_provider.SendAckConnect();
+                                }
+                                else {
+                                    Dbg("Client has offered a channel with an unsupported contract.  Rejecting client.");
+                                    namespace_provider.SendNackConnect(client_exp);
+                                }
+                                break;
+                            }
+
+                            case dir.Bind(char[]! in ExHeap expath, ServiceContract.Exp:Start! service_exp) in dirs ~> _state:
+                            {
+                                // A directory client wants to bind to a directory or a file.
+
+                                DirectoryServiceContract.Exp new_dir;
+                                FileContract.Exp new_file;
+                                string! path = Bitter.ToString2(expath);
+
+                                string full_path = JoinPath(_state.AbsolutePath, path);
+
+                                if ((new_dir = service_exp as DirectoryServiceContract.Exp) != null) {
+
+                                    Dbg("Received directory bind for '{0}'.  Accepting client.", full_path);
+                                    DirectoryState new_state = new DirectoryState(full_path);
+                                    new_dir.SendSuccess();
+                                    dirs.Add(new_dir, new_state);
+
+                                    dir.SendAckBind();
+
+                                }
+                                else if ((new_file = service_exp as FileContract.Exp) != null) {
+
+                                    // A directory client wants to bind to a file.  Unfortunately, the Singularity
+                                    // directory contract does not allow clients to express what they want to do
+                                    // with the object, once they have bound to it; there is no way to express the
+                                    // Win32 CreateFile flags, such as the access mask, creation disposition, share
+                                    // modes, etc.  So for now, we open files for read-only access.
+
+                                    Dbg("Received file bind for '{0}'.  Opening file...", full_path);
+
+                                    long FileHandle;
+                                    long FileLength;
+
+                                    bool result = KdFiles.CreateHostFile(
+                                        out FileHandle,
+                                        out FileLength,
+                                        full_path,
+                                        KdFiles.FILE_READ_DATA,         // DesiredAccess
+                                        0,                              // FileAttributes
+                                        KdFiles.FILE_SHARE_READ,        // ShareAccess
+                                        KdFiles.FILE_OPEN);             // CreateDisposition
+
+                                    if (result) {
+                                        Dbg("Successfully opened host file.  Length: {0}  Handle: {1}", FileLength, FileHandle);
+
+                                        FileState new_file_state = new FileState(full_path);
+                                        new_file_state.FileHandle = FileHandle;
+                                        new_file_state.FileLength = FileLength;
+
+                                        new_file.SendSuccess();
+                                        files.Add(new_file, new_file_state);
+                                        dir.SendAckBind();
+                                    }
+                                    else {
+                                        Dbg("Failed to open host file.");
+                                        // -XXX- need to translate and propagate real error code
+                                        dir.SendNakBind(service_exp, ErrorCode.NotFound);
+                                    }
+
+                                }
+                                else {
+                                    Dbg("Received Bind on directory client, but the service contract is not recognized.  Rejecting.");
+                                    dir.SendNakBind(service_exp, ErrorCode.ContractNotSupported);
+
+                                }
+
+                                delete expath;
+                                dirs.Add(dir, _state);
+                                break;
+                            }
+
+                            case dir.BeginEnumeration() in dirs ~> _state:
+                                Dbg("Directory client wants to enumerate kdfile directory.  Not supported.");
+                                dir.SendEnumerationTerminated(ErrorCode.NotSupported);
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.GetAttributes(char[]! in ExHeap expath) in dirs ~> _state:
+                            {
+                                string path = Bitter.ToString2(expath);
+                                delete expath;
+                                string full_path = JoinPath(_state.AbsolutePath, path);
+
+                                Dbg("Received GetAttributes.  Opening host file '{0}'...", full_path);
+
+                                long FileHandle;
+                                long FileLength;
+
+                                bool result = KdFiles.CreateHostFile(
+                                    out FileHandle,
+                                    out FileLength,
+                                    full_path,
+                                    KdFiles.FILE_READ_DATA,         // DesiredAccess
+                                    0,                              // FileAttributes
+                                    KdFiles.FILE_SHARE_READ,        // ShareAccess
+                                    KdFiles.FILE_OPEN);             // CreateDisposition
+
+                                if (result) {
+                                    Dbg("Successfully opened host file.  Length: {0}", FileLength);
+
+                                    KdFiles.CloseHostFile(FileHandle);
+
+                                    FileAttributesRecord record;
+                                    record.CreationTime = 0;
+                                    record.LastAccessTime = 0;
+                                    record.LastWriteTime = 0;
+                                    record.FileSize = FileLength;
+                                    record.Type = NodeType.File;
+                                    dir.SendAckGetAttributes(record);
+
+                                }
+                                else {
+
+                                    Dbg("Failed to open host file.  Sending ErrorCode.NotFound.");
+                                    dir.SendNakGetAttributes(ErrorCode.NotFound);
+                                }
+
+                                dirs.Add(dir, _state);
+                                break;
+                            }
+
+                            case dir.Notify(path, pattern, sendExisting, imp) in dirs ~> _state:
+                                Dbg("Received Notify on directory channel.  Not supported.");
+                                dir.SendNakNotify(imp, ErrorCode.NotSupported);
+                                delete path;
+                                delete pattern;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.QueryACL(path, effective) in dirs ~> _state:
+                                Dbg("Received QueryACL on directory channel.  Not supported.");
+                                dir.SendNakQueryACL(ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.Register(path, imp) in dirs ~> _state:
+                                Dbg("Received Register on directory channel.  Not supported.");
+                                dir.SendNakRegister(imp, ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.Deregister(path) in dirs ~> _state:
+                                Dbg("Received Deregister on directory channel.  Not supported.");
+                                dir.SendNakDeregister(ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.CreateDirectory(path) in dirs ~> _state:
+                                Dbg("Received CreateDirectory on directory channel.  Not supported.");
+                                dir.SendNakCreateDirectory(ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.DeleteDirectory(path) in dirs ~> _state:
+                                Dbg("Received DeleteDirectory on directory channel.  Not supported.");
+                                dir.SendNakDeleteDirectory(ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.CreateFile(path) in dirs ~> _state:
+                                Dbg("Received CreateFile on directory channel.  Not supported.");
+                                dir.SendNakCreateFile(ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.CreateAndBindFile(path, exp) in dirs ~> _state:
+                                Dbg("Received CreateAndBindFile on directory channel.  Not supported.");
+                                dir.SendNakCreateAndBindFile(exp, ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+
+                            case dir.DeleteFile(path) in dirs ~> _state:
+                                Dbg("Received DeleteFile on directory channel.  Not supported.");
+                                dir.SendNakDeleteFile(ErrorCode.NotSupported);
+                                delete path;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.StoreACL(filename, nodepattern, descendantpattern) in dirs ~> _state:
+                                Dbg("Received StoreACL on directory channel.  Not supported.");
+                                dir.SendNakStoreACL(ErrorCode.NotSupported);
+                                delete filename;
+                                delete nodepattern;
+                                delete descendantpattern;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.CreateLink(linkpath, linkvalue) in dirs ~> _state:
+                                dir.SendNakCreateLink(ErrorCode.NotSupported);
+                                delete linkpath;
+                                delete linkvalue;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.DeleteLink(linkpath) in dirs ~> _state:
+                                dir.SendNakDeleteLink(ErrorCode.NotSupported);
+                                delete linkpath;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.GetLinkValue(linkpath) in dirs ~> _state:
+                                dir.SendNakGetLinkValue(ErrorCode.NotSupported);
+                                delete linkpath;
+                                dirs.Add(dir, _state);
+                                break;
+
+                            case dir.ChannelClosed() in dirs ~> _state:
+                                Dbg("A directory client has closed its channel.");
+                                delete dir;
+                                break;
+
+                            case file.Read(byte[]! in ExHeap buffer, long buffer_offset, long file_offset, long max_length) in files ~> _state:
+                            {
+                                long bytes_transferred;
+                                int error;
+                                ReadHostFile(_state, buffer, buffer_offset, file_offset, max_length, out bytes_transferred, out error);
+                                file.SendAckRead(buffer, bytes_transferred, error);
+                                files.Add(file, _state);
+                                break;
+                            }
+
+                            case file.Write(byte[]! in ExHeap buffer, long buffer_offset, long file_offset, long max_length) in files ~> _state:
+                                Dbg("Received Write on file client.  Not yet supported.");
+                                file.SendAckWrite(buffer, 0, -1);
+                                files.Add(file, _state);
+                                break;
+
+                            case file.Close() in files ~> _state:
+                                Dbg("Received Close on file channel.");
+                                KdFiles.CloseHostFile(_state.FileHandle);
+                                file.SendAckClose();
+                                delete file;
+                                break;
+
+                            case file.ChannelClosed() in files ~> _state:
+                                Dbg("A file client has closed its channel.");
+                                KdFiles.CloseHostFile(_state.FileHandle);
+                                delete file;
+                                break;
+
+                            case unsatisfiable:
+                                Dbg("Unsatisfiable receive!");
+                                DebugStub.Break();
+                                break;
+                        }
+                    }
+
+                quit:;
+                }
+                finally {
+                    delete namespace_provider;
+                    dirs.Dispose();
+                    files.Dispose();
+                }
+
+                Dbg("Service thread has ended.");
+            }
+
+            static void ReadHostFile(
+                FileState! _state,
+                byte[]! in ExHeap buffer,
+                long buffer_offset,
+                long file_offset,
+                long max_length,
+                out long bytes_transferred,
+                out int error)
+            {
+                Dbg("Received Read request for 0x{0:x} bytes at file offset 0x{1:x}", max_length, file_offset);
+
+                if (buffer_offset < 0
+                    || file_offset < 0
+                    || max_length < 0
+                    || buffer_offset + max_length > buffer.Length
+                    || max_length > Int32.MaxValue)
+                {
+                    Dbg("Received Read on file client, but args are bogus.");
+                    bytes_transferred = 0;
+                    error = -1;
+                    return;
+                }
+
+                if (max_length == 0) {
+                    Dbg("Received zero-length read on file client.  Whatever.");
+                    bytes_transferred = 0;
+                    error = 0;
+                    return;
+                }
+
+                if (file_offset >= _state.FileLength) {
+                    Dbg("The read request begins beyond the end of the file.  Returning 0 bytes, but no error code.");
+                    bytes_transferred = 0;
+                    error = 0;
+                    return;
+                }
+
+                // We learned the file size from the host when we opened the file.
+                // The FileContract client will issue reads beyond the size of the file,
+                // but the KD host will fail these reads.  So we clamp the read length.
+
+                long file_bytes_available = _state.FileLength - file_offset;
+                if (max_length > file_bytes_available) {
+                    Dbg("The read request would exceed the length of the file.  Trimming request length from 0x{0:x} to 0x{1:x} bytes.",
+                        max_length, file_bytes_available);
+                    max_length = file_bytes_available;
+                }
+
+                // At least one user of FileContract interprets a read that completes with fewer bytes than
+                // requested to be an indication of EOF.  (bytes_transferred < bytes_requested)  But the transfer size
+                // to the kernel debugger is rather small (less than 4K), so we loop here, reading as much as we can.
+
+                long total_bytes_transferred = 0;
+
+                for (;;) {
+
+                    long bytes_remaining = max_length - total_bytes_transferred;
+
+                    assert bytes_remaining >= 0;
+
+                    if (bytes_remaining == 0) {
+                        Dbg("Successfully read {0} bytes from host.", total_bytes_transferred);
+                        bytes_transferred = total_bytes_transferred;
+                        error = 0;
+                        return;
+                    }
+
+                    // Perform one KD transfer.
+
+                    int pass_bytes_requested = (int)Math.Min((long)Int32.MaxValue, bytes_remaining);
+                    int pass_bytes_transferred;
+                    bool result;
+                    unsafe {
+                        byte* unmanaged_buffer = &buffer[buffer_offset + total_bytes_transferred];
+                        Dbg("Requesting {0} bytes at address 0x{1:x}", (int)max_length, (UIntPtr)unmanaged_buffer);
+                        result = KdFiles.ReadHostFile(
+                            _state.FileHandle,
+                            file_offset + total_bytes_transferred,
+                            unmanaged_buffer,
+                            pass_bytes_requested,
+                            out pass_bytes_transferred);
+                    }
+
+                    if (result) {
+                        if (pass_bytes_transferred > 0) {
+                            // Full read.  Keep looping for more.
+                            Dbg("    read {0:x} bytes @ buffer offset {1:x}", pass_bytes_transferred, total_bytes_transferred);
+                            total_bytes_transferred += pass_bytes_transferred;
+                            continue;
+                        }
+                        else {
+                            // Short read.  The transfer ends.
+                            Dbg("Successfully read {0} bytes from host (short transfer).", total_bytes_transferred);
+                            bytes_transferred = total_bytes_transferred;
+                            error = 0;
+                            return;
+                        }
+                    }
+                    else {
+                        total_bytes_transferred += pass_bytes_transferred;
+                        Dbg("FAILED to read from host.");
+                        bytes_transferred = total_bytes_transferred;
+                        error = -1;
+                        return;
+                    }
+                }
+            }
+
+
+            class DirectoryState
+            {
+                public DirectoryState(string! path)
+                {
+                    this.AbsolutePath = path;
+                }
+
+                public string! AbsolutePath;
+            }
+
+            class FileState
+            {
+                public FileState(string! path)
+                {
+                    this.AbsolutePath = path;
+                    this.FileHandle = 0;
+                }
+
+                public string! AbsolutePath;
+                public long FileHandle;
+                public long FileLength;
+            }
+        }
+
+        static string! JoinPath(string! container, string! relative_path)
+        {
+            bool container_ends_slash = container.EndsWith("/");
+            bool relative_starts_slash = relative_path.StartsWith("/");
+
+            if (container_ends_slash) {
+                if (relative_starts_slash)
+                    return container + relative_path.Substring(1);
+                else
+                    return container + relative_path;
+            }
+            else {
+                if (relative_starts_slash)
+                    return container + relative_path;
+                else
+                    return container + "/" + relative_path;
+            }
+        }
+
+
+        static bool _enable_dbg_print;
+
+        static void Dbg(string! line)
+        {
+            if (!_enable_dbg_print)
+                return;
+
+            string! msg = "KdFilesNamespace.sg: " + line;
+            DebugStub.WriteLine(msg);
+        }
+
+        static void Dbg(string! format, params object[]! args)
+        {
+            if (!_enable_dbg_print)
+                return;
+
+            string! line = String.Format(format, args);
+            DebugStub.WriteLine(line);
+        }
+
+    }
+
+}

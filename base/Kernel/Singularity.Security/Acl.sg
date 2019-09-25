@@ -1,0 +1,48 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Channels;
+
+    /// <summary>
+    /// Represents an access control list
+    /// </summary>
+    public struct Acl
+    {
+        public static Acl nullAcl = new Acl();
+
+        public readonly string val;
+        public Acl(string val)
+        {
+            this.val = val;
+        }
+
+        public Acl(byte[] utf8Encoding)
+        {
+            if (utf8Encoding == null)
+                this.val = null;
+            else
+                // fix this
+                this.val = null;
+        }
+
+        public static byte[] ToUTF8(Acl acl)
+        {
+            if (acl.val == null)
+                return null;
+            // fix this
+            return null;
+        }
+
+        public static string ToString(Acl acl)
+        {
+            return acl.val;
+        }
+    }
+}

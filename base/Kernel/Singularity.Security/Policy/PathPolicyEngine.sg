@@ -1,0 +1,290 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using System.Collections;
+    using System.Text;
+
+    using Microsoft.Singularity.Security;
+
+    /// <summary>
+    /// This class represents a policy engine for generating Access Control Lists.
+    /// The policy engine consists of a collection of policy rules applicable to paths
+    /// in a hierarchy. Given a resource path, the engine will generate an access
+    /// control list. If no suitable rule is found, the engine will return the null
+    /// Acl, which restricts all access.
+    ///
+    /// When multiple rules apply to the given resource path, the engine will choose
+    /// the one that has the longest matching prefix/suffix (depending on the rule type).
+    ///
+    /// This class is synchronized.
+    ///
+    /// This class implements policy rules. A policy rule consists of
+    /// a resource expression and a collection of access control lists (one per
+    /// each supported access mode).
+    ///
+    /// Resource expressions are path prefixes.  Rules apply to the prefix presented
+    /// and all descendants.
+    ///
+    /// ACL generators are Access Control Lists with placeholders. A placeholder is
+    /// substituted with an nth arc of the tested path. One specifies a placeholder
+    /// using {index}, where index is the index of the arc to be used.
+    ///
+    /// Examples:
+    ///           rule:                 /restricted/more
+    ///           aclgenerator:         {/users/{2}}
+    ///
+    ///           testpath:             /restricted/more/aydan/test
+    ///
+    ///           Matching testpath against the rule will give: {/users/aydan}
+    /// </summary>
+
+    public class PathPolicyEngine : IAclPolicy
+    {
+        // In the rule hashtable, all trailing "/" characters omitted from key.
+        // Root key is "".
+
+        private Hashtable! ruleTable;
+
+        public PathPolicyEngine()
+        {
+            ruleTable = new Hashtable();
+            base();
+        }
+
+        /// <summary>
+        /// Add an ACL generator for the given resource
+        /// </summary>
+        public void AddRule(string! resource, string! acl)
+        {
+            string key = SanitizeResource(resource);
+
+            Rule r = new Rule(acl);
+
+            lock (this)
+                // this asserts single-writer throughout all HTs
+                // we assume HTs are single-writer/multi-reader
+            {
+                object o = ruleTable[key];
+                if (o != null) {
+                    Rule rr = (Rule) o;
+                    rr.SetValid(false);
+                }
+                ruleTable[key] = r;
+                // add placeholder entries (toward the root of the hierarchy)
+                // so that callers to lookup can tell instantly when to terminate the
+                // search (e.g. due to the lack of a placeholder)
+                for (;;) {
+                    key = PreviousKey(key);
+                    if (key == null || ruleTable[key] != null) break;
+                    ruleTable[key] = Rule.GetPlaceholder();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Obtain and ACL for the specified resource path
+        /// Method of IAclPolicy.
+        ///
+        /// We assume here that all resource paths obey the following rules:
+        ///    a)  no instances of "//"
+        ///    b)  no trailing '/'
+        /// This is true for the Node.sg/AccessInstance.sg subclass.
+
+        /// </summary>
+        public Acl LookupAndExpand(string! resource, out IAclRule rule)
+        {
+            Rule r = null;
+            string key = "";
+
+            while (key != null && ruleTable[key] != null) {
+                // if nothing in this slot, (e.g. no rules or placeholders) there are
+                // no more rules that match this resource
+                Rule rr = (Rule!) ruleTable[key];
+                if (!rr.Placeholder) {
+                   r = rr;
+                }
+
+                if (key.Length == resource.Length || resource.Length == 1)
+                    // special case here for "/"
+                    break;
+
+                int i = resource.IndexOf('/', key.Length+1);
+                if (i < 0)
+                    key = resource;
+                else
+                    key = resource.Substring(0, i);
+            }
+
+            if (r != null) {
+                Acl acl = r.Expand(resource);
+                if (acl.val != null) {
+                    rule = r;
+                    return acl;
+                }
+            }
+            rule = null;
+            return Acl.nullAcl;
+        }
+
+        private string! SanitizeResource(string! s)
+        {
+            while (s.IndexOf("//") >= 0)
+                s = s.Replace("//", "/");
+
+            int i = s.Length;
+            while (i > 0 && s[i - 1] == '/') i--;
+            if (i != s.Length)
+                s = s.Substring(0, i);
+            return s;
+        }
+
+        private string PreviousKey(string! key)
+        {
+            int i = key.LastIndexOf('/');
+            if (i < 0)
+                return null;
+            return key.Substring(0, i);
+        }
+
+        internal class Rule : IAclRule
+        {
+            static int MaxReps = 5;
+            struct Replacement
+            {
+                public int start;
+                public int end;
+                public int narc;
+            }
+
+            bool valid;
+            bool placeholder;
+            string aclExpression;
+            Replacement[] reps;
+            int nreps;
+
+            static Rule! placeholderRule = new Rule();
+            public bool Valid { get { return this.valid; } }
+            public void SetValid(bool yes) { this.valid = yes; }
+
+            private Rule()
+            {
+                aclExpression = null;
+                reps = null;
+                nreps = 0;
+                valid = false;
+                placeholder = true;
+            }
+            public Rule(string! aclExpression)
+            {
+                this.aclExpression = aclExpression;
+                reps = null;
+                nreps = 0;
+                this.valid = true;
+                this.placeholder = false;
+                //this.SetGenerator();
+            }
+
+            public bool Placeholder {
+                get { return placeholder; }
+            }
+
+            public static Rule! GetPlaceholder() { return placeholderRule; }
+
+            public Acl Expand(string! resource)
+            {
+                if (aclExpression == null)
+                    return Acl.nullAcl;
+                if (reps == null)
+                    return new Acl(aclExpression);
+
+                int i;
+                int p = 0;
+                StringBuilder sb = new StringBuilder();
+                for (i = 0; i < nreps; i++) {
+
+                    sb.Append(aclExpression.Substring(p, reps[i].start-p));
+                    sb.Append(NthArc(resource, reps[i].narc));
+                    p = reps[i].end+1;
+                }
+                sb.Append(aclExpression.Substring(p));
+                return new Acl(sb.ToString());
+            }
+
+            private string! NthArc(string! s, int index)
+            {
+                int i = 0;
+                int n = 0;
+                int j;
+
+                for (;;) {
+                    j = s.IndexOf('/', i);
+                    if (j < 0) break;
+                    if (n++ == index) break;
+                    i = j+1;
+                }
+                if (n != index)
+                    return "";
+                if (j < 0)
+                    return s.Substring(i);
+                return s.Substring(i, j);
+            }
+
+            private void SetGenerator()
+            {
+                Replacement[] treps = new Replacement[MaxReps];
+                int mode = 0;
+                int start = 0;
+                int tnreps = 0;
+
+                string tacl = aclExpression;
+
+                assert tacl != null;
+
+                // figure out the replacement set for this generator
+                for (int i = 0; i < tacl.Length; i++) {
+                    char c = tacl[i];
+                    switch (c) {
+                        case '{':
+                            if (mode == 0) {
+                                mode = 1;
+                                start = i;
+                            }
+                            break;
+                        case '}':
+                            if (mode == 1) {
+                                mode = 0;
+                                if (i > start + 1) {
+                                    // get the arc index that we have to replace
+                                    if (tnreps == MaxReps)
+                                        return;     // too many replacements in this pattern
+                                    int index = Int32.Parse(tacl.Substring(start, i-start));
+                                    treps[tnreps].start = start;
+                                    treps[tnreps].end = i;
+                                    treps[tnreps].narc = index;
+                                    tnreps++;
+                                }
+                            }
+                            break;
+                        default:
+                            if (mode != 0 && (c < '0' || c > '9')) {
+                                mode = 0;
+                            }
+                            break;
+                    }
+                }
+                if (nreps > 0) {
+                    reps = treps;
+                    nreps = tnreps;
+                }
+            }
+        }
+    }
+}
+
+

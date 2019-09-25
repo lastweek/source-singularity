@@ -1,0 +1,434 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+// #define APPLY_TPM
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using System.Threading;
+    using System.Collections;
+    using System.Text;
+
+    using Microsoft.Contracts;
+    using Microsoft.Singularity.Loader;
+    using Microsoft.Singularity.Xml;
+    using Microsoft.Singularity.Io;
+    using Microsoft.Singularity.Tpm;
+
+    public class PrincipalImpl
+    {
+        private const string KernelName = "kernel.localhost";
+        private const string UnknownName = "unknown";
+        private const string UnknownPublisher = "unknown";
+        private const string DefaultNameContext = "localhost";
+        private const string TruncateHistoryPrivilege = "$truncate-history-privilege.localhost";
+
+        // security tags in config XML
+        const string AuthPolicyXmlTag = "authpolicy";
+        const string SubexprXmlTag = "subexpr";
+        const string SubexprNameXmlAttribute = "name";
+        const string SubexprExpansionXmlAttribute = "expansion";
+        const string AuthorityXmlTag = "authority";
+        const string AuthorityNameXmlAttribute = "name";
+        const string AuthorityAclXmlAttribute = "acl";
+
+        private static Hashtable! principalHT;  // map from principal Val (ulong) to PrincipalT
+        private static Hashtable! exprHT;       // map from subexpr name to description (both strings)
+        private static Hashtable! privHT;       // map from privilege name to ArrayList of PrincipalT
+        private static Hashtable! authorityHT;  // map from authority name to acl expansion (both strings)
+        private static Hashtable! publisherHT;  // map from publisher name to PrincipalT
+
+        private const char CharInvocation = '+';
+        private const char CharRole = '@';
+        private const string NullName = "";
+
+        private const ulong KernelIdNum = 1;
+        private static ulong nextIdVal = KernelIdNum + (ulong)1;
+        private static SecurityDiagnostics! secDiag;
+        private static AclCore! aclCore;
+
+
+        internal class PrincipalT {
+            internal ulong val;
+            internal string! name;
+
+            [NotDelayed]
+            internal PrincipalT(string! _name)
+            {
+                name = _name;
+                base();
+                lock (principalHT) {
+                    val = nextIdVal++;
+                    principalHT.Add(val, this);
+                }
+            }
+            [NotDelayed]
+            internal PrincipalT(string! _name, ManifestPrincipal! mpT, string! delegatorName)
+            {
+                name = _name;
+                base();
+                lock (principalHT) {
+                    // in this case we want the record a new delegate under the same lock
+                    // thus the two tables will be consistent
+                    val = nextIdVal++;
+                    principalHT.Add(val, this);
+                    mpT.delegates[delegatorName] = val;
+                }
+            }
+        }
+
+        internal class ManifestPrincipal : PrincipalT {
+            internal string!  manifestName;
+            internal string[] privs;
+            internal PrincipalT publisherT;
+            internal ArrayList principalHashes;
+            internal Hashtable! delegates;
+
+            [NotDelayed]
+            internal ManifestPrincipal(string! _name, string! _maniName, string[] _privs, PrincipalT _publisherT)
+            {
+                manifestName = _maniName;
+                privs = _privs;
+                publisherT = _publisherT;
+                principalHashes = null;
+                delegates = new Hashtable();
+                base(_name);
+            }
+
+            [NotDelayed]
+            internal ManifestPrincipal(string! _name, string! _maniName, string[] _privs,
+                                       PrincipalT _publisherT, ArrayList _principalHashes)
+            {
+                manifestName = _maniName;
+                privs = _privs;
+                publisherT = _publisherT;
+                principalHashes = _principalHashes;
+                delegates = new Hashtable();
+                base(_name);
+            }
+
+            internal PrincipalT! MintDelegate(Principal delegator)
+            {
+                string delegatorName = delegator.GetName();
+                if (delegatorName == NullName) {
+                    throw new Exception("NewDelegation with null delegator");
+                }
+                PrincipalT dpT = this.delegates[delegatorName] as PrincipalT;
+                if (dpT != null) {
+                    return dpT;
+                }
+                int newlength = delegatorName.Length + this.manifestName.Length + 2;
+                StringBuilder sb = new StringBuilder(delegatorName, newlength);
+                sb.Append(CharInvocation);
+                sb.Append(this.manifestName);
+                return new PrincipalT(sb.ToString(), this, delegatorName);
+            }
+        }
+
+        public static void Initialize(XmlNode! config)
+        {
+            // kernel publisher T is currently "unknown".  fix this (maybe)
+            // one way to fix it is to have kernel manifest here, but that
+            // isn't currently possible.
+            principalHT = new Hashtable();
+            exprHT = new Hashtable();
+            privHT = new Hashtable();
+            authorityHT = new Hashtable();
+            publisherHT = new Hashtable();
+            secDiag = new SecurityDiagnostics();
+            aclCore = new AclCore("PrincipalImpl", null);
+            InstallPolicy(config);
+            principalHT.Add(KernelIdNum,
+                            new ManifestPrincipal(KernelName, KernelName, null, GetPublisherT(UnknownPublisher)));
+        }
+
+
+        public static Principal Self()
+        {
+            return new Principal(KernelIdNum);
+        }
+
+        public static Principal MakePrincipal(ulong id)
+        {
+            return new Principal(id);
+        }
+
+        public static string! GetPrincipalName(Principal pr)
+        {
+            PrincipalT pT = (PrincipalT) principalHT[pr.Val];
+            if (pT == null) {
+                return NullName;
+            }
+            return pT.name;
+        }
+
+        public static ArrayList GetPrincipalHashes(Principal pr)
+        {
+            ManifestPrincipal mpT = principalHT[pr.Val] as ManifestPrincipal;
+            if (mpT == null) {
+                return new ArrayList();
+            }
+            return mpT.principalHashes;
+        }
+
+        public static Principal NewInvocation(Principal parent, Manifest! manifest, string role, IoMemory rawImage)
+        {
+            string manifestName = manifest.Name;
+            string publisher = manifest.Publisher;
+            string name, newname;
+            bool eraseHistory = false;
+            string[] appPrivs = manifest.Privileges;
+            byte[] imageHash = null;
+            ArrayList newprincipalHashes = null;
+
+            if (manifestName == null) {
+                manifestName = UnknownName;
+            }
+
+            if (publisher == null) {
+                publisher = UnknownPublisher;
+            }
+
+            if (rawImage != null) {
+#if APPLY_TPM
+                byte[] dataToHash = new byte[rawImage.Length];
+
+                rawImage.Read8(0,
+                               dataToHash,
+                               0,
+                               rawImage.Length);
+
+                imageHash = SHA1.Hash(dataToHash);
+#endif // APPLY_TPM
+            }
+
+            PrincipalT publisherT = GetPublisherT(publisher);
+
+            manifestName = String.Format("{0}.{1}", manifestName, publisher);
+            name = manifestName;
+
+            ArrayList arrarr = EvaluatePrivileges(appPrivs, publisherT, out eraseHistory);
+            if (eraseHistory || (parent.Val == KernelIdNum)) {
+                // ignore role if eraseHistory or kernel parent
+                newname = name;
+                if (imageHash != null) {
+                    newprincipalHashes = new ArrayList();
+                    newprincipalHashes.Add(imageHash);
+                }
+            }
+            else {
+                string parentName = parent.GetName();
+                if (parentName == NullName) {
+                    throw new Exception("NewInvocation with null parent");
+                }
+                int newlength = parentName.Length + name.Length + 2;
+                if (role != null) {
+                    newlength += (role.Length + 1);
+                }
+                StringBuilder sb = new StringBuilder(parentName, newlength);
+                if (role != null) {
+                    sb.Append(CharRole);
+                    sb.Append(role);
+                }
+                sb.Append(CharInvocation);
+                sb.Append(name);
+                newname = sb.ToString();
+
+                if (imageHash != null) {
+                    ArrayList parentHashes = parent.GetHashes();
+                    newprincipalHashes = new ArrayList(parentHashes);
+                    newprincipalHashes.Add(imageHash);
+                }
+            }
+
+            PrincipalT pT = new ManifestPrincipal(newname, manifestName, appPrivs, publisherT, newprincipalHashes);
+            if (arrarr != null) {
+                foreach (Object! obj in arrarr) {
+                    ArrayList arr = (ArrayList) obj;
+                    lock (arr) {
+                        arr.Add(pT);
+                    }
+                }
+            }
+            return new Principal(pT.val);
+        }
+
+        public static Principal NewDelegation(Principal delegator, Principal target)
+        {
+            ManifestPrincipal targetT = principalHT[target.Val] as ManifestPrincipal;
+            if (targetT == null) {
+                throw new Exception("Delegation with inappropriate target");
+            }
+            PrincipalT pT = targetT.MintDelegate(delegator);
+            return new Principal(pT.val);
+        }
+
+        public static void Dispose(Principal pr)
+        {
+            ManifestPrincipal mpT = principalHT[pr.Val] as ManifestPrincipal;
+            lock (principalHT) {
+                principalHT.Remove(pr.Val);
+                if (mpT == null) {
+                    return;
+                }
+                IDictionaryEnumerator myEnumerator = mpT.delegates.GetEnumerator();
+                while (myEnumerator.MoveNext()) {
+                    ulong delgPrVal = (ulong) (!)myEnumerator.Value;
+                    principalHT.Remove(delgPrVal);
+                }
+            }
+
+            if (mpT.privs != null) {
+                for (int i = 0; i < mpT.privs.Length; i++) {
+                    ArrayList arr = (ArrayList) privHT[(!)mpT.privs[i]];
+                    if (arr != null) {
+                        lock (arr) {
+                            arr.Remove(mpT);
+                        }
+                    }
+                }
+            }
+        }
+
+        public static string ExpandAclIndirection(string! name)
+        {
+            if (name.Length == 0) {
+                return null;
+            }
+
+            if (name.IndexOf('.') == -1) {
+                name = String.Format("{0}.{1}", name, DefaultNameContext);
+            }
+
+            string res = (string) exprHT[name];
+            if (res != null) {
+                return res;
+            }
+
+            ArrayList arr = (ArrayList) privHT[name];
+            if (arr == null) {
+                return null;
+            }
+
+            StringBuilder sb = new StringBuilder();
+            lock (arr) {
+                sb.Append("(");
+                for (int i = 0; i < arr.Count; i++) {
+                    ManifestPrincipal mpT = (ManifestPrincipal!) arr[i];
+                    if (mpT == null || mpT.manifestName == null) {
+                        continue;
+                    }
+                    if (i != 0) {
+                        sb.Append('|');
+                    }
+                    sb.Append(mpT.manifestName);
+                }
+                sb.Append(")");
+            }
+            return sb.ToString();
+        }
+
+        public static void RegisterAclCore(Object core)
+        {
+            secDiag.RegisterAclCore((AclCore!)core);
+        }
+
+        public static void Export()
+        {
+            secDiag.Start();
+        }
+
+        private static ArrayList EvaluatePrivileges(string[] appPrivs, PrincipalT! publisherT, out bool eraseHistory)
+        {
+            // Here we look for authority to grant privilege to a app
+            // Currently, we don't revisit this decision, although in future we might
+            // return an array of privHT entries to which the new PrincipalT will be added
+            ArrayList arrarr = null;
+            eraseHistory = false;
+            if (appPrivs != null) {
+                for (int i = 0; i < appPrivs.Length; i++) {
+                    string s = (!)appPrivs[i];
+                    string acl = (string) authorityHT[s];
+                    // Would call the normal CheckAccess entry point here, but it can't equate
+                    // the Principal type in this context, and that in the library.  Grumble!
+                    if (acl != null && aclCore.CheckAccess(acl, null,
+                                                              publisherT.val, publisherT.name)) {
+                        ArrayList arr = (ArrayList) privHT[s];
+                        if (arr == null) {
+                            lock (privHT) {
+                                arr = new ArrayList();
+                                privHT[s] = arr;
+                            }
+                        }
+                        // make an array of ArrayLists which we'll add a principal handle to below
+                        if (arrarr == null) {
+                            arrarr = new ArrayList();
+                        }
+                        arrarr.Add(arr);
+                        if (s == TruncateHistoryPrivilege) {
+                            eraseHistory = true;
+                        }
+                    }
+                }
+            }
+            return arrarr;
+        }
+
+        private static void InstallPolicy(XmlNode! config)
+        {
+            // get all group definitions to register from the xml
+            XmlNode policyConfig = config.GetChild(AuthPolicyXmlTag);
+
+            if (policyConfig == null) {
+                return;
+            }
+
+            bool isAuthority = false;
+            foreach (XmlNode! elem in policyConfig.Children) {
+                string name;
+                string target;
+                if (elem.Name == AuthorityXmlTag) {
+                    name = (!)elem.GetAttribute(AuthorityNameXmlAttribute, "");
+                    target = (!)elem.GetAttribute(AuthorityAclXmlAttribute, "");
+                    isAuthority = true;
+                }
+                else if (elem.Name == SubexprXmlTag) {
+                    name = (!)elem.GetAttribute(SubexprNameXmlAttribute, "");
+                    target = (!)elem.GetAttribute(SubexprExpansionXmlAttribute, "");
+                }
+                else {
+                    continue;
+                }
+                if (name.Length != 0 && target.Length != 0) {
+                    if (name.IndexOf('.') == -1) {
+                        name = String.Format("{0}.{1}", name, DefaultNameContext);
+                    }
+                    if (isAuthority) {
+                        authorityHT[name] = target;
+                    }
+                    else {
+                        exprHT[name] = target;
+                    }
+                }
+            }
+        }
+
+        private static PrincipalT! GetPublisherT(string! publisher)
+        {
+            lock (publisherHT) {
+                PrincipalT publisherT = (PrincipalT) publisherHT[publisher];
+                if (publisherT == null) {
+                    publisherT = new PrincipalT(publisher);
+                    publisherHT[publisher] = publisherT;
+                }
+                return publisherT;
+            }
+        }
+    }
+}
+
+

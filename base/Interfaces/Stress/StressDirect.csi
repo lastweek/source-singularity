@@ -1,0 +1,20 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   StressDirect.csi
+//
+//  Note:
+//
+
+using Microsoft.Singularity.Memory;
+
+namespace Microsoft.Singularity.Stress
+{
+    public class StressDirect
+    {
+        static public unsafe uint KPTest(SharedHeap.Allocation *sharedArgs, int i);
+    }
+}

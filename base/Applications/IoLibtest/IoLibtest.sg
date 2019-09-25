@@ -1,0 +1,28 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.IO;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class IoLibTest
+    {
+        public static void Main(string[] args)
+        {
+            if (args != null && args.Length > 1) {
+                try {
+                    File.Delete(args[1]);
+                } 
+                catch (Exception e) {
+                    Console.WriteLine("error deleting {0}, msg={1}", args[1], e.Message);
+                }
+            }
+            return ; 
+        }
+    }
+}
+

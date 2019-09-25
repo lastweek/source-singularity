@@ -1,0 +1,36 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+
+    // The access control policy engine can compactly represent ACLs over
+    // a collection of objects.  Furthermore, the ACL policy can allow for
+    // substitutions based on the argument resource.  Access control rule
+    // expansions can be cached by the relying party.  However, the relying
+    // party should always check that a previous expansion is still
+    // valid using IRule.Valid.  Expansions can be invalidated when
+    // the underlying rule is superseded.
+
+    public interface IAclRule
+    {
+        bool Valid { get; }
+    }
+
+    public interface IAclPolicy
+    {
+        // An access control rule provider must provide the following method.
+        // The interpretation of "resource" is implementation specific.
+        // This method can return null, meaning that no valid rule is applicable.
+
+        Acl LookupAndExpand(string! resource,  out IAclRule rule);
+
+        // This method allows for the addition of new rules.
+        // The semantics of aclExpander are implementation specific.
+        void AddRule(string! resource, string! aclExpander);
+    }
+}

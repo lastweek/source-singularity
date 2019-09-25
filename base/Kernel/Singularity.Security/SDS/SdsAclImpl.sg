@@ -1,0 +1,305 @@
+////////////////////////////////////////////////////////////////////////////////
+//Microsoft Research Singularity// Copyright (c) Microsoft
+//Corporation.  All rights reserved.  File: SdsAclPerms.sg Note:
+
+namespace Microsoft.Singularity.Security.SDS
+{
+    using System;
+    using Microsoft.Contracts;
+    using Microsoft.Singularity.Security;
+
+    // This module support path-based ACLs in the Singularity Directory Service.
+    // ACLs are kept in prefix-table adjoining the SDS data structures.
+    // This module contains a non-persistent implementation.  It can be subclassed to
+    // produce a persistent table.
+
+    public class SdsAclImpl : ISdsAcl
+    {
+        //
+        //All "path" variables here must start with "/", end with other than "/" (except for the
+        //root), and contain no repeated "/" characters.
+        //
+
+        // We have two subtypes of IEffectiveAclRef:  one for inherited ACLs, and other
+        // for those that represent an exact match with the target.  This here is of the
+        // former variety.
+        public class AclRef : IEffectiveAclRef {
+            private bool valid = true;
+            private HEntry! entry;
+
+            public bool GetCached (out string aclPattern) {
+                aclPattern = (entry.acl.Descendant != null) ? entry.acl.Descendant : entry.acl.Node;
+                return valid;
+            }
+
+            internal AclRef(HEntry! _entry)
+            {
+                entry = _entry;
+            }
+
+            internal void Invalidate() {
+                valid = false;
+            }
+        }
+
+        //This class is returned to clients for exact path matches.
+        internal class HEntry : IEffectiveAclRef
+        {
+            internal bool inTable;
+            internal string! path;
+            internal int pathlen;
+            internal Acl acl;
+            internal AclRef iref;
+            internal HEntry chain;
+
+            public bool GetCached (out string aclPattern) {
+                aclPattern = acl.Node;
+                return inTable;
+            }
+
+            // this constructor for placeholders
+            internal HEntry(string! _path, int _pathlen)
+            {
+                inTable = true;
+                path = _path;
+                pathlen = _pathlen;
+                acl = Acl.nullAcl;
+                iref = null;
+                chain = null;
+            }
+
+            // this constructor for regular entries
+            internal HEntry(string! _path, int _pathlen, Acl _acl)
+            {
+                inTable = true;
+                path = _path;
+                pathlen = _pathlen;
+                acl = _acl;
+                iref = null;
+                chain = null;
+            }
+        }
+
+        private const int DefaultHTSize = 64;
+        private int htSize = DefaultHTSize;
+        private int htEntries = 0;
+        private HEntry[]! ht = new HEntry[DefaultHTSize];
+
+        [NotDelayed]
+        public SdsAclImpl()
+        {
+            // add null default rule
+            HtInsert(new HEntry("/", 1, Acl.nullAcl));
+        }
+
+        // This method gets a ref for fetching the effective access control pattern
+        public string GetEffective(string! path, out IEffectiveAclRef aclRef)
+        {
+            HEntry h = null;
+            aclRef = null;
+            if (path[0] != '/') {
+                DebugStub.Print("SdsAcl: invalid get acl\n");
+                return null;
+            }
+            lock (this) {
+                // first look for exact match
+                h = HtFind(path, path.Length);
+                if (h != null && h.acl.Node != null) {
+                    aclRef = h;
+                    return h.acl.Node;
+                }
+
+                // from here, we're looking for an inheritance
+                int pathlen = 1;
+                h = HtFind(path, 1);
+                //  h should be non-null here because we guarantee a non-null root
+                if (h == null) {
+                    DebugStub.Print("SdsAcl: missing root acl\n");
+                    return null;
+                }
+
+                while (true) {
+                    HEntry hh;
+                    pathlen = path.IndexOf('/', pathlen+1);
+                    if (pathlen < 0)
+                        break;
+
+                    hh = HtFind(path, pathlen);
+                    if (hh != null) {
+                        if (hh.acl.Node != null || hh.acl.Descendant != null) {
+                            h = hh;
+                        }
+                    }
+                }
+
+                // return the Node acl pattern if the Descendant one is null or we have an exact match
+                if (h.iref == null) {
+                    h.iref = new AclRef(h);
+                }
+                aclRef = h.iref;
+                // we assert that any AclRef currently in the table is valid
+                string res;
+                aclRef.GetCached(out res);
+                return res;
+            }
+        }
+
+        // This method gets the ACL stored for the designated path (e.g. not inherited)
+        public Acl Get(string! path)
+        {
+            if (path[0] != '/') {
+                DebugStub.Print("SdsAcl: invalid get acl\n");
+                return Acl.nullAcl;
+            }
+            lock (this) {
+                HEntry h = null;
+                h = HtFind(path, path.Length);
+                if (h == null)
+                    return Acl.nullAcl;
+                return h.acl;
+            }
+        }
+
+        // This method sets an ACL for a path and the paths that inherit from it.
+        public void Set(string! path, Acl acl)
+        {
+            int pathlen = path.Length;
+            if (path[0] != '/') {
+                DebugStub.Print("SdsAcl: invalid set acl");
+                return;
+            }
+            lock (this) {
+                HEntry h = new HEntry(path, pathlen, acl);
+                h = HtInsert(h);
+                while (true) {
+                    if (h != null) {
+                        if (pathlen == 1 || h.acl.Node != null || h.acl.Descendant != null) {
+                            // invalidate the first non-placeholder, or the root if none
+                            Invalidate(h);
+                            break;
+                        }
+                    }
+                    if (pathlen <= 0) {
+                        DebugStub.Print("SdsAcl: missing root acl\n");
+                        break;
+                    }
+                    // there should always be some non-placeholder ancestor
+                    pathlen = path.LastIndexOf('/', pathlen-1);
+                    if (pathlen == 0)
+                        pathlen++;              // special case to find root
+                    h = HtFind(path, pathlen);
+                    if (h == null) {
+                        // previous was null, add a placeholder
+                        HtInsert(new HEntry(path, pathlen));
+                    }
+                }
+            }
+        }
+
+        // This method clears an ACL associated with a path;
+        public void Clear(string! path)
+        {
+            if (path[0] != '/' || path.Length == 1) {
+                DebugStub.Print("SdsAcl: invalid clear acl\n");
+                return;
+            }
+            lock (this) {
+                HEntry h = HtDelete(path, path.Length);
+                if (h != null)
+                    Invalidate(h);
+            }
+        }
+
+        internal void Invalidate(HEntry h)
+        {
+            if (h != null) {
+                if (h.iref != null) {
+                    h.iref.Invalidate();
+                }
+            }
+        }
+
+        internal HEntry HtFind(string! path, int pathlen)
+        {
+            uint hash = Hash(path, pathlen);
+            HEntry h = ht[hash];
+            while (h != null && !Comp(h, path, pathlen))
+                h = h.chain;
+            return h;
+        }
+
+        internal HEntry HtInsert(HEntry! h)
+        {
+            uint hash = Hash(h.path, h.pathlen);
+            HEntry prev = null;
+            HEntry hh = ht[hash];
+            while (hh != null) {
+                if (Comp(hh, h.path, h.pathlen)) {
+                    if (prev != null)
+                        prev.chain = hh.chain;
+                    else
+                        ht[hash] = hh.chain;
+                    hh.chain = null;
+                    htEntries--;
+                    break;
+                }
+                prev = hh;
+                hh = hh.chain;
+            }
+            h.chain = ht[hash];
+            ht[hash] = h;
+            htEntries++;
+            if (hh != null)
+                hh.inTable = false;
+            return hh;
+        }
+
+        internal HEntry HtDelete(string! path, int pathlen)
+        {
+            uint hash = Hash(path, pathlen);
+            HEntry prev = null;
+            HEntry h = ht[hash];
+            while (h != null) {
+                if (Comp(h, path, pathlen)) {
+                    if (prev != null)
+                        prev.chain = h.chain;
+                    else
+                        ht[hash] = h.chain;
+                    h.chain = null;
+                    htEntries--;                    // note that pathlen of "/" is zero
+
+                    h.inTable = false;
+                    return h;
+                }
+                prev = h;
+                h = h.chain;
+            }
+            return null;
+        }
+
+        internal uint Hash(string! path, int pathlen)
+        {
+            uint hash = 5381;
+            int i = 0;
+            while (i != pathlen) {
+                hash = ((hash << 5) + hash) ^ Char.ToLower(path[i++]);
+            }
+            return hash % (uint) htSize;
+        }
+
+        internal static bool Comp(HEntry! h, string! path, int pathlen)
+        {
+            if (pathlen != h.pathlen)
+                return false;
+
+            int i = 0;
+            while (i != pathlen) {
+                if (Char.ToLower(path[i]) != Char.ToLower(h.path[i]))
+                    return false;
+                i++;
+            }
+            return true;
+        }
+    }
+}
+

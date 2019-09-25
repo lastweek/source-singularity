@@ -1,0 +1,5 @@
+singunit '@manual' EventTest EventTest TestAll '-TestTimeout=200000000'
+#singunit '@manual' EvStress EvStress TestAll '-TestTimeout=200000'
+#singunit '@manual' EventActive EventActive TestAll '-TestTimeout=200000'
+
+

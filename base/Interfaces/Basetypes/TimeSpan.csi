@@ -1,0 +1,77 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+    public struct TimeSpan : IComparable
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public const long TicksPerMillisecond;
+        public const long TicksPerSecond;
+        public const long TicksPerMinute;
+        public const long TicksPerHour;
+        public const long TicksPerDay;
+
+        public static readonly TimeSpan Zero;
+        public static readonly TimeSpan MaxValue;
+        public static readonly TimeSpan MinValue;
+
+        public TimeSpan(long ticks);
+        public TimeSpan(int hours, int minutes, int seconds);
+        public TimeSpan(int days, int hours, int minutes, int seconds);
+        public TimeSpan(int days, int hours, int minutes, int seconds, int milliseconds);
+
+        public long Ticks { get; }
+        public int Days { get; }
+        public int Hours { get; }
+        public int Milliseconds { get; }
+        public int Minutes { get; }
+        public int Seconds { get; }
+        public double TotalDays { get; }
+        public double TotalHours { get; }
+        public double TotalMilliseconds { get; }
+        public double TotalMinutes { get; }
+        public double TotalSeconds { get; }
+
+        public static int Compare(TimeSpan t1, TimeSpan t2);
+
+        public int CompareTo(Object value);
+
+        public override bool Equals(Object value);
+        public override int GetHashCode();
+        public override String ToString();
+
+        public static bool Equals(TimeSpan t1, TimeSpan t2);
+
+        public static TimeSpan FromDays(double value);
+        public static TimeSpan FromHours(double value);
+        public static TimeSpan FromMilliseconds(double value);
+        public static TimeSpan FromMinutes(double value);
+        public static TimeSpan FromSeconds(double value);
+        public static TimeSpan FromTicks(long value);
+
+        public static TimeSpan Parse(String s);
+
+        public TimeSpan Duration();
+        public TimeSpan Negate();
+        public TimeSpan Add(TimeSpan ts);
+        public TimeSpan Subtract(TimeSpan ts);
+
+        public static TimeSpan operator -(TimeSpan t);
+        public static TimeSpan operator -(TimeSpan t1, TimeSpan t2);
+        public static TimeSpan operator +(TimeSpan t);
+        public static TimeSpan operator +(TimeSpan t1, TimeSpan t2);
+
+        public static bool operator ==(TimeSpan t1, TimeSpan t2);
+        public static bool operator !=(TimeSpan t1, TimeSpan t2);
+        public static bool operator <(TimeSpan t1, TimeSpan t2);
+        public static bool operator <=(TimeSpan t1, TimeSpan t2);
+        public static bool operator >(TimeSpan t1, TimeSpan t2);
+        public static bool operator >=(TimeSpan t1, TimeSpan t2);
+    }
+}

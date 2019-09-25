@@ -1,0 +1,206 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ByteContainers.sg
+//
+//  Helper class for abstracting over either byte[] or byte[] in ExHeap
+//
+using System;
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+public class ByteContainer {
+    bool inSharedHeap;
+    bool occupied;
+    int length;
+    byte[] normalBuf;
+    VContainer<byte> sharedBuf;
+    
+    public ByteContainer() {sharedBuf = null;}
+    public ByteContainer(byte[] newBuf) {
+        inSharedHeap = false;
+        occupied = true;
+        normalBuf = newBuf;
+        sharedBuf = null;
+        length = newBuf.Length;
+    }
+    
+    public ByteContainer([Claims]byte[]! in ExHeap newBuf) {
+        inSharedHeap = true;
+        occupied = true;
+        normalBuf = null;
+        length = newBuf.Length;
+        sharedBuf = new VContainer<byte>(newBuf);
+    }
+    
+    public bool InSharedHeap {get{return inSharedHeap;}}
+    public int Length {
+        get{
+            if (!occupied) {
+                DebugStub.Break();
+                throw new Exception("Tried to get length of empty ByteContainer!");
+            }
+            else {
+                return length;
+            }
+        }
+    }
+    
+    public void CopyFrom(byte[] dest, int srcOff, int destOff, int len) {
+        if (!occupied) {
+            DebugStub.Break();
+            throw new Exception("Trying to CopyFrom empty ByteContainer!");
+        }
+        else {
+            if (inSharedHeap) {
+                byte[]! in ExHeap src = sharedBuf.Acquire();
+                for (int i = 0; i < len; i++) {
+                    dest[destOff+i] = src[srcOff+i];
+                }
+                sharedBuf.Release(src);
+            }
+            else {
+                for (int i = 0; i < len; i++) {
+                    dest[destOff+i] = normalBuf[srcOff+i];
+                }
+            }
+        }
+    }
+    
+    public void CopyTo(byte[] src, int srcOff, int destOff, int len) {
+        if (!occupied) {
+            DebugStub.Break();
+            throw new Exception("Trying to CopyTo empty ByteContainer!");
+        }
+        else {
+            if (inSharedHeap) {
+                byte[]! in ExHeap dest = sharedBuf.Acquire();
+                for (int i = 0; i < len; i++) {
+                    dest[destOff+i] = src[srcOff+i];
+                }
+                sharedBuf.Release(dest);
+            }
+            else {
+                for (int i = 0; i < len; i++) {
+                    normalBuf[destOff+i] = src[srcOff+i];
+                }
+            }
+        }
+    }
+    
+    public void Clear(long off, long amount) {
+        if (!occupied) {
+            throw new Exception("Trying to CopyFrom empty ByteContainer!");
+        }
+        else {
+            if (inSharedHeap) {
+                byte[]! in ExHeap buf = sharedBuf.Acquire();
+                for (long i = 0; i < amount; i++) {
+                    buf[off+i] = 0;
+                }
+                sharedBuf.Release(buf);
+            }
+            else {
+                for (long i = 0; i < amount; i++) {
+                    normalBuf[off+i] = 0;
+                }
+            }
+        }
+    }
+    
+    public byte[] GetArray() {
+        if (inSharedHeap) {
+            DebugStub.Break();
+            throw new Exception("Tried to get vector as array!");
+        }
+        else if (!occupied) {
+            DebugStub.Break();
+            throw new Exception("Trying to get empty ByteContainer!");
+        }
+        else {
+            occupied = false;
+            return normalBuf;
+        }
+    }
+    
+    public void PutArray(byte[] buf) {
+        if (occupied) {
+            DebugStub.Break();
+            throw new Exception("ByteContainer already occupied!");
+        }
+        else {
+            inSharedHeap = false;
+            occupied = true;
+            normalBuf = buf;
+            length = buf.Length;
+        }
+    }
+    
+    public byte[] in ExHeap ConvertToVector() {
+        if (inSharedHeap) {
+            DebugStub.Break();
+            throw new Exception("Tried to convert a vector to a vector!");
+        }
+        else if (!occupied) {
+            DebugStub.Break();
+            throw new Exception("Trying to get empty ByteContainer!");
+        }
+        else {
+            return Bitter.FromByteArray(normalBuf);
+        }
+    }
+    
+    public byte[] ConvertToArray() {
+        if (!inSharedHeap) {
+            return normalBuf;
+        }
+        else if (!occupied) {
+            DebugStub.Break();
+            throw new Exception("Trying to get empty ByteContainer!");
+        }
+        else {
+            byte[]! in ExHeap temp = sharedBuf.Acquire();
+            byte[] ret = Bitter.ToByteArray(temp);
+            sharedBuf.Release(temp);
+            return ret;
+        }
+    }
+    
+    public byte[]! in ExHeap GetVector() {
+        if (!inSharedHeap) {
+            DebugStub.Break();
+            throw new Exception("Tried to get array as vector!");
+        }
+        else if (!occupied) {
+            DebugStub.Break();
+            throw new Exception("Trying to get empty ByteContainer!");
+        }
+        else {
+            occupied = false;
+            return sharedBuf.Acquire();
+        }
+    }
+    
+    public void PutVector([Claims]byte[]! in ExHeap buf) {
+        if (occupied) {
+            DebugStub.Break();
+            throw new Exception("ByteContainer already occupied!");
+        }
+        else {
+            occupied = true;
+            inSharedHeap = true;
+            if (sharedBuf == null) {
+                length = buf.Length;
+                sharedBuf = new VContainer<byte>(buf);
+            }
+            else {
+                length = buf.Length;
+                sharedBuf.Release(buf);
+            }
+        }
+    }
+}

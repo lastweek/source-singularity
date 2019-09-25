@@ -1,0 +1,30 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Microsoft.Singularity.ServiceManager;
+
+namespace Microsoft.Singularity.Services.ServiceManager
+{
+	static class Util
+	{
+        public static void IllegalStateReached()
+        {
+            DebugStub.WriteLine("*** ILLEGAL CODE PATH REACHED ***");
+            DebugStub.Break();
+            for (;;) {
+                System.Threading.Thread.Sleep(100000);
+            }
+        }
+        
+        public static SchedulerTime SchedulerTimeNever
+        {
+            get { return SchedulerTime.MaxValue; }
+        }
+	}
+}

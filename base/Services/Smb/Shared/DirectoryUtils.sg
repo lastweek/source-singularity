@@ -1,0 +1,137 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Smb.Shared
+{
+	class DirectoryUtil
+	{
+		public static void BindService(string! path, [Claims]ServiceContract.Exp! service_exp)
+		{
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+			
+			char[]! in ExHeap expath = Bitter.FromString2(path);
+			
+			rootds.SendBind(expath, service_exp);
+			switch receive
+			{
+				case rootds.AckBind():
+					// SmbDebug.WriteLine("Successfully bound to service: " + path);
+					delete rootds;
+					break;
+					
+				case rootds.NakBind(ServiceContract.Exp:Start exp, ErrorCode code):
+					if (exp != null)
+						delete exp;
+					delete rootds;
+					throw new Exception(String.Format("The request to bind to the service '{0}' failed.  "
+						+ "The directory service refused the bind request: {1}.",
+						path, SdsUtils.ErrorCodeToString(code)));
+						
+				case rootds.NakBindReparse(char[]! in ExHeap expath_out, char[] in ExHeap rest, bool linkFound, ServiceContract.Exp:Start! exp):
+					delete expath_out;
+					if (rest != null)
+						delete rest;
+					delete exp;
+					delete rootds;
+					throw new Exception(String.Format("The request to bind to the service '{0}' failed.  "
+						+ "The directory service returned a reparse request, which is not currently supported.", path));
+					
+				case rootds.ChannelClosed():
+					delete rootds;
+					throw new Exception(String.Format("The request to bind to the service '{0}' failed.  The directory service closed the channel.", path));
+					
+				case unsatisfiable:
+					delete rootds;
+					throw new Exception(String.Format("The request to bind to the service '{0}' failed.  The select is unsatisfiable.", path));
+			}
+			
+			#if false
+			SmbDebug.WriteLine("Waiting for service to indicate that it is ready...");
+			switch receive
+			{
+				case service_imp.Ready():
+					SmbDebug.WriteLine("Service indicates it is ready.");
+					break;
+					
+				case service_imp.ChannelClosed():
+					throw new Exception(String.Format("The request to bind to service '{0}' failed.  The service closed the channel without indicating that it was ready.", path));
+					
+				case unsatisfiable:
+					throw new Exception(String.Format("The request to bind to service '{0}' failed.  The service closed the channel without indicating that it was ready.", path));
+			}
+			#endif
+		}
+		
+		public static ServiceProviderContract.Exp! RegisterService(string! path)
+		{
+			ServiceProviderContract.Imp! service_provider_imp;
+			ServiceProviderContract.Exp! service_provider_exp;
+			ServiceProviderContract.NewChannel(out service_provider_imp, out service_provider_exp);
+			try {
+				RegisterService(path, service_provider_imp);
+				return service_provider_exp;
+			}
+			catch (Exception ex) {
+				delete service_provider_exp;
+				throw ex;
+			}			
+		}
+		
+		public static void RegisterService(string! path, [Claims]ServiceProviderContract.Imp! service_provider_imp)
+		{
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+            try {
+				// DebugLine("Registering service '{0}'...", path);
+				rootds.SendRegister(Bitter.FromString2(path), service_provider_imp);
+				switch receive
+				{
+					case rootds.AckRegister():
+						// DebugLine("Successfully registered service '{0}'.", path);
+						break;
+						
+					case rootds.NakRegister(ServiceProviderContract.Imp:Start imp, ErrorCode error):
+						if (imp != null)
+							delete imp;
+						DebugLine("FAILED to register service '{0}': {1}", path, SdsUtils.ErrorCodeToString(error));
+						throw new Exception(String.Format("The service '{0}' could not be registered: {1}", path, SdsUtils.ErrorCodeToString(error)));
+						
+					case rootds.NakRegisterReparse(char[]! in ExHeap expath, char[]! in ExHeap rest, bool linkFound, ServiceProviderContract.Imp:Start! imp):
+						delete expath;
+						delete rest;
+						delete imp;
+						throw new Exception(String.Format("The service '{0}' could not be registered.  Reparse points are not yet supported.", path));						
+					
+					case rootds.ChannelClosed():
+						throw new Exception(String.Format("The service '{0}' could not be registered.  The directory service closed its channel without responding.", path));
+						
+					case unsatisfiable:
+						throw new Exception(String.Format("The service '{0}' could not be registered.  Unsatisfiable select.", path));
+				}
+            }
+            finally {
+				delete rootds;
+            }
+		}
+		
+		static void DebugLine(string msg)
+		{
+			DebugStub.WriteLine("DirectoryUtils: " + msg);
+		}
+		
+		static void DebugLine(string format, params object[] args)
+		{
+			DebugStub.WriteLine("DirectoryUtils: " + String.Format(format, args));
+		}
+	}
+
+}

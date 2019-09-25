@@ -1,0 +1,161 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple delegation test (parent)
+//
+
+using System;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Applications.Contracts;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return DlgTest.AppMain(this);
+        }
+    }
+    public class DlgTest
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp rootNS = config.nsRef.Acquire();
+            if (rootNS == null) {
+                Console.WriteLine("DlgTest : Unable to acquire handle to the Directory Service root.");
+                return 1;
+            }
+
+            rootNS.RecvSuccess();
+
+            // Start up the pong process.
+            DlgTestContract.Imp! dlgImp;
+            DlgTestContract.Exp! dlgExp;
+
+            DlgTestContract.NewChannel(out dlgImp, out dlgExp);
+
+            try {
+                Console.WriteLine("DlgTest  : Starting child.");
+
+                Process child;
+                try {
+                    string[] args = new string[] {"dlgchild"};
+                    child = new Process(args, "child", (Endpoint * in ExHeap)dlgExp);
+                    child.Start();
+                }
+                catch (ProcessCreateException) {
+                    Console.WriteLine("Can't create child");
+                    return 1;
+                }
+                catch (Exception e) {
+                    Console.Write("Can't start child: Exception '{0}' caught.", e.Message);
+                    return 1;
+                }
+
+                Console.WriteLine("DlgTest  : Waiting for child.");
+                dlgImp.RecvSuccess();
+
+                Principal p = Principal.EndpointPeer(dlgImp);
+                Console.WriteLine("Peer is {0}", p.GetName());
+
+                int phase = 0;
+                bool more = true;
+
+
+                while (more) {
+                    DirectoryServiceContract.Imp! tempImp;
+
+                    if (!MakeDirPair(rootNS, out tempImp)) {
+                        delete tempImp;
+                        return 1;
+                    }
+
+                    switch (phase) {
+                        default:
+                            dlgImp.SendHereIsCapabilityEndpoint(tempImp);
+                            break;
+                        case 1:
+                            tempImp->EnableDelegation(false);
+                            dlgImp.SendHereIsCapabilityEndpoint(tempImp);
+                            break;
+                        case 2:
+                            tempImp->EnableDelegation(true);
+                            dlgImp.SendHereIsMediationEndpoint(tempImp);
+                            break;
+                    }
+                    switch receive {
+                        case dlgImp.HereIsCapabilityEndpointAck(msg):
+                            string! str = Bitter.ToString2(msg);
+                            Console.WriteLine("Child principal is " + str);
+                            delete msg;
+                            more = true;
+                            break;
+
+                        case dlgImp.HereIsMediationEndpointAck(ep):
+                            Console.WriteLine("Mediated principal is " +
+                                              Principal.EndpointPeer(ep).GetName());
+                            delete ep;
+                            more = false;
+                            break;
+
+                        case dlgImp.ChannelClosed():
+                            more = false;
+                            break;
+                    }
+                    phase++;
+                }
+                child.Stop();
+                child.Join();
+                return 0;
+            }
+            finally {
+                delete dlgImp;
+                delete rootNS;
+            }
+            return 1;
+        }
+
+        internal static bool MakeDirPair(
+            DirectoryServiceContract.Imp! root,
+            out DirectoryServiceContract.Imp! tempImp)
+        {
+            DirectoryServiceContract.Exp! ex;
+            DirectoryServiceContract.Imp! ix;
+
+            DirectoryServiceContract.NewChannel(out ix, out ex);
+            tempImp = ix;
+
+            ErrorCode ec;
+            if (! SdsUtils.Bind("/init", root, ex, out ec)) {
+                Console.Write("DlgTest : Can't open \"/init\": {0}.", SdsUtils.ErrorCodeToString(ec));
+                return false;
+            }
+            ix.RecvSuccess();
+            return true;
+        }
+    }
+}

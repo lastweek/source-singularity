@@ -1,0 +1,61 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NicDeviceProperties.sg
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Io.Net
+{
+    public enum MacType : uint
+    {
+        Ethernet = 1,
+        // ATM
+        // FDDI
+    }
+
+    public enum ChecksumSupport : uint
+    {
+        None           = 0,
+        Ip4Receive     = 1u << 0,
+        Ip4Transmit    = 1u << 1,
+        Udp4Receive    = 1u << 2,
+        Udp4Transmit   = 1u << 3,
+        Tcp4Receive    = 1u << 4,
+        Tcp4Transmit   = 1u << 5,
+        AllIp4Receive  = (Ip4Receive | Udp4Receive | Tcp4Receive),
+        AllIp4Transmit = (Ip4Transmit | Udp4Transmit | Tcp4Transmit),
+        AllIp4         = (AllIp4Receive | AllIp4Transmit),
+        Ip6Receive     = 1u << 6,
+        Ip6Transmit    = 1u << 7,
+        Udp6Receive    = 1u << 8,
+        Udp6Transmit   = 1u << 9,
+        Tcp6Receive    = 1u << 10,
+        Tcp6Transmit   = 1u << 11,
+        AllIp6Receive  = (Ip6Receive | Udp6Receive | Tcp6Receive),
+        AllIp6Transmit = (Ip6Transmit | Udp6Transmit | Tcp6Transmit),
+        AllIp6         = (AllIp6Receive | AllIp6Transmit),
+    }
+
+    public rep struct NicDeviceProperties : ITracked
+    {
+        public char [] in ExHeap DriverName;
+        public char [] in ExHeap DriverVersion;
+
+        public MacType           MacType;
+        public byte [] in ExHeap MacAddress;
+
+        public ChecksumSupport   ChecksumSupport;
+
+        public int               MtuBytes;
+        public int               MaxTxPacketsInDevice;
+        public int               MaxTxFragmentsPerPacket;
+        public int               MaxRxPacketsInDevice;
+        public int               MaxRxFragmentsPerPacket;
+    }
+}

@@ -1,0 +1,195 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Used for testing the namespace service.
+//          register /dev/NakConnect  in the namespace.
+//          will always Nak any Connect requests.
+//
+
+using System;
+using System.Runtime.CompilerServices;
+//using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Security;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    public static class NakConnect
+    {
+        static string hang = "/service/channelhang";
+        static string nakConn = "/service/nakconnect";
+        static string nakRunning = "/service/nakrunning";
+        static string closed = "/service/channelclosed";
+
+        private static bool Register(DirectoryServiceContract.Imp! ds,
+                                     string! name,
+                                     [Claims]ServiceProviderContract.Imp! imp)
+        {
+            // acquire namespace endpoint
+
+            ErrorCode errorOut;
+            ServiceProviderContract.Imp:Start  service;
+            bool ok = SdsUtils.Register(name, ds, imp, out errorOut);
+            if (!ok) {
+                Console.WriteLine(" Registration of {0} failed. Reason: {1}",
+                                  name,
+                                  SdsUtils.ErrorCodeToString(errorOut)
+                                  );
+
+            }
+            return ok;
+
+     }
+
+        private static  bool  DoDeregister(DirectoryServiceContract.Imp! ds, string! path)
+        {
+            ErrorCode errorOut;
+            ServiceProviderContract.Imp:Start  service;
+            bool ok = SdsUtils.Deregister(path, ds, out service, out errorOut);
+            if (!ok) DebugStub.Break();
+            delete service;
+            return ok;
+        }
+
+        static void Finalize()
+        {
+            Console.WriteLine("NakService Finalizer called.");
+            DebugStub.Break();
+            DirectoryServiceContract.Imp ds = DirectoryService.NewClientEndpoint();
+            try   {
+                DoDeregister(ds, hang);
+                DoDeregister(ds, nakConn);
+                DoDeregister(ds, closed);
+            }
+            finally {
+                delete ds;
+            }
+        }
+
+        static void CleanUp()
+        {
+            Console.WriteLine("NakService Finalizer called.");
+            DirectoryServiceContract.Imp ds = DirectoryService.NewClientEndpoint();
+            try   {
+                DoDeregister(ds, hang);
+                DoDeregister(ds, nakConn);
+                DoDeregister(ds, closed);
+            }
+            finally {
+                delete ds;
+            }
+        }
+
+        public static int Main(String[]! args)
+        {
+
+            DirectoryServiceContract.Imp ds = DirectoryService.NewClientEndpoint();
+
+            // register "/service/nakconnect" in NS
+            ServiceProviderContract.Imp! imp;
+            ServiceProviderContract.Exp! s;
+            ServiceProviderContract.NewChannel(out imp, out s);
+            bool ok = NakConnect.Register(ds, nakConn, imp);
+
+            if (!ok) {
+                delete s;
+                delete ds;
+                return -1;
+            }
+
+            // register "/service/channelhang" in NS
+            // we keep the exp alive but we never listen
+            ServiceProviderContract.Imp! imp3;
+            ServiceProviderContract.Exp! s3;
+            ServiceProviderContract.NewChannel(out imp3, out s3);
+            ok = NakConnect.Register(ds, hang, imp3);
+            if (!ok) {
+                delete s;
+                delete s3;
+                delete ds;
+                return -1;
+            }
+
+            // register "/service/nakrunning" in NS
+            // we keep the exp alive but we never listen
+            ServiceProviderContract.Imp! imp4;
+            ServiceProviderContract.Exp! s4;
+            ServiceProviderContract.NewChannel(out imp4, out s4);
+            ok = NakConnect.Register(ds, nakRunning, imp4);
+            if (!ok) {
+                delete s;
+                delete s3;
+                delete ds;
+                delete s4;
+                return -1;
+            }
+
+            // register "/service/channelclosed" in NS
+            // we pass the imp on to the NS but close down the exp end
+            ServiceProviderContract.Imp! imp2;
+            ServiceProviderContract.Exp! s2;
+            ServiceProviderContract.NewChannel(out imp2, out s2);
+            ok = NakConnect.Register(ds, closed, imp2);
+
+            delete s2; // ensure channel closed on other end
+
+            if (!ok) {
+                delete s;
+                delete s3;
+                delete s4;
+                delete ds;
+                return -1;
+            }
+
+            // enter loop to receive Connect messages and always return NACK
+
+             try {
+                for (bool run = true; run;) {
+                    switch receive {
+                    // Listen for new connections
+                    case s.Connect(candidate):
+                        Console.WriteLine("Nak Service NACKing....");
+                        s.SendNackConnect(candidate);
+                        break;
+                    case s4.Connect(candidate):
+                        Console.WriteLine("Nak Service NACKing....");
+                        s.SendAckConnect();
+                        delete candidate;
+                        break;
+                    case s.ChannelClosed() :
+                        Console.WriteLine("NakConnect channel closed");
+                        run = false;
+                        break;
+                    case s4.ChannelClosed() : //IsRunning has closed
+                        Console.WriteLine("NakRunning channel closed");
+                        run = false;
+                        break;
+                   }
+                }
+            }
+            finally {
+                CleanUp();
+            }
+            Console.WriteLine("terminating NakService cleanly");
+            delete s;
+            delete s3;
+            delete s4;
+            delete ds;
+            SdsUtils.FlushCache();
+
+            return 0;
+        }
+
+    } // class NakConnect
+}//namespace

@@ -1,0 +1,803 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   LegacyKeyboard.cs
+//
+//  Note:
+//      /pnp/PNP0303: A0=IO:0060[1] A1=IO:0064[1] A2=IRQ:01
+//
+//  Useful refs:
+//      http://panda.cs.ndsu.nodak.edu/~achapwes/PICmicro/keyboard/atkeyboard.html
+//      http://members.tripod.com/~oldboard/assembly/keyboard_commands.html
+//      http://members.tripod.com/~oldboard/assembly/8042.html
+//
+
+//#define DEBUG_DISPATCH_IO
+//#define DEBUG_IO
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Runtime.CompilerServices;  //StructAlign attribute
+using System.Runtime.InteropServices;   //structLayout attribute
+using System.GCs;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Keyboard;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+
+using Microsoft.Singularity.Drivers;
+[assembly: Transform(typeof(DriverResourceTransform))]
+
+namespace Microsoft.Singularity.Drivers.LegacyKeyboard
+{
+    // Should also support PNP0F13: PS/2 Mouse
+    // [Signature("/pnp/PNP0F13")]
+    // [IoIrqRange(0, Default = 0x0c)]
+    // [Follows("/pnp/PNP0303")]
+
+    // create the resource object for CTR to fill in
+    [DriverCategory]
+    [Signature("/pnp/PNP0303")]
+    internal class KeyboardResources : DriverCategoryDeclaration
+    {
+        [IoPortRange(0, Default = 0x0060, Length = 0x01)]
+        internal readonly IoPortRange keyboard;
+
+        [IoPortRange(1, Default = 0x0064, Length = 0x01)]
+        internal readonly IoPortRange controller;
+
+        [IoIrqRange(2, Default = 0x01)]
+        internal readonly IoIrqRange irq;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(KeyboardDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> kbdsp;
+
+        internal int DriverMain(string instance) {
+            return KeyboardControl.DriverMain(this);
+        }
+    }
+
+    public class KeyboardControl
+    {
+        private static Keyboard8042 device;
+
+        internal static int DriverMain(KeyboardResources! resources)
+        {
+            // Create the device.
+            device = new Keyboard8042(resources);
+            if (!device.Initialize()) {
+                return 1;
+            }
+
+            // get the endpoints and set up the main switch receive
+            ExtensionContract.Exp ec = resources.ec.Acquire();
+            ServiceProviderContract.Exp sp = resources.kbdsp.Acquire();
+
+            Tracing.Log(Tracing.Audit, "Registered");
+
+            ec.SendSuccess();
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        // Listen for new connections
+                        case sp.Connect(candidate):
+                            KeyboardDeviceContract.Exp newClient = candidate as KeyboardDeviceContract.Exp;
+                            if (newClient == null) {
+                                Tracing.Log(Tracing.Debug, "Keyboard driver rejected connect with wrong endpoint type.");
+                                sp.SendNackConnect(candidate);
+                            }
+                            else if (KeyboardChannel.InstanceCount >= 1) {
+                                Tracing.Log(Tracing.Debug, "Keyboard driver rejected connect as already connected.");
+                                sp.SendNackConnect(candidate);
+                            }
+                            else {
+                                KeyboardChannel.CreateThread(device, newClient);
+                                sp.SendAckConnect();
+                            }
+                            break;
+
+                            // Listen for extension parent
+                        case ec.Shutdown():
+                            ec.SendAckShutdown();
+                            run = false;
+                            break;
+
+                        case sp.ChannelClosed():
+                            Tracing.Log(Tracing.Debug, "Keyboard driver no longer needed.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete sp;
+                Tracing.Log(Tracing.Debug, "Keyboard finished message pump.");
+            }
+
+            // Close the device
+            device.Finalize();
+
+            Tracing.Log(Tracing.Audit, "Shutdown");
+            delete ec;
+
+            return 0;
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    //
+    //  This worker thread processes incoming play requests.
+    //
+    //  A single instance of this class is allowed to run at any given point
+    //  in time.
+    public class KeyboardChannel
+    {
+        private static int instanceCount = 0;
+        private static object instanceLock = new object();
+
+        private TRef<KeyboardDeviceContract.Exp:Start> epStart;
+        private Keyboard8042! device;
+
+        public static int InstanceCount
+        {
+            get {
+                lock (instanceLock) {
+                    return instanceCount;
+                }
+            }
+        }
+
+        public static void CreateThread(Keyboard8042! device,
+                                        [Claims] KeyboardDeviceContract.Exp:Start! ep)
+        {
+            lock (instanceLock) {
+                DebugStub.Assert(instanceCount == 0);
+                instanceCount++;
+            }
+
+            KeyboardChannel! channel = new KeyboardChannel(device, ep);
+            Thread! thread = new Thread(new ThreadStart(channel.MessagePump));
+
+            Tracing.Log(Tracing.Audit, "KeyboardChannel starting thread {0:x}",
+                        AppRuntime.AddressOf(thread));
+            thread.Start();
+        }
+
+        private KeyboardChannel(Keyboard8042! device,
+                                [Claims] KeyboardDeviceContract.Exp:Start! ep)
+        {
+            this.device = device;
+            this.epStart = new TRef<KeyboardDeviceContract.Exp:Start>(ep);
+            base();
+        }
+
+        private void MessagePump()
+        {
+            Tracing.Log(Tracing.Debug, "KeyboardChannel.Run entered.");
+            KeyboardDeviceContract.Exp! ep = epStart.Acquire();
+            epStart = null;
+
+            try {
+                ep.SendSuccess();
+
+                for (bool run = true; run;) {
+                    uint key;
+
+                    switch receive {
+                        case ep.GetKey():
+                            Tracing.Log(Tracing.Debug, "GetKey()");
+                            key = device.WaitForKey();
+                            Tracing.Log(Tracing.Debug, "GetKey() => {0:x8}", key);
+                            ep.SendAckKey(key);
+                            break;
+
+                        case ep.ChannelClosed():
+                            Tracing.Log(Tracing.Debug, "peer closed channel.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete ep;
+
+                lock (instanceLock) {
+                    DebugStub.Assert(instanceCount == 1);
+                    instanceCount--;
+                }
+            }
+
+            Tracing.Log(Tracing.Debug, "KeyboardChannel exiting.");
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    //
+    //  Underlying device implementation.
+    //
+    public class Keyboard8042
+    {
+        internal Keyboard8042(KeyboardResources! res)
+        {
+            keyboardPort = res.keyboard.PortAtOffset(0, 1, Access.ReadWrite);
+            controllerPort = res.controller.PortAtOffset(0, 1, Access.ReadWrite);
+            irq = res.irq.IrqAtOffset(0);
+        }
+
+        private IoIrq   irq;
+        private IoPort  keyboardPort;
+        private IoPort  controllerPort;
+        private byte    lastCtrl = 0;
+        private bool    keyboardWorks = false;
+        private bool    mouseWorks = false;
+
+        public bool Initialize()
+        {
+            bool iflag = PrivilegedGate.DisableInterrupts();
+            try {
+                Tracing.Log(Tracing.Debug, "Registering Interrupt");
+                irq.RegisterInterrupt();
+
+                Tracing.Log(Tracing.Debug, "Initializing Keyboard");
+
+                byte data;
+
+                // Run a keyboard self test.
+                Tracing.Log(Tracing.Debug, "Running controller self test.");
+                Write8042Ctrl(0xaa);
+                data = ReadData();
+                Tracing.Log(Tracing.Debug, "ctrl={0:x} data={1:x}",
+                            lastCtrl, data);
+
+                if (data != 0x55) {
+                    Tracing.Log(Tracing.Debug, "Controller self test failed: {0:x}",
+                                data);
+                    return false;
+                }
+
+                // Enable the keyboard.
+                Tracing.Log(Tracing.Debug, "Enabling keyboard.");
+                Write8042Ctrl(0xae);
+                Empty8042();
+
+                // Test the keyboard.
+                Tracing.Log(Tracing.Debug, "Running controller self test.");
+                Write8042Ctrl(0xab);
+                Thread.SpinWait(10);
+
+                data = ReadData();
+                Tracing.Log(Tracing.Debug, "Keyboard test: {0:x}", data);
+
+                if (data != 0xff) {
+                    keyboardWorks = true;
+                }
+
+                // Reset keyboard, but disable scanning.
+                Tracing.Log(Tracing.Debug, "Resetting keyboard.");
+                Empty8042();
+                // Write8042Ctrl(0xd2);
+                Write8042Data(0xf5);
+                Thread.SpinWait(10);
+
+                // Write the LEDs.
+                Write8042Data(0xed);
+                Write8042Data(0x07);
+
+                // Set to scan set 2.
+                Write8042Data(0xf0);
+                Write8042Data(0x02);
+                Thread.SpinWait(10);
+                data = ReadData();
+                Tracing.Log(Tracing.Debug, "select scanset: {0:x}", data);
+
+#if DONT_MOUSE
+                Tracing.Log(Tracing.Debug, "identify keyboard");
+                byte[] mouse = new byte[10];
+                Write8042Data(0xf2);
+                ReadAndPrintData(mouse);
+#endif
+
+                // Enable IBM Scancode translation
+                //
+                // Under all Microsoft operating systems, all keyboards
+                // actually transmit Scan Code Set 2 values down the wire
+                // from the keyboard to the keyboard port. These values
+                // are translated to Scan Code Set 1 by the i8042 port chip.
+                // The rest of the operating system, and all applications
+                // that handle scan codes expect the values to be from
+                // Scan Code Set 1. Scan Code Set 3 is not used or
+                // for operation of Microsoft operating systems.
+                Write8042Ctrl(0x60);
+#if DONT_USE_INTERRUPTS
+                Write8042Data(0x40);
+#else
+                Write8042Data(0x41);    // Send an interrupt as well.
+#endif
+                Empty8042();
+
+#if DONT_MOUSE
+                // Enable the mouse.
+                Write8042Ctrl(0xa8);
+                Empty8042();
+
+                // Test the mouse.
+                Write8042Ctrl(0xa9);
+                Thread.SpinWait(10);
+
+                data = ReadData();
+                Tracing.Log(Tracing.Debug, "Mouse test: {0:x}", data);
+                if (data != 0xff) {
+                    mouseWorks = true;
+                }
+
+                // Get Mouse settings.
+                Write8042Ctrl(0xd4);
+                Write8042Data(0xe9);
+                ReadAndPrintData(mouse);
+
+                // Enable the mouse.
+                Write8042Ctrl(0xd4);
+                Write8042Data(0xf4);
+
+                Tracing.Log(Tracing.Debug, "Mouse stat={0:x} res={1:x} rate={2:x}",
+                            mouse[0], mouse[1], mouse[2]);
+#endif
+
+                // Enable keyboard scan.
+                Empty8042();
+                Write8042Data(0xf4);
+                Thread.SpinWait(10);
+
+                // Write the LEDs.
+                Write8042Data(0xed);
+                Write8042Data(0x01);
+
+                for (int i = 0; i < 10; i++) {
+                    PollRaw();
+                }
+            }
+            finally {
+                PrivilegedGate.RestoreInterrupts(iflag);
+            }
+            return keyboardWorks;
+        }
+
+
+        public void Finalize()
+        {
+            irq.ReleaseInterrupt();
+        }
+
+        private void Empty8042()
+        {
+            while (((lastCtrl = controllerPort.Read8()) & 0x01) != 0) {
+                keyboardPort.Read8();
+            }
+            lastCtrl = controllerPort.WaitClear8(0x01);
+        }
+
+        private void Write8042Prep()
+        {
+            lastCtrl = controllerPort.WaitClear8(0x02);
+            Empty8042();
+            Thread.SpinWait(50);
+        }
+
+        private void Write8042Ctrl(byte value)
+        {
+            Write8042Prep();
+            controllerPort.Write8(value);
+        }
+
+        private void Write8042Data(byte value)
+        {
+            Write8042Prep();
+            keyboardPort.Write8(value);
+        }
+
+        private byte ReadData()
+        {
+            if (((lastCtrl = controllerPort.Read8()) & 0x01) == 0) {
+                Tracing.Log(Tracing.Debug, "Waiting for data ready: {0:x}", lastCtrl);
+                lastCtrl = controllerPort.WaitSet8(0x01);
+            }
+            Thread.SpinWait(50);
+            return keyboardPort.Read8();
+        }
+
+        internal void ReadAndPrintData(byte[]! data)
+        {
+            if (((lastCtrl = controllerPort.Read8()) & 0x01) == 0) {
+                Tracing.Log(Tracing.Debug, "Waiting for data ready to print: {0:x}", lastCtrl);
+                lastCtrl = controllerPort.WaitSet8(0x01);
+            }
+
+            for (int i = 0; i < data.Length; i++) {
+                if (((lastCtrl = controllerPort.Read8()) & 0x01) == 0) {
+                    Tracing.Log(Tracing.Debug, "Ctrl {0:x}", lastCtrl);
+                    break;
+                }
+                else {
+                    Tracing.Log(Tracing.Debug, "Ctrl {0:x} : ", lastCtrl);
+                }
+                Thread.SpinWait(200);
+
+                data[i] = keyboardPort.Read8();
+                unchecked {
+                    Tracing.Log(Tracing.Debug, "Data[{0}]: {1:x}",
+                                (UIntPtr)(uint)i,
+                                data[i]);
+                }
+            }
+        }
+
+        [Flags]
+        public enum Modifiers
+        {
+            CAPS_LOCK       = 0x00000001,
+            NUM_LOCK        = 0x00000002,
+
+            SHIFT_LEFT      = 0x00000100,
+            SHIFT_RIGHT     = 0x00000200,
+            SHIFT_ALL       = SHIFT_LEFT | SHIFT_RIGHT,
+            CTRL_LEFT       = 0x00000400,
+            CTRL_RIGHT      = 0x00000800,
+            CTRL_ALL        = CTRL_LEFT | CTRL_RIGHT,
+            ALT_LEFT        = 0x00001000,
+            ALT_RIGHT       = 0x00002000,
+            ALT_ALL         = ALT_LEFT | ALT_RIGHT,
+            WINDOWS_LEFT    = 0x00004000,
+            WINDOWS_RIGHT   = 0x00008000,
+            WINDOWS_ALL     = WINDOWS_LEFT | WINDOWS_RIGHT,
+        }
+
+        private uint keyModifiers = 0;
+
+        private void SetModifier(Modifiers bit, Qualifiers shared, Modifiers all, uint data)
+        {
+            if ((data & (uint)Qualifiers.KEY_UP) != 0) {
+                keyModifiers &= ~(uint)bit;
+                if ((keyModifiers & (uint)all) == 0) {
+                    keyModifiers &= (uint)~shared;
+                }
+            }
+            else {
+                keyModifiers |= (uint)bit | (uint)shared;
+            }
+        }
+
+        private void SetModifier(Modifiers bit, uint data)
+        {
+            if ((data & (uint)Qualifiers.KEY_UP) != 0) {
+                keyModifiers &= ~(uint)bit;
+            }
+            else {
+                keyModifiers |= (uint)bit;
+            }
+        }
+
+        private byte PollRawOneByte()
+        {
+            lastCtrl = controllerPort.WaitSet8(0x01);
+            Thread.SpinWait(50);
+            byte value = keyboardPort.Read8();
+#if DEBUG_IO
+            Tracing.Log(Tracing.Debug, "Data {0:x} [modifiers={1:x}]", value, keyModifiers);
+#endif
+            Thread.SpinWait(50);
+            return value;
+        }
+
+        private uint PollRaw()
+        {
+            if (((lastCtrl = controllerPort.Read8()) & 0x01) == 0) {
+                return 0;
+            }
+
+            if ((lastCtrl & 0x20) != 0) { // Mouse
+                uint md = PollRawOneByte();
+                md |= (uint)PollRawOneByte() << 8;
+                md |= (uint)PollRawOneByte() << 16;
+
+                return (uint)((uint)Qualifiers.KEY_MOUSE | md);
+            }
+            else {
+                uint data = PollRawOneByte();
+
+                if (data >= 0x00 && data <= 0x5f) {    // Key Down
+                    return (uint)((uint)(data & 0x7f));
+                }
+                else if (data >= 0x80 && data <= 0xdf) { // Key Up
+                    return (uint)((uint)Qualifiers.KEY_UP | (data & 0x7f));
+                }
+                else if (data == 0xe0) {               // Extended
+                    data = PollRawOneByte();
+
+                    if ((data & 0x80) != 0) {
+                        return (uint)((uint)0x80 |
+                                      (uint)Qualifiers.KEY_UP |
+                                      (uint)Qualifiers.KEY_EXTENDED |
+                                      (data & 0x7f));
+                    }
+                    else {
+                        return (uint)((uint)0x80 |
+                                      (uint)Qualifiers.KEY_EXTENDED |
+                                      (data & 0x7f));
+                    }
+                }
+                else if (data == 0xe1) {               // Extended
+                    data = PollRawOneByte();
+                    if ((data & 0x80) != 0) {
+                        return (uint)((uint)0x80 |
+                                      (uint)Qualifiers.KEY_UP |
+                                      (uint)Qualifiers.KEY_EXTENDED |
+                                      (data & 0x7f));
+                    }
+                    else {
+                        return (uint)((uint)0x80 |
+                                      (uint)Qualifiers.KEY_EXTENDED |
+                                      (data & 0x7f));
+                    }
+                }
+                else {
+                    return data;
+                }
+            }
+        }
+
+        public void GetPosition(out int x, out int y)
+        {
+            x = mouseX;
+            y = mouseY;
+        }
+
+        public uint WaitForKey()
+        {
+            uint key = 0;
+            while ((key = Poll()) == 0) {
+#if DEBUG_DISPATCH_IO
+                DebugStub.WriteLine("::: Waiting for Keyboard interrupt.");
+#endif
+                irq.WaitForInterrupt();
+                Tracing.Log(Tracing.Audit, "Keyboard IRQ");
+                irq.AckInterrupt();
+            }
+
+#if DEBUG_DISPATCH_IO
+            DebugStub.WriteLine("::: Keyboard poll: {0:x8}", __arglist(key));
+#endif
+
+            return key;
+        }
+
+        public uint Poll()
+        {
+            uint data = PollRaw();
+            if (data == 0) {
+                return 0;
+            }
+
+            // Update the Modifier Flags
+            switch (data & ~(uint)Qualifiers.KEY_UP) {
+                case 0x3a:                                // Caps-Lock
+                    SetModifier(Modifiers.CAPS_LOCK, data);
+                    break;
+                case 0x45:                                // Num Lock
+                    SetModifier(Modifiers.NUM_LOCK, data);
+                    break;
+
+                case 0x2a:                                // Left Shift
+                    SetModifier(Modifiers.SHIFT_LEFT,
+                                Qualifiers.KEY_SHIFT,
+                                Modifiers.SHIFT_ALL, data);
+                    break;
+                case 0x36:                                // Right Shift
+                    SetModifier(Modifiers.SHIFT_RIGHT,
+                                Qualifiers.KEY_SHIFT,
+                                Modifiers.SHIFT_ALL, data);
+                    break;
+                case 0x1d:                                // Left Control
+                    SetModifier(Modifiers.CTRL_LEFT,
+                                Qualifiers.KEY_CTRL,
+                                Modifiers.CTRL_ALL, data);
+                    break;
+                case 0x9d:     // Right Control
+                    SetModifier(Modifiers.CTRL_RIGHT,
+                                Qualifiers.KEY_CTRL,
+                                Modifiers.CTRL_ALL, data);
+                    break;
+                case 0x38:                                // Left Alt
+                    SetModifier(Modifiers.ALT_LEFT,
+                                Qualifiers.KEY_ALT,
+                                Modifiers.ALT_ALL, data);
+                    break;
+                case 0xb8:     // Right Alt
+                    SetModifier(Modifiers.ALT_RIGHT,
+                                Qualifiers.KEY_ALT,
+                                Modifiers.ALT_ALL, data);
+                    break;
+                case 0xdb:     // Left Windows
+                    SetModifier(Modifiers.WINDOWS_LEFT,
+                                Qualifiers.KEY_WINDOWS,
+                                Modifiers.WINDOWS_ALL, data);
+                    break;
+                case 0xdc:     // Right Windows
+                    SetModifier(Modifiers.WINDOWS_RIGHT,
+                                Qualifiers.KEY_WINDOWS,
+                                Modifiers.WINDOWS_ALL, data);
+                    break;
+            }
+
+            // Encode the modifier flags into the data.
+            data |= (keyModifiers & (uint)Qualifiers.KEY_MODIFIERS);
+
+            if ((data & (uint)Qualifiers.KEY_MOUSE) != 0) {
+                // Update the cursor position.
+                // The statements here are somewhat complex because the
+                // hardware returns two 9-bit signed integers.
+                int x = ((int)unchecked((sbyte)((data & 0x10) << 3)) & ~0xff)
+                    | (int)((data >> 8) & 0xff);
+                int y = ((int)unchecked((sbyte)((data & 0x20) << 2)) & ~0xff)
+                    | (int)((data >> 16) & 0xff);
+
+                mouseX = Math.Min(Math.Max(0, mouseX + x), mouseMaxX);
+                mouseY = Math.Min(Math.Max(0, mouseY - y), mouseMaxY);
+
+                // Process the buttons.
+                uint buttons = (data & (uint)Qualifiers.MOUSE_BUTTON_ALL);
+
+                if (mouseButtons != buttons) {
+                    // Button positions changed.
+
+                    uint up = mouseButtons & (buttons ^ (uint)Qualifiers.MOUSE_BUTTON_ALL);
+                    uint dn = (mouseButtons ^ (uint)Qualifiers.MOUSE_BUTTON_ALL) & buttons;
+                    mouseButtons = buttons;
+
+                    if (dn != 0) {
+                        data = (uint)Qualifiers.KEY_DOWN | (uint)Qualifiers.KEY_MOUSE | (uint)dn;
+                    }
+                    else if (up != 0) {
+                        data = (uint)Qualifiers.KEY_UP | (uint)Qualifiers.KEY_MOUSE | (uint)up;
+                    }
+                }
+                return data;
+            }
+            else {
+                if ((data & (uint)Qualifiers.KEY_UP) == 0) {
+                    data |= (uint)Qualifiers.KEY_DOWN;
+                }
+
+                uint scan = 0;
+                if ((data & (uint)Qualifiers.KEY_SHIFT) != 0) {
+                    scan = scanShift[data & 0xff];
+                }
+                if (scan == 0) {
+                    scan = scanNormal[data & 0xff];
+                }
+
+                if (scan == 0) {
+                    Tracing.Log(Tracing.Warning, "Unmapped key: {0:x}", data & 0xff);
+                }
+
+                uint output = unchecked(data & (uint)~0xff) | scan;
+
+#if DEBUG_IO
+                Tracing.Log(Tracing.Debug, "output {0:x}", output);
+#endif
+                return output;
+            }
+        }
+
+        private uint mouseButtons = 0;
+        private int mouseX = 0;
+        private int mouseY = 0;
+        private int mouseMaxX = 1024;
+        private int mouseMaxY = 768;
+
+        private char[] scanNormal = new char [0x100]
+        {
+            // 0     1     2     3     4     5     6     7
+            // 8     9     a     b     c     d     e     f
+            '\0', (char)Keys.ESCAPE,  '1',  '2',  '3',  '4',  '5',  '6',     // 0x00..0x07
+            '7' ,  '8',  '9',  '0',  '-',  '=', '\b', '\t',     // 0x08..0x0f
+            'q' ,  'w',  'e',  'r',  't',  'y',  'u',  'i',     // 0x10..0x17
+            'o' ,  'p',  '[',  ']', '\n', (char)Keys.LEFT_CTRL,  'a',  's',     // 0x18..0x1f
+            'd' ,  'f',  'g',  'h',  'j',  'k',  'l',  ';',     // 0x20..0x27
+            '\'',  '`', (char)Keys.LEFT_SHIFT, '\\',  'z',  'x',  'c',  'v',     // 0x28..0x2f
+            'b' ,  'n',  'm',  ',',  '.',  '/', (char)Keys.RIGHT_SHIFT, '\0',     // 0x30..0x37
+            (char)Keys.LEFT_ALT, ' ', (char)Keys.CAPS_LOCK, (char)Keys.F1,
+            (char)Keys.F2, (char)Keys.F3, (char)Keys.F4, (char)Keys.F5,     // 0x38..0x3f
+            (char)Keys.F6, (char)Keys.F7, (char)Keys.F8, (char)Keys.F9,
+            (char)Keys.F10, (char)Keys.NUM_LOCK, '\0', (char)Keys.HOME,     // 0x40..0x47
+            (char)Keys.UP_ARROW, (char)Keys.PAGE_UP, '\0', (char)Keys.LEFT_ARROW,
+            '\0', (char)Keys.RIGHT_ARROW, '\0', (char)Keys.END,     // 0x48..0x4f
+            (char)Keys.DOWN_ARROW, (char)Keys.PAGE_DOWN, (char)Keys.INSERT, (char)Keys.DELETE,
+            (char)Keys.SYS_REQ, '\0', '\0', (char)Keys.F11,     // 0x50..0x57
+            (char)Keys.F12, '\0', '\0', '\0',
+            '\0', '\0', '\0', '\0',     // 0x58..0x5f
+
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x60..0x67
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x68..0x6f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x70..0x77
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x78..0x7f
+
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x80..0x87
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x88..0x8f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x90..0x97
+            '\0', '\0', '\0', '\0', '\n', (char)Keys.RIGHT_CTRL, '\0', '\0',     // 0x98..0x9f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xa0..0xa7
+            '\0', '\0', (Char)0xfff0, '\0', '\0', '\0', '\0', '\0',     // 0xa8..0xaf
+            '\0', '\0', '\0', '\0', '\0',  '/', '\0',  '*',     // 0xb0..0xb7
+            (char)Keys.RIGHT_ALT, '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xb8..0xbf
+            '\0', '\0', '\0', '\0',
+            '\0', (char)Keys.NUM_LOCK, '\0', (char)Keys.HOME,     // 0xc0..0xc7
+            (char)Keys.UP_ARROW, (char)Keys.PAGE_UP, '\0', (char)Keys.LEFT_ARROW,
+            '\0', (char)Keys.RIGHT_ARROW, '\0', (char)Keys.END,     // 0xc8..0xcf
+            (char)Keys.DOWN_ARROW, (char)Keys.PAGE_DOWN, (char)Keys.INSERT, (char)Keys.DELETE,
+            '\0', '\0', '\0', '\0',     // 0xd0..0xd7
+            '\0', '\0', '\0', (char)Keys.LEFT_WINDOWS,
+            (char)Keys.RIGHT_WINDOWS, (char)Keys.MENU, '\0', '\0',     // 0xd8..0xdf
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xe0..0xe7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xe8..0xef
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xf0..0xf7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xf8..0xff
+        };
+
+        private char[] scanShift = new char [0x100]
+        {
+            // 0     1     2     3     4     5     6     7
+            // 8     9     a     b     c     d     e     f
+            '\0', '\0',  '!',  '@',  '#',  '$',  '%',  '^',     // 0x00..0x07
+            '&' ,  '*',  '(',  ')',  '_',  '+', '\b', '\t',     // 0x08..0x0f
+            'Q' ,  'W',  'E',  'R',  'T',  'Y',  'U',  'I',     // 0x10..0x17
+            'O' ,  'P',  '{',  '}', '\n', '\0',  'A',  'S',     // 0x18..0x1f
+            'D' ,  'F',  'G',  'H',  'J',  'K',  'L',  ':',     // 0x20..0x27
+            '\"',  '~', '\0',  '|',  'Z',  'X',  'C',  'V',     // 0x28..0x2f
+            'B' ,  'N',  'M',  '<',  '>',  '?', '\0', '\0',     // 0x30..0x37
+            '\0',  ' ', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x38..0x3f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x40..0x47
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x48..0x4f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x50..0x57
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x58..0x5f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x60..0x67
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x68..0x6f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x70..0x77
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x78..0x7f
+
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x80..0x87
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x88..0x8f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x90..0x97
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0x98..0x9f
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xa0..0xa7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xa8..0xaf
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xb0..0xb7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xb8..0xbf
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xc0..0xc7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xc8..0xcf
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xd0..0xd7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xd8..0xdf
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xe0..0xe7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xe8..0xef
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xf0..0xf7
+            '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',     // 0xf8..0xff
+        };
+    }
+}

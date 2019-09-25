@@ -1,0 +1,181 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications 
+{
+    [ConsoleCategory(HelpMessage="Raw disk read performance test", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "device", Mandatory=true, Position=0 , HelpMessage="Raw device to read")]
+        internal string deviceName;
+
+        [LongParameter( "mb", Default=10, HelpMessage="Megabytes to read.")]
+        internal long numMB;
+
+        [LongParameter( "chunk", Default=65536, HelpMessage="Chunk size for each read.")]
+        internal long chunkSize;
+
+        [LongParameter( "r", Default=1, HelpMessage="Repetition count.")]
+        internal long repetitions;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return DiskRead.AppMain(this);
+        }
+    }
+
+    public class DiskRead
+    {
+        public static DiskDeviceContract.Imp:Ready OpenDevice(String! devname)
+        {
+            DiskDeviceContract.Exp! exp;
+            DiskDeviceContract.Imp! imp;
+            DiskDeviceContract.NewChannel(out imp, out exp);
+            DirectoryServiceContract.Imp ns;
+
+            // get NS endpoint
+            ns = DirectoryService.NewClientEndpoint();
+            bool success = false;
+            ErrorCode error; 
+            success = SdsUtils.Bind(devname, ns, exp, out error);
+            if (!success) {
+                Console.WriteLine("Bind of {0} failed\n", devname);
+                delete imp;
+                delete ns;
+                return null;
+            }
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    Console.WriteLine("{0} does not support DiskDevice", devname);
+                    delete imp;
+                    delete ns;
+                    return null;
+                case imp.ChannelClosed():
+                    Console.WriteLine("DiskDevice channel to {0} closed unexpectedly", devname);
+                    delete imp;
+                    delete ns;
+                    return null;
+            }
+
+            delete ns;
+            return imp;
+        }
+
+        public static bool StringToNumber(String! s, out ulong num)
+        {
+            char [] arr;
+
+            if (s.Length == 0) {
+                num = 0;
+                return false;
+            }
+
+            arr = s.ToCharArray();
+            foreach (char c in arr) {
+                if (!Char.IsDigit(c)) {
+                    num = 0;
+                    return false;
+                }
+            }
+            num = (ulong) int.Parse(s);
+            return true;
+        }
+
+
+        private static void  DisplayPerf(long ticks, long cycles, ulong numMB, ulong chunkSize)
+        {
+            double elapsed   = ticks / 10000000.0;
+            double opsPerSec = numMB * 1024 * 1024 / (elapsed * chunkSize);
+            double mbPerSec  = numMB / elapsed;
+            Console.WriteLine("Ops/s: {0:f2}  MB/s: {1:f2}  Elapsed: {2:f2}",
+                              opsPerSec, mbPerSec, elapsed);
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            long numMB = config.numMB;
+            long chunkSize = config.chunkSize; 
+            long iters = config.repetitions;
+
+            DiskDeviceContract.Imp imp;
+            string! devName = (!)config.deviceName;
+
+            imp = OpenDevice(devName);
+            if (null == imp) {
+                return 1;
+            }
+
+            for (long i = 0; i < iters; i++) {
+                long startIrqCount = ProcessService.GetKernelInterruptCount();
+                long startSwitchCount = ProcessService.GetContextSwitchCount();
+                long startKernelGcCount = ProcessService.GetKernelGcCount();
+                int  startGcCount;
+                long startGcMillis;
+                long startGcBytes;
+                GC.PerformanceCounters(out startGcCount,
+                                       out startGcMillis,
+                                       out startGcBytes);
+
+                long cycles;
+                long ticks;
+
+                imp.SendReadPerf( (int) numMB, (int) chunkSize);
+                imp.RecvAckReadPerf(out cycles, out ticks);
+
+
+                int  endGcCount;
+                long endGcMillis;
+                long endGcBytes;
+                GC.PerformanceCounters(out endGcCount,
+                                       out endGcMillis,
+                                       out endGcBytes);
+
+                DisplayPerf(ticks, cycles, (ulong) numMB, (ulong)chunkSize);
+                Console.WriteLine("[AppGC :- cnt {0} bytes {1} Kern: ints {2} swi {3} gcs {4}]",
+                endGcCount - startGcCount,
+                endGcBytes - startGcBytes,
+                ProcessService.GetKernelInterruptCount() - startIrqCount,
+                ProcessService.GetContextSwitchCount() - startSwitchCount,
+                ProcessService.GetKernelGcCount() - startKernelGcCount);
+            }
+
+            delete imp;
+            return 0;
+        }
+    }
+}

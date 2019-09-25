@@ -1,0 +1,2462 @@
+#!/usr/local/bin/perl
+#
+#    Added support for Custom Ad Rotation model: Dynamic GET w/Cookie
+#    Created 3 Dynamic URLS to support POST, GET, and GET w/cookie
+#    will default to use DYNAMIC_ROOT (POST) if others not specified
+#    Add percentage for GET w/cookie to loadload data.  Also fixed
+#    defaults for other percentages and changed lg_proc and lg_num to
+#    use actual test values to avoid configuration description errors.
+#
+#		   Added client logging option; use -l option to invoke.
+#                  Improved post log validation to check for serialization 
+#                  across all clients not just within each client (ie. check 
+#                  that the record id increases after each entry).  This is 
+#		   in keeping with the 2.1.2 SUT run rule where the result of 
+#		   any dynamic request must be visible to any client on any
+#		   subsequent dynamic request.
+#	           Added urlroot to list of parameters passed on Reset command,
+#		   this will be used in WEB98_INC processing.
+#		   Updated parameters used for dynamic script designation - 
+#		   allow use of 4 separate RC parameters to specify COMMAND's,
+#		   simple dynamic GET's, dynamic GET's for Custom Ad Rotation 
+#	           model and POST's
+#		   Add minor bug fixes.
+#
+#    Support the new SIMULTANEOUS_CONNECTIONS in the rc file. LOAD_VALUES and 
+#    PROCS are no more supported. In the rc file, a client can be configured 
+#    as name(port)[speed].
+#
+#
+#    SIMULTANEOUS_CONNECTIONS replaces LOAD_VALUES in the sense that the 
+#    number of connections will be distributed among all the clients as the 
+#    requested workload of a client. The speed of a client will be taken 
+#    into consideration when calculating the workload distribution. On a 
+#    client system, there will be as many number of processes/threads 
+#    created as the requested workload. Each of these processes/threads 
+#    will send requests to the SUT in a contiguous manner. 
+#
+#    Support the new USER_LINE_SPEED, and USER_SPEED_LIMIT in the rc file. 
+#    Every Client process/thread will not start another operation until enough 
+#    time has elapsed so that all the bytes received from the SUT can be 
+#    transmitted over the user dial up line. The speed of the dialup line
+#    (USER_LINE_SPEED) will determine that elapsed time. The connection to 
+#    the SUT will remain open for that period of time.
+#  
+#    Based on the average size of SPECweb fileset files, at the user
+#    dialup line speed of 400000bits/secs, each connection can get about
+#    3 OPS/sec. SIMULTANEOUS_CONNECTIONS will therefore determine the scope 
+#    of the file_set directories every client will access in a single run.
+#
+#    Process the new result data: rate, rate2, and aggregate_bytes.
+#    Report the new result in terms of the number of simultaneous connections,
+#    the aggregate bit rate, the throughput, and the statistical 
+#    distributions of bit rates in raw, ascii, and screen formats. 
+#
+#    Other changes: unlink 'post.log' file before fetching it from the server.
+#    
+#    Changed the way run data from each point is passed around.  There
+#    used to be 3 pieces of data in the 'config' structure (connections,
+#    throughput, and avg. response).  There's more data than that, so
+#    I replaced those 3 fields with an associative array containing
+#    all the relevant data.  Having this array, makes it easy to change
+#    what data gets passed around.
+#
+#    Added code to support ITERATIONS.  For each point in SIMULTANEOUS_
+#    CONNECTIONS, it will be repeated ITERATIONS times.  Each group if
+#    ITERATIONS is a separate test.  For each group, WARMUP_TIME done
+#    before the 1st point and the new parameter RAMPUP_TIME is done
+#    before iterations 2 through n.
+#    
+#    The reported result is the median value.
+#
+#    Add checking for required values to make sure the test will be valid.
+#    Added -C flag, to make all required values conforming
+#    Added validation code to check all paths for GETs and POSTS
+#    Changed SPECweb98 to SPECweb99 in ASCII output
+#    Better error reporting
+#    
+#
+#    
+
+
+require 5.005;
+use Getopt::Std;
+use IO::Select;
+use Time::localtime;
+use LWP::UserAgent;
+
+
+use strict;
+use IO::Socket;
+use IO::File;
+use Compress::Zlib;
+use MIME::Base64;
+use Cwd;
+use WebClient;
+
+sub Log;
+sub client_log; 
+
+##############################################################################
+# Set up global variables
+##############################################################################
+
+use vars qw ($perfcnt);
+
+use vars qw(@info @config_files %formatter $default_config_file $output_dir);
+
+$default_config_file = "rc";
+
+use vars qw(@info @config_files %formatter $default_config_file
+	    $MAX_ERROR_RATE $MIX_TOLERANCE $MIN_WARMUP_TIME $MIN_CONFORM_PCT 
+	    $REQ_ITERATIONS 
+	    $REQ_RUN_TIME 
+	    $REQ_RAMPUP_TIME 
+	    $REQ_RAMPDOWN_TIME
+	    $REQ_DYNAMIC_CONTENT 
+	    $REQ_DYNAMIC_POST 
+	    $REQ_DYNAMIC_CAD_GET
+	    $REQ_DYNAMIC_CGI_GET 
+	    $REQ_REQUESTS_PER_KEEP_ALIVE
+	    $REQ_PERCENT_KEEP_ALIVE_REQUESTS 
+	    $REQ_ABORTIVE_CLOSE
+	    $REQ_USER_LINE_SPEED 
+	    $REQ_USER_SPEED_LIMIT 
+	    $REQ_MAX_FILE
+	    $REQ_WAIT_BETWEEN_POINTS
+	    $ERROR_CHECK_RANGE 
+	    $FILES_PER_CLASS
+	    $MB_PER_DIRECTORY);
+
+
+$MAX_ERROR_RATE    = .0104999999;  # dependant upon %.3f formatting
+$MIX_TOLERANCE     = .1049999999;  # dependant upon %.3f formatting
+$MIN_WARMUP_TIME   = 1200;
+$MIN_CONFORM_PCT   = 95;
+
+$REQ_ITERATIONS    = 3;
+$REQ_RUN_TIME      = 1200;
+$REQ_RAMPUP_TIME   = 300;
+$REQ_RAMPDOWN_TIME   = 300;
+$REQ_DYNAMIC_CONTENT = 0.3;
+$REQ_DYNAMIC_POST = 0.16;
+$REQ_DYNAMIC_CAD_GET = 0.42;
+$REQ_DYNAMIC_CGI_GET = .005;
+$REQ_REQUESTS_PER_KEEP_ALIVE = 10;
+$REQ_PERCENT_KEEP_ALIVE_REQUESTS = 0.7;
+$REQ_ABORTIVE_CLOSE = 0;
+$REQ_USER_LINE_SPEED = 400000;
+$REQ_USER_SPEED_LIMIT = 320000;
+$REQ_MAX_FILE = 8;
+$REQ_WAIT_BETWEEN_POINTS = 0;
+
+$ERROR_CHECK_RANGE = .25;
+$FILES_PER_CLASS = 9;
+$MB_PER_DIRECTORY = 4.88;
+
+use vars qw($verbose $output_types @output_types $ignore_errors $compliant
+	    $rawformat $logclient $file_num $test_time $version $rcs_version
+	    $max_load @configs $short_version $details);
+use vars qw( @network_fields
+	     @clients_fields @bm_config_fields @notes_fields );
+
+
+&init_output;
+
+@info = (
+    @network_fields,
+    @clients_fields,
+    @bm_config_fields,
+    @notes_fields,
+);
+
+$verbose = 10;
+$output_types="";
+$logclient = 1;	
+$details = 0;
+
+$test_time = time;
+$version = "99-v1.0";
+($short_version)= $version =~ m/([\d.]+-)/;
+$rcs_version = q##;
+
+
+#
+# A note on the @configs data structures.
+#
+# @configs is an array of inputs and results from each config file.
+#   A config file can either be an "rc" file that gets used to run a test,
+#   or a raw file that gets read in for post-processing.
+# We typically operate on 1 $config within @configs at a time
+#
+# Each $config a reference to a hash containing inputs and results from a
+# series of points
+# 
+# Each $config hash has a key for each input from the rc file.  For example,
+#  $config->{'WARMUP_TIME'} is used to hold the WARMUP_TIME that was input
+#  from the rc file.  In addition, there are 2 substructures, used to hold
+#  output data from the test:
+#         'results'
+#         'errors'
+# 
+# The 'results' key contains an array, @results, with each element of the array
+# representing the results from an individual run within the series of
+# tests.
+# Each array element $results in the @results array contains an array, with each
+# entry as the following
+#    $results[0]    %run_stats - hash of statistics from the point
+#    $results[1]    $run_number - (this ought match the index of @results)
+#    $results[2]    $unused field
+#    $results[3]    @class_results - per class rollup info
+#    $results[4]    @errors - errors for this run
+#
+#
+# The %run_stats contains the following keys:
+#  connections, invalid, conforming, conform_pct, throughput,
+#  ops_per_thread, response, bitrate, cum_conformance
+#
+# So, to roll things up, here's an example of getting to a run stat, for the
+# 5th point in a test
+# $config->{'results'}[4][0]{'conforming'}
+#
+# My advice:  use lots of temporaries    
+
+if (! exists $ENV{'SPEC'}) {
+    die "\nERROR: environement variable \$SPEC not defined.\n" .
+	"Do \". shrc\" in sh or \"shrc.bat\" from NT to setup SPEC environment\n\n";
+}
+
+
+if (! -e "$ENV{'SPEC'}/bin/fonts") {
+    die "\nERROR: SPEC environment not properly installed.\n" .
+	"Can't find \$SPEC/bin/fonts directory\n\n";
+}
+    
+
+# Make sure the results directory exists
+$output_dir = "results/";
+mkdir $output_dir, 0755 if ! -d $output_dir;
+
+# Initialize HTTP useragent
+my $ua = new LWP::UserAgent;
+$ua->agent("SPECweb/$short_version " . $ua->agent);
+
+# Open up the log file
+my $file_num = &find_next_number($output_dir);
+my $log_file = "res.$file_num";
+open (LOG, ">$output_dir$log_file") || 
+    die "Can't open log file '$log_file': $!\n";
+select((select(LOG),$|=1)[0]);  # Unbuffer LOG file
+
+
+Log (10, "\nOpened logfile $output_dir$log_file\n");
+
+#    die "
+#$ENV{'SPEC'}/bin/fonts") if exists $ENV{'SPEC'};
+
+sub usage {
+    print <<EOT;
+Usage: $0 [options] [option=val...] [file...] 
+    -v   #       verbosity level
+    -o   types   Produce output in the specified types
+    -I           Do not abort on certain classes of errors
+    -R           files are reformatted and not used as config files
+    -l           Turn off client logging in log-client.nnn file
+    -C           set all parameters need for a compliant run
+    -D           turn on details in the ASCII output
+EOT
+    exit 1;
+}
+
+sub parse_arguments {
+    my %opts;
+    my $rc = getopts("Iv:c:d:ho:RlCD", \%opts);
+    &usage if $opts{'h'} || !$rc;
+
+    push (@config_files, $opts{'c'})  if defined $opts{'c'};
+    $verbose           = $opts{'v'}   if defined $opts{'v'};
+    $output_types      = $opts{'o'}   if defined $opts{'o'};
+    $ignore_errors     = 1            if defined $opts{'I'};
+    $rawformat         = 1            if defined $opts{'R'};
+    $logclient         = 0            if defined $opts{'l'};
+    $compliant         = 1            if defined $opts{'C'};
+    $details           = 1	      if defined $opts{'D'};
+
+
+    @config_files = grep(!m/=/, @ARGV);
+    @ARGV = grep(m/=/, @ARGV);
+}
+
+parse_arguments();
+
+#open log file for client summaries if user specified this option
+if ($logclient) {
+    my $cllog_file = "log-client.$file_num";
+    open (CLLOG, ">$output_dir$cllog_file") || die "Can't open client log file '$cllog_file': $!\n";
+    select((select(CLLOG),$|=1)[0]);  # Unbuffer client log file
+    Log (10, "\nOpened client logfile $output_dir$cllog_file\n");
+}
+
+
+# These are the valid formatters, to add a new formatter just write the
+# function and add it here.
+$formatter{'asc'}     = \&write_asc;
+$formatter{'screen'}  = \&write_screen;
+$formatter{'raw'}     = \&write_raw;
+
+# If no config file was specified, use the efault
+push (@config_files, $default_config_file) if (!@config_files);
+
+# Rawformat is the process of taking a .raw file and outputting any of
+# the defined output formats.  This is used so that people don't have
+# to create all of the different outputs they desire at once.  They can
+# produce any output from a .raw file.  Also useful for fixing up
+# incorrect notes and things.
+
+if ($rawformat) {
+    # for all of the files (not actually config files) specified on the
+    # command line
+    for my $config_file (@config_files) {
+	local(*FILE);
+	open (FILE, "<$config_file") || die "Cannot open '$config_file'";
+	my @foo=();
+	# Grab the raw data out of the file
+	while (<FILE>) {
+	    push (@foo, $_) if /^(%% )?BEGIN SPECWEB99/ .. /^(%% )?END SPECWEB99/;
+	}
+	close(FILE);
+
+	if ($#foo < 0) {
+	    print STDERR "******\n$config_file is not a valid raw file\n";
+	    next;
+	}
+
+	# strip any comment and character escaping that might have been
+	# done.  We comment for Postscript and PDF and escape for HTML.
+	@foo = grep(!m/(%% )?(BEGIN|END) SPECWEB99/, @foo);
+	grep(s/^\s*%%\s*//, @foo);
+	grep(s/\&lt;/</g, @foo);
+	grep(s/\&gt;/>/g, @foo);
+	grep(s/\&amp;/\&/g, @foo);
+
+	# Read in the config file, we use a special option to mark this
+	# as a read of a raw file.
+	my $config = config_read(\@foo, 1);
+
+	my ($num) = $config_file =~ m/^.*\.(\d+)\.raw$/;
+	&do_outputs($config, $num, $output_dir);
+    
+    }
+    # If rawformatting that's all we do
+    exit (0);
+}
+
+# Read in and parse all the config files and find the maximum load value
+$max_load = 0;
+for (@config_files) {
+    my ($req, $res, $url);
+
+    #as we read each config file, we save its info as an entry in @configs
+    my $config = config_read($_);
+    push (@configs, $config);
+
+    # Make sure that for each config file, we can actually do all the
+    # operations (Static GET, Dyn GET, Dyn CGI GET, Dyn CAD GET, Dyn POST)
+    Log(5, "\nValidating all paths for $config->{'FILENAME'}\n");
+    &verify_all_HTTP_operations($config);
+    Log(5, "\n");
+}
+
+
+# Run all of the separate config files
+for my $config (@configs) {
+
+#    &validate_config($config);
+    #For multiple iterations, monkey with the SIMULTANEOUS CONNECTIONS
+    #parameter to make separate tests for each point
+    if ($config->{'ITERATIONS'} > 1) {
+	my @saved_connections_list = @{$config->{'SIMULTANEOUS_CONNECTIONS'}};
+	foreach my $point (@saved_connections_list) {
+	    $config->{'results'} = [];
+	    $config->{'errors'} = [];
+	    &validate_config($config);
+
+	    @{$config->{'SIMULTANEOUS_CONNECTIONS'}} = ();
+	    for (my $i = 0; $i < $config->{'ITERATIONS'}; $i++) {
+		push (@{$config->{'SIMULTANEOUS_CONNECTIONS'}} ,$point);
+	    }
+	    run_all ($config);
+	    &do_outputs($config, $file_num, $output_dir);
+	    $file_num++;
+	}
+    }
+        
+    #If single iteration, then just run all the points -- this is really
+    #just a testing mode, not something that can be done in a submittable test
+    else {
+	&validate_config($config);
+	run_all($config);
+	&do_outputs($config, $file_num, $output_dir);
+	$file_num++;
+    }
+}
+
+##############################################################################
+# Config file routines
+##############################################################################
+
+# Initialize configuration file to have default values
+sub config_init {
+    Log(30, 'init_config\n');
+    my $config = {};
+
+    &set_required_parameters($config);
+
+    $config->{'SIMULTANEOUS_CONNECTIONS'} =  10;
+    $config->{'SUCCESSIVE_SPEED_LIMITS'} = 0;
+    $config->{'LOAD_FILL'}           =   0;
+    $config->{'CLIENTS'}             = 'client1';
+    $config->{'URL_ROOT'}            = 'http://server/spec/file_set';
+    $config->{'DYNAMIC_ROOT'}        = 'http://server/spec/cgi-bin/dynamic?';
+    $config->{'DYN_CMD_SCRIPT'}      = '';
+    $config->{'DYN_GET_SCRIPT'}      = '';
+    $config->{'DYN_CAD_SCRIPT'}      = '';
+    $config->{'DYN_CGI_SCRIPT'}      = '';
+    $config->{'DYN_POST_SCRIPT'}     = '';
+    $config->{'HTTP_PROTOCOL'}       = '';
+
+    $config->{'SERVER'}              = "server";
+    $config->{'OUTPUT_NAME'}         = "output";
+#    $config->{'LOG_SUFFIX'}          = ".err";
+    $config->{'WAIT_TO_BEGIN'}       = 5;
+    $config->{'WAIT_BETWEEN_POINTS'} = 0;
+    $config->{'OUTPUT_TYPE'}         = "all";
+    $config->{'Volume'}              = '--';
+    $config->{'Issue'}               = '--';
+    $config->{'Page'}                = '--';
+    $config->{'munge_date'}          = 1;
+#    $config->{'detail'}		     = 1;  #Turn on more data in ASCII
+
+    for (@info) {
+	$config->{$_->[1]} = '';
+    }
+
+    return $config;
+}
+
+
+
+sub set_required_parameters {
+    my ($config) = @_;
+
+    $config->{'USER_LINE_SPEED'}     =  $REQ_USER_LINE_SPEED;
+    $config->{'USER_SPEED_LIMIT'}    =  $REQ_USER_SPEED_LIMIT;
+    $config->{'RUN_TIME'}            = $REQ_RUN_TIME;
+    $config->{'RAMPDOWN_TIME'}       =  $REQ_RAMPDOWN_TIME;
+    $config->{'RAMPUP_TIME'}         =  $REQ_RAMPUP_TIME;
+    $config->{'DYNAMIC_CONTENT'}     = $REQ_DYNAMIC_CONTENT;
+    $config->{'DYNAMIC_POST'}        = $REQ_DYNAMIC_POST;
+    $config->{'DYNAMIC_CAD_GET'}     = $REQ_DYNAMIC_CAD_GET;
+    $config->{'DYNAMIC_CGI_GET'}     = $REQ_DYNAMIC_CGI_GET;
+    $config->{'REQUESTS_PER_KEEP_ALIVE'} = $REQ_REQUESTS_PER_KEEP_ALIVE;  
+    $config->{'PERCENT_KEEP_ALIVE_REQUESTS'} =$REQ_PERCENT_KEEP_ALIVE_REQUESTS; 
+    $config->{'MAX_FILE'}            = $REQ_MAX_FILE;
+    $config->{'ABORTIVE_CLOSE'}      = $REQ_ABORTIVE_CLOSE;
+    $config->{'ITERATIONS'}      = $REQ_ITERATIONS;
+    $config->{'WAIT_BETWEEN_POINTS'}      = $REQ_WAIT_BETWEEN_POINTS;
+    
+
+    $config->{'WARMUP_TIME'}         = $MIN_WARMUP_TIME if $config->{'WARMUP_TIME'} < $MIN_WARMUP_TIME;
+
+}
+# Read in a configuration file
+#     $file may be a filename or an reference to the array containing
+#     the file.
+sub config_read {
+    my($file, $rawread) = @_;
+    my ($key, $value, $num, @lines);
+
+    Log(30, "Reading Config file\n");
+
+    # Initializes the default values for the config file.
+    my $hash = config_init();
+
+    # If it's an array then just use it, otherwise read in the file.
+    if (ref($file) eq "ARRAY") {
+	@lines = @$file;
+    } else {
+	$hash->{'FILENAME'} = $file;
+	my $fh = new IO::File "< $file";
+	die "Can't open file '$file': $!\n" if (!defined $fh);
+	@lines = $fh->getlines;
+	$fh->close;
+    }
+
+    # Put any option=val arguments at the bottom so they override the
+    # values in the config file.
+    push (@lines, @ARGV);
+    my @rawlines = grep(!m/^\s*[#;]>/, @lines);
+
+
+    # If we are reading a .raw file, we need to define some values so
+    # that they won't be interpreted as errors
+    if ($rawread) {
+	for (qw(median_index median_results metric
+		test_time WORK_DIR FILENAME MAX_LOAD version
+		total_speed rcs_version rawconfig)) {
+	    $hash->{$_} = '--';
+	}
+	$hash->{'results'} = [];
+	$hash->{'errors'}  = [];
+    } 
+
+    # Parse the actual file
+    for (@lines) {
+	if (m/^\s*$/ || m/^\s*[#;]/) {
+	    # Comments and blank lines are ignored
+	} elsif (m/^\s*(\S+)\s*=\s*"(.*)"\s*$/ || 
+		 m/^\s*(\S+)\s*=\s*(.*\S)\s*$/ ||
+		 m/^\s*(\S+)\s*=\s*(.*)/){
+	    # key=value, key="value" are accepted
+	    ($key, $value) = ($1, $2);
+
+	    # Check to see if the key is in the form of label### these
+	    # are treated specially
+	    $num = -1;
+	    if ($key =~ m/(.*\D)(\d+)/) {
+		($key, $num) = ($1, $2);
+	    }
+
+	    # If the key is results then we have to parse the line to
+	    # fill out our data
+	    if ($key eq "results") {
+		# Make sure we have somewhere to put the data
+		if (!defined $hash->{'results'}[$num]) {
+		    $hash->{'results'}[$num] = [];
+		    $hash->{'results'}[$num][0] = {};    # %run_stats
+		    $hash->{'results'}[$num][1] = $num;  # $run_num
+		    $hash->{'results'}[$num][2] = "unused_field";
+		    $hash->{'results'}[$num][3] = [];    # @class_results
+		    $hash->{'results'}[$num][4] = [];    # @errors
+		}
+
+
+
+		# For quick reference
+		my $res = $hash->{'results'}[$num];
+		# Find out our subkey so we can put the data in the
+		# right place
+		my ($subkey, $val);
+		if (($subkey, $val) = $value =~ m/(\S+)\s+(.*)/) {
+		    #find error strings
+		    if ($subkey eq "error") {
+			push (@{$res->[4]},  $val) ;
+		    }
+		    #find per class statistics
+		    elsif ($subkey eq "class") {
+			my ($class_num, $class_name, $class_data) = 
+			    $val =~ m/^(\d+)\s+"(.*)"\s+(.*)/;
+			$res->[3][$class_num] = [ $class_name, split(" ", $class_data) ];
+		    }
+		    else {
+			# all the rest are other result statistics
+			$res->[0]{$subkey} = $val;
+		    }
+
+		} else {
+		    Log(10, "Can't parse line: $_\n");
+		    next;
+		}
+	    } elsif (!defined $hash->{$key}) {
+		# We make sure that there aren't any typos by only
+		# accepting keys which we have defined for the user
+		$num = '' if ($num == -1);
+		Log(10, "Key '$key$num' is unknown.  Ignoring.\n");
+	    } else {
+		# If it was in the form label### assign the value to
+		# the correct index in the entry, otherwise just assign
+		# the value.
+		#if ($num ne "") {
+		if ($num != -1) {
+		    if (ref($hash->{$key}) ne "ARRAY") {
+			$hash->{$key} = [$hash->{$key}];
+		    }
+		    $hash->{$key}->[$num] = $value;
+		} else {
+		    $hash->{$key} = $value;
+		}
+	    }
+	} else {
+	    Log(10, "Can't parse $.: $_\n");
+	}
+    }
+
+    $hash->{'metric'} = 'SPECweb99';
+
+    if (!$rawread) {
+	chomp(@rawlines); chomp(@rawlines);
+	my $rawtxt = join("\n", @rawlines);
+	my $cmptxt = Compress::Zlib::memGzip($rawtxt);
+	my $md5txt = encode_base64($cmptxt);
+	$hash->{'rawconfig'} = [ split("\n", $md5txt) ];
+    }
+
+
+    # Fix up a bunch of values
+	
+    &finalize_config($hash,[qw(SIMULTANEOUS_CONNECTIONS CLIENTS)]) if !$rawread;
+
+    # If $compliant asked for, then change the parameters to valid values
+    if ($compliant && !$rawread) {
+	Log (10, "\nSetting all required parameters to legal values\n\n");
+	&set_required_parameters($hash);
+    }
+
+    # Any descriptive information which doesn't have a label gets
+    # assigned two dashes
+    for (@info) {
+	my $key = $_->[1];
+	$hash->{$key} = "--" if ($hash->{$key} =~ /^\s*$/);
+    }
+
+    # The 'errors' field in @notes_field in @info shouldn't
+    # get preloaded with '--'.  We want it to be an array
+    delete $hash->{'errors'} if !$rawread;
+
+    return $hash;
+}
+
+# Fix up the data from the config file
+sub finalize_config {
+    Log(30, "finalize_config\n");
+    my ($hash, $multi) = @_;
+    my ($key, %load, $step, $fudge_step, $fudge, $num, $bad, $i);
+
+    # Turn multi-valued entries into an arrays so we can fetch data out easily
+    for $key (@$multi) {
+	if (ref($hash->{$key}) eq "") {
+	    $hash->{$key} = [grep(!/^\s*$/, split(/ |,/, $hash->{$key}))];
+	}
+    }
+    $hash->{'OUTPUT_TYPES'} = 
+	join (",", grep(!/^\s*$/, split(/ |,/, $hash->{'OUTPUT_TYPES'})));
+
+    # Make sure we have version information
+    $hash->{'version'}    =$version     if !defined $hash->{'version'};
+    $hash->{'rcs_version'}=$rcs_version if !defined $hash->{'rcs_version'};
+
+    # Check to see if MSL and TIME_WAIT were RFC compliant
+    ($hash->{'msl'})       = $hash->{'msl'}       =~ /(\d+)/;
+    ($hash->{'time_wait'}) = $hash->{'time_wait'} =~ /(\d+)/;
+    $hash->{'msl'}       .= ' (Non RFC1122)' if $hash->{'msl'} < 120;
+    $hash->{'time_wait'} .= ' (Non RFC1122)' if $hash->{'time_wait'} < 240 || 
+					$hash->{'time_wait'}/$hash->{'msl'} < 2;
+
+
+    # Record where this took place
+    $hash->{'WORK_DIR'}  =cwd if ($hash->{'WORK_DIR'} eq "");
+
+    # Set individual DYN parameters if the 1-size-fits-all DYNAMIC_ROOT was used
+    if ($hash->{'DYN_GET_SCRIPT'} eq '') {
+	$hash->{'DYN_GET_SCRIPT'} = $hash->{'DYNAMIC_ROOT'} 
+    }
+    if ($hash->{'DYN_CAD_SCRIPT'} eq '') {
+	$hash->{'DYN_CAD_SCRIPT'} = $hash->{'DYNAMIC_ROOT'} 
+    }
+    if ($hash->{'DYN_POST_SCRIPT'} eq '') {
+	$hash->{'DYN_POST_SCRIPT'} = $hash->{'DYNAMIC_ROOT'} 
+    }
+    if ($hash->{'DYN_CMD_SCRIPT'} eq '') {
+	$hash->{'DYN_CMD_SCRIPT'} = $hash->{'DYNAMIC_ROOT'} 
+    }
+    # Get rid of the '?' and anything following it
+    ($hash->{'DYN_CMD_SCRIPT'} = $hash->{'DYN_CMD_SCRIPT'}) =~ s/\?.*$//;
+    print "$hash->{'DYN_CMD_SCRIPT'} \n";
+
+    # This code is from before we had reasonable RAMP_DOWN values
+    # Set some really long value for WAIT_BETWEEN_POINTS.  Hopefully to
+    # allow all of the sockets to shut down gracefully.
+#    if ($hash->{'WAIT_BETWEEN_POINTS'} eq "" && $hash->{'time_wait'} > 0) {
+#	$hash->{'WAIT_BETWEEN_POINTS'} = $hash->{'time_wait'};
+#    }
+
+
+    #expand any ranges in simultaneous_connections string and store list
+    @{$hash->{'SIMULTANEOUS_CONNECTIONS'}} =
+	&expand_ranges(@{$hash->{'SIMULTANEOUS_CONNECTIONS'}});
+
+    $hash->{'MAX_LOAD'} = &max(@{$hash->{'SIMULTANEOUS_CONNECTIONS'}});
+
+    # Make sure that we have 10 evenly spaced points
+    %load = map {$_ => 1} @{$hash->{'SIMULTANEOUS_CONNECTIONS'}};
+    my $max = $hash->{'MAX_LOAD'};
+
+
+        if ($max < 10 && $hash->{'LOAD_FILL'}) {
+	Log(5, "Can't make 10 evenly spaced points for a load of less than 10\n");
+    }
+
+    # Store the load in order 
+    @{$hash->{'SIMULTANEOUS_CONNECTIONS'}} = sort { $a <=> $b } keys %load;
+    $hash->{'test_time'} = $test_time;
+
+    # Parse the client names.  See if they've overridden the port to
+    # connect to, or if they've specified a relative speed rating
+    $hash->{'clients_parsed'} = [];
+    $hash->{'total_speed'} = 0;
+
+    Log(10, "\nCLIENT LIST: \n");
+    $i = 1;
+    for (@{$hash->{'CLIENTS'}}) {
+	my ($name, $port, $speed, $host);
+	($port)  = m/\((\d*)\)/;           # ()
+	($speed) = m/\[([\d.]*)\]/;        # []
+	($host)  = m/\{([^<{([\])}>]*)\}/; # {}
+	($name)  = m/^([^<{([\])}>]+)/;
+	$speed = 1 if $speed eq "" || $speed <= 0;
+        Log(10, "  Client $i: name=$name, port=$port, speed=$speed, host=$host\n");
+	$hash->{'total_speed'} += $speed;
+	push (@{$hash->{'clients_parsed'}}, [$name, $port, $speed, $host]);
+	$i++;
+    }
+}
+
+##############################################################################
+# Do the actual runs
+##############################################################################
+
+sub run_all {
+    Log(30, "run_all\n");
+    my ($config) = @_;
+    #my (@values)   = &expand_ranges(@{$config->{'SIMULTANEOUS_CONNECTIONS'}});
+    my (@values)   = @{$config->{'SIMULTANEOUS_CONNECTIONS'}};
+    my $num_runs  = 1;
+    my $max_run   = @values;
+
+#    my @results;
+
+    # Do a run for each requested load value
+    for (my $i = 0; $i < @values; $i++)  {
+	my $load = $values[$i];
+#    while (@values) {
+#	my $load = shift @values;
+        my $date = &date;
+
+	#for multiple iterations, the 1st point does a long warmup,
+	#and the rest of the points do a short rampup
+	
+
+	my $test_warmup = $config->{'WARMUP_TIME'};
+	my ($tmp_string) = "Point $num_runs";
+
+	if ($config->{'ITERATIONS'} > 1 ) {
+	    $tmp_string = "Iteration $num_runs of $config->{'ITERATIONS'}";
+	    if ( $i > 0) {
+		$test_warmup = $config->{'RAMPUP_TIME'};
+	    }
+	}
+
+	$tmp_string = sprintf("\n%s with load of %d connections\n%s\n",
+			      $tmp_string, $load, $date);
+	
+	Log (10, $tmp_string);
+	&client_log($tmp_string) if $logclient;
+
+	my $num_clients = @{$config->{'CLIENTS'}};
+	Log 101, <<EOT;
+=============================================================================
+Number of clients        = $num_clients
+Simultaneous Connections = $load
+Warm-up time (seconds)   = $test_warmup
+Run time (seconds)       = $config->{'RUN_TIME'}
+EOT
+
+	my $rc = run_one($config, $load, $num_runs++, $test_warmup);
+	if (!defined $rc) {
+	    &Log(10, "Error running with load of $load\n");
+	    return undef if !$ignore_errors;
+	}
+	if (@values) {
+	    &Log(20, "Waiting for $config->{'WAIT_BETWEEN_POINTS'} seconds between points\n");
+	    sleep ($config->{'WAIT_BETWEEN_POINTS'});
+	}
+    }
+
+    &validate_results($config);
+
+
+    #Log(10, "Finding median result\n");
+    ($config->{'median_index'},$config->{'median_results'}) = 
+	&find_median_result($config);
+
+#    my(%med_run_stats)= %{$config->{'results'}[$config->{'median_index'}][0]};
+    
+#    $config->{'bm_requested_conn'} = $med_run_stats{'requested_conn'};
+#    $config->{'bm_fileset_size'} = $MB_PER_DIRECTORY * 
+#	&dirs_from_load($config, $med_run_stats{'requested_conn'});
+
+}
+
+
+# Run one data point
+sub run_one {
+    Log(30, "run_one\n");
+    my ($config, $load, $num, $test_warmup) = @_;
+    my ($i, $j, $exe, $hostname, $client, @clients);
+    my (%tmp, $tmp, @errors, $class);
+    my ($ts, $ts1, $ts2);
+
+    my $num_clients = @{$config->{'CLIENTS'}};
+    my $total_speed = $config->{'total_speed'};
+
+    my $client_num = 0;
+    my $expired_list = '' ;
+    my @client_loads;
+
+
+    #Calculate the total load with regard to the weightings
+    my $total_load;
+    my $wtload = 0;
+    
+    for my $data (@{$config->{'clients_parsed'}}) {
+	my ($hostname, $port, $speed, $clients_server) = @$data;
+	my $client_load = int ($load * ($speed/$total_speed));
+	if ($client_load > $wtload) {
+	    $wtload = $client_load;
+	}
+	
+	$total_load += $client_load;
+	push (@client_loads, $client_load);
+	next if $client_load <= 0;
+    }
+    my $maxthread = $num_clients * $wtload;
+    
+    # If the total load is not evenly divisible by the clients
+    # and their weightings, then distribute the extra processes
+    my $delta_load = $load  - $total_load;
+    for (; $delta_load > 0; $delta_load--) {
+	@client_loads[$delta_load]++;
+    }
+    
+    # Initialize the POST and Get w/Cookie data on the server if necessary
+    if ($config->{'DYNAMIC_POST'} > 0 || $config->{'DYNAMIC_CAD_GET'} > 0 ) {
+	my ($req, $res, $dynamic_url);
+
+	$ts = time;
+	$ts1 = $ts % 360;
+	$ts2 = $ts1 + 100;
+	if ($ts2 > 359) {
+	    $ts = $ts2 - 360;
+	    $ts2 = $ts1;
+	    $ts1 = $ts;
+	}
+	$expired_list = $ts1 . ',' . $ts2;
+
+	# For the command/Reset, we don't want any other argument pieces
+	# so delete everything after the first '?' and append the command.
+	$dynamic_url = $config->{'DYN_CMD_SCRIPT'};
+        $dynamic_url  =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+
+
+	my $pttime = $config->{'RUN_TIME'} + $test_warmup + $config->{'RAMPDOWN_TIME'};
+	my $tmp_url_root = $config->{'URL_ROOT'};
+	$tmp_url_root =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+	$req = new HTTP::Request 'GET' => $dynamic_url . 
+	   '?command/Reset' . '&maxload=' . $max_load . '&pttime=' . $pttime .  '&maxthread=' . $maxthread . '&exp=' . $expired_list . '&urlroot=' . $tmp_url_root;
+	$req->header('Accept' => '*/*');
+	$res = $ua->request($req);
+	if (!$res->is_success) {
+	    die "Can't reset POST log on server, make sure cgi script\n" .
+		"DYNAMIC_ROOT (or DYN_CMD_SCRIPT) is configured correctly!\n" .
+		"Error: " . $res->code . " " . $res->message, "\n";
+	}
+    } 
+
+    # Open and initialize each client
+    my $data;
+    my $clientnum = 0;
+    for my $data (@{$config->{'clients_parsed'}}) {
+	my ($hostname, $port, $speed, $clients_server) = @$data;
+	if ($clients_server eq '') {
+	    $clients_server = $config->{'SERVER'};
+	}
+	$port   = 'specweb(2222)'    if $port  eq "";
+        my $client_load = shift (@client_loads);
+
+	next if $client_load <= 0;
+	Log(30, "Opening client '$hostname'\n");
+	my $client = WebClient->new(PeerAddr => $hostname,
+				    PeerPort => $port,
+				    Proto    => 'tcp');
+	die "Can't open socket to '$hostname'\n" if (!defined $client);
+
+	# If the hostname has already been seen, then add a modifier to
+	# the end in the hopes that we can make unique names.
+	my $tmp = $hostname;
+	if ($tmp{$tmp}++) {
+	    $tmp .= "-".$tmp{$tmp}++;
+	}
+
+	# Wait until this client is ready and that the version of the
+	# daemon on each client matches this manager script
+	wait_until_ready([ $client ]);
+	if ($client->identity() ne "SPEC-WEB-$version") {
+	    die "Client $client_num($hostname) is not running version $version of the SPEC daemon!\n";
+	}
+
+	# Configure this client
+	my $max_dir = dirs_from_load($config, $load);
+	my $tmp_url_root        = $config->{'URL_ROOT'};
+	my $tmp_dyn_post_script = $config->{'DYN_POST_SCRIPT'};
+	my $tmp_dyn_get_script  = $config->{'DYN_GET_SCRIPT'};
+	my $tmp_dyn_cad_script  = $config->{'DYN_CAD_SCRIPT'};
+	my $tmp_dyn_cgi_script  = $config->{'DYN_CGI_SCRIPT'};
+	$tmp_url_root        =~ s/\@\@SERVER\@\@/$clients_server/e;
+	$tmp_dyn_post_script =~ s/\@\@SERVER\@\@/$clients_server/e;
+	$tmp_dyn_get_script  =~ s/\@\@SERVER\@\@/$clients_server/e;
+	$tmp_dyn_cad_script  =~ s/\@\@SERVER\@\@/$clients_server/e;
+	$tmp_dyn_cgi_script  =~ s/\@\@SERVER\@\@/$clients_server/e;
+	$client->workload99   ($tmp_url_root, 
+			       $tmp_dyn_post_script, 
+			       $tmp_dyn_get_script, 
+			       $tmp_dyn_cad_script, 
+			       $tmp_dyn_cgi_script, 
+			       $max_dir, 
+			       $config->{'MAX_FILE'}, 
+			       $config->{'DYNAMIC_CONTENT'}, 
+			       $config->{'DYNAMIC_POST'}, 
+			       $config->{'DYNAMIC_CAD_GET'}, 
+			       $config->{'DYNAMIC_CGI_GET'}, 
+			       $config->{'PERCENT_KEEP_ALIVE_REQUESTS'}, 
+			       $config->{'REQUESTS_PER_KEEP_ALIVE'}, 
+			       $config->{'USER_LINE_SPEED'}, 
+			       $config->{'USER_SPEED_LIMIT'}, 
+			       $expired_list, 
+			       "class0", "0.35", 
+			       "class1", "0.50", 
+			       "class2", "0.14", 
+			       "class3", "0.01");
+
+	$client->set_server   ($config->{'SERVER'});
+	$client->set_client   ($tmp);
+	$client->set_clientnum($clientnum++);
+	$client->set_runtime  ($config->{'RUN_TIME'});
+	$client->set_rampup   ($test_warmup);;
+	$client->set_rampdown ($config->{'RAMPDOWN_TIME'}) if $config->{'RAMPDOWN_TIME'};
+	$client->set_abortive_close ($config->{'ABORTIVE_CLOSE'}) if ($config->{'ABORTIVE_CLOSE'});
+	$client->set_loadgen  ($client_load);
+        # set the load in terms of OPS/sec:
+	$client->set_load (($config->{'USER_LINE_SPEED'}/122000)*$client_load);
+	my $protocol = $config->{'HTTP_PROTOCOL'};
+	if ($protocol =~ s#.*/##) {
+	    $protocol *= 10;
+	    $client->set_http_protocol($protocol);
+	} else {
+	    die "Can't use HTTP_PROTOCOL '$config->{'HTTP_PROTOCOL'}'\n";
+	}
+	$client->srandom      (2331 + 256*$client_num++);
+#       $client->workload     ('workload');
+	$client->init         ();
+	$client->set_auto_advance(1);
+	push (@clients, $client);
+    }
+
+
+
+
+    wait_until_ready(\@clients);
+    sleep($config->{'WAIT_TO_BEGIN'});
+
+    # At this point in time all of the clients are ready to run.  So we
+    # just send the comand to kick them off.
+    for (@clients) {
+	$_->dorampup();
+    }
+    wait_until_ready(\@clients);
+
+    # Everybody is running now, queue up a few commands to run fetch
+    # the results and then disconnect from the client.
+    for (@clients) {
+	$_->wait_advance('Result');
+	$_->fetch_results();
+	$_->quit();
+    }
+    wait_until_ready(\@clients);
+
+    # OKAY -- we're all done running this point/iteration, now
+
+	# For the command/Finish, we don't want any other argument pieces
+	# so delete everything after the first '?' and append the command.
+    if ($config->{'DYNAMIC_POST'} > 0 || $config->{'DYNAMIC_CAD_GET'} > 0 ) {
+	my ($req, $res, $dynamic_url);
+	$dynamic_url = $config->{'DYN_CMD_SCRIPT'};
+        $dynamic_url  =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+	$req = new HTTP::Request 'GET' => $dynamic_url . 
+	   '?command/Finish';
+	$req->header('Accept' => '*/*');
+	$res = $ua->request($req);
+	if (!$res->is_success) {
+	    die "Can't issue Finish on server\n";
+	}
+    $perfcnt = $res->content;
+    print $res->content . "\n";
+    } 
+
+    # Check to see that the post log looks okay
+    my ($server_post_count_ref,$post_errors_ref);
+    if ($config->{'DYNAMIC_POST'} > 0) {
+	($server_post_count_ref,$post_errors_ref) = 
+	    &validate_post_log($config, $num);
+	push (@errors, @$post_errors_ref);
+    }
+
+    # For each of the clients, sum all of the results for each class.
+    my $cl_results   = [];
+    my $lg_res    = [];
+    my $successive_speed_limits = [];
+    my $speed_limit_string;
+    my $lg_cum_res = [];
+    my $total_cum = [];
+    my $total_missing_ops;
+
+    my %run_stats;
+
+    #Initialize min_bitrate to max possible speed
+    $run_stats{'min_bitrate'} = $config->{'USER_LINE_SPEED'} + 1000;
+
+    # Get results from each client
+    for (@clients) {
+	&client_log( "\n***** Client:  $_->{'client'}\n") if $logclient;
+
+        $lg_res = $_->{'lg_results'};
+
+	my(%client_run_stats);
+
+	# Load generator status info
+	$client_run_stats{'requested_conn'} = $_->loadgen();
+	$client_run_stats{'conforming'} = $lg_res->[1];
+	$client_run_stats{'invalid_conn'}=$client_run_stats{'requested_conn'} - 
+	    $lg_res->[0];
+
+	$client_run_stats{'min_bitrate'} = $lg_res->[2] * 8;
+	$client_run_stats{'mean_bitrate'} = $lg_res->[3] * 8;
+	$client_run_stats{'max_bitrate'} = $lg_res->[4] * 8;
+
+	$run_stats{'requested_conn'} += $client_run_stats{'requested_conn'};
+	$run_stats{'conforming'} += $client_run_stats{'conforming'};
+	$run_stats{'invalid_conn'} += $client_run_stats{'invalid_conn'};
+
+	if ($client_run_stats{'min_bitrate'}  < $run_stats{'min_bitrate'}) {
+	    $run_stats{'min_bitrate'} = $client_run_stats{'min_bitrate'};
+	}
+	if ($client_run_stats{'max_bitrate'}  > $run_stats{'max_bitrate'}) {
+	    $run_stats{'max_bitrate'} = $client_run_stats{'max_bitrate'};
+	}
+
+
+	# Look for generators that have 0 ops (i.e. 0 good, 0 bad);
+	my (%no_ops, @opkeys, @text_results);
+	@text_results = split (/\n/, $_->text_results());
+	for (@text_results) {
+#	    Log 130, "$_\n";
+	    # pattern: 602 generator class time time2 good bad ...
+	    if (m/^602 (\d+) \d+ \d+ \d+ 0 0/) {
+		$no_ops{$1} = 1;
+	    }
+	}
+	@opkeys = keys (%no_ops);
+	$client_run_stats{'gens_missing_class_ops'} = @opkeys;
+	$run_stats{'gens_missing_class_ops'} += @opkeys;
+
+
+	# Cumulative conformance data
+        $lg_cum_res = $_->{'lg_cum_results'};
+	for (my $i = 0; $i < @$lg_cum_res; $i++) {
+	    $client_run_stats{'cum_conformance'} .= 
+		sprintf("%6.2f ", 
+			($lg_cum_res->[$i] / 
+			 $client_run_stats{'requested_conn'})*100.0);
+            $total_cum->[$i] += $lg_cum_res->[$i];
+	}
+
+	# Successive speed limit string
+        $successive_speed_limits = $_->{'successive_speed_limits'};
+	if (! $config->{'successive_speed_limits'}) {
+	    $config->{'SUCCESSIVE_SPEED_LIMITS'}= [@{$successive_speed_limits}];
+	    $speed_limit_string = sprintf "@{$successive_speed_limits}";
+	}
+
+	# Total up per class results
+	my $tmp = $_->results();
+
+	for ($class = 0; $class < @$tmp; $class++) {
+	    $cl_results->[$class] = [] if !defined($cl_results->[$class]);
+
+	    # Don't subtotal name and probability fields
+	    $cl_results->[$class][0] = $tmp->[$class][0];
+	    $cl_results->[$class][1] = $tmp->[$class][1];
+
+
+	    # Subtotal all the other stats
+	    for ($j = 2; $j < @{$tmp->[$class]}; $j++) {
+		$cl_results->[$class][$j] = 0 
+		    if !defined($cl_results->[$class][$j]);
+		$cl_results->[$class][$j] += $tmp->[$class][$j];
+	    }
+	}
+
+	#Printout class results for this client
+	my (@misc_results) = 
+	    &printout_class_results ($tmp, $config->{'RUN_TIME'},$num,"CLIENT");
+	
+	
+	for (qw(response bitrate throughput)) {
+	    $client_run_stats{$_} = shift @misc_results;
+	}
+	push (@errors, @misc_results);
+
+	#Prinout summary infor for this client
+	printout_summary( \%client_run_stats, $speed_limit_string, 
+			 $config->{'USER_SPEED_LIMIT'},"CLIENT");
+
+
+
+	&client_log("ERRORS FOUND\n" . join("\n", @misc_results) . "\n\n") 
+	    if (@misc_results);
+	&client_log ("=============================================================================\n");
+
+	undef $_;
+    } #end of for (@clients)
+
+    # Printout class results for this run
+    my (@misc_results) = &printout_class_results($cl_results, 
+						 $config->{'RUN_TIME'}, 
+						 $num, "TOTALS");
+    #Save return values and errors
+    for (qw(response bitrate throughput)) {
+	$run_stats{$_} = shift @misc_results;
+    }
+    push (@errors, @misc_results);
+
+    # Check to see if the posts per class match what's in the post.log
+    if ($config->{'DYNAMIC_POST'} > 0) {
+	my (@server_post_count) = @$server_post_count_ref;
+	for ($class = 0; $class < @server_post_count; $class++) {
+	    my $difference = $cl_results->[$class][6] - 
+		$server_post_count[$class]; 
+	    # The server isn't allowed to have more posts than were submitted
+	    if ($difference < 0) {
+		push (@errors,
+		      sprintf "Iteration $num: The server post.log recorded %d too many POSTS in class %d",
+		      abs($difference), $class);
+	    }
+	    # The server is allowed to have less, up to the MAX_ERROR_RATE percent.
+	    elsif ($difference / $cl_results->[$class][6] > $MAX_ERROR_RATE) {
+		push (@errors,
+		      sprintf "Iteration $num:  %.1f%% of class %d POSTS missing in post.log.",
+		      100 * $difference / $cl_results->[$class][6], $class);
+	    }
+	    
+#	    if ($cl_results->[$class][6] != $server_post_count[$class]) {
+#		push (@errors, 
+#		      sprintf "Iteration $num: The server saw %d instead of %d class %d POST transactions",
+#		      $server_post_count[$class], $cl_results->[$class][6], 
+#		      $class);
+#	    }
+	}
+    }
+
+    # Make the conformance stirng
+    for (my $i = 0; $i < @$total_cum; $i++) {
+	$run_stats{'cum_conformance'}  .= 
+	    sprintf("%6.2f ", 
+		    ($total_cum->[$i] /
+		     $run_stats{'requested_conn'})*100.0);
+    }
+
+    # Printout summary info for this run
+    printout_summary( \%run_stats, $speed_limit_string, 
+		         $config->{'USER_SPEED_LIMIT'}, "TOTALS");
+
+    # A few more error checks
+    if ($run_stats{'invalid_conn'} > 0) {
+	push (@errors,
+	      sprintf "Iteration $num: $run_stats{'invalid_conn'} invalid connections found");
+	push (@errors,
+	      sprintf ("             %d from load generators with 0 requests in a class or classes", 
+		       $run_stats{'gens_missing_class_ops'}));
+	push (@errors,
+	      sprintf ("             %d from load generators with > %.1f%% errors in a class or classes", 
+	$run_stats{'invalid_conn'} -  $run_stats{'gens_missing_class_ops'},
+	$MAX_ERROR_RATE * 100));
+
+    }
+
+    if ($run_stats{'conform_pct'} < $MIN_CONFORM_PCT) {
+	push (@errors,
+	      sprintf "Iteration $num: %% conforming connections is %.1f%% must be >= %.1f%%",
+	      $run_stats{'conform_pct'}, $MIN_CONFORM_PCT);
+
+    }
+    
+    # Save the errors off so that we can peruse them later.
+    $config->{'results'} = [] if !defined $config->{'results'};
+    push (@{$config->{'results'}}, 
+	  [ { %run_stats },		#%run_stats
+	   $num - 1,			#$num is 1-based 
+	   "unused field",		#place-holder, if we need it
+	   $cl_results,			#class results stuff
+	   [ @errors ] ]);		#@errors
+
+    &Log (101, "ERRORS FOUND\n" . join("\n", @errors) . "\n\n") if (@errors);
+    &Log (101, "=============================================================================\n");
+
+    return 1;
+}
+
+
+# This is called to validate whether the inputs in the config file will
+# generate a valid test
+sub validate_config {
+    my ($config) = @_;
+    my (@errors);
+
+
+    push (@errors, &validate_req('RUN_TIME', $config->{'RUN_TIME'}));
+    push (@errors, &validate_req('RAMPUP_TIME', $config->{'RAMPUP_TIME'}));
+    push (@errors, &validate_req('ITERATIONS', $config->{'ITERATIONS'}));
+    push (@errors, &validate_req('RAMPDOWN_TIME', $config->{'RAMPDOWN_TIME'}));
+    push (@errors, &validate_req('DYNAMIC_CONTENT', $config->{'DYNAMIC_CONTENT'}));
+    push (@errors, &validate_req('DYNAMIC_POST', $config->{'DYNAMIC_POST'}));
+    push (@errors, &validate_req('DYNAMIC_CAD_GET', $config->{'DYNAMIC_CAD_GET'}));
+    push (@errors, &validate_req('DYNAMIC_CGI_GET', $config->{'DYNAMIC_CGI_GET'}));
+    push (@errors, &validate_req('REQUESTS_PER_KEEP_ALIVE', $config->{'REQUESTS_PER_KEEP_ALIVE'}));
+    push (@errors, &validate_req('PERCENT_KEEP_ALIVE_REQUESTS', $config->{'PERCENT_KEEP_ALIVE_REQUESTS'}));
+    push (@errors, &validate_req('ABORTIVE_CLOSE', $config->{'ABORTIVE_CLOSE'}));
+    push (@errors, &validate_req('USER_LINE_SPEED', $config->{'USER_LINE_SPEED'}));
+    push (@errors, &validate_req('USER_SPEED_LIMIT', $config->{'USER_SPEED_LIMIT'}));
+    push (@errors, &validate_req('MAX_FILE', $config->{'MAX_FILE'}));
+    push (@errors, &validate_req('WAIT_BETWEEN_POINTS', $config->{'WAIT_BETWEEN_POINTS'}));
+
+
+    # check for reportable values for warmup and runtime
+    if ($config->{'WARMUP_TIME'} < $MIN_WARMUP_TIME) {
+	push (@errors, 
+	    sprintf "Invalid test: WARMUP_TIME is %d, must be greater than %d",
+		    $config->{'WARMUP_TIME'}, $MIN_WARMUP_TIME);
+    }
+
+
+    if (@errors) {
+	push (@{$config->{'errors'}}, @errors);
+	my $errorstring = "\nWARNING: RUN WILL BE INVALID\n" . 
+	    join ("\n", @errors) . "\n\n";
+	&Log(10, $errorstring);
+    }
+
+    # Check the validity of USER_SPEED_LIMIT versus USER_LINE_SPEED
+    if ($config->{'USER_SPEED_LIMIT'} > $config->{'USER_LINE_SPEED'} ) {
+       die "Fatal error: USER_SPEED_LIMIT cannot be larger than USER_LINE_SPEED!\n";
+    }
+
+}
+
+sub validate_req {
+    my ($varname, $input_value) = @_;
+
+    # Create the $REQ_varname variable and find out its value
+    my $REQ_varname = '$REQ_' . $varname;
+    my $REQ_value =  eval $REQ_varname; 
+
+    #Test it against the input, and return an error string if not equal
+    if ($REQ_value != $input_value) {
+	return "Invalid test: $varname is $input_value, must be $REQ_value";
+    }
+    return;
+}
+
+
+
+
+
+# This is called to validate the results of the entire run for this
+# config file.  It uses the error data calculated for each data point
+# in run_one
+sub validate_results {
+    &Log(30, "validate_results\n");
+    my ($config) = @_;
+    my ($num, $idxname, $peakidx, $peak, $min, $max, $tmp);
+    my (@invalid_mix, @invalid_errors);
+    my (@results) = @{$config->{'results'}};
+    my (@test_errors) = ();
+    my %conform_cxn;
+
+
+
+    #@{$config->{'errors'}} = ();        #MC: initialize to no errors
+
+    &Log(10, scalar(@{$config->{'results'}}) . " data points\n");
+
+    #Look through all of the results
+    my ($i);
+    for ($i = 0; $i < @results; $i++) {
+	#Test for errors
+	my @run_errors = @{$results[$i][4]};
+	if (@run_errors ) {
+	    push (@test_errors, "\n");
+	    push (@test_errors, @run_errors);
+	}
+    }
+
+    push (@{$config->{'errors'}},  @test_errors);
+
+    # Return a list of the errors -- why? nobody checks the return value
+    #return @{$config->{'errors'}};;
+}
+
+#check the post log for any errors -- done after every point
+sub validate_post_log {
+
+    my ($config, $iteration) = @_;
+    my @errors = ();
+
+    # Fetch the POST data on the server if necessary
+    my @server_post_count;
+
+    my ($req, $res, $real_count, $reference_count, $dynamic_url);
+
+    unlink('post.log');
+    
+    # For the command/Fetch, we don't want any other argument pieces
+    # so delete everything after the first '?' and append the command.
+    $dynamic_url = $config->{'DYN_CMD_SCRIPT'};
+    $dynamic_url  =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+    
+    $req = new HTTP::Request 'GET' => $dynamic_url . '?command/Fetch';
+    $req->header('Accept' => '*/*');
+    $res = $ua->request($req, 'post.log');
+    if (!$res->is_success) {
+	die "Can't fetch POST log from server, make sure cgi script\n" .
+	    "DYNAMIC_ROOT (or DYN_CMD_SCRIPT) is configured correctly!\n" .
+		"Error: " . $res->code . " " . $res->message, "\n";
+    }
+    if (open(FILE, "<post.log")) {
+	my $lastseen = 0;
+	my $errorseen = 0;
+	my $seen_pre = 0;
+	while (<FILE>) {
+	    if (!$seen_pre) {
+		$seen_pre = 1 if m/^<pre>/;
+		next;
+	    } elsif (m#^</pre>#) {
+		     $seen_pre = 0;
+		     next;
+		 } elsif (m#^\s*$#) {
+			  next;
+		      } elsif (m#^\s*(\d+)\s*$#) {
+			       $reference_count = $1;
+			       next;
+			   }
+	    $real_count++;
+	    my ($count, $ts, $pid1, $dir, $class, $num, $client, $query, $pid2, $cookie) = split;
+	    warn "POST Log contains inconsistent data!\n" if ($pid1 != $pid2);
+	    if (!$errorseen && $lastseen >= $count) {
+		$errorseen=1;
+		push (@errors, 
+		      "Iteration $iteration: out of order entry in log\n");
+	    } else {
+		$lastseen = $count;
+	    }
+	    $server_post_count[$class]++;
+	}
+    } else {
+	die "Can't open POST log we fetched from server 'post.log': $!\n";
+    }
+    if ($reference_count != $real_count) {
+	push (@errors, 
+	      "Iteration $iteration: Number of POST requests in log inconsistant\n");
+    }
+    return \@server_post_count, \@errors;
+}
+
+
+# This simply loops until all of the clients are in the 'Ready' state.
+sub wait_until_ready {
+    my ($clients, $state) = @_;
+    $state = 'Ready' if $state eq '';
+    my $ready = 0;
+    while (!$ready) {
+	$ready = 1;
+	for (@$clients) {
+	    if ($_->state() ne $state) {
+		$ready = 0;
+		event_loop($clients);
+		last;
+	    }
+	}
+    }
+}
+
+# This checks to see which clients are active, and selects on them.
+sub event_loop {
+    my ($clients) = @_;
+    my $sel_read   = IO::Select->new();
+    my $sel_write  = IO::Select->new();
+    my %sock_to_client;
+    for (@$clients) {
+	my $sock = $_->sock();
+	$sel_read->add($_->sock())  if $_->need_read();
+	$sel_write->add($_->sock()) if $_->need_write();
+	$sock_to_client{$sock} = $_;
+    }
+    my ($reads, $writes, $errors) = $sel_read->select($sel_write, undef);
+    for (@$reads) {
+	$sock_to_client{$_}->handle_read();
+    }
+    for (@$writes) {
+	$sock_to_client{$_}->handle_write();
+    }
+}
+
+sub dirs_from_load {
+    my ($config, $load) = @_;
+
+    # 122000 is the average size of reply per SPECweb99 request
+    my $opsps = ($config->{'USER_LINE_SPEED'}/122000) * $load;
+    return int(25+($opsps/5));
+}
+
+
+#the @results are passed in -- an index number for the median one is returned
+sub find_median_result {
+
+    my ($config) = @_;
+    my @sorted_results = sort results_sort @{$config->{'results'}};
+    my $median_index = $#sorted_results / 2;
+
+
+    return 
+	$sorted_results[$median_index][1], 
+	$sorted_results[$median_index][0]{'conforming'};
+}
+
+
+
+
+##############################################################################
+# Helper functions
+##############################################################################
+
+# Try one of each test operation to make sure it works -- die if any
+# are broken.
+# Note:  This is the ONLY place where the custom ad scan/replacement scheme
+# is verified.
+# Another note:  we set $config->{'HTTP_PROTOCOL'} in here with the return
+#   protocol from the 1st GET (if not specified in the rc file, that is)
+sub verify_all_HTTP_operations {
+
+    my($config) = @_;
+    my($url);
+
+    my($thiserror, $errors, $res);
+
+    my $tmp_url_root = $config->{'URL_ROOT'};
+    $tmp_url_root =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+    $max_load =  $config->{'MAX_LOAD'} if $config->{'MAX_LOAD'} > $max_load;
+
+    if ($config->{'DYNAMIC_POST'} > 0 || $config->{'DYNAMIC_CAD_GET'} > 0 ) {
+	my $tmp_dyn_cmd_script = $config->{'DYN_CMD_SCRIPT'};
+	$tmp_dyn_cmd_script =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+	($res, $thiserror) = &HTTP_operation 
+	    ("Reset command",
+	     $tmp_dyn_cmd_script . '?command/Reset' . '&maxload=' . $max_load .
+	     '&pttime=' . 100 .  '&maxthread=' . 100 . '&exp=' . 
+	     '1,100' . '&urlroot=' . $tmp_url_root ,
+	     'dynreset.out');
+	
+	if ($thiserror) {
+	    Log (1, $thiserror);
+	    $errors++;
+	}
+    }
+
+
+    if ($config->{'DYNAMIC_POST'} > 0 || $config->{'DYNAMIC_CAD_GET'} > 0 ) {
+	my $tmp_dyn_cmd_script = $config->{'DYN_CMD_SCRIPT'};
+	$tmp_dyn_cmd_script =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+	($res, $thiserror) = &HTTP_operation 
+	    ("Finish command", $tmp_dyn_cmd_script . '?command/Finish');
+	
+	if ($thiserror) {
+	    Log (1, $thiserror);
+	    $errors++;
+	}
+    }
+
+
+    my($filenum) = int(rand($FILES_PER_CLASS - 1)); 
+    $url = sprintf ("/file_set/dir%05d/class3_$filenum",
+		    &dirs_from_load($config, $config->{'MAX_LOAD'})-1);
+
+
+    # Static GET
+    ($res, $thiserror) = &HTTP_operation("static GET", 
+				    $tmp_url_root . $url,
+				    'staticget.out');
+    if ($thiserror) {
+	Log (1, $thiserror);
+	$errors++;
+    }
+
+    #Decide whether we need HTTP 1.0 or 1.1
+    if ($config->{'HTTP_PROTOCOL'} eq '') {
+	$config->{'HTTP_PROTOCOL'} = $res->protocol();
+	#print "HTTP_PROTOCOL = $config->{'HTTP_PROTOCOL'}\n";
+    }
+
+    # Switch to shorter files!
+    $url =~ s/class3/class1/;
+
+    # Dynamic GET
+    my $tmp_dyn_get_script = $config->{'DYN_GET_SCRIPT'};
+    $tmp_dyn_get_script .= '?' if !($tmp_dyn_get_script =~ m/\?/);
+    $tmp_dyn_get_script =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+    if ($config->{'DYNAMIC_CONTENT'} > 0) {
+	($res, $thiserror) = &HTTP_operation("dynamic GET", 
+					       $tmp_dyn_get_script . $url,
+					       'dynget.out');
+	if ($thiserror) {
+	    Log (1, $thiserror);
+	    $errors++;
+	}
+    }
+
+
+    # Dynamic CGI GET
+    my $tmp_dyn_cgi_script = $config->{'DYN_CGI_SCRIPT'};
+    $tmp_dyn_cgi_script =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+    $tmp_dyn_cgi_script .= '?' if !($tmp_dyn_cgi_script =~ m/\?/);
+    if ($config->{'DYNAMIC_CGI_GET'} > 0) {
+	($res, $thiserror) = &HTTP_operation("dynamic CGI GET", 
+			     $tmp_dyn_cgi_script . $url,
+			     'dyncgiget.out');
+	if ($thiserror) {
+	    Log (1, $thiserror);
+	    $errors++;
+	}
+    }
+
+    my ($filename) = 'dyncadget.out';
+    # Dynamic Custom Ad GET
+    my $tmp_dyn_cad_script = $config->{'DYN_CAD_SCRIPT'};
+    $tmp_dyn_cad_script =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+    $tmp_dyn_cad_script .= '?' if !($tmp_dyn_cad_script =~ m/\?/);
+    if ($config->{'DYNAMIC_CAD_GET'} > 0) {
+	my ($old_errors) = $errors;
+	($res, $thiserror) = &HTTP_operation("dynamic custom ad (CAD) GET", 
+					     $tmp_dyn_cad_script . $url,
+					     $filename);
+
+	if ($thiserror) {
+	    Log (1, $thiserror);
+	    $errors++;
+	}
+
+
+	# From the cookie, figure out the expected n, x, and y values
+	my ($adid, $en, $ex, $ey, $fn, $fx, $fy, $ct, $found, $sep);
+	my $headers = $res->headers_as_string();
+
+	if ($headers =~ m/Set-Cookie.*Ad_id=(\d+)/) {
+	    $adid = $1;
+	    $en = sprintf( "%05d", int($adid/36));
+	    $ex = int(($adid % 36) / 9);
+	    $ey = int($adid % 9);
+	}
+	
+	if (open(FILE, "<$filename")) {
+	    while (<FILE>) {
+		#Note:  on NT, the headers show up in the file, not in
+		#headers-as-string() method
+		if (undef($adid) && m/Set-Cookie.*Ad_id=(\d+)/) {
+		    $adid = $1;
+		    $en = sprintf( "%05d", int($adid/36));
+		    $ex = int(($adid % 36) / 9);
+		    $ey = int($adid % 9);
+		}
+
+		    
+		if (m#<!WEB99CAD><IMG SRC="(\S+)"><!/WEB99CAD>#) {
+		    $found = $1;
+		    $ct++;
+		    if ($1 =~ m/(\S{1})class/) {
+			$sep = $1;
+		    }
+		    else {
+			Log (1, "  **ERROR**:  Bizarre stuff found in WEBCAD string\n\n$_\n");
+			$errors++;
+		    }
+		    my($expected) =sprintf("%sfile_set%sdir%5s%sclass%01d_%01d",
+					   $sep,$sep,$en,$sep,$ex,$ey);
+
+		    if ($expected ne $found) {
+			Log (1,  "ERROR: Substitution in Custom Ad scan is incorrect\n Expected: $expected Found: $found\n");
+			$errors++
+		    }
+		}
+	    }
+	    close FILE;
+
+	    if (undef($adid)) {
+		Log (1, "  **ERROR**:  No Set-Cookie header returned -- Header string:\n\n$headers\n");
+		$errors++;
+	    }
+		
+	    elsif ($ct == 0) {
+		Log(1,  "  **ERROR**:  No Custom Ad substitution was found -- see runrules for information on the WEB99CAD string substitution\n");
+		$errors++
+	    }
+	}
+	else {
+	    Log(1, " **ERROR**:  Can't open $filename fetched from dynamic CAD GET of $!\n");
+	    $errors++
+	}
+	
+	if ($old_errors < $errors) {
+	    Log(1, "    NOTE:  errors in Custom Ad Rotation may be caused by" .
+		" problems in \n command/Reset.  Check that upfgen and cadgen" .
+		" get run correctly\n");
+	}
+    }
+
+    # Dynamic post
+    my $tmp_dyn_post_script = $config->{'DYN_POST_SCRIPT'};
+    $tmp_dyn_post_script =~ s/\@\@SERVER\@\@/$config->{'SERVER'}/e;
+    $tmp_dyn_post_script .= '?' if !($tmp_dyn_post_script =~ m/\?/);
+    if ($config->{'DYNAMIC_POST'} > 0) {
+	($res, $thiserror) = &HTTP_operation("dynamic POST",
+				    $tmp_dyn_post_script . $url,
+				    'dynpost.out');
+
+	if ($thiserror) {
+	    Log (1, $thiserror);
+	    $errors++;
+	}
+
+	my ($server_pcount) = 0;
+	my($pcount_ref, $errors_ref) = &validate_post_log($config, "pre test");
+	for (@$pcount_ref) {$server_pcount += $_};
+	if ($server_pcount != 1) {
+	    Log(1, "  **ERROR**:  There should only be 1 post log entry;" .
+		"$server_pcount" .
+		" were found\n");
+	    Log(1, "    NOTE:  errors in dynamic POST may be caused by" .
+		" problems in \n command/Reset.  Check that the post.log" .
+		" gets zeroed correctly\n");
+	    $errors++;
+	}
+
+
+    }
+
+    die "\n\n****** FATAL ERRORS FOUND *******\n\n" if $errors;
+}
+
+# Code for doing HTTP operations from manager
+sub HTTP_operation {
+    my ($operation, $url, $output_file) = @_;
+    my($req, $res, $error);
+
+    Log(5, "\n  Checking $operation with '$url'\n");
+
+    if ($operation =~ m/POST/i) {
+	$req = new HTTP::Request 'POST' => $url . "f";
+	my($urlroot) = ($url =~ m#\?(.*file_set/)#);
+	$req->content("class=1&client=2&dir=00004&num=3&urlroot=$urlroot");
+    }
+    else {
+	$req = new HTTP::Request 'GET' => $url;
+    }
+    
+    $req->header('Accept' => '*/*');
+    
+    if ($operation =~ m/CAD/i || $operation =~ m/POST/i) {
+	$req->header('Cookie'=> "my_cookie=user_id=10001&last_ad=20");
+    }
+    $res = $ua->request($req,$output_file);
+    if (!$res->is_success) {
+	if ($operation =~ m/static/i) {
+	    $error .=  "  **ERROR**:" . 
+		"Can't fetch file $url with a $operation request\n" .
+		    "Did WAFGEN generate a large enough fileset?\n" .
+			"Error: " . $res->code . " " . $res->message .  "\n";
+	}
+	else {
+	    $error .=  "  **ERROR**:" .
+		" Can't fetch file $url with a $operation request\n" .
+		    "Is DYNAMIC_ROOT (or DYN_xxx_SCRIPT) configured " .
+			" correctly?\n" .
+			    "Error: " . $res->code . " " 
+				. $res->message .  "\n";
+	}
+	return $res, $error;
+    }
+
+    if ($operation =~ m/Reset/i) {
+	return $res, $error;
+    }
+    if ($operation =~ m/Finish/i) {
+	return $res, $error;
+    }
+
+    my($fileset_string);
+    if (open(FILE, "<$output_file")) {
+	while (<FILE>) {
+	    if (m/\d+\s+(file_set.*class.*)/){
+		$fileset_string = $1;
+		last;
+	    }
+	}
+	if  (!$fileset_string ) {
+	    $error .= "  **ERROR**:  Improper file returned.  See " .
+		"$output_file for returned text\n";
+	}
+    }
+    else {
+	$error .= "Can't open $output_file to check $operation: $!\n";
+    }
+
+	
+    return $res, $error;
+    
+}
+
+
+# Printout the class summary tables.  The first table has the mix,
+# op count, and response time information.  The 2nd table has bitrate
+# information.
+# This routine works for both the per-client and per-iteration printouts
+# Also, check for per-class errors:
+#		1) Mix problems (only for entire iteration)
+#               2) Error rate (for each client)
+sub printout_class_results {
+    my ($cl_res_array, $runtime, $runnum, $output_type) = @_;
+
+# Set this (and change the label ) to the confidence interval you
+# desire:
+#   my $CHI_SQR = 2.71;           # chi-sqr value for 90%   CI
+#   my $CHI_SQR = 3.84;           # chi-sqr value for 95%   CI
+#   my $CHI_SQR = 5.02;           # chi-sqr value for 97.5% CI
+#   my $CHI_SQR = 6.63;           # chi-sqr value for 99%   CI
+    my $CHI_SQR = 7.88;          # chi-sqr value for 99.5% CI
+    
+    my (@subtotals, $mix_str, $rate_str, $total_wtd_abr, @errors);
+
+    $subtotals[0] = $cl_res_array->[0][0];
+    $subtotals[1] = -10101;	#The probability subtotal is meaningless
+
+
+    # Subtotal all the classes, then save in the xxx_T variables
+    for (my $class = 0; $class < @$cl_res_array; $class++) {
+	for (my $j = 2; $j < @{$cl_res_array->[$class]}; $j++) {
+	    $subtotals[$j] += $cl_res_array->[$class][$j];
+	}
+    }
+    my ($name_T, $prob_T, $time_T, $time2_T, $good_T, $bad_T, $post_T, 
+	$rate_T, $rate2_T, $slow_rate_T, $aggregate_bytes_T) = @subtotals;
+
+
+    # Calculate the aggregate bit-rate
+    my $throughput_T = $runtime?$good_T / $runtime:0;
+    my $aggregate_rate_T = $throughput_T ? 
+	$aggregate_bytes_T / ($time_T/1000) : 0;
+    # convert into bits/sec
+    $aggregate_rate_T *= 8;
+
+
+    # Build $mix_str with basic class mix information
+    $mix_str = "
+-------------------------+-----------------+--------------------------+------
+	     M  I  X     | O P   C O U N T | MEAN RESPONSE TIME Ms/Op | Total
+Class     Target  Actual | Success   Error |     Mean   StdDev 95% CI |  Time
+-------------------------+-----------------+--------------------------+------
+";
+
+
+    #Build $rate_str with bit-rte information
+    $rate_str .= "
+-------+--------------------------------+------------------+--------------------
+       |Individual OP Bit Rate(bits/sec)| Aggregate Bit    | Weighted ABR
+Class  |        Mean      StdDev 95% CI | Rate  (bits/sec) |      (%)
+-------+--------------------------------+------------------+--------------------
+";
+
+
+    # Go through each class, calculating and printing stats for the 2 tables
+    for (my $class = 0; $class < @$cl_res_array; $class++) {
+	my ($name, $prob, $time, $time2, $good, $bad, $post, $rate, 
+	    $rate2, $slow_rate, $aggregate_bytes) = @{$cl_res_array->[$class]};
+
+	# Stats for response times
+	my $stddev     = 0;
+	my $confidence = 0;
+	my $mean       = 0;
+
+	# Stats for bit rates
+	my $stddev_rate     = 0;
+	my $confidence_rate = 0;
+	my $mean_rate       = 0;
+	my $abr             = 0;
+	my $weighted_abr    = 0;
+
+
+	my $actual_mix= $good_T ? $good/$good_T : 0 ;
+	my $class_time = $time_T ? $time/$time_T : 0;
+
+	if ($good > 0) {
+	    $mean = $time / $good;
+
+	    $mean_rate = $rate / $good;
+            # convert into bits/sec
+            $mean_rate *= 8;
+            $abr = ($aggregate_bytes / ($time/1000)) * 8.0;
+            $weighted_abr = $abr * $class_time;
+            $total_wtd_abr += $weighted_abr;
+	}
+
+	if ($good > 1) {
+	    $stddev     = sqrt(($time2 - ($time*$time)/$good) / ($good - 1));
+	    $confidence = sqrt($CHI_SQR * $stddev / $good);
+
+	    $stddev_rate = sqrt(($rate2 - ($rate*$rate)/$good) / ($good - 1));
+            # convert into bits/sec
+            $stddev_rate *= 8;
+	    $confidence_rate = sqrt($CHI_SQR * $stddev_rate / $good);
+
+	}
+
+	# Check for per-class error rate problems
+	# NOTE:  this is the only place where Class 3 error rates are checked
+	# Classes 0-2 are checked in the client on a per load-generator
+	# per-class basis.  If the error rate is too high, the load-gen is
+	# marked as invalid.
+	# Class 3 is such a small portion, a single error could invalidate
+	# a load-gen, so class 3 errors rates are calculated for each client.
+	if ($output_type eq "CLIENT") {
+	    if ($good && $bad / ($bad+$good) > $MAX_ERROR_RATE) {
+		push (@errors, 
+		      sprintf "Iteration $runnum: error rate for class %s is %.1f%%, must be <= %.1f%%",
+		      $name, 100 * $bad/($bad+$good),  $MAX_ERROR_RATE * 100);
+	    }
+	}
+
+
+	# Check for errors on the whole run
+	elsif ($output_type eq "TOTALS") {
+	    # Mix problems for each class
+	    if ($actual_mix < $prob * (1 - $MIX_TOLERANCE) ||
+		$actual_mix > $prob * (1 + $MIX_TOLERANCE)) {
+
+		push (@errors, 
+		      sprintf "Iteration $runnum: mix for class %s is %.3f, must be between %.3f and %.3f",
+		      $name, $actual_mix,
+		      $prob * (1 - $MIX_TOLERANCE),
+		      $prob * (1 + $MIX_TOLERANCE));
+	    }
+	}
+
+	$mix_str.=sprintf ("%-12s %5.3f %5.3f | %7d %7d | %8.2f %8.2f %6.2f |%5.1f%%\n",
+			   $name, $prob, $actual_mix, $good, $bad, $mean, 
+			   $stddev, $confidence, $class_time*100.0);
+
+	$rate_str .= sprintf ("%-6s | %11.2f %11.2f %6.2f |  %11.2f     | %11.2f(%3.2f)\n",
+			      $name, $mean_rate, $stddev_rate, $confidence_rate,
+			      $abr, $weighted_abr, 
+			      ($aggregate_rate_T ? $weighted_abr/$aggregate_rate_T : 0)*100);
+    }
+
+
+    # Calculate and print the totals for the 2 tables
+    my $stddev_T     = 0;
+    my $confidence_T = 0;
+    my $mean_T       = 0;
+    my $error_pct_T  = 0;
+
+    if ($good_T > 0) {
+	$mean_T = $time_T / $good_T;
+	$error_pct_T = ($bad_T / ($bad_T+$good_T)) * 100;
+    }
+    if ($good_T > 1) {
+	$stddev_T =sqrt(($time2_T - ($time_T*$time_T)/$good_T) / ($good_T - 1));
+	$confidence_T = sqrt($CHI_SQR * $stddev_T / $good_T);
+    }
+    
+
+    $mix_str .= sprintf "-------------------------+-----------------+--------------------------+------
+			 | %7d %7d | %8.2f %8.2f %6.2f |\n\n", 
+	$good_T, $bad_T, $mean_T, $stddev_T, $confidence_T;
+    
+    $rate_str .= sprintf "-------+--------------------------------+------------------+--------------------
+       |                                |                  | %11.2f(%3.2f) 
+", 
+	   $total_wtd_abr, 
+	   ($aggregate_rate_T ? $total_wtd_abr/$aggregate_rate_T : 0 )*100;
+    
+    
+
+    # Print out mix table and rate table
+
+    if ($output_type eq "ASCII") { return ($mix_str . $rate_str) }
+
+    if ($logclient && $output_type eq "CLIENT") {
+	&client_log($mix_str . $rate_str);
+    }
+    &Log(101, $mix_str . $rate_str) if $output_type eq "TOTALS";
+ 
+    return $mean_T, $aggregate_rate_T, $throughput_T, @errors;
+
+    
+
+}
+
+
+#
+#
+# Summary information for a client or run
+#
+sub printout_summary {
+    my ($run_stats, $speed_limit_string, $user_speed_limit, $output_type) = @_;
+
+    $run_stats->{'conform_pct'} = 
+	100 * $run_stats->{'conforming'}/$run_stats->{'requested_conn'};
+
+    $run_stats->{'ops_per_thread'} = $run_stats->{'throughput'} /
+	$run_stats->{'requested_conn'};
+
+
+
+
+    my ($str2) = sprintf "
+             |            | total   | ops/sec/| 
+             |  SPECweb99 | ops/sec | loadgen | msec/op
+-------------+------------+---------+---------+---------
+RESULTS      |   %6d   |  %6d |  %4.2f   |  %5.1f 
+
+        
+             |           |           |           |  conforming*
+             | requested |  valid    |  invalid  |    (conf %) 
+-------------+-----------+-----------+-----------+----------------
+SIMULTANEOUS | %7d   | %7d   | %7d   | %7d (%6.2f%%)
+CONNECTIONS  |           |           |           |
+* a conforming connection is one that operates faster than 320K bit/sec
+
+
+             |  mean   |  min    |  max   
+-------------+---------+---------+--------               
+AGGREGATE    |         |         |
+BITRATES     | %6d  | %6d  | %6d                         
+(bits/sec)   |         |         |                                
+                                                               
+
+-------------------------------------------------------------------------
+Percentage of simultaneous connections conforming at various speed limits
+--------------------------+----------------------------------------------
+Successive Speed Limits : |  %s
+Cumulative Conformance %: |  %s
+--------------------------+----------------------------------------------
+
+",
+    $run_stats->{'conforming'},
+    $run_stats->{'throughput'},
+    $run_stats->{'ops_per_thread'},
+    $run_stats->{'response'},
+
+    $run_stats->{'requested_conn'},
+    $run_stats->{'requested_conn'} -     $run_stats->{'invalid_conn'},
+    $run_stats->{'invalid_conn'},
+    $run_stats->{'conforming'},
+    $run_stats->{'conform_pct'},
+
+
+    $run_stats->{'bitrate'},
+    $run_stats->{'min_bitrate'},
+    $run_stats->{'max_bitrate'},
+    $speed_limit_string,
+    $run_stats->{'cum_conformance'};
+
+   my($str) = sprintf "
+
+RESULTS:  %6d SPECweb99 
+
+BITRATES(bits/sec):  avg = %6d    min =%6d     max = %6d 
+
+THROUGHPUTS: ops/sec = %6d    ops/sec/loadgen = %4.2f    msec/op = %6.1f 
+
+SIMULTANEOUS_CONNECTIONS: 
+ %6d requested %6d invalid %6d (%.2f%) conforming at %d bits/sec
+
+-------------------------------------------------------------------------
+Percentage of simultaneous connections conforming at various speed limits
+--------------------------+----------------------------------------------
+Successive Speed Limits : |  %s
+Cumulative Conformance %: |  %s
+--------------------------+----------------------------------------------
+
+",
+    $run_stats->{'conforming'},
+    $run_stats->{'bitrate'},
+    $run_stats->{'min_bitrate'},
+    $run_stats->{'max_bitrate'},
+    $run_stats->{'throughput'},
+    $run_stats->{'ops_per_thread'},
+    $run_stats->{'response'},
+
+    $run_stats->{'requested_conn'},
+    $run_stats->{'invalid_conn'},
+    $run_stats->{'conforming'},
+    $run_stats->{'conform_pct'},
+    $user_speed_limit,
+
+    $speed_limit_string,
+    $run_stats->{'cum_conformance'};
+
+    # Print out mix table and rate table
+    return $str2 if $output_type eq "ASCII";
+    &client_log($str2) if $logclient && $output_type eq "CLIENT";
+    &Log(101, $str2) if $output_type eq "TOTALS";
+
+}
+
+
+##############################################################################
+# Utility functions
+##############################################################################
+
+sub Log {
+    my ($level, @data) = @_;
+    my ($type, @output);
+    my $log_output    = "";
+    my $screen_output = "";
+    for (@data) {
+	$type = ref($_);
+	if ($type eq "ARRAY") {
+	    if ($verbose >= $level) {
+		$screen_output .= join ("", @$_);
+		$log_output    .= join ("", @$_);
+	    } elsif ($level >= 100) {
+		$screen_output .= $_ if $verbose + 100 >= $level;
+		$log_output    .= join ("", @$_);
+	    }
+	} elsif ($type eq "SCALAR") {
+	    if ($verbose >= $level) {
+		$screen_output .= $$_;
+		$log_output    .= $$_;
+	    } elsif ($level >= 100) {
+		$screen_output .= $_ if $verbose + 100 >= $level;
+		$log_output    .= $$_;
+	    }
+	} else {
+	    if ($verbose >= $level) {
+		$screen_output .= $_;
+		$log_output    .= $_;
+	    } elsif ($level >= 100) {
+		$screen_output .= $_ if $verbose + 100 >= $level;
+		$log_output    .= $_;
+	    }
+	}
+    }
+    print     $screen_output;
+    print LOG $log_output;
+}
+
+sub client_log {
+    my (@data) = @_;
+    my ($type, @output);
+    my $log_output    = "";
+    for (@data) {
+	$type = ref($_);
+	if ($type eq "ARRAY") {
+            $log_output    .= join ("", @$_);
+	} elsif ($type eq "SCALAR") {
+	    $log_output    .= $$_;
+	} else {
+	    $log_output    .= $_;
+	}
+    }
+    print CLLOG $log_output;
+}
+
+sub max {
+    my ($val) = @_;
+    for (@_) {
+	$val = $_ if $_ > $val;
+    }
+    return $val;
+}
+
+# This expands strings in the form of M or M-N or M-NxO into a complete
+# list of the values they represent.  1-3 would be 1,2,3 and 1-5x2
+# would be 1,3,5
+sub expand_ranges {
+    my (@data) = @_;
+    my (@rc, $start, $stop, $step, $i);
+
+    for (@data) {
+	if (($start, $stop, $step) = m/^(\d+)-(\d+)x(\d+)$/) {
+	    for ($i = $start; $i <= $stop; $i+=$step) {
+		push (@rc, $i);
+	    }
+	} elsif (($start, $stop) = m/^(\d+)-(\d+)$/) {
+	    for ($i = $start; $i <= $stop; $i++) {
+		push (@rc, $i);
+	    }
+	} else {
+	    push (@rc, $_);
+	}
+    }
+    @rc;
+}
+
+# Return the date (Note that this doesn't have time time zone in it,
+# but I'm not sure if we are that concerned about it
+sub date {
+    my ($result);
+    chomp($result = &ctime(time));
+    return $result;
+}
+
+# Given an list of choices, choose the one that matches the first few
+# characters.  Ambiguous and non-matching strings return undef.
+sub choose_string {
+    my ($string, @choices) = @_;
+    my (@matches) = grep (m/^$string/, @choices);
+    return undef if @matches != 1;
+    return $matches[0];
+}
+
+# resolve_choices takes a string containing a comma separated list of
+# choices and returns the choices from valid_outputs that match.  The
+# choices in required_outputs are added automatically.
+sub resolve_choices {
+    my($temp, $valid_outputs, $required_outputs) = @_;
+    my @temp = split(/\s*[,\s]\s*/, $temp);
+    my %temp;
+    my @output_types = ();
+
+    for (@$required_outputs) {
+	push (@output_types, $_) if (!$temp{$_}++);
+    }
+
+    for (@temp) {
+	$temp = &choose_string ($_, @$valid_outputs, "all");
+	if ($temp eq "all") {
+	    for (@$valid_outputs) {
+		if (!$temp{$_}++) {
+		    push (@output_types, $_);
+		}
+	    }
+	} elsif (!defined $temp) {
+	    Log(0, "Don't know how to output type '$_'\n");
+	} else {
+	    if (!$temp{$_}++) {
+		push (@output_types, $_);
+	    }
+	}
+    }
+    push (@output_types, $valid_outputs->[0]) if (!@output_types);
+    @output_types;
+}
+
+# Find the largest 3 digit numbered file in the directory and return a
+# 3 digit string of the next number.  Used to output numbered log files.  
+sub find_next_number {
+    local (*DIR);
+    my($path) = @_;
+    my (@files, $max);
+    opendir (DIR, $path) || die "Can't open directory '$path': $!\n";
+    @files = readdir(DIR);
+    closedir (DIR);
+    $max = 0;
+    for (@files) {
+	$max = $1 if ((m/^(\d{3})\./ || m/\.(\d{3})$/ || m/\.(\d{3})\./) && $max < $1 );
+    }
+    if ($max < 0) {
+	$max = "000";
+    } else {
+	$max = sprintf ("%03d", $max+1);
+    }
+    $max;
+}
+
+#For 2 $results, compares 'conforming' -- if equal, then compares 'throughput'
+sub results_sort {
+    my ($res) = $a->[0]{'conforming'} <=> $b->[0]{'conforming'};
+    return $res if $res != 0;
+    return $a->[0]{'throughput'} <=> $b->[0]{'throughput'};
+}
+
+##############################################################################
+# Formatting functions
+##############################################################################
+
+# All formatting functions build the output file in a string which they
+# return.  If a filename is specified, then they also output to a file.
+
+# do_outputs, figures out what types are needed and calls the appropriate
+#  functions
+
+sub do_outputs {
+
+
+
+    my ($config, $file_num, $output_dir) = @_;
+
+    # Fill in some benchmark stats for the output
+    my(%med_run_stats)= %{$config->{'results'}[$config->{'median_index'}][0]};
+    $config->{'bm_requested_conn'} = $med_run_stats{'requested_conn'};
+    $config->{'bm_fileset_size'} = $MB_PER_DIRECTORY * 
+	&dirs_from_load($config, $med_run_stats{'requested_conn'});
+
+    my $outsel=($output_types ne "")?$output_types:$config->{'OUTPUT_TYPE'};
+    my @types=&resolve_choices($outsel, [ sort keys %formatter ], ['screen', 'raw']);
+
+    # Output the results
+    for (@types) {
+	my $name   = "$output_dir$config->{'OUTPUT_NAME'}.$file_num.$_";
+	my $output = &{$formatter{$_}}($config);
+
+	next if $_ eq 'screen';
+
+	my $fh = new IO::File ">$name";
+	&Log (10, "Writing '$name'\n");
+	if (!defined $fh) {
+	    &Log (0, "Cannot create '$name': $!\n");
+	    exit (1);
+	}
+	print $fh $output;
+	$fh->close();
+    }
+}
+
+sub init_output {
+    @network_fields = (
+		    [ 'MSL (sec)',           'msl'            ],
+		    [ 'Time-Wait (sec)',     'time_wait'      ],
+    );
+    @clients_fields = (
+		    [ '# of Clients',        'lg_num'         ],
+    );
+    @bm_config_fields = (
+ 		    [ 'Requested Connections', 'bm_requested_conn' ],
+		    [ 'Fileset Size (MB)',     'bm_fileset_size' ],
+    );
+    @notes_fields = (
+		[ 'Errors',                 'errors',         ],
+    );
+    return 0;
+}
+
+
+# .raw files are to look at the raw data and to re-format into the
+# other formats.
+sub write_raw {
+    my ($config, $output_name) = @_;
+    my $rc = "";
+
+    # Header for a raw file
+    $rc .= "BEGIN SPECWEB99 1.00\n";
+#    for (qw( peak_index peak_load peak_throughput peak_response peak_size )) {
+#       $rc .= "$_= $config->{$_}\n";
+#    }
+
+    # Print out the results
+    my $num = "000";
+    for (@{$config->{'results'}}) {
+	my(%run_stats) = %{$_->[0]};
+	my($statname);
+	foreach $statname (sort keys %run_stats) {
+	    $rc .= "results$num = $statname $run_stats{$statname}\n";
+	}
+
+	my $class = 0;
+	for (@{$_->[3]}) {
+	    my ($name, @rest) = @$_;
+	    $rc .= "results$num = class      $class \"$name\" ". join(" ", @rest). "\n";
+	    $class++;
+	}
+	for (@{$_->[4]}) {
+	    $rc .= "results$num = error      $_\n";
+	}
+	$num++;
+    }
+
+    # Print out the entire configuration array
+    for my $key (sort keys %$config) {
+	if ($key eq 'results' || $key eq 'clients_parsed') {
+	    # except these, results is done above, and clients_parsed would
+	    # need similar logic, but really isn't worth it.  If we
+	    # *really* need it we can regenerate it
+	} elsif (ref($config->{$key}) eq "ARRAY") {
+	    # arrays are output as numbered lines
+	    my $num = "000";
+	    for (@{$config->{$key}}) {
+		$rc .= "$key$num = $_\n";
+		$num++;
+	    }
+	} elsif ($config->{$key} ne "--" && $config->{$key} !~ /^\s*$/) {
+	    # Don't print out lines with no values
+	    $rc .= "$key = $config->{$key}\n";
+	}
+    }
+    # Trailer to mark the end of the raw data
+    $rc .= "END SPECWEB99 1.00\n";
+
+    return $rc;
+}
+
+# write_screen  Just writes the ASCII output to the screen.  Used to
+# output the results during the run
+sub write_screen {
+    print &write_asc($_[0]);
+}
+
+# Produces an ASCII formatted listing.
+sub write_asc {
+    my ($config) = @_;
+    my (@results) = @{$config->{'results'}};
+    my (@errors)  = @{$config->{'errors'}} if $config->{'errors'};
+    my $rc = "";
+
+    # Make sure we mark runs invalid
+    my $invalid_string = (@errors)?"INVALID TEST":"";
+
+
+    my $successive_speed_limits = [];
+    $successive_speed_limits = $config->{'SUCCESSIVE_SPEED_LIMITS'};
+    my $speed_limit_string = sprintf "@{$successive_speed_limits}";
+
+    # Banner
+    $rc .= sprintf <<EOT, $config->{'median_results'};
+			       SPECweb99 Result
+
+===============================================================================
+							||
+ %-45.45s          ||   %6d SPECweb99
+ %-45.45s          ||        $invalid_string
+							||
+===============================================================================
+
+PERFORMANCE
+
+               |  Conforming Simultaneous
+   Iteration   |       Connections
+---------------+----------------------------
+EOT
+
+    for (my $i = 0; $i < @results; $i++) {
+	my ($conforming) = $results[$i][0]->{'conforming'};
+	$rc .= sprintf("     %2d        |      %7d\n", $i+1, $conforming);
+    }
+	
+    $rc .= "---------------+----------------------------\n";
+    $rc .= sprintf("    Median     |      %7d\n",  $config->{'median_results'});
+    $rc .= "\n";
+		  
+
+
+    ### Use actual test values - so no mismatch occurs ###
+    $config->{'lg_num'} = scalar(@{$config->{'CLIENTS'}});
+
+    my $width = 79;
+    $rc .= '=' x $width . "\n";
+    my $title = "Notes/Tuning information";
+    $rc .= ' ' x int(($width - length($title))/2) . $title . "\n";
+
+    for my $info ( @notes_fields ) {
+	my ($name, $key) = @$info;
+	my $val = $config->{$key};
+	my @vals = ();
+	next if $val eq '' || $val eq '--' || (ref($val) eq 'ARRAY' && @$val == 0);
+	$rc .= "\n$name\n";
+	if (ref($val) eq 'ARRAY') {
+	    for (@$val) {
+		push (@vals, split("\n", $_));
+	    }
+	} else {
+	    @vals = split("\n", $val);
+	}
+	for (@vals) {
+	    $rc .= "    $_\n";
+	}
+    }
+
+    $rc .= <<EOT; 
+
+===============================================================================
+
+Test Run Details
+ 
+    Run    Conforming  Percent  |  Throughput  Response ops/sec/  Kbits/
+    Num    Connections Conform  |  ops/sec     msec     loadgen   sec
+EOT
+
+    # Print out the data points we've collected
+    for (my $i = 0; $i < @results; $i++) {
+	my(%run_stats) = %{$results[$i][0]};
+	$rc .= sprintf ("  %2s %2d   %6d     %7.1f%%   |  %7.1f     %7.1f   %5.2f     %5.1f\n", 
+			
+			$i == $config->{'median_index'} ? "=>" : "  ",
+			$i+1,
+			$run_stats{'conforming'}, 
+			$run_stats{'conform_pct'}, $run_stats{'throughput'},
+			$run_stats{'response'}, $run_stats{'ops_per_thread'},
+			$run_stats{'bitrate'} / 1000);
+    }
+
+	$rc .= sprintf("Performance Counters:\n");
+    $rc .= sprintf ("%s\n", $perfcnt);
+
+    if ($details) {
+	$rc .= sprintf <<EOT, $speed_limit_string;
+
+
+                    Cumulative Conformance % Chart
+
+    Run  Conforming    |  Percent of connections conforming at various speeds
+    Num  Connections   |  %s
+-----------------------+---------------------------------------------------\n
+EOT
+
+	for (my $i = 0; $i < @results; $i++) {
+	    my(%run_stats) = %{$results[$i][0]};
+	    $rc .= sprintf ("  %2s %2d   %5d        |   %s\n",
+			    $i == $config->{'median_index'} ? "=>" : "  ",
+			    $i + 1,
+			    $run_stats{'conforming'}, 
+			    $run_stats{'cum_conformance'});
+	}    
+    $rc .= "\n\n";
+    }
+
+    if ($details) {
+	#Write results for individual tests 
+	for (my $i = 0; $i < @results; $i++) {
+	    $rc .= sprintf("\n\nResults From Iteration %d\n", $i+1);
+	    my (@class_results) = @{$results[$i][3]};
+	    $rc .= &printout_class_results( \@class_results,
+					   $config->{'RUN_TIME'}, $i + 1,
+					   "ASCII");
+	    my(%run_stats) = %{$results[$i][0]};
+	    $rc .= &printout_summary(\%run_stats, $speed_limit_string, 
+				     $config->{'USER_SPEED_LIMIT'}, "ASCII");
+	}
+    }
+
+    return $rc;
+}
+
+sub firstof($) {
+    my ($val) = @_;
+    $val = $val->[0] if (ref($val) eq 'ARRAY');
+    return $val;
+}

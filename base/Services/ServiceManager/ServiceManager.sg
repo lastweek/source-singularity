@@ -1,0 +1,2486 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+
+//
+//
+//A service can be started for one of the following reasons:
+//  * The configuration says the service should always be running.
+//  * A client has connected to one of the advertised names of the service.
+//  * A management client has requested that the service be started.
+//
+//
+
+using System;
+using System.Diagnostics;
+using System.Collections;
+using System.Collections.Specialized;
+using Microsoft.Contracts;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.ServiceManager;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.V1.Processes;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Services.ServiceManager
+{
+
+    internal sealed class ServiceManager : ITracked
+    {
+        ///
+        //<summary>
+        //  The kernel creates the Service Manager process when the system starts.
+        //  This happens in Kernel\Singularity.Io\IoSystem.sg, in the InitializeServiceManager()
+        //  method.  That method scans the system manifest (the in-memory, parsed XML document)
+        //  for service definitions, and then builds the argument vector for this process.
+        //  For each service, the method adds three arguments to the argument vector:
+        //  the service name, the executable (manifest) name, and the service type, which is
+        //  "managed" or "unmanaged".  (We only support "managed".)
+//
+        //  The kernel also sets up the endpoint vector, with exactly one endpoint at entry zero.
+        //  This is an instance of DirectoryServiceContract.Imp.  The current implementation of
+        //  the Service Manager does not use this endpoint, and so at startup time, we extract
+        //  and delete that endpoint.
+//
+        //  Startup endpoints:
+//
+        //      0 - DirectoryServiceContract.Imp:Ready
+//
+        //      1 - ServiceProviderContract.Exp:Start
+        //          This is a service provider channel registered at '/service/services'.
+        //          The kernel creates this service provider channel before starting the
+        //          Service Manager.  Unit test apps can also create instances of the Service
+        //          Manager at different paths.
+//
+//
+        //</summary>
+        //
+        public static int Main(string[]! args)
+        {
+            tracePrintLevel = TraceLevel.Notice;
+
+            Binder.Initialize();
+
+            Endpoint* in ExHeap ep0 = Process.GetStartupEndpoint(0);
+            if (ep0 == null) {
+                Dbg(TraceLevel.Error, "ERROR: Startup endpoint 0 is not set.  Service Manager cannot start.");
+                Dbg(TraceLevel.Error, "Service Manager cannot start.");
+                return -1;
+            }
+
+            DirectoryServiceContract.Imp:Ready rootds = ep0 as DirectoryServiceContract.Imp:Ready;
+            if (rootds == null) {
+                delete ep0;
+                Dbg(TraceLevel.Error, "ERROR: Startup endpoint 0 is set, but is not DirectoryServiceContract.Imp:Ready.");
+                Dbg(TraceLevel.Error, "Service Manager cannot start.");
+                return -1;
+            }
+
+            Endpoint* in ExHeap ep1 = Process.GetStartupEndpoint(1);
+            if (ep1 == null) {
+                Dbg(TraceLevel.Error, "ERROR: Startup endpoint is not set.  Service Manager cannot start.");
+                Dbg(TraceLevel.Error, "Service Manager cannot start.");
+                delete rootds;
+                return -1;
+            }
+
+            ServiceProviderContract.Exp:Start services_namespace_provider = ep1 as ServiceProviderContract.Exp:Start;
+            if (services_namespace_provider == null) {
+                Dbg(TraceLevel.Error, "ERROR: Startup endpoint is set, but is not ServiceProviderContract.Exp:Start.");
+                Dbg(TraceLevel.Error, "Service Manager cannot start.");
+                delete rootds;
+                delete ep1;
+                return -1;
+            }
+
+            ServiceManager! manager = new ServiceManager(rootds, services_namespace_provider);
+            try {
+                //
+                // All of the resources we need to run are now set up.  Next, process the list of
+                // services passed to this process by the kernel.  The kernel parses the system
+                // manifest, and builds the argument vector for this process by searching for
+                // <service> elements (xpath /system/serviceConfig/service).  For each service,
+                // the kernel appends three strings to the argument vector: the service name,
+                // the executable (manifest) name, and service type ("managed" or "unmanaged").
+                //
+
+                manager.CreateInitialServices(args);
+
+                int result = manager.Run();
+                return result;
+            }
+            finally {
+                manager.Dispose();
+            }
+        }
+
+        ServiceManager(
+            [Claims]DirectoryServiceContract.Imp:Ready! rootds,
+            [Claims]ServiceProviderContract.Exp:Start! services_namespace_provider)
+        {
+            this.rootds = rootds;
+            this.services_namespace_provider = services_namespace_provider;
+            this.ForgetLastStartFailedInterval = TimeSpan.FromSeconds(30);
+        }
+
+        #region Data Fields
+
+        /// <summary>
+        /// Controls which calls to Dbg() are also sent to DebugStub.WriteLine().
+        /// </summary>
+        internal static TraceLevel tracePrintLevel;
+
+        readonly ServiceConnectRequest[]! connectRequestLookasideList = new ServiceConnectRequest[0x20];
+        int connectRequestLookasideCount;
+
+        TimeSpan ForgetLastStartFailedInterval;
+
+        readonly IDictionary/*<String,Service!>*/! services = new ListDictionary(CaseInsensitiveComparer.DefaultInvariant);
+        Service[] servicesSnapshot;
+
+        /// <summary>
+        /// This channel is provided by the kernel (or whatever process created this Service Manager process).
+        /// This endpoint is passed to this process as startup endpoint 0.
+        ///
+        /// Currently, this field is not used.  However, if this process does perform any Directory operations,
+        /// it should use this as its root.
+        /// </summary>
+        readonly DirectoryServiceContract.Imp! rootds;
+
+        /// <summary>
+        /// This channel is provided by the kernel (or whatever process created this Service Manager process).
+        /// This endpoint is a namespace service provider, registered with the Directory service, usually at
+        /// '/service/services'.  However, a creating process may use a different name or path, so the Service Manager
+        /// should never assume that the path is '/service/services'.
+        ///
+        /// This endpoint is passed to this process as startup endpoint 1.
+        /// </summary>
+        readonly ServiceProviderContract.Exp! services_namespace_provider;
+
+        /// <summary>
+        /// Contains clients channels who send service control requests to the Service Manager.
+        /// Clients in this set (state) have not selected a specific service.
+        /// </summary>
+        readonly ESet<ServiceManagerContract.Exp:Ready>! clients =
+            new ESet<ServiceManagerContract.Exp:Ready>();
+
+        /// <summary>
+        /// Contains clients channels who send service control requests to the Service Manager.
+        /// </summary>
+        readonly EMap<ServiceManagerContract.Exp:ServiceSelected,Service!>! svclients =
+            new EMap<ServiceManagerContract.Exp:ServiceSelected,Service!>();
+
+        /// <summary>
+        /// Contains clients that are in the "Enumerate" state; they are enumerating the set of services.
+        /// The IEnumerator reference enumerates Service.
+        /// </summary>
+        readonly EMap<ServiceManagerContract.Exp:EnumeratingServices,IEnumerator!>! clients_enumerating =
+            new EMap<ServiceManagerContract.Exp:EnumeratingServices,IEnumerator!>();
+
+        /// <summary>
+        /// The clients whose endpoints in this endpoint map have subscribed to the status of services,
+        /// and the client is the next sender.  The client will send either WaitServiceChange, or
+        /// StopWatchingService.
+        /// </summary>
+        readonly EMap<ServiceManagerContract.Exp:WaitingServiceChange,ServiceWatcher!>! clients_readywatch =
+            new EMap<ServiceManagerContract.Exp:WaitingServiceChange,ServiceWatcher!>();
+
+        /// <summary>
+        /// Clients can connect to the Service Manager namespace (/service/services) using DirectoryServiceContract.
+        /// This can be used to enumerate service, and to connect to services.
+        /// </summary>
+        readonly EMap<DirectoryServiceContract.Exp:Ready,DirectoryClientInfo!>! dirs =
+            new EMap<DirectoryServiceContract.Exp:Ready,DirectoryClientInfo!>();
+
+        /// <summary>
+        /// Contains directory clients who are enumerating.
+        /// </summary>
+        readonly EMap<DirectoryServiceContract.Exp:EnumerateAck,DirectoryClientInfo!>! dirs_enumerating =
+            new EMap<DirectoryServiceContract.Exp:EnumerateAck,DirectoryClientInfo!>();
+
+        /// <summary>
+        /// The set of endpoints that want to be notified when the service starts.
+        /// All of these endpoints (stored in a TRef within ServiceStartWatcher) came from
+        /// clients who issued a StartServiceWait request.
+        /// </summary>
+        readonly ArrayList/*<ServiceStartWatcher>*/! serviceStartWatchers = new ArrayList();
+
+        /// <summary>
+        /// The set of endpoints that want to be notified when a specific service stops.
+        /// All of these endpoints (stored in a TRef within ServiceStopWatcher) came from
+        /// clients who issued a StopServiceWait request.
+        /// </summary>
+        readonly ArrayList/*<ServiceStopWatcher>*/! serviceStopWatchers = new ArrayList();
+
+        /// <summary>
+        /// Contains notifier endpoints of services that are being started.
+        /// </summary>
+        readonly EMap<ServiceStarterContract.Imp:Starting,ServiceStarter!>! service_starters =
+            new EMap<ServiceStarterContract.Imp:Starting,ServiceStarter!>();
+
+        /// <summary>
+        /// Contains the control endpoints of services that are starting.  We're waiting for the "Success"
+        /// message from these services before we consider them started.
+        /// </summary>
+        readonly EMap<ServiceProcessContract.Imp:Starting,ServiceProcess!>! svcontrols_starting =
+            new EMap<ServiceProcessContract.Imp:Starting,ServiceProcess!>();
+
+        /// <summary>
+        /// Contains the control endpoints of services that we have sent a "StopService" request to.
+        /// </summary>
+        readonly EMap<ServiceProcessContract.Imp:Stopping,ServiceProcess!>! svcontrols_stopping =
+            new EMap<ServiceProcessContract.Imp:Stopping,ServiceProcess!>();
+
+        /// <summary>
+        /// Contains the control endpoints of services that we have sent a "Connect" request to.
+        /// </summary>
+        readonly EMap<ServiceProcessContract.Imp:Connecting,ServiceProcess!>! svcontrols_connecting =
+            new EMap<ServiceProcessContract.Imp:Connecting,ServiceProcess!>();
+
+        /// <summary>
+        /// Contains the notification channels that are connect to service processes, which are
+        /// in the "Ready" state.  In this state, the service process can send messages to the
+        /// Service Manager.  The Service Manager always responds immediately, so there are no
+        /// other EMaps or ESets for these channels.
+        /// </summary>
+        readonly EMap<ServiceEventContract.Exp:Ready,ServiceProcess!>! svevents =
+            new EMap<ServiceEventContract.Exp:Ready,ServiceProcess!>();
+
+        /// <summary>
+        /// Contains the control endpoints of services that we have sent a "Knock" message to.
+        /// </summary>
+        readonly EMap<ServiceProcessContract.Imp:Knocking,ServiceProcess!>! svcontrols_knocking =
+            new EMap<ServiceProcessContract.Imp:Knocking,ServiceProcess!>();
+
+
+        /// <summary>
+        /// Contains instance of ServiceManagerWatcher, representing those management clients that
+        /// have subscribed to the overall status of the Service Manager.
+        /// </summary>
+        readonly ArrayList/*<ServiceManagerWatcher>*/! managerWatchers = new ArrayList();
+
+        /// <summary>
+        /// Contains endpoints of management clients that have subscribed to the overall status of the
+        /// Service Manager, and are ready to wait for the next event, or to end their subscription.
+        /// The next possible messages in this state are WaitNextServiceManagerChange and
+        /// StopWatchingServiceManager.
+        /// </summary>
+        readonly EMap<ServiceManagerContract.Exp:ReadyWatchServiceManager,ServiceManagerWatcher!>! managerWatchersReady
+            = new EMap<ServiceManagerContract.Exp:ReadyWatchServiceManager,ServiceManagerWatcher!>();
+
+        #endregion
+
+        public void Dispose()
+        {
+            delete clients;
+            delete clients_enumerating;
+            delete clients_readywatch;
+            delete service_starters;
+            delete svclients;
+            delete svcontrols_starting;
+            delete svcontrols_stopping;
+            delete svcontrols_connecting;
+            delete dirs;
+            delete dirs_enumerating;
+            delete rootds;
+            delete svevents;
+            delete svcontrols_knocking;
+            delete managerWatchersReady;
+            delete services_namespace_provider;
+        }
+
+        /// <summary>
+        /// Main service loop.
+        /// </summary>
+        int Run()
+        {
+            expose(this) {
+
+                //
+                // Now we enter our main message loop.
+                //
+                Dbg(TraceLevel.Notice, "Service Manager has started successfully.");
+
+                for (;;) {
+
+                    //
+                    // Before we process any new messages, check the integrity and
+                    // consistency of our data structures.
+                    //
+                    AssertIntegrity();
+
+                    ScanForStoppedProcesses();
+
+                    switch receive {
+
+                        #region Event handlers for message from Directory, for the '/service' registration
+
+                        case services_namespace_provider.Connect(ServiceContract.Exp:Start! exp):
+                        {
+                            ServiceManagerContract.Exp:Start client = exp as ServiceManagerContract.Exp:Start;
+                            DirectoryServiceContract.Exp:Start dir = exp as DirectoryServiceContract.Exp:Start;
+                            if (client != null) {
+                                Dbg(TraceLevel.Audit, "A client has connected, using ServiceManagerContract.");
+                                client.SendSuccess();
+                                clients.Add(client);
+                                services_namespace_provider.SendAckConnect();
+                            }
+                            else if (dir != null) {
+                                Dbg(TraceLevel.Audit, "A client has connected, using DirectoryServiceContract.");
+                                DirectoryClientInfo info = new DirectoryClientInfo("/");
+                                dir.SendSuccess();
+                                dirs.Add(dir, info);
+                                services_namespace_provider.SendAckConnect();
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, "A client has connected, but has offered an unsupported channel contract.");
+                                services_namespace_provider.SendNackConnect(exp);
+                                break;
+                            }
+
+                            break;
+                        }
+
+                        case services_namespace_provider.ChannelClosed():
+                            Dbg(TraceLevel.Audit, "The Directory has closed the namespace provider channel.  Service manager will now terminate.");
+                            return -1;
+
+                        #endregion
+
+                        #region Event handlers for 'clients' endpoint set
+                        // These are event handlers for ServiceManagerContract clients in the "Ready" state.
+                        // These are management clients that have connected to the Service Manager, but have
+                        // not selected any particular service to operate on.
+
+                        case client.SelectService(char[]! in ExHeap serviceName) in clients:
+                        {
+                            string! name = Bitter.ToString2(serviceName);
+                            delete serviceName;
+                            Service service = FindService(name);
+                            if (service != null) {
+                                Dbg(TraceLevel.Audit, "Client has selected service '{0}'.", name);
+                                client.SendOk();
+                                svclients.Add(client, service);
+                                // -XXX- add reference count on service?
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, "Client wants to select service '{0}', but there is no such service.", name);
+                                client.SendRequestFailed(ServiceError.ServiceNotFound);
+                                clients.Add(client);
+                            }
+                            break;
+                        }
+
+                        case client.CreateService(ServiceConfig config) in clients:
+                        {
+                            InternalServiceConfig local_config = new InternalServiceConfig(ref config);
+                            ServiceError error = CreateService(local_config);
+                            if (error == ServiceError.None) {
+                                client.SendOk();
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, "The request to create a service has failed, error = " + ServiceEnums.ToString(error));
+                                client.SendRequestFailed(error);
+                            }
+                            config.Dispose();
+                            clients.Add(client);
+                            break;
+                        }
+
+                        case client.EnumerateServices(ServiceInfo[]! in ExHeap infos) in clients:
+                        {
+                            // It's possible to create just the enumerator here, and allow
+                            // further messages (client.MoveNext) to drive that enumerator.
+                            // However, it's also possible for the collection being enumerated
+                            // to change, if a service is added or deleted.  That would cause
+                            // an exception during use of the enumerator later.  Instead, we
+                            // make a copy of the services.Values collection, if necessary.
+
+                            Service[]! snapshot = GetServicesSnapshot();
+                            IEnumerator! enumerator = snapshot.GetEnumerator();
+                            EnumerateServiceInfos(client, infos, enumerator);
+                            break;
+                        }
+
+                        case client.WatchServiceManager(ServiceManagerEventMask mask) in clients:
+                            // The client wants to subscribe to the overall status and configuration
+                            // of the Service Manager.
+                            if (mask == 0) {
+                                Dbg(TraceLevel.Audit, "Received 'WatchServiceManager', but the event mask specified is zero.");
+                                client.SendRequestFailed(ServiceError.InvalidArguments);
+                                clients.Add(client);
+                                break;
+                            }
+
+                            const ServiceManagerEventMask known_events = ServiceManagerEventMask.AnyServiceConfig
+                                | ServiceManagerEventMask.AnyServiceStatus;
+                            if ((mask & ~known_events) != 0) {
+                                Dbg(TraceLevel.Audit, "Received 'WatchServiceManager', but the client has specified events (bits) that we don't recognized.");
+                                client.SendRequestFailed(ServiceError.InvalidArguments);
+                                clients.Add(client);
+                                break;
+                            }
+
+                            ServiceManagerWatcher watcher = new ServiceManagerWatcher();
+                            watcher.DesiredEvents = mask;
+                            watcher.EventsMissed = mask;
+                            client.SendOk();
+                            managerWatchers.Add(watcher);
+                            managerWatchersReady.Add(client, watcher);
+                            Dbg(TraceLevel.Audit, "A client has subscribed to global Service Manager events.");
+                            Dbg(TraceLevel.Audit, "Watching: all service config = {0}, all service status = {1}",
+                                ((mask & ServiceManagerEventMask.AnyServiceConfig) != 0).ToString(),
+                                ((mask & ServiceManagerEventMask.AnyServiceStatus) != 0).ToString());
+                            break;
+
+                        case client.ChannelClosed() in clients:
+                        {
+                            // Dbg(TraceLevel.Audit, "A client client has disconnected.");
+                            delete client;
+                            break;
+                        }
+
+                        #endregion
+
+                        #region Handlers for management clients in the ReadyWatchServiceManager state
+                        // These event handlers are for management clients that have subscribed to the
+                        // overall state of the Service Manager.
+
+                        case client.WaitNextServiceManagerChange() in managerWatchersReady ~> watcher:
+                            if (watcher.EventsMissed != 0) {
+                                Dbg(TraceLevel.Audit, "Received 'WaitNextServiceManagerChange' on SM watcher, responding immediately with mask {0:x8}", ((uint)watcher.EventsMissed));
+                                client.SendServiceManagerChanged(watcher.EventsMissed);
+                                managerWatchersReady.Add(client, watcher);
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, "Received 'WaitNextServiceManagerChange' on SM watcher; no events ready, parking endpoint.");
+                                watcher.SetEndpoint(client);
+                            }
+                            break;
+
+                        case client.StopWatchingServiceManager() in managerWatchersReady ~> watcher:
+                            // The client wants to end its subscription to the Service Manager events.
+                            managerWatchers.Remove(watcher);
+                            watcher.Dispose();
+                            clients.Add(client);
+                            break;
+
+                        #endregion
+
+                        #region Handlers for 'svclients': ServiceManagerContract clients bound to a service
+                        // These event handlers are for management clients that have connected, and
+                        // have successfully selected a specific service.
+
+                        case svclient.UnselectService() in svclients ~> service:
+                            Dbg(TraceLevel.Audit, service, "Client has unselected service.");
+                            clients.Add(svclient);
+                            // -XXX- decrement reference count on service?
+                            break;
+
+                        case svclient.StartServiceNoWait() in svclients ~> service:
+                        {
+                            Dbg(TraceLevel.Audit, "Received StartServiceNoWait request for service '{0}.", service.ServiceName);
+                            ServiceError error = StartServiceProcess(service);
+                            if (error == ServiceError.None) {
+                                Dbg(TraceLevel.Audit, service, "    Request succeeded.");
+                                svclient.SendServiceStarting();
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, service, "    Request failed: error = " + error);
+                                svclient.SendRequestFailed(error);
+                            }
+                            svclients.Add(svclient, service);
+                            PushService(service);
+                            break;
+                        }
+
+                        case svclient.StartServiceWait() in svclients ~> service:
+                        {
+                            Dbg(TraceLevel.Audit, service, "Received StartServiceWait request for service '{0}'.", service.ServiceName);
+
+                            ServiceError error = StartServiceProcess(service);
+                            if (error == ServiceError.None) {
+                                Dbg(TraceLevel.Audit, service, "    Request succeeded.  Parking endpoint in serviceStartWatchers.");
+                                ServiceStartWatcher watcher = new ServiceStartWatcher(service, svclient);
+                                serviceStartWatchers.Add(watcher);
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, service, "    Request failed: error = " + error);
+                                svclient.SendRequestFailed(error);
+                                svclients.Add(svclient, service);
+                            }
+                            PushService(service);
+                            break;
+                        }
+
+                        case svclient.StopServiceNoWait() in svclients ~> service:
+                            Dbg(TraceLevel.Audit, service, "Received request to stop service.  Client does not want to be notified when service stops.");
+                            ServiceError error = StopService(service);
+                            if (error == ServiceError.None) {
+                                svclient.SendServiceStopping();
+                            }
+                            else {
+                                svclient.SendRequestFailed(error);
+                            }
+                            svclients.Add(svclient, service);
+                            PushService(service);
+                            break;
+
+                        case svclient.StopServiceWait() in svclients ~> service:
+                            Dbg(TraceLevel.Audit, service, "Received request to stop service.  NYI");
+                            svclient.SendRequestFailed(ServiceError.Unknown);
+                            svclients.Add(svclient, service);
+                            break;
+
+                        case svclient.WatchServiceStatus() in svclients ~> service:
+                        {
+                            // A client wants to watch the status of a service.
+                            // For now, we only allow watching services that exist.
+                            // At some future point, we should allow subscriptions
+                            // to services that do not exist.  We should notifiy
+                            // subscribers when the service is created, deleted, etc.
+
+                            ServiceWatcher watcher = new ServiceWatcher(service);
+                            service.StatusWatchers.Add(watcher);
+                            svclient.SendOk();
+                            clients_readywatch.Add(svclient, watcher);
+                            Dbg(TraceLevel.Audit, service, "A client is now watching the status of a service.");
+                            // -XXX- add reference to service?
+                            break;
+                        }
+
+                        case svclient.DeleteService() in svclients ~> service:
+                            ProcessDeleteServiceRequest(svclient, service);
+                            svclients.Add(svclient, service);
+                            break;
+
+                        case svclient.QueryServiceConfig() in svclients ~> service:
+                        {
+                            ServiceConfig config = new ServiceConfig();
+                            service.GetConfig(ref config);
+                            svclient.SendCurrentServiceConfig(config);
+                            svclients.Add(svclient, service);
+                            break;
+                        }
+
+                        case svclient.QueryServiceStatus() in svclients ~> service:
+                        {
+                            InternalServiceStatus status = service.LastServiceStatusPublished;
+                            ServiceStatus exstatus = status.ToExchange();
+                            svclient.SendCurrentServiceStatus(exstatus);
+                            svclients.Add(svclient, service);
+                            break;
+                        }
+
+                        case svclient.ChannelClosed() in svclients ~> service:
+                            // Dbg(TraceLevel.Audit, service, "A client that had selected this service has disconnected.");
+                            delete svclient;
+                            break;
+
+                        case svclient.EnableService(bool enable) in svclients ~> service:
+                            if (enable)
+                                Dbg(TraceLevel.Audit, service, "A client wants to ENABLE the service.");
+                            else
+                                Dbg(TraceLevel.Audit, service, "A client wants to DISABLE the service.");
+
+                            service.Config.IsAdministrativelyDisabled = !enable;
+                            PushService(service);
+                            svclient.SendOk();
+                            svclients.Add(svclient, service);
+                            break;
+
+                        case svclient.TerminateServiceAllProcesses() in svclients ~> service:
+                        {
+                            Dbg(TraceLevel.Audit, service, "Received 'TerminateServiceAllProcesses'.  Terminating all processes for this service.");
+                            foreach (ServiceProcess! process in service.Processes) {
+                                TerminateServiceProcess(process);
+                            }
+                            PushService(service);
+                            svclient.SendOk();
+                            svclients.Add(svclient, service);
+                            break;
+                        }
+
+                        case svclient.TerminateServiceProcess(int processId) in svclients ~> service:
+                        {
+                            Dbg(TraceLevel.Audit, service, "Received 'TerminateServiceProcess' for process id {0}.", processId);
+                            foreach (ServiceProcess! process in service.Processes) {
+                                Process systemProcess = process.Process;
+                                if (systemProcess != null && systemProcess.Id == processId) {
+                                    TerminateServiceProcess(process);
+                                    break;
+                                }
+                            }
+                            PushService(service);
+                            svclient.SendOk();
+                            svclients.Add(svclient, service);
+                            break;
+                        }
+
+                        #endregion
+
+                        #region Handlers for 'clients_readywatch' endpoint map
+                        // These event handlers are for clients that have subscribed to the
+                        // status of a particular service.
+
+                        case client.WaitServiceChange() in clients_readywatch ~> watcher:
+                        {
+                            // A client wants to receive the next status change.
+                            Assert(!watcher.EndpointCanSend);
+                            if (watcher.MissedChange) {
+
+                                // The watcher missed the last update, because the watcher had not yet
+                                // placed its channel in a state where the service manager could send
+                                // a status update.  So now we send a status update immediately.
+
+                                Dbg(TraceLevel.Audit, watcher.Service, "Received WaitServiceChange - client missed an update; sending status now");
+
+                                watcher.MissedChange = false;
+                                InternalServiceStatus status = watcher.Service.LastServiceStatusPublished;
+                                ServiceStatus exstatus = status.ToExchange();
+                                client.SendServiceStatusChanged(exstatus, true);
+                                clients_readywatch.Add(client, watcher);
+
+                            }
+                            else {
+
+                                // The watcher wants an update.  We move the endpoint from the local
+                                // stack frame to the TRef in watcher, and mark the watcher as ready.
+
+                                Dbg(TraceLevel.Audit, watcher.Service, "Received WaitServiceChange - watcher is now armed");
+                                watcher.TakeEndpoint(client);
+                            }
+                            break;
+                        }
+
+                        case client.ChannelClosed() in clients_readywatch ~> watcher:
+                            // Dbg(watcher.Service, "A client that was watching service status has disconnected.");
+                            watcher.Service.StatusWatchers.Remove(watcher);
+                            delete client;
+                            break;
+
+                        #endregion
+
+                        #region Handlers for endpoints in 'clients_enumerating'
+                        // These are the event handlers for ServiceManagerContract clients that
+                        // are in the process of enumerating all services.
+
+                        case client.EnumerateServices(ServiceInfo[]! in ExHeap infos) in clients_enumerating ~> enumerator:
+                            EnumerateServiceInfos(client, infos, enumerator);
+                            break;
+
+                        case client.EndEnumeration() in clients_enumerating ~> enumerator:
+                            Dbg(TraceLevel.Audit, "A client client has finished enumerating services.");
+                            // There is no response message.
+                            // enumerator.Dispose();
+                            clients.Add(client);
+                            break;
+
+                        case client.ChannelClosed() in clients_enumerating ~> enumerator:
+                            // Dbg(TraceLevel.Audit, "A client client has disconnected.");
+                            // enumerator.Dispose();
+                            delete client;
+                            break;
+
+                        #endregion
+
+                        #region Wiring that allows us to know when ServiceStarter has completed.
+
+                        case notifier.Succeeded() in service_starters ~> starter:
+                        {
+                            ServiceProcess! process = starter.Process;
+                            Service! service = starter.Service;
+                            Dbg(TraceLevel.Audit, process, "Worker thread has started service process.  Now waiting for 'Success' message.");
+
+                            assert process.State == ServiceProcessState.Starting;
+                            assert process.Process == null;
+
+                            delete notifier;
+
+                            ServiceProcessContract.Imp:Starting! svcontrol;
+                            ServiceEventContract.Exp:Ready! svevent;
+                            Process! system_process;
+                            starter.GetSuccessfulResults(out svcontrol, out svevent, out system_process);
+                            process.SetProcess(system_process);
+                            process.SetEventEndpoint(svevent);
+                            svcontrols_starting.Add(svcontrol, process);
+
+                            PushService(service);
+                            break;
+                        }
+
+                        case notifier.Failed(error) in service_starters ~> starter:
+                        {
+                            // The notifier has already disposed of the process.
+
+                            Service! service = starter.Service;
+                            ServiceProcess! svprocess = starter.Process;
+                            service.Processes.Remove(svprocess);
+                            Dbg(TraceLevel.Audit, service, "Failed to start a service process.  Error: {0}", error);
+                            delete notifier;
+
+                            service.LastStartError = error;
+                            service.LastStartFailed = true;
+                            service.LastStartFailedTime = SchedulerTime.Now;
+
+                            PushService(service);
+                            break;
+                        }
+
+                        #endregion
+
+                        #region Handlers for 'svcontrols_starting'
+                        // These handlers process messages that we receive from a "control" channel
+                        // that we created for communicating with a service process.
+                        //
+                        // If process.IsTerminated is true when we receive a message on a control
+                        // channel, then we have abandoned this process (or even terminated it), but
+                        // because we cannot remove endpoints from endpoint maps, we can still receive
+                        // a message from it.  This could happen due to a race condition, or if the
+                        // service transferred its control endpoint to a different process.  In all
+                        // cases, we must guard against receiving this message late.
+
+                        case svcontrol.StartSucceeded() in svcontrols_starting ~> process:
+                        {
+                            // This message indicates that a service process has successfully started.
+                            // We verify that we are still interested starting the service, and then
+                            // we mark the service "Running", and then we check to see if there are
+                            // any clients waiting to connect to the service.
+
+                            Service! service = process.Service;
+
+                            do {
+                            if (process.State != ServiceProcessState.Starting) {
+                                Dbg(TraceLevel.Audit, process, "Received 'StartSucceeded' from a process, but the process was abandoned earlier.");
+                                Dbg(TraceLevel.Audit, process, "The process will be ignored, and the orphaned control channel will be closed.");
+                                delete svcontrol;
+                                break;
+                            }
+
+                            if (service.IsAdministrativelyDisabled) {
+                                Dbg(TraceLevel.Audit, process, "The service was disabled after the service process was started.");
+                                process.State = ServiceProcessState.Stopping;
+                                process.NeedSendStopControl = true;
+                                svcontrol.SendStop();
+                                // -XXX- Need to set control endpoint state to Stopping
+                                svcontrols_stopping.Add(svcontrol, process);
+                                break;
+                            }
+
+                            Dbg(TraceLevel.Audit, process, "A service process has indicated that it has successfully started.");
+
+                            if (process.State == ServiceProcessState.Starting) {
+                                process.State = ServiceProcessState.Running;
+
+                                if (process.EventEndpointIsReady) {
+                                    // Dbg(TraceLevel.Audit, process, "Binding service event channel.");
+                                    ServiceEventContract.Exp:Ready! svevent = process.GetEventEndpoint(EventChannelState.WaitingEvent);
+                                    svevents.Add(svevent, process);
+                                }
+                                else {
+                                    Dbg(TraceLevel.Audit, process, "Warning: No event channel was available for this service process.");
+                                }
+
+                                process.State = ServiceProcessState.Running;
+                                process.SetControlEndpoint(svcontrol);
+                                Dbg(TraceLevel.Audit, process, "The service process is now running.");
+
+                            }
+                            else if (process.State == ServiceProcessState.Running) {
+                                Dbg(TraceLevel.Audit, process, "Received 'StartSucceeded' from a process, but it is already in the running state!");
+                                Dbg(TraceLevel.Audit, process, "This should never happen.");
+                                Util.IllegalStateReached();
+                                process.SetControlEndpoint(svcontrol);
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, process, "Illegal value for ServiceProcessState!");
+                                Util.IllegalStateReached();
+                                delete svcontrol;
+                            }
+
+                            } while (false);
+                            PushService(service);
+                            break;
+                        }
+
+                        case svcontrol.StartFailed(ServiceError error) in svcontrols_starting ~> process:
+                        {
+                            // This message indicates that a service process tried to start (initialize),
+                            // but something went wrong, and so the service process cannot be used.
+                            // In this case, we mark the service process as "defective", and close all
+                            // channels to it.  It's not yet clear what we should do with the process --
+                            // wait for it to exit?  terminate it immediately?
+
+                            Service! service = process.Service;
+
+                            switch (process.State) {
+                                case ServiceProcessState.Starting:
+                                    Dbg(TraceLevel.Audit, process, "Received 'StartFailed'; service indicates that it has failed to start.");
+                                    process.State = ServiceProcessState.Stopping;
+                                    service.LastStartFailed = true;
+                                    service.LastStartFailedTime = SchedulerTime.Now;
+                                    MarkProcessDefective(process);
+                                    FailAllConnectRequests(service, ErrorCode.Unknown);
+                                    break;
+
+                                case ServiceProcessState.Running:
+                                    // This should never happen.
+                                    Dbg(TraceLevel.Audit, process, "Received 'StartFailed' from a service, but we believe the service is already running.");
+                                    Util.IllegalStateReached();
+                                    break;
+
+                                case ServiceProcessState.Stopping:
+                                    // We started a service process, and then changed our minds.
+                                    // This is a rare, but normal (acceptable) situation.
+                                    Dbg(TraceLevel.Audit, process, "Received 'StartFailed' from a service.  We had already abandoned this service process, so no big deal.");
+                                    break;
+
+                                default:
+                                    Util.IllegalStateReached();
+                                    break;
+                            }
+
+                            delete svcontrol;
+                            process.CloseControlEndpoint();
+                            PushService(process.Service);
+                            break;
+                        }
+
+                        #endregion
+
+                        #region Handlers for 'svcontrols_knocking'
+
+                        case svcontrol.Alive() in svcontrols_knocking ~> process:
+                            Dbg(TraceLevel.Audit, process, "Received 'Alive' from service.");
+                            process.SetControlEndpoint(svcontrol);
+                            PushService(process.Service);
+                            break;
+
+                        case svcontrol.ChannelClosed() in svcontrols_knocking ~> process:
+                            Dbg(TraceLevel.Audit, process, "A service has closed its control channel unexpectedly.");
+                            delete svcontrol;
+                            MarkProcessDefective(process);
+                            process.CloseControlEndpoint();
+                            PushService(process.Service);
+                            break;
+
+                        #endregion
+
+                        #region Event handlers for 'svcontrols_stopping'
+
+                        case svcontrol.AckStop() in svcontrols_stopping ~> process:
+                        {
+                            // A service process has acknowledged the Service Manager's request
+                            // to stop the process.  We leave the process in the "stopping" state;
+                            // later, when the process terminates, we'll remove the process from
+                            // the process list for this service.
+
+                            Dbg(TraceLevel.Audit, process, "Received 'AckStop' from service process.");
+                            Assert(process.State == ServiceProcessState.Stopping);
+                            delete svcontrol;
+                            PushService(process.Service);
+                            break;
+                        }
+
+                        case svcontrol.Busy() in svcontrols_stopping ~> process:
+                            Dbg(TraceLevel.Audit, process, "Received 'Busy' from a service process that we are trying to stop.");
+                            Dbg(TraceLevel.Audit, process, "Not sure what to do with this process!");
+                            process.SetControlEndpoint(svcontrol);
+                            PushService(process.Service);
+                            break;
+
+                        #endregion
+
+                        #region Event handlers for 'svcontrols_connecting'
+
+                        case svcontrol.AckConnect() in svcontrols_connecting ~> process:
+                        {
+                            if (process.State == ServiceProcessState.Running) {
+                                Dbg(TraceLevel.Audit, process, "Received 'AckConnect' from service process.");
+                                if (process.HasCurrentConnectDir) {
+                                    SchedulerTime timeStarted;
+                                    SchedulerTime timeRoutedToService;
+
+                                    DirectoryServiceContract.Exp:Ready! dir;
+                                    string! subpath;
+                                    DirectoryClientInfo! dirinfo;
+                                    process.GetCurrentConnectDir(out dir, out dirinfo, out subpath, out timeStarted, out timeRoutedToService);
+
+                                    dir.SendAckBind();
+                                    SchedulerTime timeFinished = SchedulerTime.Now;
+                                    dirs.Add(dir, dirinfo);
+
+                                    TimeSpan elapsed = timeFinished - timeStarted;
+
+                                    Dbg(TraceLevel.Audit, process, "Routing AckBind response to dir client.  Service time: {0}", elapsed.ToString());
+
+                                }
+                                else {
+                                    Dbg(TraceLevel.Audit, process, "No current connect dir is set!!  Cannot route bind response!");
+                                    DebugStub.Break();
+                                }
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, process, "Received 'AckConnect' from service process, but the process is stopping.  Message will be ignored.");
+                            }
+                            process.SetControlEndpoint(svcontrol);
+                            PushService(process.Service);
+                            break;
+                        }
+
+                        case svcontrol.NakConnect(ErrorCode error, ServiceContract.Exp:Start exp) in svcontrols_connecting ~> process:
+                        {
+                            Dbg(TraceLevel.Audit, process, "Received 'NakConnect' from service, error = ", SdsUtils.ErrorCodeToString(error));
+                            delete exp;
+                            if (process.HasCurrentConnectDir) {
+
+                                SchedulerTime timeStarted;
+                                SchedulerTime timeRoutedToService;
+                                DirectoryServiceContract.Exp:Ready! dir;
+                                string! subpath;
+                                DirectoryClientInfo! dirinfo;
+                                process.GetCurrentConnectDir(out dir, out dirinfo, out subpath, out timeStarted, out timeRoutedToService);
+                                dir.SendNakBind(null, error);
+                                SchedulerTime now = SchedulerTime.Now;
+
+                                TimeSpan elapsed = now - timeStarted;
+
+                                Dbg(TraceLevel.Audit, process, "Routing NakBind response to client.  Time elapsed: " + elapsed.ToString());
+                                dirs.Add(dir, dirinfo);
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, process, "No current connect dir is set!!  Cannot route bind response!");
+                                DebugStub.Break();
+                            }
+                            process.SetControlEndpoint(svcontrol);
+                            PushService(process.Service);
+                            break;
+                        }
+
+                        case svcontrol.ChannelClosed() in svcontrols_connecting ~> process:
+                            Dbg(TraceLevel.Audit, process, "A service has closed its control channel unexpectedly.");
+                            delete svcontrol;
+                            MarkProcessDefective(process);
+                            PushService(process.Service);
+                            break;
+
+                        #endregion
+
+                        #region Handlers for events received from services
+                        // These event handlers receive messages on an "event" channel that we have
+                        // set up between the Service Manager and a service process.  All of these
+                        // handlers verify that we still want to receive these messages, by checking
+                        // that process.State == ServiceProcessState.Running.  We do this because
+                        // we cannot currently remove endpoints from EMaps or ESets.  Once the
+                        // Service Manager has decided to tear down a service process, it sets the
+                        // process state to Stopping, which is the cue for these event handlers to
+                        // avoid processing received messages, and then to close the event channel.
+
+                        case svevent.HealthChanged(ServiceHealth health) in svevents ~> process:
+                        {
+                            if (process.State == ServiceProcessState.Running) {
+                                Dbg(TraceLevel.Audit, process, "Received 'HealthChanged' from service process, health = {0}", ServiceEnums.ToString(health));
+                                process.Health = health;
+                                svevent.SendAck();
+                                svevents.Add(svevent, process);
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, process, "Received 'HealthChanged' message, but on an orphaned event channel.  Closing channel.");
+                                process.CloseEventEndpoint();
+                                svevent.SendAck();
+                                delete svevent;
+                            }
+                            PushService(process.Service);
+                            break;
+                        }
+
+                        case svevent.LoadChanged(ServiceLoad load) in svevents ~> process:
+                        {
+                            if (process.State == ServiceProcessState.Running) {
+                                Dbg(TraceLevel.Audit, process, "Received 'LoadChanged' from service process, load = {0}", ServiceEnums.ToString(load));
+                                process.Load = load;
+                                svevent.SendAck();
+                                svevents.Add(svevent, process);
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, process, "Received 'LoadChanged' message, but on an orphaned event channel.  Closing channel.");
+                                process.CloseEventEndpoint();
+                                svevent.SendAck();
+                                delete svevent;
+                            }
+                            PushService(process.Service);
+                            break;
+                        }
+
+                        case svevent.ChannelClosed() in svevents ~> process:
+                        {
+                            if (process.State == ServiceProcessState.Running) {
+                                Dbg(TraceLevel.Audit, process, "A service process has unexpectedly closed its event channel!");
+                                Dbg(TraceLevel.Audit, process, "The Service Manager will no longer be able to receive event messages from the service process.");
+                                process.CloseEventEndpoint();
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, process, "A service process has closed its event channel, as expected.");
+                                process.CloseEventEndpoint();
+                            }
+                            delete svevent;
+                            break;
+                        }
+
+                        #endregion
+
+
+                        #region Handlers for DirectoryServiceContract
+                        // The Service Manager does not support most of the requests defined by
+                        // DirectoryServiceContract.  The only requests supported are Bind
+                        // and the enumeration pattern.
+
+                        case dir.Bind(char[]! in ExHeap expath, ServiceContract.Exp:Start! exp) in dirs ~> dirinfo:
+                        {
+                            SchedulerTime timeStarted = SchedulerTime.Now;
+
+                            string! path = Bitter.ToString2(expath);
+                            delete expath;
+                            Dbg(TraceLevel.Audit, dirinfo, "Received Bind('{0}').", path);
+
+                            string! serviceName;
+                            string! subpath;
+
+                            int start = 0;
+                            if (path.Length > 0 && path[0] == '/')
+                                start++;
+
+                            int index = path.IndexOf('/', start);
+                            if (index != -1) {
+                                serviceName = path.Substring(start, index);
+                                subpath = path.Substring(index + 1);
+                            }
+                            else {
+                                serviceName = path.Substring(start);
+                                subpath = "";
+                            }
+
+                            Service service = FindService(serviceName);
+                            if (service == null) {
+                                Dbg(TraceLevel.Audit, dirinfo, "There is no service named '{0}'.  Rejecting bind.", serviceName);
+                                dir.SendNakBind(exp, ErrorCode.NotFound);
+                                dirs.Add(dir, dirinfo);
+                                break;
+                            }
+
+                            if (service.IsAdministrativelyDisabled) {
+                                Dbg(TraceLevel.Audit, dirinfo, "The service '{0}' is administratively disabled.  Rejecting bind.", service.ServiceName);
+                                dir.SendNakBind(exp, ErrorCode.AccessDenied);
+                                dirs.Add(dir, dirinfo);
+                                break;
+                            }
+
+                            if (service.IsDefective) {
+                                Dbg(TraceLevel.Audit, dirinfo, "The service '{0}' is currently considered defective.  Rejecting bind.", service.ServiceName);
+                                dir.SendNakBind(exp, ErrorCode.AccessDenied);
+                                dirs.Add(dir, dirinfo);
+                                break;
+                            }
+
+                            Dbg(TraceLevel.Audit, dirinfo, "Enqueuing connect request for service '{0}' at subpath '{1}'.", service.ServiceName, subpath);
+                            service.EnqueueConnectRequest(dir, dirinfo, subpath, exp, timeStarted);
+
+                            PushService(service);
+                            break;
+                        }
+
+                        case dir.BeginEnumeration() in dirs ~> dirinfo:
+                        {
+                            // The only "path" that we support is the root directory.
+                            if (dirinfo.Path != "/") {
+                                Dbg(TraceLevel.Audit, "A directory client wants to enumerate, but at a bogus path '{0}'.", dirinfo.Path);
+                                dir.SendEnumerationTerminated(ErrorCode.NotFound);
+                                dirs.Add(dir, dirinfo);
+                                break;
+                            }
+
+                            Service[]! snapshot = GetServicesSnapshot();
+                            EnumerationRecords[]! in ExHeap results = new[ExHeap] EnumerationRecords[snapshot.Length];
+
+                            for (int i = 0; i < snapshot.Length; i++) {
+                                Service! service = (!)snapshot[i];
+                                expose(results[i]) {
+                                    delete results[i].Path;
+                                    results[i].Path = Bitter.FromString2(service.ServiceName);
+                                    results[i].Type = NodeType.ServiceProvider;
+                                }
+                            }
+
+                            dir.SendEnumerationEntries(results, false);
+                            dirs_enumerating.Add(dir, dirinfo);
+                            break;
+                        }
+
+                        case dir.ReadEnumeration() in dirs_enumerating ~> dirinfo:
+                            // We already sent everything in the first request.
+                            // So this is a no-op.
+                            dir.SendEnumerationTerminated(ErrorCode.NoError);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.EndEnumeration() in dirs_enumerating ~> dirinfo:
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.ChannelClosed() in dirs_enumerating ~> dirinfo:
+                            delete dir;
+                            break;
+
+                        case dir.Notify(path, pattern, existing, imp) in dirs ~> dirinfo:
+                            delete path;
+                            delete pattern;
+                            dir.SendNakNotify(imp, ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.GetAttributes(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakGetAttributes(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.QueryACL(path, effective) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakQueryACL(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.Register(path, imp) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakRegister(imp, ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.Deregister(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakDeregister(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.CreateDirectory(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakCreateDirectory(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.DeleteDirectory(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakDeleteDirectory(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.CreateFile(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakCreateFile(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.CreateAndBindFile(path, exp) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakCreateAndBindFile(exp, ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.DeleteFile(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakDeleteFile(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.StoreACL(path, pattern, descendantPattern) in dirs ~> dirinfo:
+                            delete path;
+                            delete pattern;
+                            delete descendantPattern;
+                            dir.SendNakStoreACL(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.CreateLink(path, value) in dirs ~> dirinfo:
+                            delete path;
+                            delete value;
+                            dir.SendNakCreateLink(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.DeleteLink(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakDeleteLink(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        case dir.GetLinkValue(path) in dirs ~> dirinfo:
+                            delete path;
+                            dir.SendNakGetLinkValue(ErrorCode.NotSupported);
+                            dirs.Add(dir, dirinfo);
+                            break;
+
+                        #endregion
+
+                        case timeout(TimeSpan.FromSeconds(30)):
+                            // For now, we pop out of our select now and then, to check for
+                            // changes in the status of child processes, etc.  Need a better
+                            // way to do this.  Don't print anything here; too noisy.
+                            PushAllServices();
+                            break;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// This method marks a process as "defective", which prevents new clients from being routed
+        /// to the process.  The Service Manager closes all of its endpoints (if possible; some endpoints
+        /// may be in endpoint maps, and so they will not be closed until a message is later received).
+        /// </summary>
+        void MarkProcessDefective(ServiceProcess! process)
+        {
+            Dbg(TraceLevel.Audit, process, "Marking process as defective.");
+            process.IsDefective = true;
+            process.CloseControlEndpoint();
+            process.CloseEventEndpoint();
+
+            // If there was a DirectoryServiceContract client who had requested a bind,
+            // and that client had been routed to this service process, then extract the
+            // DirectoryServiceContract endpoint and complete the bind request with an error.
+
+            if (process.HasCurrentConnectDir) {
+                DirectoryServiceContract.Exp:Ready! dir;
+                DirectoryClientInfo! dirinfo;
+                process.GetCurrentConnectDir(out dir, out dirinfo);
+                dir.SendNakBind(null, ErrorCode.Unknown);
+                expose (this) { dirs.Add(dir, dirinfo); }
+            }
+        }
+
+        /// <summary>
+        /// This method is called whenever a global Service Manager event has occurred, which includes:
+        ///
+        /// * The status of any service has changed.
+        /// * The configuration of any service has changed.
+        /// * A service has been created.
+        /// * A service has been deleted.
+        ///
+        /// These events are mapped to bits within ServiceManagerEventMask.  All of the "status"
+        /// events map to ServiceManagerEventMask.AnyServiceStatus, and all of the "config" events
+        /// map to ServiceManagerEventMask.AnyServiceConfig.
+        ///
+        /// No attempt is made to notify watchers of the specifics of these events.  Doing so requires
+        /// keeping track of much more state.  If a management client wants to know about details, it
+        /// should query the Service Manager after being notified of a status or config change.
+        /// </summary>
+        void NotifyServiceManagerWatchers(ServiceManagerEventMask events)
+        {
+            if (events == 0)
+                return;
+
+            expose(this) {
+                foreach (ServiceManagerWatcher! watcher in managerWatchers) {
+                    // If a watcher endpoint is available, then we send a notification message
+                    // immediately.  If the watcher endpoint is not available, which typically
+                    // will occur when SM events occur more quickly than a watcher can acknowledge
+                    // them, we set bits in the watcher's EventsMissed mask.  Later, when the
+                    // watcher acknowledges a previous notification, it will be immediately
+                    // notified with the events in the EventsMissed mask.
+
+                    // Only consider those events that this watcher has subscribed to.
+                    ServiceManagerEventMask events_relevant = (events & watcher.DesiredEvents);
+                    if (events_relevant == 0)
+                        continue;
+
+                    if (watcher.IsEndpointReady) {
+                        Dbg(TraceLevel.Audit, "Sending ServiceManagerChanged to global watcher");
+                        ServiceManagerContract.Exp:WaitingServiceManagerChange! ep = watcher.GetEndpoint();
+                        ep.SendServiceManagerChanged(events_relevant);
+                        managerWatchersReady.Add(ep, watcher);
+                    }
+                    else {
+                        Dbg(TraceLevel.Audit, "A global watcher is not ready to receive events; marking for later delivery.");
+                        watcher.EventsMissed = watcher.EventsMissed | events_relevant;
+                    }
+                }
+            }
+        }
+
+        void ProcessDeleteServiceRequest(
+            ServiceManagerContract.Exp! svclient,
+            Service! service)
+        {
+            Dbg(TraceLevel.Audit, service, "Received request to delete service.");
+            if (service.IsMarkedForDeletion) {
+                Dbg(TraceLevel.Audit, service, "The service is already marked for deletion; rejecting request.");
+                svclient.SendRequestFailed(ServiceError.ServiceIsMarkedForDeletion);
+                return;;
+            }
+
+            if (service.IsDeleted) {
+                Dbg(TraceLevel.Audit, service, "The service is already deleted; rejecting request.");
+                svclient.SendRequestFailed(ServiceError.ServiceIsDeleted);
+                return;
+            }
+
+            service.IsMarkedForDeletion = true;
+            svclient.SendOk();
+
+            // We may not be able to delete the service yet.
+            bool can_delete_now = true;
+
+            if (service.Processes.Count != 0) {
+                Dbg(TraceLevel.Audit, service, "Cannot delete service yet; still have service processes.");
+                can_delete_now = false;
+                StopService(service);
+            }
+
+            if (can_delete_now) {
+                service.IsDeleted = true;
+                services.Remove(service.ServiceName);
+                Dbg(TraceLevel.Audit, service, "The service has been deleted.");
+            }
+            else {
+                Dbg(TraceLevel.Audit, service, "The service has been marked for deletion.");
+            }
+
+            PushService(service);
+        }
+
+        void DeleteServiceProcessResources(ServiceProcess! process)
+        {
+            expose(this) {
+            Dbg(TraceLevel.Audit, process, "DeleteServiceProcessResources - deleting service process resources");
+
+            if (process.HasCurrentConnectDir) {
+                Dbg(TraceLevel.Audit, process, "    A connect request was active.  Rejecting bind.");
+                DirectoryServiceContract.Exp:Ready! dir;
+                DirectoryClientInfo! dirinfo;
+                string! subpath;
+                process.GetCurrentConnectDir(out dir, out dirinfo);
+                dir.SendNakBind(null, ErrorCode.Unknown);
+                dirs.Add(dir, dirinfo);
+            }
+
+            if (process.ControlEndpointIsReady) {
+                Dbg(TraceLevel.Audit, process, "Closing control channel");
+                ServiceProcessContract.Imp! svcontrol = process.GetControlEndpoint(ControlEndpointState.Disconnected);
+                delete svcontrol;
+            }
+            }
+        }
+
+
+        /// <summary>
+        /// For a particular service, this method checks to see if there is any reason to send
+        /// a message to the control channel of a service.  Control messages
+        /// </summary>
+        void PushControlMessages(ServiceProcess! process)
+        {
+            expose (this) {
+            Service! service = process.Service;
+
+            if (!process.ControlEndpointIsReady) {
+                // If the control endpoint is not ready, there's nothing we can do here.
+                Dbg(TraceLevel.Audit, process, "PushControlMessages - control endpoint is not ready");
+                return;
+            }
+
+            switch (process.State) {
+                case ServiceProcessState.Starting:
+                    // We don't have a control endpoint in this state.
+                    break;
+
+                case ServiceProcessState.Running:
+                {
+                    // Here is where we would check for things like polling service health.
+                    // The order of these checks would determine the priority of the requests
+                    // being sent to the control channel.
+
+                    if (service.IsAdministrativelyDisabled) {
+                        Dbg(TraceLevel.Audit, process, "PushControlMessages - service is disabled, cannot send messages to it");
+                        return;
+                    }
+
+                    break;
+                }
+
+                case ServiceProcessState.Stopping:
+                {
+                    if (process.NeedSendStopControl) {
+                        Dbg(TraceLevel.Audit, process, "PushControlMessages - sending Stop message to service.");
+                        ServiceProcessContract.Imp:Running! svcontrol = process.GetControlEndpoint(ControlEndpointState.Stopping);
+                        svcontrol.SendStop();
+                        svcontrols_stopping.Add(svcontrol, process);
+                        process.NeedSendStopControl = false;
+                        return;
+                    }
+                    break;
+                }
+            }
+
+            Dbg(TraceLevel.Audit, process, "PushControlMessages - no work to do");
+            }
+        }
+
+        void PushAllServices()
+        {
+            foreach (Service! service in (!)services.Values) {
+                PushService(service);
+            }
+        }
+
+        /// <summary>
+        /// This method checks the state of a service, and generally advances that state
+        /// toward its goal state.  It's easier and more reliable to do this in a single
+        /// method, and to run this method when we believe something relevant to this
+        /// service has happened, rather than using a lot of methods that check specific
+        /// aspects of the service (e.g. pushing the connect queue).
+        ///
+        /// This method:
+        ///
+        ///     * Starts a new service process, if necessary.
+        ///     * Dequeues connection requests and forwards them to service processes.
+        ///     * Determines the "next think time", which is the next time that we need
+        ///       to reexamine the state of this service, without receiving a message
+        ///       that drives the state of the service.
+        ///
+        /// This method needs to be efficient, since it is called from many places, and
+        /// is called at the end of many different event handlers.
+        /// </summary>
+        void PushService(Service! service)
+        {
+            Assert(service.Config.MinProcesses <= service.Config.MaxProcesses);
+
+            // If we tried to start this service before, and some problem occurred when
+            // trying to start a service process, then check to see if enough time has
+            // passed that we can clear this error.
+            if (service.LastStartFailed) {
+                SchedulerTime now = SchedulerTime.Now;
+                TimeSpan elapsed = now - service.LastStartFailedTime;
+                if (elapsed > ForgetLastStartFailedInterval) {
+                    Dbg(TraceLevel.Audit, service, "Clearing 'last start' error.");
+                    service.LastStartFailed = false;
+                    service.LastStartError = ServiceError.None;
+                    service.LastStartFailedTime = new SchedulerTime();
+                }
+            }
+
+            // Scan all of the processes for this service.  Count how many are in different
+            // states; this is interesting for several reasons that follow.  The only state
+            // transition that we do here is to send a Stop() message to those processes
+            // that are already in the Stopping state, and have not yet received a Stop()
+            // message.  All other work per process depends on whether the service is
+            // administratively disabled or not.
+
+            int processes_running = 0;
+            int processes_running_control_ready = 0;
+            int processes_starting = 0;
+            int processes_stopping = 0;
+
+            foreach (ServiceProcess! process in service.Processes) {
+                switch (process.State) {
+                    case ServiceProcessState.Starting:
+                        processes_starting++;
+                        break;
+
+                    case ServiceProcessState.Running:
+                        processes_running++;
+                        if (process.ControlEndpointIsReady)
+                            processes_running_control_ready++;
+                        break;
+
+                    case ServiceProcessState.Stopping:
+                        processes_stopping++;
+                        if (process.NeedSendStopControl && process.ControlEndpointIsReady) {
+                            Dbg(TraceLevel.Audit, process, "Sending 'Stop' request to process.");
+                            process.NeedSendStopControl = false;
+                            ServiceProcessContract.Imp! svcontrol = process.GetControlEndpoint(ControlEndpointState.Stopping);
+                            svcontrol.SendStop();
+                            expose (this) { svcontrols_stopping.Add(svcontrol, process); }
+                        }
+                        break;
+                }
+            }
+
+            if (!service.IsAdministrativelyDisabled) {
+
+                // Set to true if we want to start a new service process.
+                bool want_start_process = false;
+
+                int min_processes = service.Config.MinProcesses;
+
+                switch (service.Config.ActivationMode) {
+                    case ServiceActivationMode.AlwaysActive:
+                        // This service is always supposed to be active.
+                        // Check to see if there are any services running.
+                        min_processes = Math.Min(service.Config.MinProcesses, 1);
+
+                        if (processes_running < min_processes) {
+                            if (service.Processes.Count < service.Config.MaxProcesses) {
+                                if (processes_starting == 0) {
+                                    Dbg(TraceLevel.Audit, service, "Need more running processes for always-active service.");
+                                    want_start_process = true;
+                                }
+                                else {
+                                    Dbg(TraceLevel.Audit, service, "Need to start another process for always-active service, but one is already starting.");
+                                }
+                            }
+                            else {
+                                Dbg(TraceLevel.Audit, service, "Need more running processes, but total number of processes has reached maximum.");
+                            }
+                        }
+                        else {
+                            Dbg(TraceLevel.Audit, service, "Number of processes running ({0}) is >= min processes ({1})", processes_running, min_processes);
+                        }
+                        break;
+
+                    case ServiceActivationMode.Demand:
+                        if (service.HasConnectRequests) {
+                            if (processes_running_control_ready != 0) {
+                                // At least one process is immediately available for a connect request.
+                                // No need to start another.
+                            }
+                            else {
+                                if (service.Processes.Count < service.Config.MaxProcesses) {
+                                    Dbg(TraceLevel.Audit, service, "Need more processes for demand-activated service.");
+                                    want_start_process = true;
+                                }
+                            }
+                        }
+                        break;
+
+                    case ServiceActivationMode.Manual:
+                        // Management clients have control over the lifetime of this service.
+                        // We never create processes for the service without being instructed
+                        // by a management client.
+                        break;
+
+                }
+
+
+                if (want_start_process) {
+                    if (processes_starting != 0) {
+                        Dbg(TraceLevel.Audit, "Want to start another process, but cannot do so right now; another process is starting.");
+                    }
+                    else {
+                        StartServiceProcess(service);
+                    }
+                }
+
+                PushConnectQueue(service);
+
+            }
+            else {
+
+                // This service is disabled.
+
+                FailAllConnectRequests(service, ErrorCode.Unknown);
+
+                foreach (ServiceProcess! process in service.Processes) {
+                    switch (process.State) {
+                        case ServiceProcessState.Starting:
+                        case ServiceProcessState.Running:
+                            process.State = ServiceProcessState.Stopping;
+                            process.NeedSendStopControl = true;
+                            goto case ServiceProcessState.Stopping;
+
+                        case ServiceProcessState.Stopping:
+                            if (process.NeedSendStopControl && process.ControlEndpointIsReady) {
+                                Dbg(TraceLevel.Audit, process, "Sending 'Stop' request to process.");
+                                process.NeedSendStopControl = false;
+                                ServiceProcessContract.Imp! svcontrol = process.GetControlEndpoint(ControlEndpointState.Stopping);
+                                svcontrol.SendStop();
+                                expose (this) { svcontrols_stopping.Add(svcontrol, process); }
+                            }
+                            break;
+                    }
+                }
+            }
+
+            //
+            // This method has now completed any necessary changes in the state of the service.
+            // Next, build a new ServiceStatus (actually, InternalServiceStatus), which represents
+            // a brief summary of the status of the service.  Then we will compare that to the last
+            // status that we published to service status watchers.  If there is any change, then
+            // we will update the "last published" status, notify any watchers that are read to
+            // receive an update, and for those that are not ready, we record the fact that they
+            // missed an update.
+            //
+
+            ServiceState service_state;
+            if (processes_running != 0)
+                service_state = ServiceState.Running;
+            else if (processes_starting != 0)
+                service_state = ServiceState.Starting;
+            else if (processes_stopping != 0)
+                service_state = ServiceState.Stopping;
+            else
+                service_state = ServiceState.Stopped;
+
+            InternalServiceStatus status;
+            status.State = service_state;
+            status.TotalActiveClients = -1;
+            status.ConnectQueueLength = service.ConnectQueueLength;
+            status.TotalActiveProcesses = service.Processes.Count;
+            status.ProcessId = -1;
+            status.LastStartFailed = service.LastStartFailed;
+            status.LastStartError = service.LastStartError;
+
+            if (service.Processes.Count != 0) {
+                // For now, return the first process.
+                ServiceProcess! firstProcess = (ServiceProcess!)service.Processes[0];
+                Process firstSystemProcess = firstProcess.Process;
+                if (firstSystemProcess != null && firstSystemProcess.State == ProcessState.Active) {
+                    status.ProcessId = firstSystemProcess.Id;
+                }
+            }
+
+            //
+            // Compare the last and current status, field by field.
+            //
+
+
+            bool status_changed = !InternalServiceStatus.IsEqual(ref status, ref service.LastServiceStatusPublished);
+            if (status_changed) {
+                Dbg(TraceLevel.Audit, service, "Service status has changed.");
+                InternalServiceStatus last_status = service.LastServiceStatusPublished;
+                service.LastServiceStatusPublished = status;
+
+                if (last_status.State != status.State)
+                    Dbg(TraceLevel.Audit, service, "    State                 {0} -> {1}", ServiceEnums.ToString(last_status.State), ServiceEnums.ToString(status.State));
+                if (last_status.TotalActiveProcesses != status.TotalActiveProcesses)
+                    Dbg(TraceLevel.Audit, service, "    TotalActiveProcesses  {0} -> {1}", last_status.TotalActiveProcesses, status.TotalActiveProcesses);
+                if (last_status.ConnectQueueLength != status.ConnectQueueLength)
+                    Dbg(TraceLevel.Audit, service, "    ConnectQueueLength    {0} -> {1}", last_status.ConnectQueueLength, status.ConnectQueueLength);
+                if (last_status.ProcessId != status.ProcessId)
+                    Dbg(TraceLevel.Audit, service, "    ProcessId             {0} -> {1}", last_status.ProcessId, status.ProcessId);
+                if (last_status.LastStartFailed != status.LastStartFailed)
+                    Dbg(TraceLevel.Audit, service, "    LastStartFailed       {0} -> {1}", last_status.LastStartFailed, status.LastStartFailed);
+                if (last_status.LastStartError != status.LastStartError)
+                    Dbg(TraceLevel.Audit, service, "    LastStartError        {0} -> {1}", ServiceEnums.ToString(last_status.LastStartError), ServiceEnums.ToString(status.LastStartError));
+
+                // Scan through the set of service watchers for this service, and
+                // send changes of status to each.
+
+                ServiceStatus exstatus = status.ToExchange();
+
+                foreach (ServiceWatcher! watcher in service.StatusWatchers) {
+                    if (watcher.EndpointCanSend) {
+
+                        // The watcher is ready for a message.  Send the status message
+                        // to the client, and then put the client into an endpoint map,
+                        // so we can receive it's ack message later.
+
+                        ServiceManagerContract.Exp:WaitingServiceChange! client = watcher.AcquireEndpoint();
+                        client.SendServiceStatusChanged(exstatus, false);
+                        expose (this) { clients_readywatch.Add(client, watcher); }
+
+                    }
+                    else {
+
+                        // The watcher is not ready to receive a message.  Mark the
+                        // watcher as having missed an update, and continue.  Later,
+                        // when the watcher sends WaitStatusChange, we'll immediately
+                        // send a service status notification.
+                        Dbg(TraceLevel.Audit, service, "Watcher is not ready for status update.  Marking as 'missed change'.");
+                        watcher.MissedChange = true;
+                    }
+                }
+
+                // If the service was starting, then there may be clients that want to be
+                // informed when the service is no longer starting (whether it succeeded
+                // or failed).
+                NotifyServiceManagerWatchers(ServiceManagerEventMask.AnyServiceStatus);
+            }
+        }
+
+        /// <summary>
+        /// This method tries to match up clients who want to connect with the service
+        /// to available service processes.  If necessary, it will schedule the creation
+        /// of a new service process.
+        /// </summary>
+        void PushConnectQueue(Service! service)
+        {
+            if (!service.HasConnectRequests)
+                return;
+
+            if (service.IsAdministrativelyDisabled) {
+                Dbg(TraceLevel.Audit, service, "PushConnectQueue - service is disabled, flushing queue");
+                FailAllConnectRequests(service, ErrorCode.AccessDenied);
+                return;
+            }
+
+            if (service.IsDefective) {
+                Dbg(TraceLevel.Audit, service, "PushConnectQueue - service is currently believed to be defective, flushing queue");
+                FailAllConnectRequests(service, ErrorCode.Unknown);
+                return;
+            }
+
+            // We treat all of our connection requests identically, so we don't bother
+            // to dequeue one until we have located a service process that can handle it.
+
+            while (service.HasConnectRequests) {
+
+                ServiceProcess bestProcess = null;
+                // bool found_running_service = false;
+                bool found_starting_service = false;
+
+                foreach (ServiceProcess! candidate in service.Processes) {
+
+                    if (candidate.State == ServiceProcessState.Running) {
+                        // found_running_service = true;
+
+                        if (candidate.ControlEndpointIsReady && !candidate.HasCurrentConnectDir) {
+
+                            // This service process is running, and so it is a candidate.
+                            // Check to see if this process is a better candidate (has
+                            // a lower load level) than the previous process.
+
+                            if (bestProcess != null) {
+                                int diff = CompareServiceLoads(bestProcess, candidate);
+                                if (diff > 0)
+                                    bestProcess = candidate;
+                            }
+                            else {
+                                bestProcess = candidate;
+                            }
+                        }
+                        else {
+                            // This service is busy processing a control message.
+                            // Keep searching for another service process, if possible.
+                        }
+
+                    }
+                    else if (candidate.State == ServiceProcessState.Starting) {
+                        found_starting_service = true;
+                    }
+                    else if (candidate.State == ServiceProcessState.Stopping) {
+                        // ignore services in the stopping state
+                    }
+                    else {
+                        // illegal state!
+                        Util.IllegalStateReached();
+                    }
+                }
+
+                if (bestProcess != null) {
+                    ServiceProcess! process = bestProcess;
+
+                    Dbg(TraceLevel.Audit, process, "PushConnectQueue - Forwarding client connection request to process");
+
+                    // Dequeue the connection request.
+                    DirectoryServiceContract.Exp:Ready! dir;
+                    DirectoryClientInfo! dirinfo;
+                    string! subpath;
+                    ServiceContract.Exp:Start! channel;
+                    SchedulerTime timeStarted;
+                    ServiceConnectRequest! connect = service.DequeueConnectRequest();
+                    RecycleServiceConnectRequest(connect, out dir, out dirinfo, out subpath, out channel, out timeStarted);
+
+
+                    // Acquire the control channel.
+                    ServiceProcessContract.Imp! svcontrol = process.GetControlEndpoint(ControlEndpointState.Connecting);
+                    char[] in ExHeap exsubpath = (subpath != null && subpath.Length != 0) ? Bitter.FromString2(subpath) : null;
+                    svcontrol.SendConnect(exsubpath, channel);
+
+                    expose(this) { svcontrols_connecting.Add(svcontrol, process); }
+                    process.SetCurrentConnectDir(dir, dirinfo, subpath, timeStarted);
+
+                    // Progress continues when:
+                    //      we receive AckConnect from service process
+                    //      we receive NakConnect from service process
+
+                }
+                else {
+
+                    // There are no service processes that can immediately accept the client.
+                    // Next, we decide what to do, based on whether we found any processes in
+                    // the running state, starting state, defective, etc.
+                    //
+
+                    // If we found *any* process in the "starting" state, then we believe:
+                    //      * that there is reason to believe that the process will start,
+                    //      * that the process will service the connect queue once started,
+                    //      * that no other processes are in the "starting" state, so we
+                    //        cannot start any new processes.
+                    //
+                    // In this situation, there is nothing more we can do here.  Stop now.
+                    if (found_starting_service) {
+                        Dbg(TraceLevel.Audit, service, "PushConnectQueue - Connect request must wait for service to start.");
+                        break;
+                    }
+
+                    // No processes are starting.  Are we allowed to start any new processes?
+
+                    if (service.Processes.Count >= service.Config.MaxProcesses) {
+
+                        // No, cannot start any new processes.  Did we fail to start a process last
+                        // time around?  If so, then we should clear the entire queue and bail.
+                        break;
+                    }
+
+                    if (service.Processes.Count < service.Config.MaxProcesses) {
+                        Dbg(TraceLevel.Audit, service, "PushConnectQueue - Starting new service process...");
+                        StartServiceProcess(service);
+                        break;
+                    }
+
+                    Dbg(TraceLevel.Audit, service, "PushConnectQueue - Cannot forward client connection request yet.");
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Compares two services, and selects the one with the best (lightest) load level.
+        /// </summary>
+        int CompareServiceLoads(ServiceProcess! left, ServiceProcess! right)
+        {
+            return 0;
+        }
+
+        void FailAllConnectRequests(Service! service, ErrorCode error)
+        {
+            expose(this) {
+                while (service.HasConnectRequests) {
+                    DirectoryServiceContract.Exp:Ready! dir;
+                    DirectoryClientInfo! dirinfo;
+                    string! subpath;
+                    ServiceContract.Exp:Start! channel;
+                    SchedulerTime timeStarted;
+
+                    ServiceConnectRequest! connect = service.DequeueConnectRequest();
+                    RecycleServiceConnectRequest(connect, out dir, out dirinfo, out subpath, out channel, out timeStarted);
+
+                    Dbg(TraceLevel.Audit, dirinfo, "Connect request for service '{0}', subpath '{1}' has failed, error = {2}.",
+                        service.ServiceName,
+                        subpath,
+                        SdsUtils.ErrorCodeToString(error));
+
+                    dir.SendNakBind(channel, error);
+                    dirs.Add(dir, dirinfo);
+                }
+            }
+        }
+
+        Service[]! GetServicesSnapshot()
+        {
+            if (servicesSnapshot != null)
+                return servicesSnapshot;
+
+            Service[]! array = new Service[((!)services.Values).Count];
+            services.Values.CopyTo(array, 0);
+            servicesSnapshot = array;
+
+            return array;
+        }
+
+        void InvalidateServiceSnapshot()
+        {
+            servicesSnapshot = null;
+        }
+
+        void EnumerateServiceInfos(
+            [Claims]ServiceManagerContract.Exp! client,
+            [Claims]ServiceInfo[]! in ExHeap infos,
+            IEnumerator/*<Service>*/! enumerator)
+        {
+            int count = 0;
+
+            while (count < infos.Length && enumerator.MoveNext()) {
+                Service service = (Service)enumerator.Current;
+                Assert(service != null);
+                assert service != null;
+                // Dbg(TraceLevel.Audit, "Enumerating service entry - " + service.ServiceName);
+
+                expose (infos[count]) {
+                    service.GetConfig(ref infos[count].Config);
+                    infos[count].Status = service.LastServiceStatusPublished.ToExchange();
+                }
+
+                count++;
+            }
+
+            expose (this) {
+                if (count > 0) {
+                    client.SendNextServiceInfo(infos, count);
+                    clients_enumerating.Add(client, enumerator);
+                }
+                else {
+                    // -XXX- enumerator.Dispose();
+                    client.SendEnumerationTerminated(infos, count);
+                    clients.Add(client);
+                }
+            }
+        }
+
+        ServiceError StartServiceProcess(Service! service)
+        {
+            if (service.IsAdministrativelyDisabled) {
+                Dbg(TraceLevel.Audit, service, "Cannot start service.  It is disabled.");
+                return ServiceError.ServiceIsAdministrativelyDisabled;
+            }
+
+            if (service.IsDefective) {
+                Dbg(TraceLevel.Audit, service, "Cannot start a new service process.  The service is currently believed to be defective.");
+                return ServiceError.ServiceIsDefective;
+            }
+
+            // Search the list of processes for this service.
+            // If any of them are in the Running state, then there is no need to start
+            // a new service process.
+
+            foreach (ServiceProcess! process in service.Processes) {
+                switch (process.State) {
+                    case ServiceProcessState.Starting:
+                        Dbg(TraceLevel.Audit, service, "Process {0} is already starting.  No need to start another.", process);
+                        return ServiceError.ServiceIsAlreadyStarting;
+
+                    case ServiceProcessState.Running:
+                        Dbg(TraceLevel.Audit, service, "Process {0} is already running.  No need to start another.", process);
+                        return ServiceError.ServiceIsAlreadyRunning;
+
+                    case ServiceProcessState.Defective:
+                        Dbg(TraceLevel.Audit, service, "Process {0} is defective.  Cannot yet start another process.", process);
+                        return ServiceError.None;
+
+                    case ServiceProcessState.Stopping:
+                        Dbg(TraceLevel.Audit, service, "Process {0} is stopping.  Will ignore this process.", process);
+                        break;
+
+                    default:
+                        throw new Exception("Invalid service process state");
+                }
+            }
+
+            if (service.Config.MaxProcesses == 0) {
+                Dbg(TraceLevel.Audit, service, "Configuration is busted; MaxProcesses is zero?!");
+                DebugStub.Break();
+            }
+
+            if (service.Processes.Count >= service.Config.MaxProcesses) {
+                Dbg(TraceLevel.Audit, service, "This service has reached its maximum process count.");
+                Dbg(TraceLevel.Audit, service, "No more service processes can be started at this time.");
+                return ServiceError.ServiceIsAlreadyRunning;
+            }
+
+            Dbg(TraceLevel.Audit, service, "Attempting to start new service process.");
+
+            ServiceProcess! process = new ServiceProcess(service);
+            process.State = ServiceProcessState.Starting;
+
+            ServiceStarter! starter;
+            ServiceStarterContract.Imp:Starting! notifier = ServiceStarter.StartService(process, out starter);
+
+            expose(this) { service_starters.Add(notifier, starter); }
+
+            service.Processes.Add(process);
+
+            return ServiceError.None;
+
+            // Further progress will occur when the ServiceStarter indicates that it has
+            // finished its request, either successfully or unsuccessfully.  We receive
+            // this indication as a message on the ServiceStarterContract channel.
+        }
+
+
+        /// <summary>
+        /// Create the inital set of services that are specified in the system manifest.
+        /// </summary>
+        void CreateInitialServices(string[]! list)
+        {
+            for (int i = 1; i < list.Length - 2; i += 3) {
+                string serviceName = list[i];
+                string executableName = list[i + 1];
+                string activationModeText = list[i + 2];
+
+                if (serviceName == null || serviceName.Length == 0) {
+                    Dbg(TraceLevel.Audit, "The initial service list contains an entry with null service name.");
+                    continue;
+                }
+
+                if (executableName == null || executableName.Length == 0) {
+                    Dbg(TraceLevel.Audit, "The initial service list contains an entry with null binary name.  The service name is '{0}'.", serviceName);
+                    continue;
+                }
+
+                if (activationModeText == null || activationModeText.Length == 0) {
+                    Dbg(TraceLevel.Audit, "The initial service list contains an entry with a null 'activationMode' value.  The service name is '{0}'.", serviceName);
+                    continue;
+                }
+
+                InternalServiceConfig config;
+                config.ServiceName = serviceName;
+                config.ExecutableName = executableName;
+                config.DisplayName = serviceName;
+                config.IsAdministrativelyDisabled = false;
+                config.MinProcesses = 0;
+                config.MaxProcesses = 1;
+                config.MaxClientsPerProcess = -1;
+                config.MaxProcessAgeInSeconds = -1;
+
+
+                activationModeText = activationModeText.ToLower();
+                if (activationModeText == "demand") {
+                    config.ActivationMode = ServiceActivationMode.Demand;
+                    config.MinProcesses = 0;
+                }
+                else if (activationModeText == "manual") {
+                    config.ActivationMode = ServiceActivationMode.Manual;
+                    config.MinProcesses = 0;
+                }
+                else if (activationModeText == "alwaysactive") {
+                    config.ActivationMode = ServiceActivationMode.AlwaysActive;
+                    config.MinProcesses = 1;
+                }
+                else {
+                    Dbg(TraceLevel.Audit, "Warning: The initial service entry '{0}' has an invalid activation mode of '{1}'.", serviceName, activationModeText);
+                    Dbg(TraceLevel.Audit, "Setting the mode to Demand.");
+                    config.ActivationMode = ServiceActivationMode.Demand;
+                }
+
+                if (services.Contains(serviceName)) {
+                    Dbg(TraceLevel.Audit, "A service named '{0}' already exists.  Ignoring duplicate entry.", serviceName);
+                    continue;
+                }
+
+                ServiceError error = CreateService(config);
+                if (error != ServiceError.None) {
+                    Dbg(TraceLevel.Audit, "Error: Failed to create service '{0}': {1}", serviceName, ServiceEnums.ToString(error));
+                    continue;
+                }
+            }
+        }
+
+        ServiceError StopService(Service! service)
+        {
+            switch (service.Config.ActivationMode) {
+                case ServiceActivationMode.Manual:
+                case ServiceActivationMode.Demand:
+                    break;
+
+                case ServiceActivationMode.AlwaysActive:
+                    Dbg(TraceLevel.Audit, service, "This service uses the 'always active' activation mode, and so cannot be stopped.");
+                    return ServiceError.CannotStopService;
+
+            }
+
+            if (service.Processes.Count == 0) {
+                Dbg(TraceLevel.Audit, service, "Cannot stop service; it is not running.");
+                return ServiceError.ServiceIsNotRunning;
+            }
+
+            foreach (ServiceProcess! process in service.Processes) {
+                switch (process.State) {
+                    case ServiceProcessState.Running:
+                    case ServiceProcessState.Starting:
+                        process.State = ServiceProcessState.Stopping;
+                        process.NeedSendStopControl = true;
+                        break;
+
+                    case ServiceProcessState.Stopping:
+                        break;
+                }
+            }
+
+            FailAllConnectRequests(service, ErrorCode.Unknown);
+
+            return ServiceError.None;
+        }
+
+        void TerminateServiceProcess(ServiceProcess! process)
+        {
+            switch (process.State) {
+                case ServiceProcessState.Running:
+                case ServiceProcessState.Starting:
+                case ServiceProcessState.Stopping:
+                    break;
+
+                default:
+                    throw new Exception("Invalid state");
+            }
+
+            Process system_process = process.Process;
+            if (system_process != null) {
+                Dbg(TraceLevel.Warning, process, "Terminating service process.");
+                system_process.Join(TimeSpan.FromSeconds(2));
+                system_process.Stop();
+                system_process.Join();
+            }
+        }
+
+        void ScanForStoppedProcesses()
+        {
+            foreach (Service! service in (!)services.Values) {
+                ScanServiceForStoppedProcesses(service);
+            }
+        }
+
+        void ScanServiceForStoppedProcesses(Service! service)
+        {
+            bool any_stopped = false;
+
+            int i = 0;
+            while (i < service.Processes.Count) {
+                ServiceProcess! process = (ServiceProcess!)service.Processes[i];
+                if (process.State == ServiceProcessState.Stopping) {
+                    Process system_process = process.Process;
+                    if (system_process != null && system_process.State == ProcessState.Stopped) {
+                        Dbg(TraceLevel.Audit, process, "Process has terminated.");
+                        process.ReleaseProcess();
+                        service.Processes.RemoveAt(i);
+                        any_stopped = true;
+                        // Do NOT increment i here.
+                        continue;
+                    }
+                }
+
+                i++;
+            }
+
+            if (any_stopped)
+                PushService(service);
+        }
+
+        static bool StringIsNullOrEmpty(string s)
+        {
+            return s == null || s.Length == 0;
+        }
+
+        ServiceError CreateService(InternalServiceConfig config)
+        {
+            if (StringIsNullOrEmpty(config.ServiceName)
+                || StringIsNullOrEmpty(config.DisplayName)
+                || StringIsNullOrEmpty(config.ExecutableName))
+            {
+                Dbg(TraceLevel.Audit, "Cannot create service.  Required parameters are missing.");
+                return ServiceError.InvalidArguments;
+            }
+
+            if (config.MinProcesses < 0) {
+                Dbg(TraceLevel.Audit, "Cannot create service.  MinProcesses value is invalid (negative).");
+                return ServiceError.InvalidArguments;
+            }
+            if (config.MaxProcesses <= 0) {
+                Dbg(TraceLevel.Audit, "Cannot create service.  MaxProcesses value is invalid (negative or zero).");
+                return ServiceError.InvalidArguments;
+            }
+            if (config.MinProcesses > config.MaxProcesses) {
+                Dbg(TraceLevel.Audit, "Cannot create service.  MinProcesses value is greater than MaxProcesses.");
+                return ServiceError.InvalidArguments;
+            }
+
+            if (config.MaxClientsPerProcess != -1 && config.MaxClientsPerProcess <= 0) {
+                Dbg(TraceLevel.Audit, "Cannot create service.  MaxClientsPerProcess must be -1 (disabled), or must be greater than zero.");
+                return ServiceError.InvalidArguments;
+            }
+
+            switch (config.ActivationMode) {
+                case ServiceActivationMode.AlwaysActive:
+                case ServiceActivationMode.Demand:
+                case ServiceActivationMode.Manual:
+                    break;
+
+                default:
+                    Dbg(TraceLevel.Audit, "Cannot create service.  ActivationMode is invalid.");
+                    return ServiceError.InvalidArguments;
+            }
+
+            string! serviceName = config.ServiceName;
+            Service service = FindService(serviceName);
+            if (service != null) {
+                Dbg(TraceLevel.Audit, "Cannot create service.  Service '{0}' already exists.");
+                return ServiceError.ServiceExists;
+            }
+
+            service = new Service(config);
+            // service.LastServiceStatusPublished = service.GetStatus();
+            services[serviceName] = service;
+
+            Dbg(TraceLevel.Audit, service, "Service successfully created.");
+
+            PushService(service);
+
+            return ServiceError.None;
+        }
+
+        Service FindService(string! name)
+        {
+            Service service = (Service)services[name];
+            return service;
+        }
+
+
+        #region Diagnostics
+
+        internal static string! MakeDbgPrefix(string! context)
+        {
+            return String.Format("SMS[{0,-20}] ", context);
+        }
+
+        internal static void TraceLog(TraceLevel level, string! line)
+        {
+            if (level >= tracePrintLevel) {
+                DebugStub.WriteLine(line);
+            }
+
+            // DebugStub.Break();
+            Tracing.Log((byte)level, line);
+        }
+
+        static void Dbg(TraceLevel level, string! line)
+        {
+            TraceLog(level, line);
+        }
+
+        static void Dbg(TraceLevel level, Service! service, string! line)
+        {
+            TraceLog(level, service.dbgprefix + line);
+        }
+
+        static void Dbg(TraceLevel level, ServiceProcess! process, string! line)
+        {
+            TraceLog(level, process.dbgprefix + line);
+        }
+
+        static void Dbg(TraceLevel level, DirectoryClientInfo! dirinfo, string! line)
+        {
+            TraceLog(level, dirinfo.dbgprefix + line);
+        }
+
+        #region Variants of Dbg that use String.Format
+
+        static void Dbg(TraceLevel level, string! format, params object[]! args)
+        {
+            Dbg(level, String.Format(format, args));
+        }
+
+        static void Dbg(TraceLevel level, Service! service, string! format, params object[]! args)
+        {
+            Dbg(level, service, String.Format(format, args));
+        }
+
+        static void Dbg(TraceLevel level, ServiceProcess! process, string! format, params object[]! args)
+        {
+            Dbg(level, process, String.Format(format, args));
+        }
+
+        static void Dbg(TraceLevel level, DirectoryClientInfo! dirinfo, string! format, params object[]! args)
+        {
+            Dbg(level, dirinfo, String.Format(format, args));
+        }
+
+        #endregion
+
+        static void DumpException(Exception! ex)
+        {
+            for (Exception focus = ex; focus != null; focus = focus.InnerException) {
+                Dbg(TraceLevel.Error, "{0}: {1}", ex.GetType().FullName, ex.Message);
+            }
+        }
+
+        void AssertIntegrity()
+        {
+            foreach (DictionaryEntry entry in services) {
+                Assert(entry.Key != null, "entry.Key != null");
+                Assert(entry.Value != null, "entry.Value != null");
+                string name = (string)entry.Key;
+                Service service = (Service)entry.Value;
+                Assert(name != null, "name != null");
+                Assert(service != null, "service != null");
+                assert service != null;
+                assert name != null;
+
+                if (name != service.ServiceName)
+                    assert false;
+                // assert name == service.ServiceName;
+
+            }
+
+            foreach (ServiceStartWatcher! startWatcher in serviceStartWatchers) {
+                Service service = FindService(startWatcher.Service.ServiceName);
+                assert service != null;
+                assert service == startWatcher.Service;
+            }
+
+            foreach (ServiceStopWatcher! stopWatcher in serviceStartWatchers) {
+                Service service = FindService(stopWatcher.Service.ServiceName);
+                assert service != null;
+                assert service == stopWatcher.Service;
+            }
+        }
+
+        void Assert(bool condition, string! msg)
+        {
+            if (condition)
+                return;
+            Dbg(TraceLevel.Error, "Assertion failed: " + msg);
+            DebugStub.Break();
+        }
+
+        void Assert(bool condition)
+        {
+            if (condition)
+                return;
+            Dbg(TraceLevel.Error, "Assertion failed.");
+            DebugStub.Break();
+        }
+
+        #endregion
+
+        ServiceConnectRequest! AllocateServiceConnectRequest(
+            [Claims]DirectoryServiceContract.Exp:Ready! dir,
+            DirectoryClientInfo! dirinfo,
+            string! subpath,
+            [Claims]ServiceContract.Exp:Start! channel,
+            SchedulerTime timeStarted)
+        {
+            ServiceConnectRequest request;
+            if (connectRequestLookasideCount > 0) {
+                connectRequestLookasideCount--;
+                request = connectRequestLookasideList[connectRequestLookasideCount];
+                assert request != null;
+                request.Release(dir, dirinfo, subpath, channel, timeStarted);
+                return request;
+            }
+            else {
+                request = new ServiceConnectRequest(dir, dirinfo, subpath, channel, timeStarted);
+                return request;
+            }
+        }
+
+        void RecycleServiceConnectRequest(
+            ServiceConnectRequest! request,
+            out DirectoryServiceContract.Exp:Ready! dir,
+            out DirectoryClientInfo! dirinfo,
+            out string! subpath,
+            out ServiceContract.Exp:Start! channel,
+            out SchedulerTime timeStarted)
+        {
+            request.Acquire(out dir, out dirinfo, out subpath, out channel, out timeStarted);
+
+            // need to assert that request.Acquire() has been called
+            if (connectRequestLookasideCount < connectRequestLookasideList.Length) {
+                connectRequestLookasideList[connectRequestLookasideCount] = request;
+                connectRequestLookasideCount++;
+            }
+            else {
+                request.Dispose();
+            }
+        }
+
+        #region ITracked methods
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        #endregion
+    }
+
+
+    /// <summary>
+    /// Instances of this class are used to associate information with instances of
+    /// DirectoryServiceContract.Exp.  The Service Manager allows clients to connect
+    /// to '/service/services' using DirectoryServiceContract.  The Service Manager only
+    /// supports a few requests: service enumeration, and binding to services.
+    /// </summary>
+    class DirectoryClientInfo
+    {
+        public DirectoryClientInfo(string! path)
+        {
+            this.Path = path;
+            this.dbgprefix = ServiceManager.MakeDbgPrefix("dir '" + path + "'");
+        }
+
+        public string! Path;
+        public string! dbgprefix;
+
+        #if false
+        /// <summary>
+        /// Used while enumerating a particular directory.
+        /// </summary>
+        public IEnumerator/*<Service>*/ Enumerator;
+        #endif
+    }
+
+
+
+    class ServiceManagerWatcher
+    {
+        public ServiceManagerWatcher()
+        {
+            endpointIsReady = false;
+            endpointRef = null;
+            EventsMissed = 0;
+        }
+
+        public ServiceManagerEventMask DesiredEvents;
+        public ServiceManagerEventMask EventsMissed;
+        private bool endpointIsReady;
+        private TRef<ServiceManagerContract.Exp:WaitingServiceManagerChange> endpointRef;
+
+        public void SetEndpoint([Claims]ServiceManagerContract.Exp:WaitingServiceManagerChange! ep)
+        {
+            if (endpointIsReady)
+                throw new Exception("This ServiceManagerWatcher instance already has an endpoint.");
+
+            if (endpointRef != null)
+                endpointRef.Release(ep);
+            else
+                endpointRef = new TRef<ServiceManagerContract.Exp:WaitingServiceManagerChange>(ep);
+            endpointIsReady = true;
+            EventsMissed = 0;
+        }
+
+        public ServiceManagerContract.Exp:WaitingServiceManagerChange! GetEndpoint()
+        {
+            if (!endpointIsReady)
+                throw new Exception("This ServiceManagerWatcher instance does not have an endpoint.");
+
+            assert endpointRef != null;
+            ServiceManagerContract.Exp:WaitingServiceManagerChange! ep = endpointRef.Acquire();
+            endpointIsReady = false;
+            return ep;
+        }
+
+        public bool IsEndpointReady
+        {
+            get { return endpointIsReady; }
+        }
+
+        public void Dispose()
+        {
+            if (endpointIsReady) {
+                ServiceManagerContract.Exp:WaitingServiceManagerChange! ep = GetEndpoint();
+                delete ep;
+            }
+        }
+
+    }
+
+    /// <summary>
+    /// Keep these values in sync with the Tracing levels (System.Tracing).
+    /// </summary>
+    enum TraceLevel : byte
+    {
+        Fatal   = 0xe, // system crashed.
+        Error   = 0xc, // system will crash.
+        Warning = 0xa, // cause for immediate concern.
+        Notice  = 0x8, // might be cause for concern.
+        Trace   = 0x6, // may be of use in crash.
+        Audit   = 0x4, // impact on performance.
+        Debug   = 0x2, // used only for debugging.
+    }
+
+}

@@ -1,0 +1,209 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Omap3430Keyboard.cs
+//
+
+//#define DEBUG_DISPATCH_IO
+//#define DEBUG_IO
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Runtime.CompilerServices;  //StructAlign attribute
+using System.Runtime.InteropServices;   //structLayout attribute
+using System.GCs;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Keyboard;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+
+namespace Microsoft.Singularity.Drivers.Omap3430Keyboard
+{
+    // Should also support PNP0F13: PS/2 Mouse
+    // [Signature("/pnp/PNP0F13")]
+    // [IoIrqRange(0, Default = 0x0c)]
+    // [Follows("/pnp/PNP0303")]
+
+    // create the resource object for CTR to fill in
+    [DriverCategory]
+    [Signature("/arm/ti/3430/FAC")]
+    internal class KeyboardResources : DriverCategoryDeclaration
+    {
+        [IoIrqRange(0, Default = 0x01)]
+        internal IoIrqRange irq;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(KeyboardDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> kbdsp;
+
+        // This should have a custom attribute.
+        internal static KeyboardResources Values;
+
+        // CTR will create the rest of this class:
+
+        // CTR creates a private constructor so that the app writer can't
+        // instantiate objects of this class
+        private KeyboardResources()
+        {
+            // endpoint initialization
+            ec = new TRef<ExtensionContract.Exp:Start>
+                ((!)(Process.GetStartupEndpoint(0) as ExtensionContract.Exp));
+            kbdsp = new TRef<ServiceProviderContract.Exp:Start>
+                ((!)(Process.GetStartupEndpoint(1) as ServiceProviderContract.Exp));
+
+            // Io Resource initialization
+            IoConfig config = (!)IoConfig.GetConfig();
+
+            // dynamic resources
+            irq = (IoIrqRange)config.DynamicRanges[0];
+
+            base();
+        }
+
+        static KeyboardResources()
+        {
+            Values = new KeyboardResources();
+        }
+    }
+
+    public class KeyboardControl
+    {
+        private static AutoResetEvent stall;
+
+        public static int Main(String[] args)
+        {
+#if VERBOSE
+            DebugStub.WriteLine("Omap3430Keyboard driver started.");
+            for (int i = 0; i < args.Length; i++) {
+                DebugStub.WriteLine("  {0}. [{1}]", __arglist(i, args[i]));
+            }
+#endif
+
+            stall = new AutoResetEvent(false);
+
+            // get the endpoints and set up the main switch receive
+            ExtensionContract.Exp ec = KeyboardResources.Values.ec.Acquire();
+            ServiceProviderContract.Exp sp = KeyboardResources.Values.kbdsp.Acquire();
+
+            Tracing.Log(Tracing.Audit, "Registered");
+
+            ec.SendSuccess();
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        // Listen for new connections
+                        case sp.Connect(candidate):
+                            KeyboardDeviceContract.Exp newClient = candidate as KeyboardDeviceContract.Exp;
+                            if (newClient != null) {
+                                KeyboardChannel.CreateThread(stall, newClient);
+                                sp.SendAckConnect();
+                            }
+                            else {
+                                sp.SendNackConnect(candidate);
+                            }
+                            break;
+
+                            // Listen for extension parent
+                        case ec.Shutdown():
+                            ec.SendAckShutdown();
+                            run = false;
+                            break;
+
+                        case sp.ChannelClosed():
+                            Tracing.Log(Tracing.Debug, "Keyboard driver no longer needed.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete sp;
+                Tracing.Log(Tracing.Debug, "Keyboard finished message pump.");
+            }
+
+            // Close the device
+            stall.Set();
+
+            Tracing.Log(Tracing.Audit, "Shutdown");
+            delete ec;
+
+            return 0;
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    //
+    //  This worker thread processes incoming play requests.
+    //
+    public class KeyboardChannel
+    {
+        private AutoResetEvent stall;
+        private TRef<KeyboardDeviceContract.Exp:Start> epStart;
+
+        public static void CreateThread(AutoResetEvent stall,
+                                        [Claims] KeyboardDeviceContract.Exp:Start! ep)
+        {
+            KeyboardChannel! channel = new KeyboardChannel(stall, ep);
+            Thread! thread = new Thread(new ThreadStart(channel.MessagePump));
+            Tracing.Log(Tracing.Audit, "KeyboardChannel starting thread {0:x}",
+                        AppRuntime.AddressOf(thread));
+            thread.Start();
+        }
+
+        private KeyboardChannel(AutoResetEvent stall,
+                                [Claims] KeyboardDeviceContract.Exp:Start! ep)
+        {
+            this.stall = stall;
+            this.epStart = new TRef<KeyboardDeviceContract.Exp:Start>(ep);
+            base();
+        }
+
+        private void MessagePump()
+        {
+            Tracing.Log(Tracing.Debug, "KeyboardChannel.Run entered.");
+            KeyboardDeviceContract.Exp! ep = epStart.Acquire();
+            epStart = null;
+
+            try {
+                ep.SendSuccess();
+
+                for (bool run = true; run;) {
+                    uint key;
+
+                    switch receive {
+                        case ep.GetKey():
+                            Tracing.Log(Tracing.Debug, "GetKey()");
+                            stall.WaitOne();
+                            Tracing.Log(Tracing.Debug, "GetKey() => {0:x8}", 0);
+                            ep.SendAckKey(0);
+                            break;
+
+                        case ep.ChannelClosed():
+                            Tracing.Log(Tracing.Debug, "peer closed channel.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete ep;
+            }
+            Tracing.Log(Tracing.Debug, "KeyboardChannel exiting.");
+        }
+    }
+}

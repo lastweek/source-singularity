@@ -1,0 +1,134 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Contracts\ServiceManager.Contracts\ServiceContract.sg
+//
+//  Note:   For service providers managed by Service Manager
+//
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.ServiceManager
+{
+    ///
+    //<summary>
+    //This contract describes communication between the Service Manager and the processes that
+    //it creates.  The Service Manager holds the import endpoint, the service holds the export.
+    //</summary>
+    //
+    //<remarks>
+    //<para>
+    //When the Service Manager creates a process, it searches the manifest of the executable
+    //for an endpoint declaration matchign ServiceProcessContract.  All service executables
+    //must declare such an endpoint; if they do not, then the Service Manager will not start
+    //the process.
+    //</para>
+    //
+    //<para>    
+    //When the Service Manager creates a channel using this contract, the initial state is
+    //"Start", and in this state, the service is the next sender.  The first message is
+    //either ServiceStarted, which indicates that the service has successfully initialized
+    //and is ready for clients, or ServiceFailedStart, indicating that the service failed
+    //to initialize.
+    //</para>
+    //
+    //<para>    
+    //Once the service is running, the Service Manager will route client connect requests
+    //to the service, using the Connect message.
+    //</para>
+//
+    //</remarks>
+    // 
+    
+    public contract ServiceProcessContract
+    {
+        out message StartSucceeded();
+        out message StartFailed(ServiceError error);
+        out message Busy();
+        
+        in message Knock();
+        out message Alive();
+
+        in message Stop();
+        out message AckStop();
+
+        in message Connect(char[] in ExHeap path, ServiceContract.Exp:Start! exp);
+        out message AckConnect();
+        out message NakConnect(ErrorCode error, ServiceContract.Exp:Start exp);
+        
+        state Starting : one {
+            StartSucceeded! -> Running;
+            StartFailed! -> Stopped;
+        }
+
+        state Running : one {
+            Knock? -> Knocking;
+            Stop? -> Stopping;
+            Connect? -> Connecting;
+        }
+        
+        state Knocking : one {
+            Alive! -> Running;
+        }
+        
+        state Stopping : one {
+            AckStop! -> Stopped;
+            Busy! -> Running;
+        }
+        
+        state Stopped : one {
+        }
+        
+        state Connecting : one {
+            NakConnect! -> Running;
+            AckConnect! -> Running;
+        }
+    }
+    
+    public enum ServiceHealth
+    {
+        Unknown = 1,
+        Normal,
+        UnrecoverableError,
+        RecoverableError,
+    }
+    
+    public enum ServiceLoad
+    {
+        Unknown = 1,
+        Low,
+        Moderate,
+        High,
+        Overloaded,
+    }
+    
+    /// <summary>
+    /// The Service Manager and service processes communicate using this contract.
+    /// Service Manager holds the import side, the service the export side.
+    /// The service sends notification events to the SM.
+    /// </summary>
+    public contract ServiceEventContract
+    {
+        in message HealthChanged(ServiceHealth health);
+        in message LoadChanged(ServiceLoad load);
+
+        out message Ack();
+        
+        state Ready : one {
+            HealthChanged? -> HealthChanging;
+            LoadChanged? -> LoadChanging;
+        }
+        
+        state HealthChanging : one {
+            Ack! -> Ready;
+        }
+        
+        state LoadChanging : one {
+            Ack! -> Ready;
+        }
+    }
+}

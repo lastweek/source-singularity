@@ -1,0 +1,85 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note: CachedFile is intended to hold copies of Custom.Ads
+//  and User.Profiles in memory.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Io;
+using System.Text;
+using System.Threading;
+using System.Web;
+using FileSystem.Utils;
+using System.Net.IP;
+using Microsoft.Singularity.V1.Services;
+
+namespace Microsoft.Singularity.WebApps
+{
+    public class CachedFile
+    {
+        string  filename;
+        byte[]  filedata;
+        uint    fileMaxBytes;
+
+        internal CachedFile(string! theFilename, uint maxBytes)
+        {
+            this.filename      = theFilename;
+            this.fileMaxBytes  = maxBytes;
+        }
+
+        public bool Refresh()
+        {
+            lock (this) {
+                FileContract.Imp conn;
+                conn = FileUtils.OpenFile(filename);
+
+                if (conn == null) {
+                    Console.WriteLine("CachedFile: Failed to open {0}", filename);
+                    return false;
+                }
+
+                try {
+                    byte[]! in ExHeap bytes = new [ExHeap] byte [fileMaxBytes];
+                    long bytesRead;
+                    int  error;
+                    conn.SendRead(bytes,
+                                  /* buffer offset */0,
+                                  /* file offset */0,
+                                  bytes.Length);
+                    conn.RecvAckRead(out bytes, out bytesRead, out error);
+
+                    if (error != 0) {
+                        delete bytes;
+                        return false;
+                    }
+
+                    filedata = Bitter.ToByteArray(bytes);
+                    delete bytes;
+                    return true;
+                }
+                finally {
+                    delete conn;
+                }
+            }
+        }
+
+        // Caller should not hold onto this outside of method of use.
+        // "borrows"
+        public byte[] FileData
+        {
+            get { lock (this) { return filedata; } }
+        }
+    }
+}

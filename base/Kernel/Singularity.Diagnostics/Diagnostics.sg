@@ -1,0 +1,28 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Diagnostics.sg
+//
+//  Note:   The kernel diagnostics module
+//
+
+using System;
+using System.Collections;
+
+namespace Microsoft.Singularity.Diagnostics
+{
+    public class DiagnosticsModule
+    {
+        public static void Initialize()
+        {
+            // NEW-STYLE INITIALIZATION (keep this)
+            ProcessModule.Initialize();
+            MemoryModule.Initialize();
+            ChannelModule.Initialize();
+        }
+
+    }
+}

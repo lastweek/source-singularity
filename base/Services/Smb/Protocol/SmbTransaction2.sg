@@ -1,0 +1,227 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Utils;
+
+namespace Smb.Protocol
+{
+    // Codes for the Setup[0] field of SMB_TRANS2
+    enum SmbTransaction2Code
+    {
+		Open = 0,
+		FindFirst = 1,
+		FindNext = 2,
+		QueryFsInformation = 3,
+		Reserved = 4, // SetFsInformation = 4,
+		QueryPathInformation = 5,
+		SetPathInformation = 6,
+		QueryFileInformation = 7,
+		SetFileInformation = 8,
+		FsControl = 9,
+		IoControl = 0xa,
+		FindNotifyFirst = 0xb,
+		FindNotifyNext = 0xc,
+		CreateDirectory = 0xd,
+		SessionSetup = 0xe,
+		GetDfsReferral = 0x10,
+		ReportDfsInconsistency = 0x11,
+    }
+    
+    // This structure describes the SMB_COM_TRANSACTION2 message header.
+    // This is described in [1] page 32.
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbTransaction2Request
+    {
+		public SmbHeader Header;
+		public SmbTransaction2RequestHeader Transaction;
+	}
+	
+    // This structure describes the SMB_COM_TRANSACTION2 message header.
+    // This is described in [1] page 32.
+    // Note that the alignment of this structure is "sane", unlike that of SmbHeader.
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbTransaction2RequestHeader
+    {
+		// public const SmbCommand Command = SmbCommand.Transaction2;
+		// public SmbHeader Header;
+		
+		// public const byte ParameterCount = 14 + SetupCount;
+		// The ParameterCount field in SmbHeader needs to be set to 14 + SetupCount.
+		public const int HeaderParameterCount = 14;
+		
+		public ushort TotalParameterCount;				// Total parameter bytes being sent
+		public ushort TotalDataCount;					// Total data bytes being sent
+		public ushort MaxParameterCount;				// Max parameter bytes to return
+		public ushort MaxDataCount;						// Max data bytes to return
+		public byte MaxSetupCount;						// Max setup words to return
+		public byte Reserved;							// zero
+		public ushort Flags;							// bit 0 - Disconnect TID
+		public uint Timeout;							//
+		public ushort Reserved2;						// zero
+		public ushort ParameterCount;					// Parameter bytes sent this buffer
+		public ushort ParameterOffset;					// Offset (from header start) to Parameters
+		public ushort DataCount;						// Data bytes sent this buffer
+		public ushort DataOffset;						// Offset (from header start) to data
+		public byte SetupCount;							// Count of setup words
+		public byte Reserved3;							// zero
+		public ushort Setup0;							// setup word 0, which is usually the transaction code
+		// public ushort[] Setup[SetupCount];			// Setup words (# = SetupWordCount)
+		// public ushort ByteCount;
+		// STRING Name[];								// must be null
+		// byte Pad[];									// Pad to SHORT or LONG
+		// byte Parameters[ParameterCount];				// parameter bytes
+		// byte Pad1[];									// Pad to SHORT or LONG
+		// byte Data[DataCount];						// Data bytes (# = DataCount)
+    }
+
+
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbTransaction2ResponseHeader
+	{
+		public ushort TotalParameterCount;
+		public ushort TotalDataCount;
+		public ushort Reserved;
+		public ushort ParameterCount;
+		public ushort ParameterOffset;
+		public ushort ParameterDisplacement;
+		public ushort DataCount;
+		public ushort DataOffset;
+		public ushort DataDisplacement;
+		public ushort Fid;
+		public ushort ByteCount;
+		
+		// byte Pad[];
+		// byte Parameters[ParameterCount];
+		// byte Pad[];
+		// byte Data[];
+	}
+	
+	[StructLayout(LayoutKind.Sequential, Pack=1)]
+	pointerfree struct SmbTransaction2Response
+	{
+		public SmbHeader Header;
+		public SmbTransaction2ResponseHeader Transaction;
+	}
+
+
+	//
+	//[StructLayout(LayoutKind.Sequential, Pack=1)]
+	//pointerfree struct SmbCheckDirectoryRequest
+	//{
+	//	public SmbComTransaction2RequestHeader TransactionHeader;
+	//	// WordCount = 0
+	//	// ByteCount = ?
+	//	// BufferFormat = 4
+	//	// STRING DirectoryPath
+	//}
+	//
+
+    // This structure describes the TRANS2_FIND_FIRST request.
+    // This request searches a directory, using a given wildcard pattern.
+	// page 99 - describes TRANS2_FIND_FIRST2
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbFindFirst2Request
+    {
+		public SmbHeader Header;
+		public SmbTransaction2RequestHeader Transaction;
+		// WordCount = 15
+		// SetupCount = 1
+		// Setup[0] = TRANS2_FIND_FIRST2 = Transaction2Code.FindFirst
+		
+    }
+    
+    [StructLayout(LayoutKind.Sequential)]
+    pointerfree struct SmbFindFirstParametersHeader
+    {
+		public ushort SearchAttributes;
+		public ushort SearchCount;
+		public ushort Flags;
+			// bit 0 - close search after this request
+			// bit 1 - close search if end of search reached
+			// bit 2 - return resume keys for each entry found
+			// bit 3 - continue search from previous ending place
+			// bit 4 - find with backup intent
+		public ushort InformationLevel; // FindFirstInformationLevel
+		public uint SearchStorageType;
+		// STRING FileName;
+		// byte Data[TotalDataCount];
+		// Data contains EA list if InformationLevel = QUERY_EAS_FROM_LIST
+    }
+    
+    [StructLayout(LayoutKind.Sequential, Pack=1)]
+    pointerfree struct SmbFindFirstResponseParametersParameters
+    {
+		public ushort SearchId;
+		public ushort SearchCount;
+		public ushort EndOfSearch;
+		public ushort EaErrorOffset;
+		public ushort LastNameOffset;
+		// public byte[TotalDataCount];
+    }
+    
+    [Flags]
+    enum SmbSearchAttributes : ushort
+    {
+		ReadOnly = 1,
+		Hidden = 2,
+		System = 4,
+		Deprecated_VolumeId = 8,
+		Directory = 0x10,
+		Archive = 0x20,
+    }
+    
+    [Flags]
+    enum SmbSearchFlags : ushort
+    {
+		CloseAfterRequest = 1,
+		CloseIfLastResponse = 2,
+		ReturnResumeKeysForEachEntry = 4,
+		ResumeFromPrevious = 8,
+		BackupIntent = 0x10,
+    }
+    
+    enum SmbSearchInformationLevel
+    {
+		Standard = 1,
+		QueryEaSize = 2,
+		QueryEasFromList = 3,
+		FileDirectoryInfo = 0x101,
+		FileFullDirectoryInfo = 0x102,
+		FileNamesInfo = 0x103,
+		FileBothDirectoryInfo = 0x104,
+		FileUnix = 0x202,
+    }
+
+    [StructLayout(LayoutKind.Sequential)]    
+    pointerfree struct SmbQueryFileBasicInfo
+    {
+        public FILETIME CreationTime;
+        public FILETIME LastAccessTime;
+        public FILETIME LastWriteTime;
+        public FILETIME ChangeTime;
+        public uint Attributes;
+        public uint Padding;
+    }
+    
+    [StructLayout(LayoutKind.Sequential)]    
+    pointerfree struct SmbQueryFileStandardInfo
+    {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint NumberOfLinks;
+        public byte DeletePending;
+        public byte Directory;
+    }
+        
+}

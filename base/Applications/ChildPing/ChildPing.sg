@@ -1,0 +1,94 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple ping-pong test child app #1
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.PingPong.Contracts;
+using System;
+using System.Diagnostics;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.PingPong
+{
+    [Category("PingPong")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<PingContract.Exp:Start> pingRef;
+
+        reflective private Parameters();
+        
+    }
+
+    public class ChildPing
+    {
+        internal  static int AppMain(Parameters! config)
+        {
+            PingContract.Exp conn = ((!)config.pingRef).Acquire(); 
+            if (conn == null) { 
+                throw new Exception("ChildPing: Unable to acquire handle to the the Ping Contract"); 
+            } 
+            
+#if false 
+            Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            PingContract.Exp conn = ep as PingContract.Exp;
+            if (conn == null) {
+                // Wrong contract type!
+                delete ep;
+                return;
+            }
+#endif
+            // Start up and connect to the ChildPong image!
+            PongContract.Imp! childImp;
+            PongContract.Exp! childExp;
+            PongContract.NewChannel(out childImp, out childExp);
+
+            string[] args = new string[1];
+            args[0] = "ChildPong";
+            Process child = new Process(args, (Endpoint * in ExHeap)childExp);
+            child.Start();
+
+            childImp.RecvPongReady();
+            conn.SendPingReady();
+
+            try {
+                while (true) {
+                    switch receive {
+                        case conn.StartPingPong(int numReps) :
+                            for (int i = 0; i < numReps; ++i) {
+                                int data;
+                                childImp.SendPing(42);
+                                childImp.RecvPong(out data);
+                            }
+
+                            conn.SendDone();
+                            break;
+
+                        case conn.ChannelClosed():
+                            return -1;
+                    }
+                }
+            }
+            finally {
+                delete conn;
+                delete childImp;
+            }
+            return 0;
+        }
+    }
+}

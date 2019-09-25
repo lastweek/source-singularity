@@ -1,0 +1,6 @@
+ipconfig '@dhcp' '/dev/nic0' start
+fatcontrol '@mount' '/dev/vol0.0' '/fs'
+ipconfig '@show'
+testutil
+cassini '-quitURL' '-app:SPECWeb99WebApp'
+exit 8188

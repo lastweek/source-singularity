@@ -1,0 +1,38 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   UDPContract.sg
+//
+//  Note:   Contract definition for UDP channels
+//
+
+using Microsoft.Singularity.Directory;
+
+namespace NetStack.Contracts
+{
+    public contract UdpContract : ServiceContract
+    {
+        // The name you should use to look up this module using the NameServer.
+        public const string ModuleName = "/service/udp";
+
+        // Signal our identity
+        out message Ready();
+
+        // Create a new UDP connection
+        in message CreateUdpSession(UdpConnectionContract.Exp:Start! endpoint);
+        out message Ack();
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            CreateUdpSession? -> Ack! -> ReadyState;
+        }
+    }
+}

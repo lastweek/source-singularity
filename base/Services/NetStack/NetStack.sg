@@ -1,0 +1,214 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NetStack.sg
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.ServiceManager;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace NetStack
+{
+    using NetStack.Channels.Private;
+    using NetStack.Channels.Nic;
+
+    [Category("Service")]
+    internal class ServiceParameters
+    {
+        [CustomEndpoint]
+        public readonly TRef<ServiceProcessContract.Exp:Starting> ControlEndpointRef;
+
+        [CustomEndpoint]
+        public readonly TRef<ServiceEventContract.Imp:Ready> EventEndpointRef;
+
+        reflective private ServiceParameters();
+    }
+
+    /// <summary>
+    /// The NetStack Application class is a single instance service running
+    /// on a host.  When it runs it attempts to register as /service/netstack;
+    /// success indicates no other instances and it then initializes
+    /// the various NetStack subsystems.
+    /// </summary>
+    class NetStackApplication : ITracked
+    {
+        NetStackApplication(
+            [Claims]ServiceProcessContract.Exp! svcontrol,
+            [Claims]ServiceEventContract.Imp! svevent)
+        {
+            this.svcontrol = svcontrol;
+            this.svevent = svevent;
+        }
+
+        void ITracked.Dispose()
+        {
+            delete svcontrol;
+            delete svevent;
+        }
+
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+
+
+        readonly ServiceProcessContract.Exp! svcontrol;
+        readonly ServiceEventContract.Imp! svevent;
+
+        readonly DNSExpManager! dnsManager = new DNSExpManager();
+        readonly RoutingExpManager! routingManager = new RoutingExpManager();
+        readonly TcpExpManager! tcpManager = new TcpExpManager();
+        readonly UdpExpManager! udpManager = new UdpExpManager();
+        readonly IPExpManager! ipManager = new IPExpManager();
+
+        bool Start()
+        {
+            try {
+                ipManager.Start();
+
+                routingManager.Start();
+                tcpManager.Start();
+                udpManager.Start();
+                dnsManager.Start();
+
+                NicFactory.Probe();
+
+                return true;
+            }
+            catch (Exception ex) {
+                Dbg("An exception occurred during service startup: " + ex.Message);
+                return false;
+            }
+        }
+
+        void ServiceMain()
+        {
+            bool run = true;
+
+            expose (this) {
+            while (run) {
+                switch receive {
+                    case svcontrol.Stop():
+                        Dbg("Received 'Stop' control from Service Manager.");
+                        return;
+
+                    case svcontrol.Connect(subpath, exp):
+                        Dbg("Received client connection from Service Manager.");
+                        Dbg("We don't support connecting this way; rejecting client.");
+                        delete subpath;
+                        svcontrol.SendNakConnect(ErrorCode.ContractNotSupported, exp);
+                        break;
+
+                    case svcontrol.Knock():
+                        svcontrol.SendAlive();
+                        break;
+
+                    case svcontrol.ChannelClosed():
+                        Dbg("The service control channel has closed!  Not good!  Terminating.");
+                        return;
+
+                }
+            }
+            }
+        }
+
+        void Stop()
+        {
+            // Stop the service provider threads.
+            Dbg("Stopping service provider threads");
+            dnsManager.Stop();
+            routingManager.Stop();
+            ipManager.Stop();
+            tcpManager.Stop();
+            udpManager.Stop();
+
+            // StaticConfiguration.Stop() walks the list of installed modules and calls
+            // the StopModule() method of each.  We do this after stopping the service
+            // provider threads.
+            Dbg("Stopping protocol modules");
+            NetStack.Runtime.StaticConfiguration.Stop();
+        }
+
+        internal static int AppMain(ServiceParameters! parameters)
+        {
+            ServiceProcessContract.Exp! svcontrol = parameters.ControlEndpointRef.Acquire();
+            ServiceEventContract.Imp! svevent = parameters.EventEndpointRef.Acquire();
+
+            NetStack.Runtime.StaticConfiguration.Initialize();
+            NetStack.Runtime.StaticConfiguration.Start();
+
+            NetStackApplication! app = new NetStackApplication(svcontrol, svevent);
+
+            try {
+                return app.Run();
+            }
+            finally {
+                delete app;
+                Dbg("NetStack is terminating.");
+            }
+        }
+
+        static ServiceProviderContract.Exp RegisterServiceProvider(DirectoryServiceContract.Imp! rootds, string! name)
+        {
+            ServiceProviderContract.Imp! provider_imp;
+            ServiceProviderContract.Exp! provider_exp;
+            ServiceProviderContract.NewChannel(out provider_imp, out provider_exp);
+
+            ErrorCode error;
+            if (SdsUtils.Register(name, rootds, provider_imp, out error))
+                return provider_exp;
+            else {
+                Dbg("FAILED to register name '{0}', error = {1}", name, SdsUtils.ErrorCodeToString(error));
+                delete provider_exp;
+                return null;
+            }
+        }
+
+        int Run()
+        {
+            expose (this) {
+                if (Start()) {
+                    svcontrol.SendStartSucceeded();
+                    ServiceMain();
+                    Stop();
+                    return 0;
+                }
+                else {
+                    Dbg("Sending StartFailed to Service Manager.");
+                    svcontrol.SendStartFailed(ServiceError.Unknown);
+                    Stop();
+                    return -1;
+                }
+            }
+        }
+
+        static void Dbg(string! line)
+        {
+            DebugStub.WriteLine(line);
+        }
+
+        static void Dbg(string! format, params object[]! args)
+        {
+            Dbg(String.Format(format, args));
+        }
+    }
+}

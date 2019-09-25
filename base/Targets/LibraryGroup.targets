@@ -1,0 +1,58 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+You can use this file to create "library group" projects.  Library groups are
+collections of libraries that are usually used together, or are done so often
+enough that grouping them makes sense.  This does not prevent projects from
+referring directly to specific assemblies; it only simplifies adding references
+to groups of libraries.
+
+To create a "library group" project, define ProjectReference items, then import
+this LibraryGroup.targets file.  To add a reference to a library group, just
+add a ProjectReference to the library group project, as though it were just a
+single library.
+
+It is suggested that library group projects use the .proj extension, since it
+is never useful to edit them using the Visual Studio IDE as projects.
+
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+
+  <Target Name="BuildLibraries">
+    <MSBuild Projects="@(ProjectReference)"
+             StopOnFirstFailure="$(StopOnFirstFailure)"
+             Condition="'$(BuildInParallel)'!='true'">
+      <Output TaskParameter="TargetOutputs" ItemName="__built_projects"/>
+    </MSBuild>
+    <MSBuild Projects="@(ProjectReference)"
+             StopOnFirstFailure="$(StopOnFirstFailure)"
+             Condition="'$(BuildInParallel)'=='true'"
+             BuildInParallel="true">
+      <Output TaskParameter="TargetOutputs" ItemName="__built_projects"/>
+    </MSBuild>
+  </Target>
+
+  <Target Name="Build"
+          Outputs="@(__built_projects)"
+          DependsOnTargets="BuildLibraries"
+          >
+  </Target>
+
+  <Target Name="GetContentItems" Outputs="@(__merged_content_items)"/>
+  <Target Name="InternalGetContentItems">
+    <MSBuild Projects="@(ProjectReference)"
+             Targets="GetContentItems">
+      <Output ItemName="__merged_content_items" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+
+</Project>

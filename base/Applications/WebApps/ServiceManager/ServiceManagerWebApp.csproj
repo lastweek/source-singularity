@@ -1,0 +1,35 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>ServiceManagerWebApp</AssemblyName>
+    <NoNullCheck>true</NoNullCheck>
+    <ProjectGuid>{6FF50C76-A677-44BD-A178-B9F556686BBD}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ServiceManagerWebApp.sg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\ServiceManager.Contracts\ServiceManager.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\WebApps\WebAppsLib.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Web\System.Web.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <ProjectReference Include="..\Driver\WebAppDriver.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DebugUtils\DebugUtils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="sv_style.css" />
+  </ItemGroup>
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

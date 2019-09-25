@@ -1,0 +1,119 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IPContract.gs
+//  Note:   Contract definition for interacting with the IP Module
+//
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using System;
+
+namespace NetStack.Contracts
+{
+    // 6-bye Ethernet address
+    public rep struct HardwareAddress
+    {
+        public byte b0, b1, b2, b3, b4, b5;
+
+        public void Set(byte bt0, byte bt1, byte bt2, byte bt3, byte bt4, byte bt5)
+        {
+            b0 = bt0;
+            b1 = bt1;
+            b2 = bt2;
+            b3 = bt3;
+            b4 = bt4;
+            b5 = bt5;
+        }
+
+        public void Set(byte[]! bytes)
+        {
+            if (bytes.Length != 6) {
+                throw new ArgumentException("Invalid array length in HardwareAddress()");
+            }
+
+            b0 = bytes[0];
+            b1 = bytes[1];
+            b2 = bytes[2];
+            b3 = bytes[3];
+            b4 = bytes[4];
+            b5 = bytes[5];
+        }
+    }
+
+    // IP configuration information
+    public rep struct InterfaceIPInfo
+    {
+        public uint address;
+        public uint netmask;
+        public uint gateway;
+    }
+
+    // Information for a network interface.
+    // A single interface can have multiple IP configurations.
+    public rep struct InterfaceInfo : ITracked
+    {
+        public char[] in ExHeap driverName; // Friendly name, not programmatic name
+        public char[] in ExHeap driverVersion;
+        public uint linkSpeed;
+        public HardwareAddress hardwareAddress;
+        public InterfaceIPInfo[] in ExHeap ipConfigs; // Zero or more IP configs
+    }
+
+    public contract IPContract : ServiceContract
+    {
+        // This is the name under which the IP module registers itself with
+        // the name server
+        public const string ModuleName = "/service/ip";
+
+        // Response messages
+        out message InterfaceList(char[][]! in ExHeap names);
+        out message InterfaceState(InterfaceInfo ifInfo);
+        out message HostName(char[]! in ExHeap hostname);
+        out message DomainName(char[]! in ExHeap domainName);
+        out message Running(bool isRunning);
+        out message IsLocal(bool isLocal);
+        out message InterfaceNotFound();
+        out message Err();
+        out message OK();
+
+        // General configuration
+        in message GetDomainName();
+        in message SetDomainName(char[]! in ExHeap name);
+        in message GetHostName();
+        in message SetHostName(char[]! in ExHeap name);
+        in message IsLocalAddress(uint addr);
+        in message Test();
+
+        // Interface configuration
+        in message StartDhcp(char[]! in ExHeap interfaceName);
+        in message StopDhcp(char[]! in ExHeap interfaceName);
+        in message IsRunningDhcp(char[]! in ExHeap interfaceName);
+        in message GetInterfaces();
+        in message SetInterfaceState(char[]! in ExHeap interfaceName, uint address, uint netMask, uint gateway);
+        in message GetInterfaceState(char[]! in ExHeap interfaceName);
+
+        out message Ready();
+        override state Start : Ready! -> ReadyState;
+
+        state ReadyState : one
+        {
+            GetDomainName? -> DomainName! -> ReadyState;
+            SetDomainName? -> (Err! or OK!) -> ReadyState;
+            GetHostName? -> HostName! -> ReadyState;
+            SetHostName? -> (Err! or OK!) -> ReadyState;
+            IsLocalAddress? -> IsLocal! -> ReadyState;
+
+            StartDhcp? -> (InterfaceNotFound! or OK!) -> ReadyState;
+            StopDhcp? -> (InterfaceNotFound! or OK!) -> ReadyState;
+            IsRunningDhcp? -> (InterfaceNotFound! or Running!) -> ReadyState;
+
+            GetInterfaces? -> InterfaceList! -> ReadyState;
+            SetInterfaceState? -> (InterfaceNotFound! or Err! or OK!) -> ReadyState;
+            GetInterfaceState? -> (InterfaceNotFound! or InterfaceState!) -> ReadyState;
+        }
+    }
+}

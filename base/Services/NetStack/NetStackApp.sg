@@ -1,0 +1,161 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NetStack.sg
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.ServiceManager;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace NetStack
+{
+    using NetStack.Channels.Private;
+    using NetStack.Channels.Nic;
+
+    [ConsoleCategory(HelpMessage="Runs the NetStack as an application", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return NetStackApplication.Main();
+        }
+    }
+
+    /// <summary>
+    /// The NetStack Application class is a single instance service running
+    /// on a host.  When it runs it attempts to register as /service/netstack;
+    /// success indicates no other instances and it then initializes
+    /// the various NetStack subsystems.
+    /// </summary>
+    class NetStackApplication
+    {
+        DNSExpManager! dnsManager;
+        RoutingExpManager! routingManager;
+        TcpExpManager! tcpManager;
+        UdpExpManager! udpManager;
+        IPExpManager! ipManager;
+
+        NetStackApplication()
+        {
+            NetStack.Runtime.StaticConfiguration.Initialize();
+            NetStack.Runtime.StaticConfiguration.Start();
+
+            dnsManager     = new DNSExpManager();
+            routingManager = new RoutingExpManager();
+            tcpManager     = new TcpExpManager();
+            udpManager     = new UdpExpManager();
+            ipManager      = new IPExpManager();
+        }
+
+        bool Start()
+        {
+            try {
+                ipManager.Start();
+
+                routingManager.Start();
+                tcpManager.Start();
+                udpManager.Start();
+                dnsManager.Start();
+
+                NicFactory.Probe();
+
+                return true;
+            }
+            catch (Exception ex) {
+                Dbg("An exception occurred during service startup: " + ex.Message);
+                return false;
+            }
+        }
+
+        void ServiceMain()
+        {
+            bool run = true;
+
+            while (run) {
+                Thread.Sleep(1000);
+            }
+        }
+
+        void Stop()
+        {
+            // Stop the service provider threads.
+            Dbg("Stopping service provider threads");
+            dnsManager.Stop();
+            routingManager.Stop();
+            ipManager.Stop();
+            tcpManager.Stop();
+            udpManager.Stop();
+
+            // StaticConfiguration.Stop() walks the list of installed modules and calls
+            // the StopModule() method of each.  We do this after stopping the service
+            // provider threads.
+            Dbg("Stopping protocol modules");
+            NetStack.Runtime.StaticConfiguration.Stop();
+        }
+
+        public static int Main()
+        {
+            NetStackApplication app = new NetStackApplication();
+
+            try {
+                return app.Run();
+            }
+            finally {
+                Dbg("NetStack is terminating.");
+            }
+        }
+
+        int Run()
+        {
+            if (Start()) {
+                ServiceMain();
+                Stop();
+                return 0;
+            }
+            else {
+                Dbg("Sending StartFailed to Service Manager.");
+                Stop();
+                return -1;
+            }
+        }
+
+        static void Dbg(string! line)
+        {
+            DebugStub.WriteLine(line);
+        }
+
+        static void Dbg(string! format, params object[]! args)
+        {
+            Dbg(String.Format(format, args));
+        }
+    }
+}

@@ -1,0 +1,591 @@
+record production(lhs, rhsList, conditions, reduceRestrictions)
+record dotted(production, index, lookaheads, state)
+record itemSet(items, sym, transitions)
+
+global acceptingState
+global productionList
+global augmentingDottedProduction
+global startSymbol
+global startState
+global nonterms
+global terms
+global first
+global follow
+global nullable
+global closures
+
+global lookaheads
+
+procedure main(argv)
+	local L, fsm, i, S, d
+
+	L := grammar()
+
+	productionList := []
+	every put(productionList, list2production(!L))
+	startSymbol := productionList[1].lhs
+	push(productionList, production("<s t a r t>", [ startSymbol ]))
+
+	extract_conditionals(productionList)
+
+	computeSymbols(productionList)
+	insert(terms, "<EOF>")
+
+	computeSets(productionList)
+	dumpFollow()
+	dumpFirst()
+
+	fsm := createFSM()
+	acceptingState := itemSet([], "<s t a r t>", table())
+	fsm[""] := acceptingState
+	startState.transitions["<s t a r t>"] := acceptingState
+
+	S := computeUnreachable(startState)
+	every write("// unreachable: ", image(!S))
+
+	// computeSLR(fsm)
+
+	writeGLR(fsm)
+end
+
+procedure extract_conditionals(L)
+	local i, t, e, x
+
+	every i := !L do {
+		t := []
+		if find("===", !i.rhsList) then {
+			every e := 1 to *i.rhsList do {
+				x := &null
+				i.rhsList[e] ? {
+					i.rhsList[e] <- tab(find("===")) & move(3) & x <- tab(0);
+				}
+				put(t, x)
+			}
+		}
+		i.conditions := t
+	}
+end
+
+procedure computeSLR(fsm)
+	local state, i
+
+	type(fsm) == "table" | runerr(500, fsm)
+
+	every state := !fsm & i := !state.items do {
+		if i.index > *i.production.rhsList then {
+			i.lookaheads := \follow[i.production.lhs] | runerr(500, i.production.lhs)
+		}
+	}
+end
+
+procedure doLookahead(dot, tok)
+	type(dot) == "dotted" | runerr(500, dot)
+	type(tok) == "string" | runerr(500, tok)
+
+	if member(dot.lookaheads, tok) then return
+	insert(dot.lookaheads, tok)
+	if dot.index > *dot.production.rhsList then return
+	if nullableIndex(dot.production, dot.index+1) then {
+		every doLookahead(!closures[dot], tok)
+	}
+	doLookahead(succ(dot), tok)
+end
+
+procedure nullableIndex(prod, index)
+	static memo
+	initial {
+		memo := table()
+	}
+
+	type(prod) == "production" | runerr(500, prod)
+	type(index) == "integer" | runerr(500, index)
+
+	/memo[prod] := list(*prod.rhsList+1)	
+	if /memo[prod][index] then {
+		memo[prod][index] := if index > *prod.rhsList | (nullableIndex(prod, index+1) & member(nullable, prod.rhsList[index])) then 1 else 0
+	}
+	return memo[prod][index] = 1
+end
+
+procedure succ(dot)
+	local d, s
+	static memo
+	initial {
+		memo := table()
+	}
+
+	type(dot) == "dotted" | runerr(500, dot)
+
+	if dot.index <= *dot.production.rhsList then {
+		if /memo[dot] then {
+			s := dot.state.transitions[dot.production.rhsList[dot.index]]
+			if d := !s.items & d.production === dot.production & d.index = dot.index+1 then {
+				memo[dot] := d
+			} else {
+				runerr(500, dot)
+			}
+		}
+		return memo[dot]
+	}
+end
+
+procedure createFSM()
+	local d, kernel, wl, state, T, sym, seen
+
+	d := dotted(productionList[1], 1, set([]))
+	augmentingDottedProduction := d
+	closures := table()
+
+	kernel := [ d ]
+	wl := []
+	seen := table()
+	startState := add2fsm(kernel, seen, wl)
+	while state := pop(wl) do {
+		eClosure(state)
+		T := table()
+		every d := !state.items do {
+			if sym := d.production.rhsList[d.index] then {
+				/T[sym] := []
+				put(T[sym], bump(d))
+			}
+		}
+		state.transitions := table()
+		every sym := key(T) do {
+			state.transitions[sym] := add2fsm(T[sym], seen, wl)
+		}
+	}
+	return seen
+end
+
+procedure add2fsm(kernelList, seen, wl)
+	local sig, d, sym
+
+	type(kernelList) == "list" | runerr(500, kernelList)
+	*kernelList > 0 | runerr(500, kernelList)
+	type(seen) == "table" | runerr(500, kernelList)
+	type(wl) == "list" | runerr(500, kernelList)
+	every d := !kernelList do {
+		type(d) == "dotted" | runerr(500, d)
+		d.index <= *d.production.rhsList+1 | runerr(500, d)
+		sym := d.production.rhsList[(1 < d.index)-1]
+	}
+
+	sig := kernel2sig(kernelList)
+	if /seen[sig] then {
+		seen[sig] := itemSet(kernelList, sym)
+		put(wl, seen[sig])
+		every (!kernelList).state := seen[sig]
+	}
+	type(seen[sig]) == "itemSet" | runerr(500, seen[sig])
+	return seen[sig]
+end
+
+procedure eClosure(state)
+	local wl, d, seen, new, p, sym
+
+	type(state) == "itemSet" | runerr(500, state)
+
+	wl := []
+	every put(wl, !state.items)
+	seen := table()
+	while d := pop(wl) do {
+		closures[d] := set([])
+		if sym := d.production.rhsList[d.index] then {
+			if member(nonterms, sym) then {
+				every p := !productionList & p.lhs == sym do {
+					if /seen[p] then {
+						new := dotted(p, 1, set([]), state)
+						put(wl, new)
+						seen[p] := new
+						put(state.items, new)
+					}
+					insert(closures[d], seen[p])
+				}
+			}
+		}
+	}
+end
+
+procedure computeSets(pList)
+	local prev, p, c, s, i, change, old, f, j
+
+	nullable := set([])
+	prev := -1
+	while prev < *nullable do {
+		prev := *nullable
+		every p := !pList & not member(nullable, p.lhs) do {
+			c := 0
+			every s := !p.rhsList & member(nullable, s) do {
+				c +:= 1
+			}
+			if c = *p.rhsList then {
+				insert(nullable, p.lhs)
+			}
+		}
+	}
+
+	first := table()
+	every i := !terms do {
+		first[i] := set([i])
+	}
+	every first[!nonterms] := set([])
+
+	change := 1
+	while \change do {
+		change := &null
+		every p := !pList do {
+			old := *first[p.lhs]
+			f := First(p.rhsList)
+			every insert(first[p.lhs], !f)
+			change := (*first[p.lhs] ~= old)
+		}
+	}
+
+	follow := table()
+	every follow[!nonterms] := set([])
+	insert(follow["<s t a r t>"], "<EOF>")
+
+	every i := !productionList do {
+		every j := 1 to *i.rhsList & s := i.rhsList[j] do {
+			if member(nonterms, s) then {
+				every insert(follow[s], !FirstIndex(i, j+1))
+			}
+		}
+	}
+	change := 1
+	while \change do {
+		change := &null
+		every i := !productionList do {
+			every j := 1 to *i.rhsList & s := i.rhsList[j] do {
+				if member(nonterms, s) & nullableIndex(i, j+1) then {
+					prev := *follow[s]
+					every insert(follow[s], !follow[i.lhs])
+					if prev < *follow[s] then {
+						change := 1
+					}
+				}
+			}
+		}
+	}
+end
+
+procedure First(symList)
+	local f, i
+
+	f := set([])
+	every i := !symList do {
+		every insert(f, !first[i])
+		if not member(nullable, i) then {
+			return f
+		}
+	}
+	return f
+end
+
+procedure FirstIndex(production, index)
+	local f, i
+	static memo
+	initial {
+		memo := table()
+	}
+
+	index <= *production.rhsList+1 | runerr(500, index)
+	type(production) == "production" | runerr(500, production)
+
+	/memo[production] := list(*production.rhsList+1)
+	if /memo[production][index] then {
+		f := set([])
+		every i := production.rhsList[index to *production.rhsList] do {
+			every insert(f, !first[i])
+			if not member(nullable, i) then {
+				break
+			}
+		}
+		memo[production][index] := f
+	}
+
+	return memo[production][index]
+end
+
+procedure bump(d)
+	local t
+
+	type(d) == "dotted" | runerr(500, d)
+
+	t := dotted(d.production, d.index+1, set([]))
+	return t
+end
+
+procedure kernel2sig(kernelList)
+	local s, d, L
+
+	L := []
+	every d := !kernelList do {
+		put(L, image(d.production) || " " || d.index || " ")
+	}
+	s := ""
+	every d := !sort(L) do {
+		s ||:= d
+	}
+	return s
+end
+
+procedure computeSymbols(pList)
+	local i
+
+	nonterms := set([])
+	every insert(nonterms, (!pList).lhs)
+
+	terms := set([])
+	every i := !(!pList).rhsList & not member(nonterms, i) do {
+		insert(terms, i)
+	}
+end
+
+procedure list2production(L)
+	local i, p
+
+	p := production(L[1], L[2])
+	if "REDUCE==" == p.rhsList[i := 1 to *L] then {
+		p.reduceRestrictions := p.rhsList[i+1:0]
+		p.rhsList := p.rhsList[1:i]
+	}
+	return p
+end
+
+procedure computeUnreachable(ss)
+	local L, seen, S
+
+	S := set([])
+	seen := set([])
+	computeReachable0(ss, S, seen)
+	return ((nonterms++terms)--S)
+end
+
+procedure computeReachable0(state, reachable, seen)
+	local i, t
+
+	if member(seen, state) then {
+		return
+	}
+	insert(seen, state)
+	every i := !state.items do {
+		insert(reachable, i.production.lhs)
+		every insert(reachable, !i.production.rhsList)
+	}
+	every computeReachable0(!\state.transitions, reachable, seen)
+end
+
+procedure grammar()
+	local L, s, count
+
+	L := []
+	count := 0
+	while s := read() do {
+		count +:= 1
+		s := separate(s)
+		if not (s[2] == ":") then {
+			stop("line ", count, ": syntax error")
+		}
+		put(L, [s[1], s[3:0]])
+	}
+
+	return L
+end
+
+procedure Image(x)
+	local s
+	static memo
+	initial {
+		memo := table()
+	}
+
+	if /memo[x] then {
+		s := image(x)
+		s := (s ? (tab(upto(' ')) & move(1) & tab(upto('('))))
+		memo[x] := s
+	}
+	return memo[x]
+end
+
+
+procedure separate(s)
+	local L
+
+	L := []
+	s ? {
+		repeat {
+			tab(many(' \t'))
+			if not put(L, tab(upto(' \t'))) then {
+				put(L, tab(0))
+				break;
+			}
+		}
+	}
+	return L
+end
+
+procedure dumpSymbols()
+	 every write("NONTERM: ", !sort(nonterms))
+	 every write("TERM: ", !sort(terms))
+end
+
+procedure dumpSets()
+	 every write("NULLABLE: ", !nullable)
+	 every i := key(first) & write("FIRST[", i, "] ", !first[i])
+end
+
+procedure dumpProductions()
+	local tmpList
+
+	tmpList := []
+	every put(tmpList, dumpProductionFull(!productionList))
+	every write(!sort(tmpList))
+end
+
+procedure dumpProductionFull(p)
+	local s
+
+	s := "(" || Image(p) || ") "
+	s ||:= dumpProduction(p)
+	return s
+end
+
+procedure dumpProduction(p)
+	local s, i
+
+	s := p.lhs || " :"
+	every i := 1 to *p.rhsList do {
+		s ||:= " " || p.rhsList[i]
+		s ||:= "===" || \p.conditions[i]
+	}
+	return s
+end
+
+procedure dumpDotted(d)
+	local s, i
+
+	type(d) == "dotted" | runerr(500, d)
+	type(d.production) == "production" | runerr(500, d.production)
+	type(d.production.lhs) == "string" | runerr(500, d.production.lhs)
+	type(d.production.rhsList) == "list" | runerr(500, d.production.rhsList)
+
+	# s := "(" || Image(d) || ":" || Image(d.production) || ") "
+	s := ""
+	s ||:= d.production.lhs || ":"
+	every i := 1 to *d.production.rhsList do {
+		type(d.production.rhsList[i]) == "string" | runerr(500, d.production)
+		if i = d.index then {
+			s ||:= " ."
+		}
+		s ||:= " " || d.production.rhsList[i]
+	}
+	if *d.production.rhsList < d.index then {
+		s ||:= " ."
+	}
+	if d.index > *d.production.rhsList then {
+		s ||:= " [lookaheads="
+		every s ||:= " " || Image(!d.lookaheads)
+		s ||:= " ]"
+	}
+	return s
+end
+
+procedure dumpDottedFull(d)
+	local s, i
+
+	type(d) == "dotted" | runerr(500, d)
+
+	s := "(" || Image(d) || ") "
+	s ||:= d.production.lhs || ":"
+	every i := 1 to *d.production.rhsList do {
+		if i = d.index then {
+			s ||:= " ."
+		}
+		s ||:= " " || d.production.rhsList[i]
+	}
+	if *d.production.rhsList < d.index then {
+		s ||:= " ."
+	}
+	every i := 1 to *d.production.rhsList+1 do {
+		s ||:= "\n"
+		if i = d.index then {
+			s ||:= "\t\t.\n"
+		}
+		if \lookaheads[d][i] then {
+			s ||:= "\t\t{"
+			every s ||:= " " || !lookaheads[d][i]
+			s ||:= "}\n"
+		}
+		s ||:= "\t\t" || d.production.rhsList[i]
+	}
+	return s
+end
+
+procedure dumpItemSetFull(state)
+	local s
+
+	s := Image(state) || "[" || image(state.sym) || "]\n"
+	every s ||:= "\t" || dumpDottedFull(!state.items) || "\n"
+	return s
+end
+
+procedure dumpItemSet(prefix, state)
+	local s
+
+	s := prefix || Image(state) || "[" || image(state.sym) || "]\n"
+	every s ||:= prefix || "\t" || dumpDotted(!state.items) || "\n"
+	return s
+end
+
+procedure dumpStateFull(state)
+	local s, k
+	s := dumpItemSetFull(state)
+	every k := key(state.transitions) do {
+		s ||:= "\t[" || k || "] -> " || Image(state.transitions[k]) || "\n"
+	}
+	return s
+end
+
+procedure dumpState(prefix, state)
+	local s, k
+	s := dumpItemSet(prefix, state)
+	every k := key(state.transitions) do {
+		s ||:= prefix || "\t[" || k || "] -> " || Image(state.transitions[k]) || "\n"
+	}
+	return s
+end
+
+procedure dumpFSM(fsm)
+	local s
+
+	s := ""
+	every s ||:= dumpState("", !fsm)
+	return s
+end
+procedure dumpClosures()
+	local i, j
+
+	every i := key(closures) do {
+		write("closure of ", dumpDotted(i))
+		every j := !closures[i] do {
+			write("---------->", dumpDotted(j))
+		}
+	}
+end
+procedure dumpFollow()
+	local nt
+	every nt := key(follow) do {
+		writes("//FOLLOW[", image(nt), "]")
+		every writes(" ", !follow[nt])
+		write()
+	}
+end
+procedure dumpFirst()
+	local nt
+	every nt := key(first) & not member(terms, nt) do {
+		writes("//FIRST[", image(nt), "]")
+		every writes(" ", !first[nt])
+		write()
+	}
+end

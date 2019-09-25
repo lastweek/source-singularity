@@ -1,0 +1,509 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/FileExp.sg
+//
+//  Note:
+//
+//		This file contains the implementation of FileContract.  This contract
+//		allows clients to access the contents of files on remote SMB servers.
+//		The FileExp class holds a reference to FileContract.Exp, on which it
+//		receives file requests (read, write, etc.), and also a reference to
+//		SmbTransactor.Imp, which it uses to execute SMB transactions.
+//
+//		Each instance of FileExp runs in its own thread.  Access to the
+//		single TCP connection to the SMB server is multiplexed by the
+//		TransportMux class, which is accessed using the SmbTransactor channel.
+//
+//		The general pattern is that the FileExp thread loops in a switch-receive
+//		loop, and when it receives a file request, it translates the request into
+//		SMB requests.  It formats those requests, submits them to the transport
+//		mux, then waits for the response, and translates the response into
+//		FileContract response messages.
+//
+//		The top-level loop listens for FileContract messages, and listens for
+//		ChannelClosed on the FileContract.  If either channel closes, the
+//		thread terminates.  While the thread is waiting for responses on its
+//		SmbTransactor channel, it also listens for ChannelClosed on its
+//		FileContract channel.  This prevents the thread from blocking for a 
+//		long time, if either channel closes.
+//
+//
+//	TODO:
+//
+//		*	Exception handling is poor.
+//
+
+using System;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Smb.PublicChannels;
+using Smb.PrivateChannels;
+using Smb.Protocol;
+using Smb.Shared;
+
+namespace Smb.Client
+{
+    //
+    //This class implements (exports) FileContract.  A thread is devoted to servicing incoming requests.
+    //The "upper" edge of this thread is FileContract.Exp.  The "lower" edge of this thread is SmbTransactor.Imp,
+    //which is the internal communications pipe to the SMB request multiplexer.
+    //
+    //The service thread will terminate when several conditions occur:
+    //  * The FileContract.Exp channel closes.
+    //  * The SmbTransactor.Imp channel closes.
+    //  * Any internal exception reaches the main switch-receive loop.
+    //
+	class FileExp
+	{
+	    public static void CreateServiceThread([Claims]FileContract.Exp:Start! file_exp, string! path, ushort fileId, [Claims]SmbTransactor.Imp:Ready! transactor)
+	    {
+	        FileExp exp = new FileExp(file_exp, path, fileId, transactor);
+			Thread thread = new Thread(new ThreadStart(exp.ThreadServiceRoutine));
+			thread.Start();
+	    }
+	    
+		private FileExp([Claims]FileContract.Exp:Start! file_exp, string! path, ushort fileId, [Claims]SmbTransactor.Imp:Ready! transactor)
+		{
+			_path = path;
+			_file_exp = new TRef<FileContract.Exp:Start>(file_exp);
+			_fileId = fileId;
+			_debugprefix = String.Format("File[{0:x4}:{1}] ", fileId, path);
+			_transactor = new TRef<SmbTransactor.Imp:Ready>(transactor);
+		}
+		
+		// These two channels are passed to the service thread.
+		// The service thread never transfers ownership of the channels, so after the
+		// service thread starts, these TRefs are never used again.
+		readonly TRef<FileContract.Exp:Start>! _file_exp;
+		readonly TRef<SmbTransactor.Imp:Ready>! _transactor;
+
+        // The absolute path (within the namespace of the SMB client).  Currently this is only used for
+        // diagnostic messages.		
+		readonly string! _path;
+		
+		// The 16-bit SMB file handle.  This value is assigned by the SMB server, and is returned in the
+		// response to the CreateAndX response.
+		readonly ushort _fileId;
+		
+		readonly string! _debugprefix;
+						
+		private void ThreadServiceRoutine()
+		{
+		    Thread.CurrentThread.DebugName = "fileclient";
+		    
+			FileContract.Exp:Start! file = _file_exp.Acquire();
+			SmbTransactor.Imp! transactor = _transactor.Acquire();
+			
+			file.SendSuccess();
+			
+			DebugLine("Service thread running");
+			
+			try
+			{
+				for (;;)
+				{
+					switch receive
+					{
+						case file.Read(byte []! in ExHeap buf, long bufOffset, long fileOffset, long maxLength):
+							int error;
+							long bytesRead = Read(file, transactor, buf, bufOffset, fileOffset, maxLength, out error);
+							#if NOISY
+							if (bytesRead >= 0)
+								DebugLine("Sending AckRead: bytesRead {0}", bytesRead);
+							else
+								DebugLine("Sending Ackread: bytesRead {0} error {1}", bytesRead, error);
+							#endif
+							file.SendAckRead(buf, bytesRead, error);
+							break;
+	                        
+						case file.Write(byte []! in ExHeap buf, long bufOffset, long fileOffset, long maxLength):
+						    int error;
+						    long bytesWritten = Write(file, transactor, buf, bufOffset, fileOffset, maxLength, out error);
+						    if (bytesWritten >= 0)
+						        DebugLine("Sending AckWrite: bytesWritten {0}", bytesWritten);
+						    else
+						        DebugLine("Sending AckWrite: bytesWritten {0} error {1}", bytesWritten, error);
+						    file.SendAckWrite(buf, bytesWritten, error);
+							break;
+							
+						case file.Close():
+							DebugLine("File client has closed gracefully (Close)");
+							file.SendAckClose();
+							CloseFid(transactor);
+							return;
+						
+						case file.ChannelClosed():
+							DebugLine("File client has closed abruptly (ChannelClose)");
+							CloseFid(transactor);
+							return;
+							
+						case transactor.ChannelClosed():
+						    DebugLine("The transactor channel has closed.  The FileContract service channel will now close.");
+						    return;
+					}
+				}
+
+            }
+            catch (Exception ex) {
+                DebugLine("An exception has reached the service loop of FileContract service thread.");
+                DebugLine("The service thread will now terminate.");
+                Util.ShowExceptionDebug(ex, "FileContract service thread failed");
+			}
+			finally {
+				delete file;
+				delete transactor;
+			}
+		}
+		
+		//
+		//This method reads a block of data from the remote file server.  The file must already be open;
+		//the 16-bit file ID is taken from the _fileId field of the class instance of this method.
+		//If the data block cannot fit into a single SMB request, then this method will issue more than
+		//one data transfer request.  Therefore, there is no guarantee of any sort of "atomic" data transfer.
+		//
+		//This method is synchronous; it will not return until the data has been read, or until an error
+		//occurs on the SMB client channel (transactor).
+		//
+		long Read(
+		    FileContract.Exp! file,
+			SmbTransactor.Imp! transactor, 
+			byte []! in ExHeap buf,
+			long bufOffset,
+			long fileOffset,
+			long maxLength,
+			out int error)
+		{
+			if (TraceSwitches.ShowFileActivity)
+				DebugLine("Read: file offset 0x{0:x} max length 0x{1:x}", fileOffset, maxLength);
+			
+			if (bufOffset < 0 || fileOffset < 0 || maxLength < 0) {
+				DebugLine("Invalid parameters.  One or more values are negative.");
+				error = (int)ErrorCode.BadArguments;
+				return -1;
+			}
+			
+			if (bufOffset + maxLength > buf.Length) {
+				maxLength = buf.Length - bufOffset;
+			}
+			
+			// Arbitrary.
+			int transferMaxLength = 1024;
+			
+			long bytesRead = 0;			
+			
+			for (;;) {
+				assert bytesRead <= maxLength;
+				long bytesRemaining = maxLength - bytesRead;
+				if (bytesRemaining == 0) {
+					error = 0;
+					return bytesRead;
+				}
+				
+				if (bytesRemaining > transferMaxLength)
+					bytesRemaining = transferMaxLength;
+				
+				int bytesRequested = (int)bytesRemaining;
+					
+				int requestLength = sizeof(SmbReadAndXRequest);
+				byte[] in ExHeap requestEncoded = new[ExHeap] byte[sizeof(SmbReadAndXRequest)];
+				ref SmbReadAndXRequest request = ref requestEncoded[0];
+				
+				long transferFileOffset = fileOffset + bytesRead;
+				
+				request.Header.Prepare(SmbCommand.ReadAndX, 12);
+				request.AndXCommand = 0xff;
+				request.AndXReserved = 0;
+				request.AndXOffset = 0;
+				request.Fid = _fileId;
+				request.FileOffsetLow = (uint)(transferFileOffset & 0xffffffffu);
+				request.MaxCount = (ushort)bytesRequested;
+				request.MinCount = 0;
+				request.MaxCountHigh = 0;
+				request.Remaining = 0;
+				request.FileOffsetHigh = (uint)(transferFileOffset >> 32);				
+				request.ByteCount = 0;
+				
+				transactor.SendRequest(requestEncoded);
+				
+				// DebugLine("Reading at file offset 0x{0:x}", transferFileOffset);
+				
+				switch receive
+				{
+					case transactor.Response(responseEncoded):
+					
+						ref SmbHeader header = ref responseEncoded[0];
+						if (header.IsError) {
+							DebugLine("ReadAndX failed: " + header.GetErrorText());
+							delete responseEncoded;
+							goto return_error;
+						}
+						else {
+							if (responseEncoded.Length < sizeof(SmbReadAndXResponse)) {
+								DebugLine("Response is too small to be a valid SmbReadAndXResponse.");
+								delete responseEncoded;
+								goto return_error;
+							}
+							ref SmbReadAndXResponse response = ref responseEncoded[0];
+							
+							int dataOffset = SmbHeader.FramingHeaderLength + response.DataOffset;
+							uint dataLength = response.DataLength | (((uint)response.DataLengthHigh) << 16);
+
+							if (dataLength > bytesRequested) {
+								DebugLine("Server returned more bytes than we asked for!!  Truncating.");
+								dataLength = (uint)requestLength;
+							}
+							
+							if (dataLength != 0) {
+								if (dataOffset < sizeof(SmbReadAndXResponse)
+									|| (dataOffset + dataLength) > responseEncoded.Length) {
+									DebugLine("Response is invalid.  DataOffset and DataLength are bogus.");
+									delete responseEncoded;
+									goto return_error;
+								}
+							//	DebugLine("Transferred 0x{0:x} bytes to buffer offset 0x{1:x}.", dataLength, bufOffset);
+								Bitter.Copy(buf, (int)(bufOffset + bytesRead), (int)dataLength, responseEncoded, (int)dataOffset);
+								bytesRead += dataLength;
+								delete responseEncoded;
+							}
+							else {
+								DebugLine("Server indicates that zero bytes were transferred in this exchange.");
+								DebugLine("Returning {0} bytes read.", bytesRead);
+								delete responseEncoded;
+								error = 0;
+								return bytesRead;
+							}
+						}						
+						break;
+						
+					case transactor.RequestFailed(tranError):
+						DebugLine("ReadAndX failed: " + tranError.ToString());
+						goto return_error;
+						
+					case transactor.ChannelClosed():
+						DebugLine("Transactor channel was closed.");
+						goto return_error;
+						
+					case file.ChannelClosed():
+					    DebugLine("The FileContract.Exp channel has closed during a ReadAndX transfer.");
+					    DebugLine("The FileContract service thread will now close its transactor channel and terminate.");
+					    error = -1;
+					    return -1;
+				}
+			}
+			
+		return_error:
+			if (bytesRead > 0) {
+				// Some bytes were transferred.
+				error = 0;
+				return bytesRead;
+			}
+			else {
+				// No bytes were transferred, and there was an error.
+				DebugLine("No bytes transferred.  Returning -1 for bytes transferred.");
+				error = -1;
+				return -1;
+			}
+		}
+		
+		//
+		//This method writes a block of data to the remote file server.  The file must already be
+		//open; the 16-bit file ID is taken from the _fileId field of the class instance of this method.
+		//If the data block cannot fit into a single SMB request, then this method will issue more than
+		//one data transfer request.  Therefore, there is no guarantee of any sort of "atomic" data writes.
+		//
+		//This method is synchronous; it will not return until the data has been written, or until an error
+		//occurs on the SMB client channel (transactor).
+		//
+		long Write(
+		    FileContract.Exp! file,
+			SmbTransactor.Imp! transactor, 
+			byte []! in ExHeap buf,
+			long bufOffset,
+			long fileOffset,
+			long maxLength,
+			out int error)
+		{
+			DebugLine("Write: file offset 0x{0:x} max length 0x{1:x}", fileOffset, maxLength);
+			
+			if (bufOffset < 0 || fileOffset < 0 || maxLength < 0) {
+				DebugLine("Invalid parameters.  One or more values are negative.");
+				error = (int)ErrorCode.BadArguments;
+				return -1;
+			}
+			
+			if (bufOffset + maxLength > buf.Length) {
+				maxLength = buf.Length - bufOffset;
+			}
+			
+			// Arbitrary.
+			int transferMaxLength = 1024;
+			
+			long bytesWritten = 0;			
+			
+			for (;;) {
+				assert bytesWritten <= maxLength;
+				long bytesRemaining = maxLength - bytesWritten;
+				if (bytesRemaining == 0) {
+					error = 0;
+					return bytesWritten;
+				}
+				
+				if (bytesRemaining > transferMaxLength)
+					bytesRemaining = transferMaxLength;
+				
+				// bytesRequested is the number of bytes that we will attempt to transfer in this
+				// single request.
+				int bytesRequested = (int)bytesRemaining;
+
+				int requestLength = sizeof(SmbWriteAndXRequest);
+				requestLength = Util.Align4(requestLength);
+				int payloadOffset = requestLength;
+				requestLength += bytesRequested;
+				requestLength = Util.Align4(requestLength);
+				
+				byte[] in ExHeap requestEncoded = new[ExHeap] byte[requestLength];
+				ref SmbWriteAndXRequest request = ref requestEncoded[0];
+				
+				long transferFileOffset = fileOffset + bytesWritten;
+
+				request.Header.Prepare(SmbCommand.WriteAndX, SmbWriteAndXRequest.ParameterCount);
+				request.AndXCommand = 0xff;
+				request.AndXReserved = 0;
+				request.AndXOffset = 0;
+				request.Fid = _fileId;
+				request.FileOffsetLow = (uint)(transferFileOffset & 0xffffffffu);
+				request.Reserved = 0;
+				request.WriteMode = 0;
+				request.Remaining = 0xffff;
+				request.DataLengthHigh = (ushort)(bytesRequested >> 16);
+				request.DataLengthLow = (ushort)(bytesRequested & 0xffff);
+				request.DataOffset = (ushort)(payloadOffset - SmbHeader.FramingHeaderLength);
+				request.FileOffsetHigh = (uint)(transferFileOffset >> 32);
+				request.ByteCount = 0;
+
+                // Transfer the data from the buffer supplied by FileContract importer to our request buffer.
+                // In the future, if we're smarter, we may be able to eliminate this copy by passing this
+                // buffer directly to TcpConnectionContract.  That would require modifying TcpConnectionContract
+                // so that it returned the (unmodified) buffer.
+                Bitter.Copy(requestEncoded, payloadOffset, bytesRequested, buf, (int)(bufOffset + bytesWritten));
+				
+				transactor.SendRequest(requestEncoded);
+				
+				DebugLine("Writing at file offset 0x{0:x}", transferFileOffset);
+				DebugLine("Waiting for response to WriteAndX");
+				
+				switch receive
+				{
+					case transactor.Response(responseEncoded):
+					
+						ref SmbHeader header = ref responseEncoded[0];
+						if (header.IsError) {
+							DebugLine("WriteAndX failed: " + header.GetErrorText());
+							delete responseEncoded;
+							goto return_error;
+						}
+						else {
+							if (responseEncoded.Length < sizeof(SmbWriteAndXResponse)) {
+								DebugLine("Response is too small to be a valid SmbWriteAndXResponse.");
+								delete responseEncoded;
+								goto return_error;
+							}
+							ref SmbWriteAndXResponse response = ref responseEncoded[0];
+							
+							if (response.Count == 0) {
+							    // No bytes were transferred.  Assume the remote file server will not accept
+							    // any more bytes on this file handle.
+							    DebugLine("Response indicates that zero bytes were transferred.  Terminating the transfer.");
+							    delete responseEncoded;
+							    error = 0;
+							    return bytesWritten;
+							}
+							
+							bytesWritten += response.Count;
+							DebugLine("Wrote {0} bytes, for a total of {1} bytes", response.Count, bytesWritten);
+							delete responseEncoded;
+							// Loop for another transfer.
+						}						
+						break;
+						
+					case transactor.RequestFailed(tranError):
+						DebugLine("WriteAndX failed: " + tranError.ToString());
+						goto return_error;
+
+					case transactor.ChannelClosed():
+						DebugLine("Transactor channel was closed.");
+						goto return_error;
+
+					case file.ChannelClosed():
+					    DebugLine("The FileContract.Exp channel has closed during a WriteAndX transfer.");
+					    DebugLine("The FileContract service thread will now close its transactor channel and terminate.");
+					    error = -1;
+					    return -1;
+				}
+
+			return_error:
+				if (bytesWritten > 0) {
+					// Some bytes were transferred.
+					error = 0;
+					return bytesWritten;
+				}
+				else {
+					// No bytes were transferred, and there was an error.
+					DebugLine("No bytes transferred.  Returning -1 for bytes transferred.");
+					error = -1;
+					return -1;
+				}
+			}
+		}
+		
+		void CloseFid(SmbTransactor.Imp! transactor)
+		{
+			int requestLength = sizeof(SmbCloseFileRequest);
+			byte[]! in ExHeap request_encoded = new[ExHeap] byte[requestLength];
+			ref SmbCloseFileRequest request = ref request_encoded[0];
+			request.Header.Prepare(SmbCommand.CloseFile, 3);
+			request.Fid = _fileId;
+			request.ByteCount = 0;
+
+			transactor.SendRequest(request_encoded);
+			
+			DebugLine("Waiting for response to CLOSE FILE");
+			switch receive {
+			    case transactor.Response(responseEncoded):
+			        delete responseEncoded;
+			        DebugLine("Received response to CLOSE FILE");
+			        break;
+			        
+			    case transactor.RequestFailed(error):
+			        DebugLine("The CLOSE FILE request has failed.  The server returned an error code: " + error);
+			        break;
+			        
+			    case transactor.ChannelClosed():
+			        DebugLine("Failed to execute CLOSE FILE request.  The transactor channel has closed.");
+			        break;
+			        
+			    // Don't wait for file.ChannelClosed here, because it has probably already closed.
+			    // Even if it had not, we want to finish the transaction, not (potentially, in
+			    // some future implementation) interrupt the transaction by closing the transactor
+			    // channel.
+			}
+		}
+		
+		void DebugLine(string msg)
+		{
+			SmbDebug.WriteLine(_debugprefix + msg);
+		}
+		
+		void DebugLine(string format, params object[] args)
+		{
+			DebugLine(String.Format(format, args));
+		}
+	}
+}

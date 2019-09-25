@@ -1,0 +1,46 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security.AccessControl
+{
+    using System;
+
+	/// <summary>
+	/// Summary description for Token.
+	/// </summary>
+	internal class AclToken
+	{
+        /// <summary>
+        /// The token type
+        /// </summary>
+        public AclTokenType Type;
+        /// <summary>
+        /// The value of the token
+        /// </summary>
+		public readonly string! Text;
+        /// <summary>
+        /// Start position in the input stream.
+        /// </summary>
+		public int Start;
+        /// <summary>
+        /// End position in the input stream.
+        /// </summary>
+		public int End;
+
+		public AclToken(AclTokenType type, string! text, int start, int end)
+		{
+			this.Type = type;
+			this.Text = text;
+			this.Start = start;
+			this.End = end;
+		}
+
+		public override string! ToString()
+		{
+			return "[" + Type + ":" + Text + ":(" + Start + "," + End +")]";
+		}
+	}
+}

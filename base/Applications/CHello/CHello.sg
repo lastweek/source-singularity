@@ -1,0 +1,89 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+using System;                               // Console, String etc
+using Microsoft.Singularity.Applications;   // ApplicationResourceTransform
+using Microsoft.Singularity.Channels;       // TRef
+using Microsoft.Singularity.Configuration;  // ConsoleCategory, InputEndpoint, OutputEndpoint
+using Microsoft.Singularity.Directory;      // DirectoryServiceContract, ErrorCode, DirectoryService, SdsUtils
+using Microsoft.Singularity.Io;             // UnicodePipeContract, DiskDeviceContract
+using Microsoft.SingSharp.Reflection;       // Transform namespace
+
+// change "public static int Main(String[] args)" to "internal static int Main(DefaultConfig! config)"
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Classic Hello World app", DefaultAction=true)]
+    internal class DefaultConfig {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal DefaultConfig();
+
+        internal int AppMain() {
+            return CHello.Main(this);
+        }
+    }
+
+    public class CHello
+    {
+        public static DiskDeviceContract.Imp:Ready OpenDevice(String! devname)
+        {
+            DiskDeviceContract.Exp! exp;
+            DiskDeviceContract.Imp! imp;
+            DiskDeviceContract.NewChannel(out imp, out exp);
+            DirectoryServiceContract.Imp ns;
+
+            // get NS endpoint
+            ns = DirectoryService.NewClientEndpoint();
+            bool success = false;
+            ErrorCode error; 
+            success = SdsUtils.Bind(devname, ns, exp, out error);
+            if (!success) {
+                Console.WriteLine("Bind of {0} failed\n", devname);
+                delete imp;
+                delete ns;
+                return null;
+            }
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    Console.WriteLine("{0} does not support DiskDevice", devname);
+                    delete imp;
+                    delete ns;
+                    return null;
+                case imp.ChannelClosed():
+                    Console.WriteLine("DiskDevice channel to {0} closed unexpectedly", devname);
+                    delete imp;
+                    delete ns;
+                    return null;
+            }
+
+            delete ns;
+            return imp;
+        }
+
+        internal static int Main(DefaultConfig! config)
+        {
+            Console.WriteLine("Hello World!");
+
+            DiskDeviceContract.Imp device = OpenDevice("/dev/disk0");
+            if (device == null) {
+                Console.WriteLine("Couldn't open disk0");
+                return 1;
+            }
+            delete device;
+            Console.WriteLine("Opened disk0");
+            return 0;
+        }
+    }
+}

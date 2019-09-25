@@ -1,0 +1,54 @@
+﻿<!--
+##############################################################################
+#
+# Copyright (c) Microsoft Corporation.   All rights reserved.
+#
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>cassini</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <!-- TODO: Make null-clean -->
+    <NoWarn>2614,2637,2638,2613,2639</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <Compile Include="ByteParser.cs" />
+    <Compile Include="ByteString.cs" />
+    <Compile Include="Connection.cs" />
+    <Compile Include="Host.cs" />
+    <Compile Include="Main.cs" />
+    <Compile Include="Messages.cs" />
+    <Compile Include="Request.cs" />
+    <Compile Include="Server.cs" />
+
+    <!-- Singularity-specific sources -->
+    <Compile Include="Singularity\CassiniThreadPool.sg" />
+    <Compile Include="Singularity\Dispatcher.sg" />
+    <Compile Include="Singularity\DummyMarshalHttpRequest.cs" />
+    <Compile Include="Singularity\LocalHttpRequest.cs" />
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Diagnostics.Contracts\Diagnostics.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\MapPointProxy.Contracts\MapPointProxy.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\SeattleTrafficProxy.Contracts\SeattleTrafficProxy.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\PingPong.Contracts\PingPong.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net\System.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Web\System.Web.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\WebApps\WebAppsLib.csproj" />
+    <ProjectReference Include="..\WebApps\Driver\WebAppDriver.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

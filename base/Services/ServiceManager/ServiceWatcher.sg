@@ -1,0 +1,114 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.ServiceManager;
+
+namespace Microsoft.Singularity.Services.ServiceManager
+{
+    /// <summary>
+    /// References to instances of this class are stored in Service.WatchersList,
+    /// and also as the "data" field of the endpoint map at ServiceManager.clients_readywatch.
+    /// </summary>
+    class ServiceWatcher
+    {
+        public ServiceWatcher(Service! service)
+        {
+            this.Service = service;
+            this.MissedChange = true;
+            this._endpointCanSend = false;
+            this.EndpointRef = null;
+        }
+        
+        
+        public readonly Service! Service;
+        
+        /// <summary>
+        /// If true, then Client contains an endpoint that we can send to.
+        /// If false, then Client is either null, or has already been acquired.
+        /// </summary>
+        public bool EndpointCanSend {
+            get { return _endpointCanSend; }
+        }
+        
+        bool _endpointCanSend;
+        
+        /// <summary>
+        /// If true, then the status of the service changed while 'CanSend' was false.
+        /// So, the next time we send a status change message to the client, we pass
+        /// a flag that says "you missed one or more updates".
+        /// </summary>
+        public bool MissedChange;
+        
+        /// <summary>
+        /// The client endpoint that has subscribed to the status of the service.
+        /// If EndpointCanSend is true, then this field is non-null and contains
+        /// an endpoint (can be acquired).  If EndpointCanSend is false, then this
+        /// field is either null, or it is in the "acquired" state.
+        /// </summary>
+        TRef<ServiceManagerContract.Exp:WaitingServiceChange> EndpointRef;
+        
+        public void TakeEndpoint([Claims]ServiceManagerContract.Exp:WaitingServiceChange! client)
+        {
+            if (_endpointCanSend)
+                throw new InvalidOperationException("This ServiceWatcher instance already has an endpoint; another endpoint cannot be accepted.");
+
+            if (EndpointRef != null)
+                EndpointRef.Release(client);
+            else
+                EndpointRef = new TRef<ServiceManagerContract.Exp:WaitingServiceChange>(client);
+            _endpointCanSend = true;
+        }
+        
+        public ServiceManagerContract.Exp:WaitingServiceChange! AcquireEndpoint()
+        {
+            if (!_endpointCanSend)
+                throw new InvalidOperationException("This ServiceWatcher instance does not contain an endpoint.");
+            assert EndpointRef != null;
+            _endpointCanSend = false;
+            return EndpointRef.Acquire();
+        }
+    }
+    
+    class ServiceStartWatcher
+    {
+        public ServiceStartWatcher(
+            Service! service,
+            [Claims]ServiceManagerContract.Exp:StartingServiceWait:StartingServiceWait! endpoint)
+        {
+            this.Service = service;
+            this.EndpointRef = new TRef<ServiceManagerContract.Exp:StartingServiceWait>(endpoint);
+        }
+        
+        public Service! Service;
+        public TRef<ServiceManagerContract.Exp:StartingServiceWait>! EndpointRef;
+        
+        public void Dispose()
+        {
+        }
+    }
+    
+    class ServiceStopWatcher : IDisposable
+    {
+        public ServiceStopWatcher(
+            Service! service,
+            [Claims]ServiceManagerContract.Exp:StoppingServiceWait:StoppingServiceWait! endpoint)
+        {
+            this.Service = service;
+            this.EndpointRef = new TRef<ServiceManagerContract.Exp:StoppingServiceWait>(endpoint);
+        }
+        
+        public Service! Service;
+        public TRef<ServiceManagerContract.Exp:StoppingServiceWait>! EndpointRef;
+        
+        public void Dispose()
+        {
+        }
+    }
+    
+}

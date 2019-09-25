@@ -1,0 +1,47 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DefaultCommand.sg
+//
+//  Note:
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Services.Fat.FatControl
+{
+    [ConsoleCategory(HelpMessage = "Show help for FAT control program.",
+                     DefaultAction = true)]
+    internal class DefaultCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        internal DefaultCommand() {}
+
+        internal int AppMain()
+        {
+            Console.WriteLine("Specify a command to execute, or '-?' for a list of commands.");
+            return 0;
+        }
+    }
+}

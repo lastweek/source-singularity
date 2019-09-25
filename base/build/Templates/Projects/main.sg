@@ -1,0 +1,13 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+public class Test{
+  static void Main(){
+    Console.WriteLine("Sing# says hello!");
+  }
+}

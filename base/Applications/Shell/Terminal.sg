@@ -1,0 +1,281 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+//using Microsoft.Singularity;
+//using Microsoft.SingSharp;
+using Pipe = Microsoft.Singularity.Io.Tty;
+
+namespace Microsoft.Singularity.Applications
+{   
+    
+    class Terminal
+    {   
+        private     bool    openBracketSeen;
+        private     string  numberString; 
+        private     bool    haveNumber;
+        private     bool    inNumber; 
+        private     int     repeat; 
+        private     string  history;  //debug remove
+
+        public Terminal()
+        {
+            openBracketSeen     = false; 
+            inNumber            = false;
+            haveNumber          = false; 
+            numberString        = ""; 
+            history             = ""; 
+        }
+        
+        public void Reset()
+        {
+            openBracketSeen     = false; 
+            inNumber            = false;
+            haveNumber          = false; 
+            history             = ""; 
+            numberString        = ""; 
+        }
+        
+        public bool ProcessEscape(char c, out Pipe.EscapeCodes code, out int repeat)
+        {
+            code = Pipe.EscapeCodes.NOCODE; 
+            repeat = 1; 
+            bool notProcessed = false; 
+            
+            history = history + c; 
+            //DebugStub.WriteLine("esc: processing({0}. history={1})",__arglist(c, history));
+            
+            if (Char.IsWhiteSpace(c)) {
+                code = Pipe.EscapeCodes.NOCODE; 
+                return true; 
+            }
+            
+            if (c == '[') {
+                Reset(); 
+                openBracketSeen = true; 
+                code = Pipe.EscapeCodes.NOCODE; 
+                return true; 
+            }
+            
+            if (Char.IsNumber(c)) {
+                if (!inNumber) {
+                    inNumber = true; 
+                }
+                numberString = numberString +c; 
+                return true; 
+            } 
+            
+            if (Char.IsLetter(c)) {
+                if (inNumber) {
+                    inNumber = false; 
+                    haveNumber = true; 
+                    repeat = int.Parse(numberString);
+                }
+                switch (c) {
+                case 'A': 
+                    code = Pipe.EscapeCodes.UP;
+                    break;
+                case 'B': 
+                    code = Pipe.EscapeCodes.DOWN;
+                    break;
+                case 'C': 
+                    code = Pipe.EscapeCodes.RIGHT;
+                    break;
+                case 'D': 
+                    code = Pipe.EscapeCodes.LEFT;
+                    break;
+                case 'K':
+                    code = Pipe.EscapeCodes.ERASE_FROM_CURSOR; 
+                    break; 
+                case 'S':
+                    code = Pipe.EscapeCodes.SET_CURSOR_SIZE; 
+                    break; 
+                case 'J':
+                    if (haveNumber) {
+                        if (repeat == 2) {
+                            code = Pipe.EscapeCodes.CLEAR_SCREEN; 
+                        }
+                    }
+                    break; 
+                default: 
+                    //DebugStub.Break(); 
+                    notProcessed = true;
+                    break;
+                }
+                if (notProcessed) {
+                    return true; 
+                }
+                else {
+                    Reset(); 
+                    return false; 
+                }
+                
+            }
+            else if (c == '~') {
+                DebugStub.WriteLine("term: ~ seen. inNumber={0}", __arglist(inNumber)); 
+                if (inNumber) {
+                    inNumber = false; 
+                    haveNumber = true; 
+                    int num  = int.Parse(numberString);
+                    DebugStub.WriteLine("term: Number={0}", __arglist(num)); 
+                    switch (num) {
+                    case 1: 
+                        code = Pipe.EscapeCodes.HOME;
+                        break; 
+                    case 2: 
+                        code = Pipe.EscapeCodes.INSERT;
+                        break; 
+                    case 3: 
+                        code = Pipe.EscapeCodes.DELETE;
+                        break; 
+                    case 4: 
+                        code = Pipe.EscapeCodes.END;
+                        break; 
+                    case 5: 
+                        code = Pipe.EscapeCodes.PAGE_UP;
+                        break; 
+                    case 6: 
+                        code = Pipe.EscapeCodes.PAGE_DOWN;
+                        break; 
+                    default: 
+                        notProcessed = true; 
+                        break; 
+                    }
+                    if (notProcessed) {
+                        return true; 
+                    }
+                    else {
+                        Reset(); 
+                        return false; 
+                    }
+                }
+                // hit ~ but not processing a number?
+                DebugStub.Break(); 
+            }
+            return false; 
+        }
+        
+        private  Pipe.EscapeCodes GetCodeFromSequence(char[]! sequence)
+        {
+            int pos, num, qual;
+            string numString= "";
+            string qualString= "";
+            bool qualifierEncountered = false; 
+            num = 0; 
+            
+            assert sequence[0] ==  '[';
+            for (pos = 1; pos < sequence.Length; pos++) {
+                if (sequence[pos] == ';') {
+                    // handle qualifier 
+                    qualifierEncountered = true; 
+                    continue; 
+                }
+                if (sequence[pos] =='~') {
+                    //end of sequence
+                    break;
+                }
+                if (qualifierEncountered) { 
+                    qualString = qualString + sequence[pos];
+                }
+                else {
+                    numString = numString + sequence[pos];
+                }
+            }
+            try { 
+                num = int.Parse(numString);
+                if (qualifierEncountered) {
+#if false
+                    qual = int.Parse(qualString); 
+                    DebugStub.WriteLine("shell: key qualifier encountered {0} in sequence ",
+                        __arglist(qual)); 
+#endif 
+                }
+            } 
+            catch (Exception e) {
+                Console.WriteLine("Exception encountered: {0}", e.ToString()); 
+            }
+            return (Pipe.EscapeCodes) num;
+
+        }
+
+        public  void SetCursorSize(char size)
+        {
+           char[] buffer = new char[10];
+           int pos;
+
+           if (buffer != null) {
+                buffer[0] = (char) 0x1b;
+                buffer[1] = '[';
+                pos = 2;
+                buffer[pos++] = size; 
+                buffer[pos++] = 'S'; 
+                Console.Write(buffer,0,pos);
+           }
+        }
+        
+        public  void GenerateAndSendEscapeSequence(Pipe.EscapeCodes code)
+        {
+           char[] buffer = new char[10];
+           int pos;
+
+           if (buffer != null) {
+                buffer[0] = (char) 0x1b;
+                buffer[1] = '[';
+                pos = 2;
+                switch (code) {
+                    case Pipe.EscapeCodes.PAGE_UP:
+                        buffer[pos++] = '5';
+                        buffer[pos++] = '~';
+                        break;
+                    case Pipe.EscapeCodes.PAGE_DOWN:
+                        buffer[pos++] = '6';
+                        buffer[pos++] = '~';
+                        break;
+                    case Pipe.EscapeCodes.UP:
+                        buffer[pos++] = 'A';
+                        break;
+                    case Pipe.EscapeCodes.DOWN:
+                        buffer[pos++] = 'B';
+                        break;
+                    case Pipe.EscapeCodes.LEFT:
+                        buffer[pos++] = 'D';
+                        break;
+                    case Pipe.EscapeCodes.RIGHT:
+                        buffer[pos++] = 'C';
+                        break;
+                    case Pipe.EscapeCodes.ERASE_FROM_CURSOR:
+                        buffer[pos++] = 'K';
+                        break;
+                    case Pipe.EscapeCodes.CLEAR_SCREEN:
+                        buffer[pos++] = '2';
+                        buffer[pos++] = 'J';
+                        break;
+                    case Pipe.EscapeCodes.HOME:
+                        buffer[pos++] = '1';
+                        buffer[pos++] = '~';
+                        break;
+                    case Pipe.EscapeCodes.END:
+                        buffer[pos++] = '4';
+                        buffer[pos++] = '~';
+                        break;
+                    case Pipe.EscapeCodes.INSERT:
+                        buffer[pos++] = '2';
+                        buffer[pos++] = '~';
+                        break;
+                    case Pipe.EscapeCodes.DELETE:
+                        buffer[pos++] = '~';
+                        buffer[pos++] = '3';
+                        break;
+                }
+
+                Console.Write(buffer,0,pos);
+            }
+        }
+    }
+}

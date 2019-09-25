@@ -1,0 +1,51 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File: SystemType.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity.V1.Services;
+
+namespace Microsoft.Singularity.V1.Types
+{
+    [CLSCompliant(true)]
+    public struct SystemType
+    {
+        /// A handle to a RuntimeSystemType
+        private readonly UIntPtr id;
+
+        [NoHeapAllocation]
+        public static SystemType RootSystemType();
+
+        [NoHeapAllocation]
+        public static SystemType Register(char* name,
+                                          int nameLength,
+                                          long lowerHash,
+                                          long upperHash,
+                                          SystemType parent);
+
+        [NoHeapAllocation]
+        public static bool IsSubtype(SystemType child,
+                                     SystemType parent);
+
+        [NoHeapAllocation]
+        unsafe public static bool IsSubtype(SharedHeapService.Allocation* childData,
+                                            SystemType parent);
+
+        [NoHeapAllocation]
+        public static bool IsNull(SystemType st);
+
+        public UIntPtr TypeId
+        {
+            [NoHeapAllocation]
+            get;
+        }
+    }
+}

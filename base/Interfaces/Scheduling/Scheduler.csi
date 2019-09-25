@@ -1,0 +1,55 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Scheduler.csi
+//
+//  Note:   Assembly strong name information.
+//
+
+using System;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Scheduling
+{
+    public class Scheduler
+    {
+        public static void Initialize();
+        public static void Start();
+        public static void Finalize();
+
+        // Methods inherited from old IScheduler.
+
+        public static ISchedulerThread CreateSchedulerThread(Thread thread);
+        public static ISchedulerProcessor CreateSchedulerProcessor(Processor processor);
+        public static ISchedulerActivity CreateSchedulerActivity();
+        public static ISchedulerCpuReservation ReserveCpu(ISchedulerActivity activity,
+                                                          CpuResourceAmount amount,
+                                                          TimeSpan period);
+        public static bool NextThread(out Thread nextThread);
+        public static bool ShouldReschedule();
+
+        /// <summary>
+        /// Note that as tasks now contain resource accounting, there is
+        /// no need to pass out the resource usage from the scheduler.
+        /// For consistency we'll still pass it out of the Task API at least
+        /// until instantaneous usage is fixed.
+        /// </summary>
+        /// <returns>Returns true if admitted.</returns>
+        public static bool BeginConstraint(Hashtable resourceEstimates,
+                                           SchedulerTime deadline,
+                                           ISchedulerTask taskToEnd,
+                                           out ISchedulerTask schedulerTask);
+        public static void BeginDelayedConstraint(Hashtable resourceEstimates,
+                                                  TimeSpan relativeDeadline,
+                                                  ISchedulerTask taskToEnd,
+                                                  out ISchedulerTask schedulerTask);
+        public static bool EndConstraint(ISchedulerTask taskToEnd);
+    }
+}
+

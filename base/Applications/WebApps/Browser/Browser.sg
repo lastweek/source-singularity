@@ -1,0 +1,104 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   The Browser web app (serves files and supports browsing)
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Text;
+using System.Web;
+using FileSystem.Utils;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.WebApps
+{
+    [Category("WebApp")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<WebAppContract.Exp:Start> webAppRef;
+
+        [StringParameter( "prefix", Position=0, Default=null, HelpMessage="prefix")]
+        internal string prefix;
+
+        reflective private Parameters();
+    }
+
+    public class BrowserWebApp : IWebApp
+    {
+        private string pathPrefix = null;
+        private TRef<DirectoryServiceContract.Imp:Ready>! epNS;
+
+        public BrowserWebApp(string prefix)
+        {
+            pathPrefix = prefix;
+            epNS = new TRef<DirectoryServiceContract.Imp:Ready>(DirectoryService.NewClientEndpoint());
+        }
+
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            // The Singularity WebServer uses QueryStrings to express the file to be
+            // browsed.  But Cassini uses the UriPath.  (In the Singularity WebServer,
+            // the UriPath indicates which application should service the request).
+            // Try to support both conventions:
+            string uri = request.GetQueryString();
+
+            if ((uri == null) || (uri.Length == 0)) {
+                uri = request.GetUriPath();
+                if ((uri == null) || (uri.Length == 0)) {
+                    uri = "/";
+                }
+            }
+
+            if (pathPrefix != null) {
+                uri = pathPrefix + uri;
+            }
+
+            DirectoryServiceContract.Imp:Ready! nsImp = epNS.Acquire();
+
+            try {
+                WebAppFSUtils.ServeFSPath(uri, request, nsImp);
+            }
+            finally {
+                epNS.Release(nsImp);
+            }
+        }
+
+        // ======================================================
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        internal static int AppMain(Parameters! config)
+        {
+            WebAppContract.Exp conn = ((!)config.webAppRef).Acquire();
+            if (conn == null) {
+                // Wrong contract type!
+                return -1;
+            }
+
+            conn.SendWebAppReady();
+
+            string prefix = config.prefix;
+
+            BrowserWebApp webApp = new BrowserWebApp(prefix);
+            Driver.ServiceChannel(webApp, conn);
+            delete conn;
+            return 0;
+        }
+    }
+}

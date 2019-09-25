@@ -1,0 +1,104 @@
+{
+open Lexing;;
+open Parse;;
+open Parse_util;;
+open Microsoft.FSharp.Compatibility.OCaml.Big_int;;
+
+}
+
+rule comment = parse
+| "*/" { () }
+| "*)" { () }
+| "/*" { comment lexbuf ; comment lexbuf }
+| "(*" { comment lexbuf ; comment lexbuf }
+| "\n\r" { incr line; comment lexbuf }
+| "\r\n" { incr line; comment lexbuf }
+| ['\n''\r'] { incr line; comment lexbuf }
+| _ { comment lexbuf }
+and token = parse
+| "\n\r" { incr line; token lexbuf }
+| "\r\n" { incr line; token lexbuf }
+| ['\n''\r'] { incr line; token lexbuf }
+| [' ''\t'] { token lexbuf }
+| "//"[^'\n''\r']* { token lexbuf }
+| "#line"[^'\n''\r']* { token lexbuf }
+| "/*" { comment lexbuf ; token lexbuf }
+| "(*" { comment lexbuf ; token lexbuf }
+| ":" { COLON }
+| ";" { SEMI }
+| "(" { LPAREN }
+| ")" { RPAREN }
+| "[" { LBRACKET }
+| "]" { RBRACKET }
+| "{" { LBRACE }
+| "}" { RBRACE }
+| "<" { LT }
+| ">" { GT }
+| "=" { EQ }
+| "+" { PLUS }
+| "-" { MINUS }
+| "*" { STAR }
+| "!" { BANG }
+| "%" { PERCENT }
+| "/" { SLASH }
+| "," { COMMA }
+| ":=" { COLONEQ }
+| "<=" { LE }
+| ">=" { GE }
+| "==" { EQEQ }
+| "!=" { NE }
+| "&&" { AMPAMP }
+| "||" { BARBAR }
+| "::" { COLONCOLON }
+| "==>" { EQEQGT }
+| "<==>" { LTEQEQGT }
+| "type" { TYPE }
+| "const" { CONST }
+| "function" { FUNCTION }
+| "returns" { RETURNS }
+| "axiom" { AXIOM }
+| "procedure" { PROCEDURE }
+| "implementation" { IMPLEMENTATION }
+| "requires" { REQUIRES }
+| "ensures" { ENSURES }
+| "modifies" { MODIFIES }
+| "invariant" { INVARIANT }
+| "assert" { ASSERT }
+| "havoc" { HAVOC }
+| "goto" { GOTO }
+| "call" { CALL }
+| "Call" { CCALL }
+| "Ret" { RET }
+| "IRet" { IRET}
+| "Go" { GO }
+| "forall" { FORALL }
+| "exists" { EXISTS }
+| "old" { OLD }
+| "int" { INT }
+| "bool" { BOOL }
+| "true" { LITBOOL true }
+| "false" { LITBOOL false }
+| "var" { VAR }
+| "if" { IF }
+| "return" { RETURN }
+| "eax" { EAX }
+| "ebx" { EBX }
+| "ecx" { ECX }
+| "edx" { EDX }
+| "esi" { ESI }
+| "edi" { EDI }
+| "ebp" { EBP }
+| "esp" { ESP }
+| ['0'-'9']+ { LITINT (big_int_of_string(lexeme lexbuf)) }
+| ['0'-'9']+"bv32" { let s = lexeme lexbuf in LITINT (big_int_of_string(s.Substring(0, s.Length - 4))) }
+| ['_']*['A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* { UID ((lexeme lexbuf)) }
+| ['_']*['a'-'z']['_''a'-'z''A'-'Z''0'-'9']* { LID ((lexeme lexbuf)) }
+| '?'['_']*['A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* { QUID ((lexeme lexbuf)) }
+| '?'['_']*['a'-'z']['_''a'-'z''A'-'Z''0'-'9']* { QLID ((lexeme lexbuf)) }
+| '$'['_']*['A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* { DUID ((lexeme lexbuf)) }
+| '$'['_']*['a'-'z']['_''a'-'z''A'-'Z''0'-'9']* { DLID ((lexeme lexbuf)) }
+| ['_']+['_''0'-'9']* { LID ((lexeme lexbuf)) }
+| eof { EOF }
+| '\000' { EOF }
+| _ { parse_err ("cannot parse character: \"" ^ (lexeme lexbuf) ^ "\"" ^ "\n(ascii code " ^ (string_of_int (Char.code (String.get (lexeme lexbuf) 0))) ^ ")") }
+

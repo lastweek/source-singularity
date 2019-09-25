@@ -1,0 +1,729 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets" />
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\RuntimePaths.target"/>
+
+  <PropertyGroup>
+    <UNDRPL>undrpl</UNDRPL>
+    <SDIZEPDB>sdizepdb</SDIZEPDB>
+    <AFLAGS>$(AFLAGS)</AFLAGS>
+    <CFLAGS>$(CFLAGS) /Oi /I&quot;$(KERNEL_NATIVE_DIR)&quot; /I&quot;$(SINGULARITY_ROOT)\boot\include&quot;</CFLAGS>
+    <ACFLAGS>$(ACFLAGS) /DSINGULARITY=1 /DSINGULARITY_KERNEL=1 /I&quot;$(KERNEL_NATIVE_DIR)&quot;</ACFLAGS>
+    <ACFLAGS Condition="'$(SINGULARITY_MP)'=='true'">$(ACFLAGS) /DSINGULARITY_MP=1</ACFLAGS>
+    <ACFLAGS Condition="'$(PAGING)'=='On'">$(ACFLAGS) /DPAGING</ACFLAGS>
+    <LFLAGS>$(LINKFLAGS) /nodefaultlib /subsystem:native /OPT:REF /RELEASE /DLL </LFLAGS>
+    <LENTRYFLAGS>/entry:HalEntryPoint</LENTRYFLAGS>
+    <KERNEL_BARTOK_LOG>&gt;&quot;$(KERNEL_NATIVE_DIR)\kernel.log&quot;</KERNEL_BARTOK_LOG>
+    <LBASEFLAGS>/fixed:no /map</LBASEFLAGS>
+    <Collector>$(COLLECTOR_KERNEL)</Collector>
+
+    <DEFAULT_SYSCALL_BUILDER>&quot;$(BUILDDIR)\SyscallBuilder.exe&quot;</DEFAULT_SYSCALL_BUILDER>
+    <SYSCALL_BUILDER Condition="'$(SYSCALL_BUILDER)'==''">$(DEFAULT_SYSCALL_BUILDER)</SYSCALL_BUILDER>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <KernelManifest>kernel.$(Machine).manifest</KernelManifest>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="('$(Machine)'=='x86' or '$(Machine)'=='x64')">
+    <CFLAGS>$(CFLAGS) /Gr</CFLAGS>
+    <LBASEFLAGS>$(LBASEFLAGS) /base:0xC10000</LBASEFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Machine)'=='arm'">
+    <BartokFlags>$(BartokFlags) /PhoenixMirOpts=false</BartokFlags>
+    <!-- MinOpt is needed for current Bartok (@6763) otherwise Bartok croaks
+         with a null reference exception -->
+    <BartokFlags>$(BartokFlags) /MinOpt</BartokFlags>
+    <BartokFlags>$(BartokFlags) /nohiropt</BartokFlags>
+    <BartokFlags>$(BartokFlags) /PhoenixMirOpts=false</BartokFlags>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Machine)'=='arm' and '$(Platform)'=='Omap3430'">
+    <CFLAGS>$(CFLAGS) /QRarch5 /QRimplicit-import-</CFLAGS>
+    <LBASEFLAGS>$(LBASEFLAGS) /base:0x80100000 /driver</LBASEFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <HalClassHFile>$(KERNEL_NATIVE_DIR)\halclass.h</HalClassHFile>
+    <HalClassIncFile>$(KERNEL_NATIVE_DIR)\halclass.inc</HalClassIncFile>
+    <HalClassTmpHFile>$(KERNEL_NATIVE_DIR)\_halclass.h</HalClassTmpHFile>
+    <HalClassTmpIncFile>$(KERNEL_NATIVE_DIR)\_halclass.inc</HalClassTmpIncFile>
+  </PropertyGroup>
+
+  <!-- Importing GC.targets gets us GC_ML_DEFS, and BARTOK_COLLECTOR. -->
+  <Import Project="GC.targets"/>
+
+  <PropertyGroup>
+    <BartokFlags>$(BartokFlags) /Singularity</BartokFlags>
+    <BartokFlags>$(BartokFlags) /verbosity:perphase</BartokFlags>
+    <BartokFlags>$(BartokFlags) /GCInlineArrayAllocations=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /GCInlineFixedAllocations=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /GCIntrinsicFixedAllocations=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /GCInlineWriteBarrier=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /GenAsmHeader=&quot;$(HalClassTmpIncFile)&quot;</BartokFlags>
+    <BartokFlags>$(BartokFlags) /GenCppHeader=&quot;$(HalClassTmpHFile)&quot;</BartokFlags>
+    <BartokFlags>$(BartokFlags) /OmitFramePointer=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /DebugInline=true</BartokFlags>
+    <BartokFlags>$(BartokFlags) /UnnameTracedPtrs=true</BartokFlags>
+    <BartokFlags>$(BartokFlags) /Warnings=true</BartokFlags>
+    <BartokFlags>$(BartokFlags) /WholeProgram=true</BartokFlags>
+    <BartokFlags>$(BartokFlags) /UseSegmentRegister=false</BartokFlags>
+  </PropertyGroup>
+
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug' or '$(Configuration)'=='Prototype'">
+    <BartokFlags>$(BartokFlags) /IrSimpleInliner=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /CoalesceExceptionThrow=false</BartokFlags>
+    <BartokFlags>$(BartokFlags) /OptimizeLocals=false</BartokFlags>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Prototype'">
+<!--    <BartokFlags>$(BartokFlags) /minopt</BartokFlags> -->
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Collector>$(COLLECTOR_KERNEL)</Collector>
+    <NativeImageName>kernel</NativeImageName>
+    <EnableOutputLog>false</EnableOutputLog>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <AbiCandidatesFile>$(KERNEL_NATIVE_DIR)\Singularity.V1.candidates</AbiCandidatesFile>
+    <KernelObjPath>$(KERNEL_NATIVE_DIR)\kernel.obj</KernelObjPath>
+
+    <NativeLibPath>$(KERNEL_NATIVE_DIR)\native.lib</NativeLibPath>
+  </PropertyGroup>
+
+
+  <!-- HAL -->
+  <Choose>
+    <When Condition="'$(Platform)'=='ApicPC'">
+      <PropertyGroup>
+        <HalProject>$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.ApicPC.csproj</HalProject>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Platform)'=='ApicMP'">
+      <PropertyGroup>
+        <HalProject>$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.ApicMP.csproj</HalProject>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Platform)'=='Apic64'">
+      <PropertyGroup>
+        <HalProject>$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Apic64.csproj</HalProject>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(Platform)'=='Omap3430'">
+      <PropertyGroup>
+        <HalProject>$(SINGULARITY_ROOT)\Kernel\Singularity.Hal.Omap3430.csproj</HalProject>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>The value '$(Platform)' is not a valid choice for the Platform property.</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <!-- -->
+  <PropertyGroup Condition="'$(Machine)'=='x86'">
+    <BartokFlags>$(BartokFlags) /SymbolicDebug=true</BartokFlags>
+    <BartokFlags Condition="'$(SINGULARITY_STACK_CHECKS)'=='true'">$(BartokFlags) /StackOverflowChecks=true</BartokFlags>
+    <BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacks=true</BartokFlags>
+<!-- REVIEW: HACK: Need to investigate enabling this.
+    <BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacksRequireExternalBound=true</BartokFlags>
+-->
+    <BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacksDumpBounds=true</BartokFlags>
+    <ACFLAGS>$(ACFLAGS) /DISA_IX=1 /DISA_IX86=1 /DPTR_SIZE_32=1</ACFLAGS>
+    <AFLAGS>$(AFLAGS) /I&quot;$(SINGULARITY_ROOT)\kernel\native\ix&quot;</AFLAGS>
+    <AFLAGS>$(AFLAGS) /I&quot;$(SINGULARITY_ROOT)\kernel\native\ix86&quot;</AFLAGS>
+    <UFLAGS>$(UFLAGS)</UFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Machine)'=='x64'">
+    <BartokFlags>$(BartokFlags) /SymbolicDebug=true</BartokFlags>
+    <BartokFlags Condition="'$(SINGULARITY_STACK_CHECKS)'=='true'">$(BartokFlags) /StackOverflowChecks=true</BartokFlags>
+    <BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacks=true</BartokFlags>
+    <BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacksRequireExternalBound=true</BartokFlags>
+    <BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacksDumpBounds=true</BartokFlags>
+    <BartokFlags>$(BartokFlags) /x64</BartokFlags>
+    <ACFLAGS>$(ACFLAGS) /DISA_IX=1 /DISA_IX64=1 /DPTR_SIZE_64=1</ACFLAGS>
+    <AFLAGS>$(AFLAGS) /I&quot;$(SINGULARITY_ROOT)\kernel\native\ix&quot;</AFLAGS>
+    <AFLAGS>$(AFLAGS) /I&quot;$(SINGULARITY_ROOT)\kernel\native\ix64&quot;</AFLAGS>
+    <UFLAGS>$(UFLAGS) -r:SI:SA -r:PA:PEA</UFLAGS>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Machine)'=='arm'">
+    <BartokFlags>$(BartokFlags) /SymbolicDebug=true</BartokFlags>
+    <!--<BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacks=true</BartokFlags>-->
+    <!--<BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacksRequireExternalBound=true</BartokFlags>-->
+    <!--<BartokFlags Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'">$(BartokFlags) /LinkedStacksDumpBounds=true</BartokFlags>-->
+    <!--<BartokFlags Condition="'$(SINGULARITY_STACK_CHECKS)'=='true'">$(BartokFlags) /StackOverflowChecks=true</BartokFlags>-->
+    <BartokFlags>$(BartokFlags) /TargetArch=ARM</BartokFlags>
+    <BartokFlags>$(BartokFlags) /EnableIrExposeAllocationCall=true</BartokFlags>
+    <ACFLAGS>$(ACFLAGS) /DISA_ARM=1 /DPTR_SIZE_32=1</ACFLAGS>
+    <AFLAGS>$(AFLAGS) /I&quot;$(SINGULARITY_ROOT)\kernel\native\ARM&quot;</AFLAGS>
+    <UFLAGS>$(UFLAGS) -r:SI:SA</UFLAGS>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(PAGING)'=='On'">
+    <KernelObj Include="$(KERNEL_NATIVE_DIR)\sysentry.obj"/>
+  </ItemGroup>
+  <PropertyGroup Condition="'$(PAGING)'=='On'">
+    <LinkKernelDependsOn>$(LinkKernelDependsOn);sysentry_obj</LinkKernelDependsOn>
+    <BuildDependsOn>$(BuildDependsOn);LinkSyscallsDll</BuildDependsOn>
+  </PropertyGroup>
+
+
+  <!-- ##################################### TARGETS ############################################ -->
+
+  <Target Name="Build" DependsOnTargets="
+          BuildDependentProjects;
+          BuildKernelManifest;
+          LinkKernel;
+          LinkTestApp;
+          BuildTestPeManifest;
+          $(BuildDependsOn);
+          ">
+  </Target>
+
+  <!-- These items are the IL assemblies that form the managed part of the kernel. -->
+  <ItemGroup>
+    <ProjectReference Include="Kernel.Corlib.csproj" />
+    <ProjectReference Include="System.Compiler.Runtime\System.Compiler.Runtime.Kernel.csproj" />
+    <ProjectReference Include="SingSharp.Runtime\Microsoft.SingSharp.Runtime.Kernel.csproj" />
+    <ProjectReference Include="Singularity.Diagnostics\Diagnostics.csproj" />
+    <ProjectReference Include="Singularity.Channels\Channels.csproj" />
+    <ProjectReference Include="Singularity.Loader\Loader.csproj" />
+    <ProjectReference Include="Singularity.Directory\Directory.csproj" />
+    <ProjectReference Include="Singularity.Stress\Stress.csproj" />
+    <ProjectReference Include="Singularity.Io\IoSystem.csproj" />
+    <ProjectReference Include="Singularity.Drivers\KernelDrivers.csproj" />
+    <ProjectReference Include="Singularity.Security\Security.csproj" />
+    <ProjectReference Include="Singularity.Security\Service\SecurityService.csproj" />
+    <ProjectReference Include="$(HalProject)" />
+    <ProjectReference Include="Singularity.KdFiles\Singularity.KdFiles.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\Singbench\Contracts\Singbench.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Diagnostics.Contracts\Diagnostics.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Net.Contracts\Io.Net.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Stress.Contracts\Stress.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.Kernel.csproj" />
+  </ItemGroup>
+
+  <Target Name="BuildDependentProjects">
+    <MSBuild Projects="@(ProjectReference)" StopOnFirstFailure="$(StopOnFirstFailure)" Condition="'$(BuildInParallel)'!='true'">
+      <Output ItemName="Reference" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+    <MSBuild Projects="@(ProjectReference)" StopOnFirstFailure="$(StopOnFirstFailure)" Condition="'$(BuildInParallel)'=='true'" BuildInParallel="true">
+      <Output ItemName="Reference" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+
+  <Target Name="BuildKernelManifest"
+          Inputs="@(Reference)"
+          Outputs="$(KERNEL_NATIVE_DIR)\$(KernelManifest)"
+          DependsOnTargets="BuildDependentProjects">
+    <Message Text="Building $(KernelManifest)" />
+    <MakeDir Directories="$(KERNEL_NATIVE_DIR)"/>
+    <Exec Command="&quot;$(BUILDDIR)\mkmani&quot; /out:&quot;$(KERNEL_NATIVE_DIR)\$(KernelManifest)&quot; /app:kernel /cache:&quot;$(BASEDIR)&quot; @(Reference->'&quot;%(Identity)&quot;',' ') /runtime:Full" />
+  </Target>
+
+  <Target Name="BuildAbiCandidates"
+          Inputs="$(KernelObjPath);$(NativeLibPath)"
+          Outputs="$(AbiCandidatesFile)"
+          DependsOnTargets="CompileKernelObj;BuildNativeIncludes;BuildNativeLib">
+    <Message Text="Building Singularity.V1.candidates" />
+    <Exec Command="abi2def.cmd /dumpbin $(DUMPBIN) /version 1 /def &quot;$(AbiCandidatesFile)&quot; &quot;$(KernelObjPath)&quot; &quot;$(NativeLibPath)&quot;" />
+  </Target>
+
+
+  <!-- This target links a dummy version of the PE/COFF kernel. -->
+  <Target Name="LinkDummyKernel"
+          Outputs="$(KERNEL_NATIVE_DIR)\dummykernel.$(Machine)"
+          Inputs="$(KERNEL_NATIVE_DIR)\kernel.obj;$(NativeLibPath);linkdate.cpp;$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE);dummysysentry.cpp"
+          DependsOnTargets="CompileKernelObj;BuildNativeIncludes;BuildNativeLib;BuildAbiLib">
+    <Message Text="Building dummy kernel native .obj"/>
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /Fo&quot;$(KERNEL_NATIVE_DIR)\dummysysentry.obj&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\dummysysentry.pdb&quot; /c dummysysentry.cpp" />
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /Fo&quot;$(KERNEL_NATIVE_DIR)\linkdate.obj&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\linkdate.pdb&quot; /c linkdate.cpp" />
+    <Exec Command="$(LINK) /debug /out:&quot;$(KERNEL_NATIVE_DIR)\dummykernel.$(Machine)&quot; /def:&quot;$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)&quot; /pdb:&quot;$(KERNEL_NATIVE_DIR)\dummykernel.$(Machine).pdb&quot; $(LFLAGS) /fixed /map /base:0x310000 $(LENTRYFLAGS) &quot;$(NativeLibPath)&quot; &quot;$(KERNEL_NATIVE_DIR)\linkdate.obj&quot; &quot;$(KERNEL_NATIVE_DIR)\kernel.obj&quot; &quot;$(KERNEL_NATIVE_DIR)\dummysysentry.obj&quot; &quot;$(KERNEL_NATIVE_DIR)\kernel_superObj.obj&quot;" />
+
+    <Exec Command="$(SDIZEPDB) /t:&quot;$(KERNEL_NATIVE_DIR)\kernel.txt&quot; &quot;$(KERNEL_NATIVE_DIR)\dummykernel.$(Machine).pdb&quot;"
+          IgnoreExitCode="true"
+          Condition="'$(EnableSdize)'=='true'"/>
+  </Target>
+
+  <!-- This target dumps the export symbols of the dummy kernel. -->
+  <Target Name="CreateSyscallsSources"
+          Inputs="$(KERNEL_NATIVE_DIR)\dummykernel.$(Machine)"
+          Outputs="
+          $(KERNEL_NATIVE_DIR)\dummykernel.dumpbin;
+          $(KERNEL_NATIVE_DIR)\syscalls.h;
+          $(KERNEL_NATIVE_DIR)\syscalls.cpp;
+          $(KERNEL_NATIVE_DIR)\sysentry.cpp;
+          "
+          DependsOnTargets="LinkDummyKernel">
+    <Message Text="Dumping export symbols of dummy kernel"/>
+    <Exec Command="$(DUMPBIN) $(DUMPFLAGS) /exports &quot;$(KERNEL_NATIVE_DIR)\dummykernel.$(Machine)&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\dummykernel.dumpbin&quot;" />
+    <Exec Command="$(SYSCALL_BUILDER) /genhdr &lt; &quot;$(KERNEL_NATIVE_DIR)\dummykernel.dumpbin&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\syscalls.h&quot;" />
+    <Exec Command="$(SYSCALL_BUILDER) /genlib &lt; &quot;$(KERNEL_NATIVE_DIR)\dummykernel.dumpbin&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\syscalls.cpp&quot;" />
+    <Exec Command="$(SYSCALL_BUILDER) /genentry &lt; &quot;$(KERNEL_NATIVE_DIR)\dummykernel.dumpbin&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\sysentry.cpp&quot;"/>
+  </Target>
+
+
+  <Target Name="sysentry_obj"
+          Inputs="$(KERNEL_NATIVE_DIR)\sysentry.cpp;$(KERNEL_NATIVE_DIR)\syscalls.h"
+          Outputs="$(KERNEL_NATIVE_DIR)\sysentry.obj"
+          DependsOnTargets="CreateSyscallsSources">
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /Fo&quot;$(KERNEL_NATIVE_DIR)\sysentry.obj&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\sysentry.pdb&quot; /c &quot;$(KERNEL_NATIVE_DIR)\sysentry.cpp&quot;" />
+  </Target>
+
+  <Target Name="CompileSyscallsObj"
+          Inputs="$(KERNEL_NATIVE_DIR)\syscalls.cpp;$(KERNEL_NATIVE_DIR)\syscalls.h"
+          Outputs="$(KERNEL_NATIVE_DIR)\syscalls.obj"
+          DependsOnTargets="CreateSyscallsSources">
+    <Exec Command="$(CC) /c $(CFLAGS) $(ACFLAGS) /Fd&quot;$(KERNEL_NATIVE_DIR)\syscalls.pdb&quot; /Fo&quot;$(KERNEL_NATIVE_DIR)\syscalls.obj&quot; &quot;$(KERNEL_NATIVE_DIR)\syscalls.cpp&quot;" />
+    <!--    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /LD /Fd&quot;$(KERNEL_NATIVE_DIR)\syscalls.pdb&quot; &quot;$(KERNEL_NATIVE_DIR)\syscalls.cpp&quot; /link /out:&quot;$(KERNEL_NATIVE_DIR)\syscalls.dll&quot; /NODEFAULTLIB /NOENTRY &quot;$(KERNEL_NATIVE_DIR)\kernel.lib&quot;" /> -->
+  </Target>
+
+  <ItemGroup>
+    <SyscallsObj Include="$(KERNEL_NATIVE_DIR)\syscalls.obj"/>
+    <SyscallsObj Include="$(KERNEL_NATIVE_DIR)\kernel.lib"/>
+
+  </ItemGroup>
+
+  <Target Name="LinkSyscallsDll"
+          Inputs="@(SyscallsObj)
+          "
+          Outputs="$(KERNEL_NATIVE_DIR)\syscalls.dll"
+          DependsOnTargets="CompileSyscallsObj;LinkKernel"
+          >
+    <Exec Command="$(LINK) $(LFLAGS) /DLL /NOENTRY /MAP /out:&quot;$(KERNEL_NATIVE_DIR)\syscalls.dll&quot; /NODEFAULTLIB /pdb:&quot;$(KERNEL_NATIVE_DIR)\syscalls.dll.pdb&quot; @(SyscallsObj->'&quot;%(Identity)&quot;',' ')"/>
+  </Target>
+
+  <Target Name="genabistub"
+          Inputs="$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin;Singularity\BspAbiStub.cs;$(KERNEL_NATIVE_DIR)\MpSyscalls.$(Machine)"
+          Outputs="">
+<!--           DependsOnTargets="BuildKernelDmp"> -->
+  </Target>
+
+
+  <Target Name="MakeDirs">
+    <MakeDir Directories="$(KERNEL_NATIVE_DIR)" />
+  </Target>
+
+  <Target Name="BuildAbiDumpBin"
+          Inputs="$(KERNEL_NATIVE_DIR)\SingularityStub.V1.lib"
+          Outputs="$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin;$(KERNEL_NATIVE_DIR)\genApAbiStub.out;Singularity\BspAbiStub.cs"
+          DependsOnTargets="BuildAbStubLib">
+    <Exec Command="$(DUMPBIN) $(DUMPFLAGS) /exports &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.lib&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin&quot;" />
+    <Exec Command="$(ASMP_SYSCALL_BUILDER) /genApAbiStub &lt; &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\genApAbiStub.out&quot;" />
+    <Exec Command="$(ASMP_SYSCALL_BUILDER) /genBspAbiStub &lt; &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin&quot; &gt; Singularity\BspAbiStub.cs" />
+  </Target>
+
+
+  <!-- busted -->
+  <Target Name="BuildMpSyscallsObj"
+          Inputs="$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin"
+          Outputs="$(KERNEL_NATIVE_DIR)\MpSyscalls.h;$(KERNEL_NATIVE_DIR)\MpSyscalls.cpp;$(KERNEL_NATIVE_DIR)\MpSyscalls.obj"
+          DependsOnTargets="BuildAbiDumpBin">
+    <Exec Command="$(ASMP_SYSCALL_BUILDER) /genMpSyscallsHeader &lt; &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.h&quot;" />
+    <Exec Command="$(ASMP_SYSCALL_BUILDER) /genMpSyscallsImpl &lt; &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.dumpbin&quot; &gt; &quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.cpp&quot;" />
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /Fo&quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.obj&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.pdb&quot; /c &quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.cpp&quot;" />
+  </Target>
+
+
+  <!--
+# pass5 depends on this .. which depends on MpSyscalls.obj
+$(KERNEL_NATIVE_DIR)\MpSyscalls.$(Machine): $(KERNEL_NATIVE_DIR)\MpSyscalls.obj $(KERNEL_NATIVE_DIR)\SingularityStub.V1.lib
+    $(LINK) $(LFLAGS) /fixed /MAP /out:$@ \
+        /pdb:$(KERNEL_NATIVE_DIR)\MpSyscalls.$(Machine).pdb /base:0x00600000 /entry:entry \
+        $(KERNEL_NATIVE_DIR)\MpSyscalls.obj \
+        $(KERNEL_NATIVE_DIR)\SingularityStub.V1.lib
+-->
+  <Target Name="BuildMpSyscallsNative"
+          Inputs="$(KERNEL_NATIVE_DIR)\MpSyscalls.obj;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.lib"
+          Outputs="$(KERNEL_NATIVE_DIR)\MpSyscalls.$(Machine)"
+          DependsOnTargets="">
+    <Exec Command="$(LINK) $(LFLAGS) /fixed /MAP /out:&quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.$(Machine)&quot; /pdb:&quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.$(Machine).pdb&quot; /base:0x00600000 /entry:entry &quot;$(KERNEL_NATIVE_DIR)\MpSyscalls.obj&quot; &quot;$(KERNEL_NATIVE_DIR)\SingularityStub.V1.lib&quot;" />
+  </Target>
+
+
+  <ItemGroup>
+    <KernelObj Include="$(KERNEL_NATIVE_DIR)\kernel.obj"/>
+    <KernelObj Include="$(KERNEL_NATIVE_DIR)\kernel_superObj.obj"/>
+  </ItemGroup>
+
+
+
+  <Target Name="PreprocessAbiDef"
+          Inputs="$(SING_DEF_FILE)"
+          Outputs="$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)"
+          >
+    <MakeDir Directories="$(KERNEL_NATIVE_DIR)" />
+    <Message Text="Preprocessing ABI names - $(SING_DEF_FILE) to $(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)" />
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /EP /TP &quot;$(SING_DEF_FILE)&quot; | $(UNDRPL) $(UFLAGS) &gt; &quot;$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)&quot;" />
+    <Message Text="Validating ABI" />
+    <Exec Command="validabi.cmd $(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)" />
+  </Target>
+
+  <Target Name="LinkKernel"
+          Outputs="$(KERNEL_NATIVE_DIR)\kernel.$(Machine);$(KERNEL_NATIVE_DIR)\kernel.lib"
+          Inputs="@(KernelObj);linkdate.cpp;$(NativeLibPath);$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)"
+          DependsOnTargets="CompileKernelObj;BuildNativeIncludes;PreprocessAbiDef;BuildNativeLib;$(LinkKernelDependsOn)">
+    <Message Text="Linking kernel native PE image" />
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /Fo&quot;$(KERNEL_NATIVE_DIR)\linkdate.obj&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\linkdate.pdb&quot; /c linkdate.cpp" />
+    <Exec Command="$(LINK) /out:&quot;$(KERNEL_NATIVE_DIR)\kernel.$(Machine)&quot; /def:&quot;$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)&quot; /debug /map:&quot;$(KERNEL_NATIVE_DIR)\kernel.$(Machine).map&quot; /pdb:&quot;$(KERNEL_NATIVE_DIR)\kernel.$(Machine).pdb&quot; $(LFLAGS) /ignore:4216 $(LBASEFLAGS) $(LENTRYFLAGS) &quot;$(NativeLibPath)&quot; &quot;$(KERNEL_NATIVE_DIR)\linkdate.obj&quot; @(KernelObj->'&quot;%(Identity)&quot;',' ')" />
+    <Exec Command="$(SDIZEPDB) /t:&quot;$(KERNEL_NATIVE_DIR)\kernel.txt&quot; &quot;$(KERNEL_NATIVE_DIR)\kernel.$(Machine).pdb&quot;"
+          IgnoreExitCode="true"
+          Condition="'$(EnableSdize)'=='true'"/>
+  </Target>
+
+  <!-- ############################################################# C++ Hello World. -->
+  <Target Name="BuildTestPeObj"
+          Inputs="testpe.cpp"
+          Outputs="$(KERNEL_NATIVE_DIR)\testpe.obj"
+          DependsOnTargets="">
+    <Exec Command="$(CC) $(CFLAGS) $(ACFLAGS) /FAsc /Fa&quot;$(KERNEL_NATIVE_DIR)\testpe.lst&quot; /Fo&quot;$(KERNEL_NATIVE_DIR)\testpe.obj&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\testpe.pdb&quot; /c testpe.cpp" />
+  </Target>
+
+  <Target Name="LinkTestApp"
+          Outputs="$(KERNEL_NATIVE_DIR)\testpe.$(Machine)"
+          Inputs="$(KERNEL_NATIVE_DIR)\testpe.obj;$(KERNEL_NATIVE_DIR)\Singularity.V1.$(Runtime).lib"
+          DependsOnTargets="BuildTestPeObj;BuildAbiLib">
+    <Message Text="Linking native PE image of test app" />
+    <Exec Command="$(LINK) $(LFLAGS) /fixed:no /out:&quot;$(KERNEL_NATIVE_DIR)\testpe.$(Machine)&quot; /pdb:&quot;$(KERNEL_NATIVE_DIR)\testpe.$(Machine).pdb&quot; /base:0x2000000 /entry:entry &quot;$(KERNEL_NATIVE_DIR)\testpe.obj&quot; &quot;$(KERNEL_NATIVE_DIR)\Singularity.V1.$(Runtime).lib&quot;" />
+  </Target>
+
+  <Target Name="BuildAbiLib"
+          Inputs="$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)"
+          Outputs="$(KERNEL_NATIVE_DIR)\Singularity.V1.$(Runtime).lib"
+          DependsOnTargets="PreprocessAbiDef">
+    <Exec Command="$(LIB) $(LIBFLAGS) /def:&quot;$(KERNEL_NATIVE_DIR)\$(SING_DEF_FILE)&quot; /out:&quot;$(KERNEL_NATIVE_DIR)\Singularity.V1.$(Runtime).lib&quot;" />
+  </Target>
+
+  <PropertyGroup>
+    <TestPeManifest>testpe.manifest</TestPeManifest>
+    <TestPeInstalledManifest>$(KERNEL_NATIVE_DIR)\testpe.$(Machine).manifest</TestPeInstalledManifest>
+  </PropertyGroup>
+
+  <Target Name="BuildTestPeManifest" Inputs="$(TestPeManifest)" Outputs="$(TestPeInstalledManifest)">
+    <Copy SourceFiles="$(TestPeManifest)" DestinationFiles="$(TestPeInstalledManifest)" />
+  </Target>
+
+  <!--
+  ==============================================================================================
+
+  Native runtime sources
+
+  ==============================================================================================
+  -->
+
+  <ItemGroup>
+    <NativeIncludes Include="Native\hal.h"/>
+    <NativeIncludes Include="Native\halkd.h"/>
+    <NativeIncludes Include="Native\halkd1394.h"/>
+
+    <NativeSource Include="Native\Buffer.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\CInit.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Decimal.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\EventController.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\EventDescriptor.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\EventingKernel.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\GCTracing.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Hal.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Halkd.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Halkd1394.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Halkdserial.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\IoPort.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\MemoryStorage.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Monitoring.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Number.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\PEImage.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Platform.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Tracing.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ZoneAllocation.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\halexn.cpp"> <!-- MOVE TO Native --><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\Processor.cpp"> <!-- MOVE TO Native --><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\isac.cpp"><OutputRelativeDir>Singularity\Isal\</OutputRelativeDir></NativeSource>
+
+    <NativeIncludes Include="$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)\core.inc"/>
+
+    <NativeSource Include="$(BartokSrcDir)\runtime\shared\native\arch\$(BARTOK_MACHINE)\lib.asm"><OutputRelativeDir>BartokSharedArch\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)\lib.asm"><OutputRelativeDir>BartokSingularityArch\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="$(BartokSrcDir)\runtime\singularity\native\arch\$(BARTOK_MACHINE)\gc.asm"><OutputRelativeDir>BartokSingularityArch\</OutputRelativeDir></NativeSource>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='x86' or '$(Machine)'=='x64'">
+
+    <NativeIncludes Include="Native\ix\hal.inc"/>
+
+    <NativeSource Include="Native\Halkdcom.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+
+    <NativeSource Include="Native\ix\Thread.cpp"><OutputRelativeDir>Native\ix\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix\halstack.asm"><OutputRelativeDir>Native\ix\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix\kdnotify.asm"><OutputRelativeDir>Native\ix\</OutputRelativeDir></NativeSource>
+
+    <NativeSource Include="Singularity\Isal\ix\interrupt.asm"><OutputRelativeDir>Singularity\Isal\ix\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\ix\context.asm"><OutputRelativeDir>Singularity\Isal\ix\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\ix\isa.asm"><OutputRelativeDir>Singularity\Isal\ix\</OutputRelativeDir></NativeSource>
+
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='x64'">
+
+    <NativeSource Include="Native\ix64\Math.cpp"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\_memcpy.asm"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\_memset.asm"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\halkdx.cpp"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\halmath.asm"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\halprocessor.asm"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix64\kdasm.asm"><OutputRelativeDir>Native\ix64\</OutputRelativeDir></NativeSource>
+
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='x86'">
+
+    <NativeSource Include="Native\ix86\Math.cpp"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_lldiv.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_llmul.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_llshl.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_llshr.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_llrem.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_memcpy.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_memset.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_ulldiv.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_ulldvrm.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_ullrem.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\_ullshr.asm"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\ix86\halkdx.cpp"><OutputRelativeDir>Native\ix86\</OutputRelativeDir></NativeSource>
+
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='arm'">
+    <NativeIncludes Include="Native\arm\hal.inc"/>
+
+    <NativeSource Include="Native\arm\Math.cpp"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\arm\Thread.cpp"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\arm\halkdarm.cpp"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\arm\lies.asm"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\arm\kdasm.asm"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\arm\interlocked_v5.asm"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\arm\context.asm"><OutputRelativeDir>Singularity\Isal\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\arm\interrupt.asm"><OutputRelativeDir>Singularity\Isal\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\arm\isa.asm"><OutputRelativeDir>Singularity\Isal\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\arm\isatodo.asm"><OutputRelativeDir>Singularity\Isal\arm\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Singularity\Isal\arm\XscaleMmu.asm"><OutputRelativeDir>Singularity\Isal\arm\</OutputRelativeDir></NativeSource>
+
+<!--    <NativeSource Include="Native\arm\halstack.asm"/> -->
+
+    <!-- Compiler intrinsics and runtime. -->
+    <NativeSource Include="Native\Arm\Crt\__div.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\__div0.cpp"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\__udiv.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\add.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\check.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\div.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\e2d.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\error.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\fnorm2.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\fpdata.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\fpraise.cpp"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\mdsdiv64.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\memcpy.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\memmove.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\memset.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\mul.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\nans.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\normal.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\normop1.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\normop2.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_addd.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_adds.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_divd.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_divs.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_dtoi.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_dtoi64.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_dtos.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_dtou.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_dtou64.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_eqd.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_eqs.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_ged.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_ges.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_gtd.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_gts.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_i64tod.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_i64tos.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_itod.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_itos.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_led.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_les.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_ltd.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_lts.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_muld.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_muls.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_ned.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_negd.cpp"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_nes.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_stod.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_stoi.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_stoi64.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_stou.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\Arm\Crt\r_stou64.asm"><OutputRelativeDir>Native\Arm\Crt\</OutputRelativeDir></NativeSource>
+  </ItemGroup>
+
+
+  <ItemGroup Condition="'$(Machine)'=='arm' and '$(Platform)'=='Omap3430'">
+    <NativeSource Include="Native\Halkduart.cpp"><OutputRelativeDir>Native\</OutputRelativeDir></NativeSource>
+    <NativeSource Include="Native\arm\cyclecounter.asm"><OutputRelativeDir>Native\arm\</OutputRelativeDir></NativeSource>
+  </ItemGroup>
+
+  <!-- This target creates __native_objs items from NativeSource items. -->
+  <Target Name="CreateNativeItems">
+    <CreateItem Include="$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).obj">
+      <Output ItemName="__native_objs" TaskParameter="Include"/>
+    </CreateItem>
+  </Target>
+
+  <!--
+  Note: This target uses batching.  All tasks within the target will be executed, once for each distinct
+  value of %(NativeSource.identity).
+
+  Notes about dependency checking: In general, we do not attempt to do fine-grained dependency checking
+  on #include dependencies, because:
+      * doing so is error-prone (the dependencies are in the code, not in the project)
+      * we don't have much C++ code, so it compiles fast
+      * nearly all of the C++ files depend on halclass.h, which is generated when any IL changes
+
+  So we just punt, and declare that all native sources depend on halclass.h (and halclass.inc),
+  and the handful of native header files that we have, which are declared as NativeIncludes items.
+  This means that we are conservative about dependencies; we may rebuild code when it is not strictly
+  necessary, but this is better than not building code that really has changed.
+
+  This target depends on CompileKernelObj because Bartok generates halclass.h / halclass.inc.
+  -->
+  <Target Name="CompileNativeSources"
+          Inputs="
+            %(NativeSource.identity);
+            %(NativeSource.Dependencies);
+            @(NativeIncludes);
+            $(KERNEL_NATIVE_DIR)\halclass.h;
+            $(KERNEL_NATIVE_DIR)\halclass.inc;
+            "
+          Outputs="$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).obj"
+          DependsOnTargets="CompileKernelObj;BuildNativeIncludes;CreateNativeItems;MakeDirs">
+
+    <MakeDir Directories="$(KERNEL_NATIVE_DIR)"/>
+    <MakeDir Directories="$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)"/>
+
+    <!-- Compile C++ sources -->
+    <Exec Condition="'%(NativeSource.extension)'=='.c' or '%(NativeSource.extension)'=='.cpp'"
+          Command="$(CC) $(CFLAGS) %(NativeSource.CFlags) $(ACFLAGS) $(GC_ML_DEFS) /I&quot;$(KERNEL_NATIVE_DIR)&quot; /INative /INative/$(Machine) /FAsc /Fa&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.filename).lst&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\native.pdb&quot; /Fo&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).obj&quot; /c &quot;%(NativeSource.identity)&quot;"/>
+
+    <!-- Compile assembly sources -->
+    <Exec Condition="'%(NativeSource.extension)'=='.asm'"
+          Command="$(AS) $(AFLAGS) $(ACFLAGS) $(GC_ML_DEFS) /I&quot;$(KERNEL_NATIVE_DIR)&quot; /INative /INative/$(Machine) /I&quot;$(BartokSrcDir)\runtime\Singularity\native\arch\$(BARTOK_MACHINE)&quot; /Fl&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).lst&quot; /Fo&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).obj&quot; /c &quot;%(NativeSource.identity)&quot;"/>
+  </Target>
+
+  <Target Name="BuildNativeLib"
+          DependsOnTargets="CompileNativeSources"
+          Outputs="$(KERNEL_NATIVE_DIR)\native.lib"
+          Inputs="@(__native_objs)">
+    <Message Text="Linking native lib - $(KERNEL_NATIVE_DIR)\native.lib"/>
+    <Delete Files="$(KERNEL_NATIVE_DIR)\native.lib"/>
+    <!-- NOTE: ARM lib seems to have a bug with long command lines, so use a temp file -->
+    <WriteLinesToFile File="$(TEMP)\nativelib.txt" Lines="@(__native_objs->'&quot;%(Identity)&quot;',' ')" Overwrite="true"/>
+    <Exec Command="$(LIB) $(LIBFLAGS) /nod /out:&quot;$(KERNEL_NATIVE_DIR)\native.lib&quot; @&quot;$(TEMP)\nativelib.txt&quot;"/>
+    <Delete Files="$(TEMP)\nativelib.txt"/>
+  </Target>
+
+  <!-- This target is useful for debugging build problems. -->
+  <Target Name="PreprocessNativeSources"
+          Inputs="%(NativeSource.identity)"
+          Outputs="$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).i"
+          DependsOnTargets="CompileKernelObj;BuildNativeIncludes;CreateNativeItems;MakeDirs">
+
+    <!-- Compile C++ sources -->
+    <Exec Condition="'%(NativeSource.extension)'=='.c' or '%(NativeSource.extension)'=='.cpp'"
+          Command="$(CC) /EP &gt;&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).i&quot; $(CFLAGS) $(ACFLAGS) $(GC_ML_DEFS) /I&quot;$(KERNEL_NATIVE_DIR)&quot; /INative /FAsc /Fa&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).lst&quot; /Fd&quot;$(KERNEL_NATIVE_DIR)\native.pdb&quot; /Fo&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).obj&quot; /c &quot;%(NativeSource.identity)&quot;"/>
+
+    <!-- Compile assembly sources -->
+    <Exec Condition="'%(NativeSource.extension)'=='.asm'"
+          Command="$(AS) /EP &gt;&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).i&quot; $(AFLAGS) $(ACFLAGS) $(GC_ML_DEFS) /I&quot;$(KERNEL_NATIVE_DIR)&quot; /INative /Fl&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).lst&quot; /Fo&quot;$(KERNEL_NATIVE_DIR)\%(NativeSource.OutputRelativeDir)\%(NativeSource.filename).obj&quot; /c &quot;%(NativeSource.identity)&quot;"/>
+  </Target>
+
+  <Target Name="ShowDebugInfo">
+    <Message Text="KERNEL_NATIVE_DIR:               $(KERNEL_NATIVE_DIR)"/>
+    <Message Text="KERNEL_IL_DIR:                   $(KERNEL_IL_DIR)"/>
+  </Target>
+
+
+  <ItemGroup>
+    <NativeIncludes Include="$(HalClassHFile)" />
+    <NativeIncludes Include="$(HalClassIncFile)" />
+    <NativeIncludes Include="$(KERNEL_NATIVE_DIR)\halclasswin.h" />
+    <NativeIncludes Include="$(KERNEL_NATIVE_DIR)\halclass.armfix.inc" />
+  </ItemGroup>
+
+
+  <Target Name="BuildNativeIncludes"
+          Inputs="$(HalClassTmpHFile);
+                  $(HalClassTmpIncFile)"
+          Outputs="@(NativeIncludes)"
+          DependsOnTargets="CompileKernelObj">
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Build\CheckedCopy.cmd&quot; &quot;$(HalClassTmpHFile)&quot; &quot;$(HalClassHFile)&quot;"/>
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Build\CheckedCopy.cmd&quot; &quot;$(HalClassTmpIncFile)&quot; &quot;$(HalClassIncFile)&quot;"/>
+
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Kernel\bar2win.cmd&quot; &quot;$(KERNEL_NATIVE_DIR)\halclass.h&quot; &quot;$(KERNEL_NATIVE_DIR)\_halclasswin.h&quot;"/>
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Build\CheckedCopy.cmd&quot; &quot;$(KERNEL_NATIVE_DIR)\_halclasswin.h&quot; &quot;$(KERNEL_NATIVE_DIR)\halclasswin.h&quot;"/>
+
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Kernel\bararmfix.cmd&quot; &quot;$(KERNEL_NATIVE_DIR)\halclass.inc&quot; &quot;$(KERNEL_NATIVE_DIR)\_halclass.armfix.inc&quot;"/>
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Build\CheckedCopy.cmd&quot; &quot;$(KERNEL_NATIVE_DIR)\_halclass.armfix.inc&quot; &quot;$(KERNEL_NATIVE_DIR)\halclass.armfix.inc&quot;"/>
+  </Target>
+
+  <Target Name="CompileKernelObj"
+          Inputs="@(Reference)"
+          Outputs="
+          $(KERNEL_NATIVE_DIR)\kernel.obj;
+          $(KERNEL_NATIVE_DIR)\kernel_superObj.obj;
+          $(HalClassTmpHFile);
+          $(HalClassTmpIncFile);
+          "
+          DependsOnTargets="BuildDependentProjects;MakeDirs"
+          >
+    <Message Importance="High" Text="Compiling Kernel.obj native image"/>
+    <Message Text="IL assemblies:"/>
+    <Message Text="    %(Reference.identity)"/>
+
+    <!-- PATH $(SINGULARITY_PATH) -->
+
+    <Exec WorkingDirectory="$(SINGULARITY_ROOT)\build"
+      Command="$(BARTOK) $(BARTOK_COLLECTOR) $(BartokFlags) /out: &quot;$(KernelObjPath)&quot; @(Reference->'&quot;%(identity)&quot;',' ') $(KERNEL_BARTOK_LOG)"/>
+  </Target>
+
+  <Target Name="Clean">
+    <Delete Files="
+          $(KERNEL_NATIVE_DIR)\kernel.obj;
+          $(KERNEL_NATIVE_DIR)\kernel_superObj.obj;
+          $(KERNEL_NATIVE_DIR)\halclass.h;
+          $(KERNEL_NATIVE_DIR)\halclass.inc;
+          $(KERNEL_NATIVE_DIR)\halclasswin.h;
+          $(KERNEL_NATIVE_DIR)\halclass.armfix.inc;
+          $(KERNEL_NATIVE_DIR)\native.lib;
+          $(KERNEL_NATIVE_DIR)\Singularity.V1.candidates;
+          "/>
+  </Target>
+
+</Project>

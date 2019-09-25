@@ -1,0 +1,42 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+Note:   This is the template for a basic console app.
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+  Provide the relative walk-up path to $(SINGULARITY_ROOT)\Paths.targets.
+  This is annoying, but is necessary in order to get VS builds to work,
+  without requiring that you set environment variables for VS.
+  -->
+  <Import Project="..\..\Paths.targets" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>nib</AssemblyName>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+    <NoNullCheck>true</NoNullCheck>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\windows\nib\nib.cs"/>
+    <Compile Include="NibHelper.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Declare references to the projects you need, for example: -->
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Manifest\Manifest.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\xml\Xml.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+</Project>

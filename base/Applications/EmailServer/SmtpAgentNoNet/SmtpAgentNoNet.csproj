@@ -1,0 +1,35 @@
+<!--
+##############################################################################
+#
+# Copyright (c) Microsoft Corporation.   All rights reserved.
+#
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SmtpAgentNoNet</AssemblyName>
+    <NoWarn>2614,2637,2638,2613,2639</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="SmtpAgentNoNet.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MailStore\MailStoreContracts.csproj"/>
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net\System.Net.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

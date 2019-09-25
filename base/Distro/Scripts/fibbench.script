@@ -1,0 +1,18 @@
+#
+# A script for measuring chores using Fibonacci with delays
+#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+#
+
+
+n = 30
+
+echo 'Beginning Chores benchmark: Fib '$n
+
+echo ''
+
+fib '-n:30' '-reps:3' '-ShowDelay' '-ShowSequence' '-ShowPromise' '-ShowChore' '0' '28' '80' '160' '375' '750' '1200' '8000'
+
+echo ''
+
+echo 'Finished Chores benchmark'

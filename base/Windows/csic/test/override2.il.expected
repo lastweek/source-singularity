@@ -1,0 +1,105 @@
+.assembly 'override2' { }
+.class 'A'
+	extends [mscorlib]System.Object
+{
+.property instance string Identity() {
+.get instance string 'A'::'get_Identity'()
+} // end of property A.Identity
+.method hidebysig specialname public virtual instance string 'get_Identity'() {
+.locals init ([0]string 't0')
+ldstr "A.Identity(): "
+ldarg.0
+callvirt instance string [mscorlib]System.Object::'ToString'()
+call  string [mscorlib]System.String::'Concat'(object,object)
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 2
+} // end of method A.get_Identity
+.method hidebysig public instance void 'print'() {
+ldarg.0
+callvirt instance string 'A'::'get_Identity'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of method A.print
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor A.A
+} // end of class A
+.class 'B'
+	extends 'A'
+{
+.method hidebysig virtual public instance string 'ToString'() {
+.locals init ([0]string 't0')
+ldstr "B.ToString()"
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 1
+} // end of method B.ToString
+.property instance string Identity() {
+.get instance string 'B'::'get_Identity'()
+} // end of property B.Identity
+.method hidebysig specialname virtual public instance string 'get_Identity'() {
+.locals init ([0]string 't0')
+ldstr "B.Identity(): "
+ldarg.0
+call instance string [mscorlib]System.Object::'ToString'()
+call  string [mscorlib]System.String::'Concat'(object,object)
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 2
+} // end of method B.get_Identity
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void 'A'::.ctor()
+ret
+.maxstack 1
+} // end of constructor B.B
+} // end of class B
+.class 'test'
+	extends [mscorlib]System.Object
+{
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]class 'A' 't0')
+newobj instance void 'A'::.ctor()
+stloc 0 // a
+ldloc 0 // a
+call instance void 'A'::'print'()
+.locals init ([1]class 'B' 't1')
+newobj instance void 'B'::.ctor()
+stloc 1 // b
+ldloc 1 // b
+call instance void 'A'::'print'()
+ldstr "{0}"
+ldloc 1 // b
+callvirt instance string 'A'::'get_Identity'()
+call  void [mscorlib]System.Console::'WriteLine'(string,object)
+ldstr "{0}"
+ldloc 1 // b
+callvirt instance string 'A'::'get_Identity'()
+call  void [mscorlib]System.Console::'WriteLine'(string,object)
+ldloc 1 // b
+call instance void 'A'::'print'()
+ret
+.maxstack 2
+} // end of method test.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor test.test
+} // end of class test

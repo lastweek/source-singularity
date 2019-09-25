@@ -1,0 +1,368 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Anti-virus patterns.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+
+namespace Microsoft.Singularity.Email
+{
+    // Patterns
+    //
+    // A pattern is a restricted regular expression that can be matched
+    // against a location in an input file.  It is represented as a linked
+    // list of Pattern subclasses that should be matched in sequence.
+    //
+    //   EmptyPattern:
+    //     Terminates every pattern, indicating successful match.
+    //     Stores the name of the matched virus.
+    //
+    //   SeqPattern:
+    //     Holds a sequence of bytes that must be matched in order.
+    //
+    //   AltPattern:
+    //     Holds an array of bytes, one of which must match the next
+    //     input byte.
+    //
+    //   WildPattern:
+    //     Matches an arbitrary sequence of bytes whose length is between
+    //     lower and upper (inclusive).
+    //
+    //   NibblePattern:
+    //     Matches a masked version of the next input byte.
+    //
+    // Each pattern contains a Match method, which matches the pattern
+    // against an input array at a given index.  If the pattern matches, it
+    // should call the "enqueue" delegate to queue up the next pattern in
+    // the list for matching.  This delegate is also given the lower and
+    // upper bounds (inclusive) where the next pattern might potentially
+    // start.
+
+    class PatternError : ApplicationException
+    {
+        public PatternError(string message) { }
+        public PatternError(string message, Object o1)
+            : this(String.Format(message, o1)) { }
+        public PatternError(string message, Object o1, Object o2)
+            : this(String.Format(message, o1, o2)) { }
+    }
+
+    delegate void EnqueueDelegate(Pattern pattern, int lower, int upper);
+
+    abstract class Pattern
+    {
+        public Pattern Next;
+
+        abstract public void Match(byte[]! input, int index, EnqueueDelegate! enqueue);
+
+        virtual public string GetName()
+        {
+            return Next != null ? Next.GetName() : null;
+        }
+    }
+
+    class EmptyPattern : Pattern
+    {
+        public EmptyPattern(string name)
+        {
+            Name = name;
+        }
+
+        override public void Match(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            Debug.Assert(false);
+        }
+
+        override public string GetName()
+        {
+            return Name;
+        }
+
+        public string Name;
+    }
+
+    class SeqPattern : Pattern
+    {
+        public SeqPattern(byte[] bytes)
+        {
+            Bytes = bytes;
+        }
+
+        override public void Match(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            int patternLength = Bytes.Length;
+            int inputLength = input.Length;
+
+            if (index + patternLength <= inputLength) {
+                for (int i = 0; i < patternLength; i++) {
+                    if (input[index + i] != Bytes[i]) {
+                        return;
+                    }
+                }
+
+                enqueue(Next, index + patternLength, index + patternLength);
+            }
+        }
+
+        public byte[] Bytes;
+    }
+
+    class AltPattern : Pattern
+    {
+        public AltPattern(byte[] options)
+        {
+            Options = options;
+        }
+
+        override public void Match(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            int length = Options.Length;
+            for (int i = 0; i < length; i++) {
+                if (input[index] == Options[i]) {
+                    enqueue(Next, index + 1, index + 1);
+                    return;
+                }
+            }
+        }
+
+        public byte[] Options;
+    }
+
+    class WildPattern : Pattern
+    {
+        public WildPattern(int lower, int upper)
+        {
+            Lower = lower;
+            Upper = upper;
+        }
+
+        override public void Match(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            // Make sure upper doesn't overflow.
+            int lower = index + Lower;
+            int upper = index <= Int32.MaxValue - Upper ? index + Upper : Int32.MaxValue;
+            enqueue(Next, lower, upper);
+
+            // If the lower bound is zero, we need to try matching with the next pattern, too.
+            if (Lower == 0) {
+                Next.Match(input, index, enqueue);
+            }
+        }
+
+        public int Lower;
+        public int Upper;
+    }
+
+    class NibblePattern : Pattern
+    {
+        public NibblePattern(int mask, int val)
+        {
+            Mask = mask;
+            Value = val;
+        }
+
+        override public void Match(byte[]! input, int index, EnqueueDelegate! enqueue)
+        {
+            if ((input[index] & Mask) == Value) {
+                enqueue(Next, index + 1, index + 1);
+            }
+        }
+
+        public int Mask;
+        public int Value;
+    }
+
+    // PatternParser
+    //
+    // Given the name of a virus and an input pattern, construct a Pattern
+    // object as described above.
+
+    class PatternParser
+    {
+        public Pattern Parse(string name, string! input)
+        {
+            Debug.Assert(curPattern == null);
+
+            int index = 0;
+
+            while (index < input.Length) {
+                char cur = input[index];
+                if (cur == '*') {
+                    Add(new WildPattern(0, Int32.MaxValue));
+                    index += 1;
+                } else if (cur == '?') {
+                    char next = input[index + 1]; // TODO: exists?
+                    if (next == '?') {
+                        Add(new WildPattern(1, 1));
+                    } else if (IsHex(next)) {
+                        Add(new NibblePattern(0xf, ToByte(next)));
+                    } else {
+                        throw new PatternError("Invalid byte: {0}{1}", cur, next);
+                    }
+                    index += 2;
+                } else if (IsHex(cur)) {
+                    char next = input[index + 1]; // TODO: exists?
+                    if (next == '?') {
+                        Add(new NibblePattern(0xf0, ToByte(cur)));
+                    } else if (IsHex(next)) {
+                        AddByte(ToByte(cur, next));
+                    } else {
+                        throw new PatternError("Invalid byte: {0}{1}", cur, next);
+                    }
+                    index += 2;
+                } else if (cur == '(') {
+                    Debug.Assert(byteOptions.Count == 0);
+
+                    do {
+                        index += 1;
+                        char first = input[index];
+                        char second = input[index + 1];
+                        if (IsHex(first) && IsHex(second)) {
+                            AddOption(ToByte(first, second));
+                        } else {
+                            throw new PatternError("Alternation does not contain literal byte: {0}{1}", first, second);
+                        }
+                        index += 2;
+                    } while (input[index] == '|');
+
+                    if (input[index] != ')') {
+                        throw new PatternError("Alternation not terminated by paren: {0}", input[index]);
+                    }
+                    index += 1;
+
+                    FinishOptions();
+                } else if (cur == '{') {
+                    index += 1;
+
+                    int lower = ParseNum(input, ref index);
+
+                    int upper;
+                    if (input[index] == '-') {
+                        index += 1;
+                        int num = ParseNum(input, ref index);
+                        upper = num >= 0 ? num : Int32.MaxValue;
+                    } else {
+                        upper = lower;
+                    }
+
+                    if (input[index] != '}') {
+                        throw new PatternError("Wildcard not terminated by brace: {0}", input[index]);
+                    }
+                    index += 1;
+
+                    Add(new WildPattern(lower, upper));
+                } else {
+                    throw new PatternError("Unrecognized character: {0}", cur);
+                }
+            }
+
+            FinishSequence();
+
+            Add(new EmptyPattern(name));
+
+            Debug.Assert(byteBuffer.Count == 0);
+            Debug.Assert(byteOptions.Count == 0);
+
+            Pattern result = curPattern;
+            curPattern = null;
+
+            return Reverse(result);
+        }
+
+        private int ParseNum(string! input, ref int index)
+        {
+            int endIndex = input.IndexOfAny(new char[] { '-', '}' }, index);
+            string numStr = input.Substring(index, endIndex - index);
+            index = endIndex;
+            return numStr.Length > 0 ? Int32.Parse(numStr) : -1;
+        }
+
+        private void Add(Pattern! pattern)
+        {
+            FinishSequence();
+            AddCore(pattern);
+        }
+
+        private void AddCore(Pattern! pattern)
+        {
+            Debug.Assert(pattern.Next == null);
+            pattern.Next = curPattern;
+            curPattern = pattern;
+        }
+
+        private void AddByte(byte val)
+        {
+            byteBuffer.Add(val);
+        }
+
+        private void AddOption(byte val)
+        {
+            byteOptions.Add(val);
+        }
+
+        private void FinishOptions()
+        {
+            Add(new AltPattern((byte[])byteOptions.ToArray(typeof(byte))));
+            byteOptions.Clear();
+        }
+
+        private void FinishSequence()
+        {
+            if (byteBuffer.Count > 0) {
+                AddCore(new SeqPattern((byte[])byteBuffer.ToArray(typeof(byte))));
+                byteBuffer.Clear();
+            }
+        }
+
+        private Pattern Reverse(Pattern pattern)
+        {
+            Pattern reversed = null;
+
+            while (pattern != null) {
+                Pattern next = pattern.Next;
+                pattern.Next = reversed;
+                reversed = pattern;
+                pattern = next;
+            }
+
+            return reversed;
+        }
+
+        private bool IsHex(char c)
+        {
+            return ('0' <= c && c <= '9') ||
+                   ('a' <= c && c <= 'f') ||
+                   ('A' <= c && c <= 'F');
+        }
+
+        private byte ToByte(char c)
+        {
+            if ('0' <= c && c <= '9') {
+                return (byte)(c - '0');
+            } else if ('a' <= c && c <= 'f') {
+                return (byte)(c - 'a' + 10);
+            } else if ('A' <= c && c <= 'F') {
+                return (byte)(c - 'A' + 10);
+            } else {
+                throw new PatternError("Invalid hex digit: {0}", c);
+            }
+        }
+
+        private byte ToByte(char c1, char c2)
+        {
+            return (byte)((ToByte(c1) << 4) | ToByte(c2));
+        }
+
+        private ArrayList byteOptions = new ArrayList();
+        private ArrayList byteBuffer = new ArrayList();
+        private Pattern curPattern = null;
+    }
+}

@@ -1,0 +1,265 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Contracts;
+
+namespace System.Collections
+{
+
+    public class ArrayList
+    {
+
+        public object this [int index]
+        {
+          [Pure]
+          get
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index < this.Count otherwise ArgumentOutOfRangeException;
+          set
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index < this.Count otherwise ArgumentOutOfRangeException;
+        }
+
+        public int Capacity
+        {
+          [Pure]
+          get
+			ensures result >= 0;
+          set
+			requires value >= this.Count otherwise ArgumentOutOfRangeException;
+        }
+
+        public int Count
+        {
+          [Pure]
+          get
+			ensures result >= 0;
+        }
+
+        public object SyncRoot
+        {
+          [Pure]
+          get;
+        }
+
+        public bool IsSynchronized
+        {
+          [Pure]
+          get;
+        }
+
+        public bool IsFixedSize
+        {
+          [Pure]
+          get;
+        }
+
+        public bool IsReadOnly
+        {
+          [Pure]
+          get;
+        }
+
+        public void TrimToSize ()
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public Array! ToArray (Type! type)
+            requires type != null otherwise ArgumentNullException;
+
+        public object[]! ToArray ();
+
+        public static ArrayList! Synchronized (ArrayList! list)
+            requires list != null otherwise ArgumentNullException;
+            ensures result.IsSynchronized;
+
+        public static IList! Synchronized (IList! list)
+            requires list != null otherwise ArgumentNullException;
+            ensures result.IsSynchronized;
+
+        public void Sort (int index, int count, IComparer comparer)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + count <= Count otherwise ArgumentException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+
+        public void Sort (IComparer comparer)
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+
+        public void Sort ()
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+
+        public ArrayList GetRange (int index, int count)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + count <= Count otherwise ArgumentException;
+
+        public void SetRange (int index, ICollection! c)
+            requires c != null otherwise ArgumentNullException;
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + c.Count <= Count otherwise ArgumentOutOfRangeException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+
+        public void Reverse (int index, int count)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + count <= Count otherwise ArgumentException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+
+        public void Reverse ()
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+
+        public static ArrayList Repeat (object value, int count)
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+
+        public void RemoveRange (int index, int count)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + count <= Count otherwise ArgumentException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public void RemoveAt (int index)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index < Count otherwise ArgumentOutOfRangeException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public void Remove (object obj)
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public static ArrayList! ReadOnly (ArrayList! list)
+            requires list != null otherwise ArgumentNullException;
+            ensures result.IsReadOnly;
+
+        public static IList! ReadOnly (IList! list)
+            requires list != null otherwise ArgumentNullException;
+            ensures result.IsReadOnly;
+
+        public int LastIndexOf (object value, int startIndex, int count)
+            requires 0 <= count otherwise ArgumentOutOfRangeException;
+            requires 0 <= startIndex otherwise ArgumentOutOfRangeException;
+            requires startIndex + count <= Count otherwise ArgumentOutOfRangeException;
+            ensures -1 <= result && result < this.Count;
+
+        public int LastIndexOf (object value, int startIndex)
+            requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex < this.Count otherwise ArgumentOutOfRangeException;
+            ensures -1 <= result && result < this.Count;
+
+        public int LastIndexOf (object value)
+            ensures -1 <= result && result < this.Count;
+
+        public void InsertRange (int index, ICollection! c)
+            requires c != null otherwise ArgumentNullException;
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index <= Count otherwise ArgumentOutOfRangeException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public void Insert (int index, object value)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index <= Count otherwise ArgumentOutOfRangeException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public int IndexOf (object value, int startIndex, int count)
+            requires 0 <= count otherwise ArgumentOutOfRangeException;
+            requires 0 <= startIndex otherwise ArgumentOutOfRangeException;
+            requires startIndex + count <= Count otherwise ArgumentOutOfRangeException;
+            ensures -1 <= result && result < this.Count;
+
+        public int IndexOf (object value, int startIndex)
+            requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex < this.Count otherwise ArgumentOutOfRangeException;
+            ensures -1 <= result && result < this.Count;
+
+        public int IndexOf (object value)
+            ensures -1 <= result && result < this.Count;
+
+        public IEnumerator GetEnumerator (int index, int count)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+
+        public IEnumerator GetEnumerator ();
+
+        public static ArrayList FixedSize (ArrayList! list)
+            requires list != null otherwise ArgumentNullException;
+            ensures result.IsFixedSize;
+
+        public static IList FixedSize (IList! list)
+            requires list != null otherwise ArgumentNullException;
+            ensures result.IsFixedSize;
+
+        public void CopyTo (int index, Array! array, int arrayIndex, int count)
+			requires array != null otherwise ArgumentNullException;
+			requires array.Rank == 1 otherwise ArgumentException;
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires index < this.Count otherwise ArgumentOutOfRangeException;
+            requires arrayIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires arrayIndex < array.Length otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + count <= Count otherwise ArgumentException;
+            requires  arrayIndex + count <= array.Length otherwise ArgumentException;
+
+        public void CopyTo (Array! array, int arrayIndex)
+			requires array != null otherwise ArgumentNullException;
+			requires array.Rank == 1 otherwise ArgumentException;
+            requires arrayIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires arrayIndex < this.Count otherwise ArgumentOutOfRangeException;
+
+        public void CopyTo (Array! array)
+			requires array != null otherwise ArgumentNullException;
+			requires array.Rank == 1 otherwise ArgumentException;
+
+        public bool Contains (object item);
+
+        public object Clone ();
+
+        public void Clear ()
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public int BinarySearch (object value, IComparer comparer)
+            ensures -1 <= result && result < this.Count;
+
+        public int BinarySearch (object value)
+            ensures -1 <= result && result < this.Count;
+
+        public int BinarySearch (int index, int count, object value, IComparer comparer)
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+            requires index + count <= Count otherwise ArgumentException;
+            ensures -1 <= result && result < this.Count;
+
+        public void AddRange (ICollection! c)
+			requires c != null otherwise ArgumentNullException;
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public int Add (object value)
+			requires ! this.IsReadOnly otherwise NotSupportedException;
+			requires ! this.IsFixedSize otherwise NotSupportedException;
+
+        public static ArrayList Adapter (IList! list)
+            requires list != null otherwise ArgumentNullException;
+
+        public ArrayList (ICollection! c)
+            requires c != null otherwise ArgumentNullException;
+            ensures this.Capacity == c.Count;
+            ensures this.Count == c.Count;
+
+        public ArrayList (int capacity)
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+            ensures this.Capacity == capacity;
+
+        public ArrayList ()
+			ensures this.Count == 0;
+			ensures this.Capacity == 16; // stated in the documentation
+    }
+}

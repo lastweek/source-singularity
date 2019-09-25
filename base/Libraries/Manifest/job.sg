@@ -1,0 +1,491 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Job.cs
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.GC;
+using System.Threading;
+using System.Collections;
+using System.Diagnostics;
+
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications; 
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.ConsoleApplications
+{
+    // See WaitForChildThread below
+    internal contract WaitForChildContract {
+        out message Finish();
+        state Start: one {Finish! -> Done;}
+        state Done: one {}
+    }
+
+#region JobClasses 
+    public abstract class Job {
+        private string! commandLine;
+        protected TRef<UnicodePipeContract.Imp:READY>! stdinCell;
+        public readonly int Id;
+
+        private static int IdGenerator = 0;
+
+        public string Name {
+            get { return commandLine; }
+        }
+
+        protected Job(string! command, [Claims] UnicodePipeContract.Imp:READY! stdin) {
+            this.commandLine = command;
+            this.stdinCell = new TRef<UnicodePipeContract.Imp:READY>(stdin);
+            this.Id = IdGenerator++;
+        }
+
+        public UnicodePipeContract.Imp:READY! AcquireStdin() {
+            return this.stdinCell.Acquire();
+        }
+
+        public void ReleaseStdin([Claims] UnicodePipeContract.Imp:READY! stdin) {
+            this.stdinCell.Release(stdin);
+        }
+
+
+        public string StatusName {
+            get {
+                switch (this.Status) {
+                case ProcessState.Stopped:
+                    return "Stopped";
+                case ProcessState.Suspended:
+                    return "Suspended";
+                case ProcessState.Active:
+                    return "Active";
+                default:
+                    return "Unknown";
+                }
+            }
+        }
+
+        public ProcessState Status {
+            get {
+                Process p = this.Process;
+                if (p == null) {
+                    return ProcessState.Stopped;
+                }
+                return p.State;
+            }
+        }
+
+        public int ExitCode {
+            get {
+                Process p = this.Process;
+                if (p == null) {
+                    return 0;
+                }
+                return p.ExitCode;
+            }
+        }
+
+        public virtual void Dispose() {
+        }
+
+        public abstract Process Process { get; }
+
+        public void Stop() {
+            Process p = this.Process;
+            if (p != null) {
+                p.Stop();
+            }
+        }
+
+        public void Suspend() {
+            Process p = this.Process;
+            if (p != null) {
+                p.Suspend(false);
+            }
+        }
+
+        public void Resume() {
+            Process p = this.Process;
+            if (p != null) {
+                p.Resume(false);
+            }
+        }
+    }
+
+    public class SingleProcessJob : Job {
+
+        Process process;
+
+        private static string! CommandLineString(string[]! command)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (string s in command) {
+                sb.Append(s);
+                sb.Append(' ');
+            }
+            return sb.ToString();
+        }
+
+        public SingleProcessJob(string[]! command, Process p,
+                                [Claims] UnicodePipeContract.Imp:READY! stdin)
+            : base(CommandLineString(command), stdin)
+        {
+            this.process = p;
+        }
+
+        public override Process Process {
+            get { return this.process; }
+        }
+
+        public override void Dispose() {
+            Process p = this.process;
+            if (p != null) {
+                p.Dispose(true);
+            }
+            base.Dispose();
+        }
+    }
+
+    public class PipeJob : Job {
+        Process[]! processes ;
+
+        public PipeJob(string! command,
+                       [Claims] UnicodePipeContract.Imp:READY! stdin,
+                       Process[]! processes)
+            : base(command, stdin)
+        {
+            this.processes = processes;
+        }
+
+        public override Process Process {
+            get {
+                int c = processes.Length;
+                if (c <= 0) return null;
+
+                return (Process)this.processes[c-1];
+            }
+        }
+
+        public override void Dispose() {
+            foreach (Process! p in this.processes) {
+                p.Dispose(true);
+            }
+            base.Dispose();
+        }
+    }
+
+#endregion
+    public class JobControl : ITracked {
+
+        PipeMultiplexer! outputControl;
+        Hashtable! jobs; // maps ints to jobs
+        ParameterProcessor  parameterProcessor; 
+        
+        public JobControl([Claims] PipeMultiplexer! outputControl) {
+            this.outputControl = outputControl;
+            this.jobs = new Hashtable();
+        }
+
+        public UnicodePipeContract.Imp:READY FreshStdout() {
+            expose(this) {
+                return this.outputControl.FreshClient();
+            }
+        }
+
+        private void RemoveStoppedJobs() {
+            ArrayList toRemove = new ArrayList();
+            foreach (int i in jobs.Keys) {
+                Job job = (Job)this.jobs[i];
+                assert job != null;
+                if (job.Status == ProcessState.Stopped) {
+                    job.Dispose();
+                    toRemove.Add(i);
+                }
+            }
+            foreach (int i in toRemove) {
+                Console.WriteLine("[{0}] Done.", i);
+                this.jobs.Remove(i);
+            }
+        }
+        /// <summary>
+        /// Provides enumeration of non-exited jobs
+        /// </summary>
+        public IEnumerator GetEnumerator() {
+            RemoveStoppedJobs();
+            return this.jobs.Keys.GetEnumerator();
+        }
+
+        public Job this[int i] {
+            get {
+                return (Job)this.jobs[i];
+            }
+        }
+
+        public void Add(Job! job) {
+            jobs[job.Id] = job;
+        }
+
+        public void Dispose()
+        {
+            this.outputControl.Dispose();
+        }
+
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+    }
+
+    public class ConsoleJob : ITracked
+    {
+        private Process process;
+        private string[] cmdLine; 
+        private string cmdName;
+        private Job job;
+        
+        public ConsoleJob()
+        {
+            Binder.Initialize();
+        }
+        
+        public  bool CreateProcess(  DirectoryServiceContract.Imp:Ready! ds,
+                                     JobControl! jobControl,
+                                     String[]! commandLine,
+                                     ParameterProcessor! parameterProcessor 
+                                     )
+        {
+            string path;
+            string action;
+            bool ok; 
+            
+            assert parameterProcessor != null;
+            assert jobControl != null; 
+            assert ds != null; 
+            
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) {
+                Console.WriteLine("ConsoleJob:CreateProcess: directory service endpoint not in Ready state"); 
+                return false;
+            }
+
+            //DebugStub.Break();
+            string cmdName  = commandLine[0]; 
+            if (cmdName == null) {
+                Console.WriteLine("ConsoleJob.CreateProcess: no command name given");
+                return false; 
+            }
+            Console.Write(" ConsoleJob.CreateProcess: cmd=");
+            for (int i = 0; i < commandLine.Length; i++) {
+                Console.Write("{0} ",commandLine[i]);
+            }
+            Console.Write("\n");
+            
+            try {
+                 UnicodePipeContract.Imp:READY childStdout;
+                expose(this) {
+                   childStdout = jobControl.FreshStdout();
+                }
+                if (childStdout == null) {
+                    // output multiplexer dead (which means that we shouldn't use Console.WriteLine
+                    DebugStub.WriteLine("-- Can't get new output pipe");
+                    return false;
+                }
+
+                
+                Manifest manifest = Binder.LoadManifest(ds, cmdName);
+                if (manifest != null) {
+                    if (manifest.HasParameters()) {
+                        //Console.WriteLine("Has parameters");
+                        ok = false; 
+                        action = null;
+                        if (parameterProcessor != null) {
+                            ok = parameterProcessor.ProcessParameters(commandLine,
+                                    manifest, out process, out action);
+                        }
+                        if (!ok) {
+                            //Console.WriteLine(" failed to process parameters"); 
+                            delete childStdout;
+                            return false;
+                        }
+                        else {
+                            assert process != null;
+                            Console.WriteLine(" ConsoleJob: setting endpoints for {0}, action=({1})",  cmdName, action);
+                            int result = manifest.SetEndpoints(process, action, false);
+                            if (result < 0) {
+                                Console.WriteLine("Unable to set all endpoints for this process.");
+                                delete childStdout;
+                                return false;
+                            }
+                        }
+                    }
+                    else {
+                        DebugStub.WriteLine("manifest has no parameters. Must be old style: NOT SUPPORTED");
+                        //Console.WriteLine("manifest has no parameters");
+                        //this.process = new Process(commandLine, null, 2);
+                        delete childStdout;
+                        return false;
+                    }
+                }
+                else {
+                    Console.WriteLine("'{0}' is not a command or has no manifest",
+                                        commandLine[0]);
+                    //process = new Process(commandLine, null, 2);
+                    delete childStdout;
+                    return false;
+                }
+
+                UnicodePipeContract.Imp! stdinImp;
+                UnicodePipeContract.Exp! stdinExp;
+                UnicodePipeContract.NewChannel(out stdinImp, out stdinExp);
+
+                this.job = new SingleProcessJob(commandLine, this.process, stdinImp);
+
+                this.process.SetStartupEndpoint(0, (Endpoint * in ExHeap) stdinExp);
+                this.process.SetStartupEndpoint(1, (Endpoint * in ExHeap) childStdout);
+
+                jobControl.Add(this.job);
+                ok = true; 
+
+            }
+            catch (ProcessCreateException) {
+                Console.Write("Unsupported command: {0}", commandLine[0]);
+                ok = false;
+            }
+            catch (Exception e) {
+                Console.Write("Can't create {0}: Exception '{1}' caught.", commandLine[0],
+                                e.Message);
+                 ok = false;
+            }
+            return ok;
+        }
+        
+        public bool Start()
+        {
+            if (this.process == null) return false; 
+            this.process.Start(); 
+            return true; 
+        }
+
+       
+        public  void Dispose() {
+            Job j = this.job;
+            if (j != null) {
+                j.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Copy and echo characters from shell stdin to job stdin.
+        /// Wait for either the job to exit gracefully, or for the user
+        /// to press control-c or control-z.
+        ///
+        /// Known limitation: if the child process opens
+        /// its own keyboard channel, the shell may never see the control-c
+        /// message.
+        /// </summary>
+        public   int WaitForJob()
+        {
+            if (this.job == null) {
+                DebugStub.WriteLine("ConsoleJob.WaitForJob: job is null!"); 
+                return -1; 
+            } 
+            if (this.process == null) {
+                DebugStub.WriteLine("ConsoleJob.WaitForJob: process is null!"); 
+                return -1; 
+            }
+
+            WaitForChildContract.Imp! imp;
+            WaitForChildContract.Exp! exp;
+            WaitForChildContract.NewChannel(out imp, out exp);
+
+            try {
+                WaitForChildThread.StartWaiting(job.Process,
+                                                new TRef<WaitForChildContract.Exp:Start>(exp));
+
+                while (true) {
+                    // invariant exChar != null && childStdInReady.Head(ep) ||
+                    //           exChar == null && childStdInReady.Empty
+                    switch receive {
+
+                        case imp.Finish():
+                            //Console.WriteLine("finish");
+                            int exitCode = job.ExitCode;
+                            job.Dispose();
+                            return exitCode;
+                    }
+                }
+            }
+            finally {
+                delete imp;
+            }
+        }
+
+        // TODO: better ways to wait on a child process
+        private class WaitForChildThread
+        {
+            private Process! process;
+            private TRef<WaitForChildContract.Exp:Start>! expRef;
+
+            private WaitForChildThread(Process! process,
+                                       TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                this.process = process;
+                this.expRef = expRef;
+                base();
+            }
+
+            public static void StartWaiting(Process process,
+                                            TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                if (process == null) {
+                    WaitForChildContract.Exp exp = expRef.Acquire();
+                    exp.SendFinish();
+                    delete exp;
+                    return;
+                }
+
+                WaitForChildThread wft = new WaitForChildThread(process, expRef);
+                Thread t = new Thread(new ThreadStart(wft.Wait));
+                t.Start();
+            }
+
+            private void Wait()
+            {
+                process.Join();
+                WaitForChildContract.Exp exp = expRef.Acquire();
+                exp.SendFinish();
+                delete exp;
+            }
+        }
+
+        public static JobControl! StartOutputPipeThread() {
+            UnicodePipeContract.Exp! newOutputExp;
+            UnicodePipeContract.Imp! newOutputImp;
+            UnicodePipeContract.NewChannel(out newOutputImp, out newOutputExp);
+
+            UnicodePipeContract.Imp stdOut = ConsoleOutput.Swap(newOutputImp);
+            if (stdOut == null) {
+                DebugStub.WriteLine("Shell not connected to a pipe output!");
+                throw new ApplicationException("Can't go on");
+            }
+            PipeMultiplexer pm = PipeMultiplexer.Start(stdOut, newOutputExp);
+            return new JobControl(pm);
+        }
+        
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+    }
+}

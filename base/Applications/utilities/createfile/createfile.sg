@@ -1,0 +1,251 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+
+using FileSystem.Utils;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity;
+using System.Text;
+using System.Threading;
+using System;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="create a new file", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter("filename", Mandatory=true, Position=0, HelpMessage="Name of file to create")]
+        internal string fileName;
+
+        [ BoolParameter("o", Default = false, Mandatory = false, HelpMessage = "Overwrite existing file") ]
+        internal bool overwrite;
+
+        [StringParameter("c", Default=null, Mandatory=false, HelpMessage="Initial contents of file as a text string")]
+        internal string contentsString;
+
+        [StringParameter("x", Default=null, Mandatory=false, HelpMessage="Initial contents of file as a sequence of hexadecimal bytes, such as 000FA8")]
+        internal string contentsHexString;
+
+        [StringParameter("s", Default=null, Mandatory=false,
+         HelpMessage="Size of file. Specified contents will be repeated to fill it, or all zero bits will be used if no pattern is specified.")]
+        internal string fileSize;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return FsCreateFile.AppMain(this);
+        }
+    }
+
+    public class FsCreateFile
+    {
+        private const int WriteChunkBytes = 128 * 1024;
+
+        internal static bool CreateFile(string! fileName, DirectoryServiceContract.Imp! ds)
+        {
+            ErrorCode error;
+            FileUtils.CreateFile(fileName, ds, out error);
+            bool ok = (error == ErrorCode.NoError);
+            if (!ok) {
+                Console.WriteLine("File ({0}) create failed. Reason: {1}",
+                                  fileName, SdsUtils.ErrorCodeToString(error));
+            }
+            return ok;
+        }
+
+        private static bool
+        WritePattern(FileContract.Imp! fileClient, byte[]! pattern, int size)
+        {
+            // Create a buffer to write out data and fill it with
+            // repeated copies of pattern.
+            int writeBufferBytes = size;
+            if (writeBufferBytes > WriteChunkBytes) {
+                writeBufferBytes = WriteChunkBytes;
+            }
+            writeBufferBytes -= (writeBufferBytes % pattern.Length);
+
+            byte []! writeBuffer = new byte[writeBufferBytes];
+            for (int i = 0; i < writeBuffer.Length; i += pattern.Length) {
+                Array.Copy(pattern, 0, writeBuffer, i, pattern.Length);
+            }
+
+            int end = size - (size % pattern.Length);
+            for (int i = 0; i < end; i += writeBuffer.Length) {
+                if (FileUtils.Write(fileClient, i, writeBuffer) !=
+                    writeBuffer.Length) {
+                    Console.WriteLine("Truncated write.");
+                    return false;
+                }
+            }
+
+            if (end != size &&
+                FileUtils.Write((!)fileClient, 0, (int)(size - end), end,
+                                writeBuffer) != (size - end)) {
+                Console.WriteLine("Truncated write.");
+                return false;
+            }
+            return true;
+        }
+
+        internal static bool
+        WriteToFile(string! fileName, byte[]! pattern, int size)
+        {
+            FileContract.Imp:Ready fileClient = null;
+            try {
+                ErrorCode error;
+                fileClient = FileUtils.OpenFile(fileName, out error);
+
+                if (fileClient != null) {
+                    assert error == ErrorCode.NoError;
+                    return WritePattern(fileClient, pattern, (int)size);
+                }
+                return false;
+            }
+            finally {
+                delete fileClient;
+            }
+        }
+
+        private static byte HexUpperCharToByte(char hexChar)
+        {
+            if (Char.IsDigit(hexChar)) {
+                return (byte)(int.Parse(new String(hexChar, 1)));
+            }
+            else {
+                switch (hexChar) {
+                    case 'A': return 10;
+                    case 'B': return 11;
+                    case 'C': return 12;
+                    case 'D': return 13;
+                    case 'E': return 14;
+                    case 'F': return 15;
+                }
+                throw new FormatException(String.Format("Invalid hex character '{0}'", hexChar));
+            }
+        }
+
+        private static byte[]! HexStringToBytes(string! hex)
+        {
+            foreach (char c in " \t\r\n") {
+                hex = hex.Replace(new String(c,1), "");
+            }
+            hex = hex.ToUpper();
+            if (hex.Length == 0) {
+                throw new FormatException("Hex byte string should not be empty.");
+            }
+            if ((hex.Length % 2) != 0) {
+                throw new FormatException("Hex byte string should contain an even number of digits.");
+            }
+
+            byte[]! result = new byte[hex.Length / 2];
+            for (int i = 0; i < result.Length; i++) {
+                result[i] = (byte)(HexUpperCharToByte(hex[2*i]) * 16  +
+                                   HexUpperCharToByte(hex[2*i + 1]));
+            }
+            return result;
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            if (config.contentsString != null && config.contentsHexString != null) {
+                Console.WriteLine("Can only specify at most one of the options -c or -x.");
+                return -1;
+            }
+
+            DirectoryServiceContract.Imp ds = config.nsRef.Acquire();
+            if (ds == null) {
+                Console.WriteLine("Unable to acquire handle to the Directory Service root");
+                return -1;
+            }
+            ds.RecvSuccess();
+
+            // Check if the file already exists
+            ErrorCode error;
+            FileAttributesRecord fileAttributes;
+            SdsUtils.GetAttributes((!)config.fileName, ds, out fileAttributes, out error);
+            if (config.overwrite) {
+                if (error == ErrorCode.NotFound) {
+                    Console.WriteLine("Cannot overwrite file. File does not exist.");
+                    delete ds;
+                    return -1;
+                }
+            }
+            else if (error != ErrorCode.NotFound) {
+                Console.WriteLine("Cannot create file. File already exists.");
+                delete ds;
+                return -1;
+            }
+
+            try {
+                byte[]! data = new byte[0];
+                if (config.contentsString != null) {
+                    data = Encoding.UTF8.GetBytes(config.contentsString);
+                }
+                else if (config.contentsHexString != null) {
+                    data = HexStringToBytes(config.contentsHexString);
+                }
+
+                int fileSize = 0;
+                if (config.fileSize != null) {
+                    ulong userFileSize = DiskSizeUtils.ParsePrettySizeString(config.fileSize);
+                    if (userFileSize > (ulong)Int32.MaxValue) {
+                        Console.WriteLine("File size not supported.");
+                        return -1;
+                    }
+                    fileSize = (int)userFileSize;
+                }
+                else {
+                    fileSize = data.Length;
+                }
+
+                if (fileSize > 0 && data.Length == 0) {
+                    // Fill in with zero bits
+                    data = new byte[1];
+                    data[0] = 0;
+                }
+
+                if (config.overwrite == false &&
+                    !CreateFile(config.fileName, ds)) {
+                    return -1;
+                }
+                if (fileSize != 0 &&
+                    !WriteToFile(config.fileName, data, fileSize)) {
+                    return -1;
+                }
+            }
+            catch (FormatException ex) {
+                Console.WriteLine("Invalid parameter format: " + ex.Message + ".");
+                return -1;
+            }
+            finally {
+                delete ds;
+            }
+            return 0;
+        }
+    } // class Test
+}

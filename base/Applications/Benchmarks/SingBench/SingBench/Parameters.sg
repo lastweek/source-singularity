@@ -1,0 +1,62 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+namespace Microsoft.Singularity.Applications.Singbench
+{
+    [ConsoleCategory(HelpMessage="Singularity Benchmark Application", DefaultAction=true)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<MemoryContract.Imp:Start> memoryRef;
+
+        [BoolParameter( "b", Default=false , HelpMessage="Break at start of tests.")]
+        internal bool breakIn;
+
+        [LongParameter( "i", Default=10000 , HelpMessage="Iterate tests <n> times.")]
+        internal long iterations;
+
+        [BoolParameter( "n", Default=true , HelpMessage="No GC between tests.")]
+        internal bool allowGC;
+
+        [BoolParameter( "w", Default=false , HelpMessage="Wait for key press between tests.")]
+        internal bool pauseForKeys;
+
+        [BoolParameter( "x", Default=false , HelpMessage="XML output.")]
+        internal bool xmlOutput;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SingBench.AppMain(this);
+        }
+    }
+}

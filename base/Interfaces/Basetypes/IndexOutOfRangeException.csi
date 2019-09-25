@@ -1,0 +1,17 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [RequiredByBartok]
+    public sealed class IndexOutOfRangeException : SystemException {
+        public IndexOutOfRangeException();
+        public IndexOutOfRangeException(String message);
+        public IndexOutOfRangeException(String message, Exception innerException);
+    }
+}

@@ -1,0 +1,82 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+    // The SortedList class implements a sorted list of keys and values. Entries in
+    // a sorted list are sorted by their keys and are accessible both by key and by
+    // index. The keys of a sorted list can be ordered either according to a
+    // specific IComparer implementation given when the sorted list is
+    // instantiated, or according to the IComparable implementation provided
+    // by the keys themselves. In either case, a sorted list does not allow entries
+    // with duplicate keys.
+
+    public class SortedList : IDictionary, ICloneable
+    {
+        public SortedList();
+        public SortedList(int initialCapacity);
+        public SortedList(IComparer comparer);
+        public SortedList(IComparer comparer, int capacity);
+        public SortedList(IDictionary d);
+        public SortedList(IDictionary d, IComparer comparer);
+
+        public virtual void Add(Object key, Object value);
+
+        public virtual int Capacity {
+            get;
+            set;
+        }
+
+        public virtual int Count { get; }
+
+        public virtual ICollection Keys { get; }
+        public virtual ICollection Values { get; }
+
+        public virtual bool IsReadOnly { get; }
+        public virtual bool IsFixedSize { get; }
+        public virtual bool IsSynchronized { get; }
+
+        public virtual Object SyncRoot { get; }
+
+        public virtual void Clear();
+
+        public virtual Object Clone();
+
+        public virtual bool Contains(Object key);
+        public virtual bool ContainsKey(Object key);
+        public virtual bool ContainsValue(Object value);
+
+        public virtual void CopyTo(Array array, int arrayIndex);
+
+        public virtual Object GetByIndex(int index);
+
+        IEnumerator IEnumerable.GetEnumerator();
+
+        public virtual IDictionaryEnumerator GetEnumerator();
+
+        public virtual Object GetKey(int index);
+        public virtual IList GetKeyList();
+        public virtual IList GetValueList();
+
+        public virtual Object this[Object key] {
+            get;
+            set;
+        }
+
+        public virtual int IndexOfKey(Object key);
+        public virtual int IndexOfValue(Object value);
+
+        public virtual void RemoveAt(int index);
+        public virtual void Remove(Object key);
+
+        public virtual void SetByIndex(int index, Object value);
+
+        public static SortedList Synchronized(SortedList list);
+        public virtual void TrimToSize();
+    }
+}

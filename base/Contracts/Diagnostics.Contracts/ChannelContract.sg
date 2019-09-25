@@ -1,0 +1,47 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for the Singularity Channel diagnostics service
+//
+
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Diagnostics.Contracts
+{
+    public rep struct ChannelInfo {
+        public int ChannelId;
+        public int ImpProcessId;
+        public int ExpProcessId;
+        public int MessagesDeliveredToImp;
+        public int MessagesDeliveredToExp;
+    }
+
+    public contract ChannelContract : ServiceContract
+    {
+        public const string ModuleName = "/status/channels";
+
+        // Signal our identity
+        out message Ready();
+
+        in message GetChannels();
+        out message Channels(ChannelInfo[]! in ExHeap channels);
+
+        in message GetChannelStats();
+        out message ChannelStats(long msgsSent, long bytesSent, long channelsCreated);
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            GetChannels? -> Channels! -> ReadyState;
+            GetChannelStats? -> ChannelStats! -> ReadyState;
+        }
+    }
+}

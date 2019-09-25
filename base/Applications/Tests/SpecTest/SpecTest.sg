@@ -1,0 +1,144 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Test of various Spec# and Boogie features.
+//
+using System;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Io;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Contracts;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="SpecTest [options]  Test of Spec# and Boogie",
+                     DefaultAction=true)]
+    [Verify(false)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain()
+        {
+            return new SpecTest().Run();
+        }
+    }
+
+    [Verify(false)]
+    internal contract Con1
+    {
+        out message M1();
+        in message M2();
+        state S1 : one
+        {
+            M1! -> M2? -> S1;
+        }
+    }
+
+    public class SpecTest
+    {
+        public int Run()
+        {
+            Console.WriteLine();
+            PrintHello();
+            int[]! arr = new int[] {3, 4, 5};
+            bool b1 = bsearch(4, arr);
+            assert arr[1] == 4;
+            assert b1;
+            bool b2 = bsearch(6, arr);
+            assert !b2;
+            Console.WriteLine(b1);
+            Console.WriteLine(b2);
+            MakeCon();
+            G();
+            return 0;
+        }
+
+        void T1(Con1.Imp:S1! imp, Con1.Exp:S1! exp)
+        {
+        }
+
+        void F(int i)
+            requires i == 0;
+        {
+        }
+
+        void G()
+        {
+            F(0);
+        }
+
+        bool bsearch(int x, int[]! arr)
+            requires forall { int i in ( 0 : arr.Length - 1); arr[i] <= arr[i+1] };
+            ensures forall { int i in ( 0 : arr.Length - 1); arr[i] <= arr[i+1] };
+            ensures forall { int i in ( 0 : arr.Length); old(arr)[i] == arr[i]};
+            ensures result == exists { int i in (0 : arr.Length); arr[i] == x};
+        {
+            return bsearchr(x, arr, 0, arr.Length);
+        }
+
+        bool bsearchr(int x, int[]! arr, int left, int right)
+            requires 0 <= left;
+            requires left <= right;
+            requires right <= arr.Length;
+            requires forall { int i in ( 0 : arr.Length - 1); arr[i] <= arr[i+1] };
+            ensures forall { int i in ( 0 : arr.Length - 1); arr[i] <= arr[i+1]};
+            ensures forall { int i in ( 0 : arr.Length); old(arr)[i] == arr[i]};
+            ensures result == exists { int i in (left : right); arr[i] == x};
+        {
+            if (right == left) return false;
+            else if (right == left + 1) return arr[left] == x;
+            else {
+                int mid = left / 2 + (right + 1) / 2;
+                return bsearchr(x, arr, left, mid) || bsearchr(x, arr, mid, right);
+            }
+        }
+
+
+        [Verify(false)]
+        void PrintHello()
+        {
+            Console.WriteLine("This is SpecTest");
+        }
+
+        [Verify(false)]
+        void T2(Con1.Imp:S1! imp, Con1.Exp:S1! exp)
+        {
+            exp.SendM1();
+            imp.RecvM1();
+            imp.SendM2();
+            exp.RecvM2();
+        }
+
+        [Verify(false)]
+        void MakeCon()
+        {
+            Con1.Imp !imp;
+            Con1.Exp !exp;
+            Con1.NewChannel(out imp, out exp);
+            T1(imp, exp);
+            T2(imp, exp);
+            exp.SendM1();
+            imp.RecvM1();
+            imp.SendM2();
+            exp.RecvM2();
+            delete imp;
+            delete exp;
+        }
+    }
+}

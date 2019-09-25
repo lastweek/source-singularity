@@ -1,0 +1,184 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IntelDeviceChannel.sg
+//
+#define DEBUG_INTEL
+
+using Microsoft.SingSharp;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Drivers.Network.Intel
+{
+    internal class IntelDeviceChannel
+    {
+        Intel! device;
+        TRef<NicDeviceContract.Exp:Start> channel;
+
+        private IntelDeviceChannel(
+            Intel! theDevice,
+            [Claims] NicDeviceContract.Exp:Start! channel
+            )
+            ensures this.channel != null;
+        {
+            this.device  = theDevice;
+            this.channel = new TRef<NicDeviceContract.Exp:Start>(channel);
+            base();
+        }
+
+        private bool IoRunningMessageLoop(NicDeviceContract.Exp! ep)
+        {
+            Intel.DebugPrint("Intel 8254x entered {0} state",
+                             __arglist(ep.CurrentState()));
+
+            device.StartIo();
+
+            for (;;) {
+                switch receive {
+                    case ep.GiveTxPacketsToDevice(txFifo):
+                        device.PopulateTsmtBuffer(txFifo);
+                        device.DrainTsmtBuffer(txFifo);
+                        ep.SendTakeTxPacketsFromDevice(txFifo);
+                        break;
+
+                    case ep.GiveRxPacketsToDevice(rxFifo):
+                        device.PopulateRecvBuffer(rxFifo);
+                        device.DrainRecvBuffer(rxFifo);
+                        ep.SendTakeRxPacketsFromDevice(rxFifo);
+                        break;
+
+                    case ep.StopIO():
+                        device.StopIo();
+                        return true;
+
+                    case ep.ChannelClosed():
+                        device.StopIo();
+                        return false;
+                }
+            }
+            return false;
+        }
+
+        private bool IoConfigureMessagePump(NicDeviceContract.Exp! ep)
+        {
+            Intel.DebugPrint("Intel 8254x entered {0} state",
+                             __arglist(ep.CurrentState()));
+
+            for (;;) {
+                switch receive {
+                    case ep.RegisterForEvents(eventExp):
+                        ep.SendSuccess();
+                        eventExp.SendSuccess();
+                        device.SetEventRelay(new IntelEventRelay(eventExp));
+                        break;
+
+                    case ep.SetChecksumProperties(checksum):
+                        if ((checksum & ~Intel.ChecksumSupport) == 0) {
+                            // TODO: Running with checksumming on anyway...
+                            // but should be responsive to this request.
+                            ep.SendSuccess();
+                        }
+                        else {
+                            ep.SendUnsupportedChecksumProperties();
+                        }
+                        break;
+
+                    case ep.StartIO():
+                        ep.SendAckStartIO();
+                        return IoRunningMessageLoop(ep);
+
+                    case ep.ChannelClosed():
+                        return false;
+
+                    case unsatisfiable:
+                        DebugStub.Break();
+                        break;
+                }
+            }
+
+            return false;
+        }
+
+        private void ReadyMessagePump()
+            requires this.channel != null;
+        {
+            NicDeviceContract.Exp! ep = channel.Acquire();
+            this.channel = null;
+
+            assert ep.InState(NicDeviceContract.Start.Value);
+            ep.SendSuccess();
+            assert ep.InState(NicDeviceContract.READY.Value);
+
+            try {
+                for (bool run = true; run == true;) {
+                    switch receive {
+                        case ep.GetDeviceProperties(dp):
+                            GetDeviceProperties(dp);
+                            ep.SendDeviceProperties(dp);
+                            break;
+
+                        case ep.ConfigureIO():
+                            ep.SendAckConfigureIO();
+                            run = IoConfigureMessagePump(ep);
+                            break;
+
+                        case ep.ChannelClosed():
+                            run = false;
+                            break;
+
+                        case unsatisfiable:
+                            DebugStub.Break();
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete ep;
+            }
+        }
+
+        private void GetDeviceProperties(NicDeviceProperties*! in ExHeap dp)
+        {
+            expose (dp) {
+                delete dp->DriverName;
+                dp->DriverName = Bitter.FromString2(device.DriverName);
+
+                delete dp->DriverVersion;
+                dp->DriverVersion = Bitter.FromString2(device.DriverVersion);
+
+                dp->MacType    = MacType.Ethernet;
+                delete dp->MacAddress;
+                dp->MacAddress =
+                    Bitter.FromByteArray(device.getMacAddress.GetAddressBytes());
+
+                dp->ChecksumSupport         = Intel.ChecksumSupport;
+                dp->MtuBytes                = Intel.MtuBytes;
+                dp->MaxRxFragmentsPerPacket = Intel.MaxRxFragmentsPerPacket;
+                dp->MaxTxFragmentsPerPacket = Intel.MaxTxFragmentsPerPacket;
+                dp->MaxRxPacketsInDevice    = Intel.MaxRxPackets;
+                dp->MaxTxPacketsInDevice    = Intel.MaxTxPackets;
+            }
+        }
+
+        internal static bool
+        CreateThread(Intel! device, [Claims] NicDeviceContract.Exp:Start! ep)
+        {
+            IntelDeviceChannel idc = new IntelDeviceChannel(device, ep);
+            Thread thread = new Thread(new ThreadStart(idc.ReadyMessagePump));
+            thread.Start();
+            return true;
+        }
+    }
+}

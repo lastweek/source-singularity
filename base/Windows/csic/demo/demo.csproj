@@ -1,0 +1,185 @@
+<VisualStudioProject>
+    <CSHARP
+        ProjectType = "Local"
+        ProductVersion = "7.10.3077"
+        SchemaVersion = "2.0"
+        ProjectGuid = "{CA2E2A34-8E68-42EA-BCA7-BB892526DF5C}"
+    >
+        <Build>
+            <Settings
+                ApplicationIcon = ""
+                AssemblyKeyContainerName = ""
+                AssemblyName = "demo"
+                AssemblyOriginatorKeyFile = ""
+                DefaultClientScript = "JScript"
+                DefaultHTMLPageLayout = "Grid"
+                DefaultTargetSchema = "IE50"
+                DelaySign = "false"
+                OutputType = "WinExe"
+                PreBuildEvent = ""
+                PostBuildEvent = ""
+                RootNamespace = ""
+                RunPostBuildEvent = "OnBuildSuccess"
+                StartupObject = ""
+            >
+                <Config
+                    Name = "Debug"
+                    AllowUnsafeBlocks = "false"
+                    BaseAddress = "285212672"
+                    CheckForOverflowUnderflow = "false"
+                    ConfigurationOverrideFile = ""
+                    DefineConstants = ""
+                    DocumentationFile = ""
+                    DebugSymbols = "true"
+                    FileAlignment = "4096"
+                    IncrementalBuild = "true"
+                    NoStdLib = "false"
+                    NoWarn = ""
+                    Optimize = "false"
+                    OutputPath = ".\"
+                    RegisterForComInterop = "false"
+                    RemoveIntegerChecks = "false"
+                    TreatWarningsAsErrors = "false"
+                    WarningLevel = "1"
+                />
+                <Config
+                    Name = "Release"
+                    AllowUnsafeBlocks = "false"
+                    BaseAddress = "285212672"
+                    CheckForOverflowUnderflow = "false"
+                    ConfigurationOverrideFile = ""
+                    DefineConstants = ""
+                    DocumentationFile = ""
+                    DebugSymbols = "false"
+                    FileAlignment = "4096"
+                    IncrementalBuild = "true"
+                    NoStdLib = "false"
+                    NoWarn = ""
+                    Optimize = "false"
+                    OutputPath = "bin\"
+                    RegisterForComInterop = "false"
+                    RemoveIntegerChecks = "false"
+                    TreatWarningsAsErrors = "false"
+                    WarningLevel = "1"
+                />
+            </Settings>
+            <References>
+                <Reference
+                    Name = "System"
+                    AssemblyName = "System"
+                    HintPath = "..\..\..\..\WINDOWS\Microsoft.NET\Framework\v1.0.3705\System.dll"
+                />
+                <Reference
+                    Name = "System.Data"
+                    AssemblyName = "System.Data"
+                    HintPath = "..\..\..\..\..\WINDOWS\Microsoft.NET\Framework\v1.1.4322\System.Data.dll"
+                />
+                <Reference
+                    Name = "System.Drawing"
+                    AssemblyName = "System.Drawing"
+                    HintPath = "..\..\..\..\..\WINDOWS\Microsoft.NET\Framework\v1.1.4322\System.Drawing.dll"
+                />
+                <Reference
+                    Name = "System.Windows.Forms"
+                    AssemblyName = "System.Windows.Forms"
+                    HintPath = "..\..\..\..\..\WINDOWS\Microsoft.NET\Framework\v1.1.4322\System.Windows.Forms.dll"
+                />
+                <Reference
+                    Name = "System.XML"
+                    AssemblyName = "System.Xml"
+                    HintPath = "..\..\..\..\..\WINDOWS\Microsoft.NET\Framework\v1.1.4322\System.XML.dll"
+                />
+                <Reference
+                    Name = "base"
+                    AssemblyName = "base"
+                    HintPath = "..\base\base.dll"
+                />
+                <Reference
+                    Name = "bind"
+                    AssemblyName = "bind"
+                    HintPath = "..\bind\bind.dll"
+                />
+                <Reference
+                    Name = "rewrite"
+                    AssemblyName = "rewrite"
+                    HintPath = "..\rewrite\rewrite.dll"
+                />
+                <Reference
+                    Name = "emit"
+                    AssemblyName = "emit"
+                    HintPath = "..\emit\emit.dll"
+                />
+                <Reference
+                    Name = "Bartok.Utility"
+                    AssemblyName = "Bartok.Utility"
+                    HintPath = "..\Debug\Bartok.Utility.dll"
+                />
+                <Reference
+                    Name = "Bartok.Datatype"
+                    AssemblyName = "Bartok.Datatype"
+                    HintPath = "..\Debug\Bartok.Datatype.dll"
+                />
+                <Reference
+                    Name = "Bartok.DebugInfo"
+                    AssemblyName = "Bartok.DebugInfo"
+                    HintPath = "..\Debug\Bartok.DebugInfo.dll"
+                />
+                <Reference
+                    Name = "Bartok.MSIL"
+                    AssemblyName = "Bartok.MSIL"
+                    HintPath = "..\Debug\Bartok.MSIL.dll"
+                />
+                <Reference
+                    Name = "ilgen"
+                    AssemblyName = "ilgen"
+                    HintPath = "..\ilgen\ilgen.dll"
+                />
+                <Reference
+                    Name = "source"
+                    AssemblyName = "source"
+                    HintPath = "..\source\source.dll"
+                />
+                <Reference
+                    Name = "typecheck"
+                    AssemblyName = "typecheck"
+                    HintPath = "..\typecheck\typecheck.dll"
+                />
+                <Reference
+                    Name = "Compiler"
+                    AssemblyName = "Compiler"
+                    HintPath = "..\Compiler\Compiler.dll"
+                />
+                <Reference
+                    Name = "parser"
+                    AssemblyName = "parser"
+                    HintPath = "..\parser\parser.dll"
+                />
+            </References>
+        </Build>
+        <Files>
+            <Include>
+                <File
+                    RelPath = "demo.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+                <File
+                    RelPath = "form.cs"
+                    SubType = "Form"
+                    BuildAction = "Compile"
+                />
+                <File
+                    RelPath = "form.resx"
+                    DependentUpon = "form.cs"
+                    BuildAction = "EmbeddedResource"
+                />
+                <File
+                    RelPath = "ListBoxWriter.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+            </Include>
+        </Files>
+    </CSHARP>
+</VisualStudioProject>
+

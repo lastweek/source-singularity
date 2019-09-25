@@ -1,0 +1,76 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RoutingContract.gs
+//
+//  Note:   Contract definition for interacting with the IP Routing module
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace NetStack.Contracts
+{
+    public rep struct Network
+    {
+        public uint network;
+        public uint netmask;
+    }
+
+    public rep struct RouteEntry
+    {
+        public Network network;
+        public uint gateway;
+        public uint ifaddr;
+        public uint metric;
+        public uint tag;
+    }
+
+    public contract RoutingContract : ServiceContract
+    {
+        // This is the name under which the routing module
+        // registers itself with the name server.
+        public const string ModuleName = "/service/routing";
+
+        // Response messages
+        out message RoutingTable(RouteEntry[] in ExHeap routes);
+        out message Err();
+        out message NoRouteFound();
+        out message Route(RouteEntry route);
+        out message OK();
+
+        // Request messages
+        in message GetRoutingTable();
+        in message AddRoute(Network dest, uint gateway, uint ifaddr);
+
+        in message DeleteRoute(Network dest);
+
+        // Find routes towards the indicated destination or network
+        in message FindHostRoute(uint dest);
+        in message FindNetRoute(Network dest);
+
+        // Find a route specific to this target host
+        in message FindSpecificHostRoute(uint dest);
+
+        // Find a route to this exact network
+        in message FindSpecificNetRoute(Network dest);
+
+        out message Ready();
+        override state Start : Ready! -> ReadyState;
+
+        state ReadyState : one
+        {
+            GetRoutingTable? -> RoutingTable! -> ReadyState;
+            AddRoute? -> (Err! or OK!) -> ReadyState;
+            DeleteRoute? -> (NoRouteFound! or OK!) -> ReadyState;
+
+            FindHostRoute? -> (Route! or NoRouteFound!) -> ReadyState;
+            FindNetRoute? -> (Route! or NoRouteFound!) -> ReadyState;
+            FindSpecificHostRoute? -> (Route! or NoRouteFound!) -> ReadyState;
+            FindSpecificNetRoute? -> (Route! or NoRouteFound!) -> ReadyState;
+        }
+    }
+}

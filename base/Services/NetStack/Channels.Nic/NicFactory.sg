@@ -1,0 +1,71 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File: NicManager.sg1
+//
+//  Note:
+//
+//  When a network device comes up, it registers with the
+//  NicManager, who places it in the namespace under
+//  /dev/nicX and advertises its existence with the netstack
+//  runtime core.  The netstack runtime core will be responsible
+//  for notifying the NicManager when the device has gone away.
+//
+
+using System;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+
+using NetStack.Contracts;
+
+namespace NetStack.Channels.Nic
+{
+    public class NicFactory
+    {
+        private static void ProbeNic(DirectoryServiceContract.Imp! ns,
+                                     int number)
+        {
+            string! nicName = (!)String.Format("/dev/nic{0}", number);
+
+            NicDeviceContract.Imp! imp;
+            NicDeviceContract.Exp! exp;
+            NicDeviceContract.NewChannel(out imp, out exp);
+
+            Tracing.Log(Tracing.Debug, "Looking up {0}", nicName);
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Bind(nicName, ns, exp, out errorOut);
+            if (!ok) {
+                delete imp;
+                Tracing.Log(Tracing.Debug, "Error! reason {0}",
+                            SdsUtils.ErrorCodeToString(errorOut));
+            }
+            else {
+                Tracing.Log(Tracing.Debug, "Found {0}", nicName);
+                Nic.CreateAndRegister(imp, nicName);
+                Tracing.Log(Tracing.Debug, "Done with {0}", nicName);
+            }
+        }
+
+        public static void Probe()
+        {
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+            try {
+                for (int i = 0; i < 10; i++) {
+                    ProbeNic(ns, i);
+                }
+            }
+            finally {
+                delete ns;
+            }
+        }
+    }
+}

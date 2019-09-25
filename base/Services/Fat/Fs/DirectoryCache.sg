@@ -1,0 +1,39 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DirectoryCache.sg
+//
+//  Note:
+//
+//  This cache is for recently closed directories.  Opened
+//  directories are not stored here.  This cache exists because
+//  opening a directory entails a non-trivial amount of work.
+//
+//  Directories do not have a fixed size and this cache should
+//  probably take this into account.
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal class DirectoryCache
+    {
+        FsObjectCache! cache;
+
+        internal DirectoryCache(uint capacity)
+        {
+            this.cache = new FsObjectCache(capacity);
+        }
+
+        internal void Add(int firstCluster, Directory! directory)
+        {
+            cache.Add(firstCluster, directory);
+        }
+
+        internal Directory Get(int firstCluster)
+        {
+            return (Directory)cache.Get(firstCluster);
+        }
+    }
+}

@@ -1,0 +1,313 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+    public abstract class Node
+    {
+        // base class for all node types in name space
+
+        private string nodeName;
+
+        /// <summary>
+        /// The policy object controlling the access to this node
+        /// </summary>
+        private AclCore! core;
+        private IAclPolicy! policy;
+        /// <summary>
+
+        /// ACLs here are not persistent.
+        /// </summary>
+        private Acl acl = Acl.nullAcl;
+        private IAclRule rule = null;
+
+        private readonly NodeType nodeType;
+
+        protected Node(NodeType nodeType, string! name, AclCore! core, IAclPolicy! policy)
+        {
+            this.nodeType = nodeType;
+            this.nodeName = name;
+            this.core = core;
+            this.policy = policy;
+        }
+
+        protected Node(NodeType nodeType, string! name, Node! parent)
+        {
+            this.nodeType = nodeType;
+            this.nodeName = parent.nodeName + "/" + name;
+            this.core = parent.core;
+            this.policy = parent.policy;
+        }
+
+        private Acl GetObjectAcl()
+        {
+            lock (this) {
+                if (acl.val != null) {
+                    if (rule == null || rule.Valid)
+                        return acl;
+                }
+                acl = policy.LookupAndExpand(nodeName, out rule);
+                return acl;
+            }
+        }
+
+        public bool CheckAccess(AccessMode! permission, Principal pr)
+        {
+            Acl acl = GetObjectAcl();
+            return core.CheckAccess(acl, permission, pr);
+        }
+
+        public bool CheckAccess(AccessMode! permission, Principal pr, Endpoint*! in ExHeap ep)
+        {
+            Acl acl = GetObjectAcl();
+            if (!core.CheckAccess(acl, permission, pr))
+                return false;
+            Principal pr2 = AclCore.EndpointPeer(ep);
+            if (pr.Equal(pr2))
+                return true;
+            return core.CheckAccess(acl, permission, AclCore.EndpointPeer(ep));
+        }
+
+        public Acl GetInstanceAcl()
+        {
+            lock (this) {
+                if (rule == null)
+                    return acl;
+            }
+            return Acl.nullAcl;
+        }
+
+        public void SetInstanceAcl(Acl acl)
+        {
+            lock (this) {
+                this.acl = acl;
+                this.rule = null;
+            }
+        }
+
+        public string! FullName { get { return nodeName; } }
+
+        /// <returns>
+        /// null on success, the service argument if it failed.
+        /// </returns>
+        public abstract ServiceContract.Exp Bind(StringBuilder! p,
+                                                 Principal pr,
+                                                 out bool success,
+                                                 out bool linkFound,
+                                                 out ErrorCode error,
+                                                 out bool reparse,
+                                                 out string link,
+                                                 [Claims]
+                                                 ServiceContract.Exp! service);
+
+
+        /// CreateAndBindFile
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract FileContract.Imp CreateAndBindFile(StringBuilder! p,
+                                                           Principal pr,
+                                                           out bool linkFound,
+                                                           out ErrorCode error,
+                                                           out bool reparse,
+                                                           out string link
+                                                           );
+
+        /// CreateDirectory
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool CreateDirectory(StringBuilder! p,
+                                             Principal pr,
+                                             out bool linkFound,
+                                             out ErrorCode error,
+                                             out bool reparse,
+                                             out string link
+                                             );
+
+        /// CreateFile
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool CreateFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        );
+
+        /// CreateFile
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool CreateLink(StringBuilder! p,
+                                        Principal pr,
+                                        string! value,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        );
+        /// DeleteDirectory
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool DeleteDirectory(StringBuilder! p,
+                                             Principal pr,
+                                             out bool linkFound,
+                                             out ErrorCode error,
+                                             out bool reparse,
+                                             out string link
+                                             );
+        /// DeleteFileusing Microsoft.SingSharp;
+
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool DeleteFile(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        );
+
+        /// DeleteLink
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool DeleteLink(StringBuilder! p,
+                                        Principal pr,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        );
+
+
+        /// GetLinkValue
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool GetLinkValue(StringBuilder! p,
+                                          Principal pr,
+                                          out bool linkFound,
+                                          out ErrorCode error,
+                                          out bool reparse,
+                                          out string link
+                                          );
+
+        /// <returns>
+        /// The endpoint on success, null, if it fails.
+        /// </returns>
+        public abstract ServiceProviderContract.Imp:Start Deregister(StringBuilder! path,
+                                                               Principal pr,
+                                                               DirectoryServiceContract.Exp! ep,
+                                                               out bool linkFound,
+                                                               out ErrorCode error,
+                                                               out bool reparse,
+                                                               out string link
+                                                               );
+
+
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool GetAttributes(StringBuilder! p,
+                                           Principal pr,
+                                           out bool linkFound,
+                                           out ErrorCode error,
+                                           out bool reparse,
+                                           out string link,
+                                           out long length,
+                                           out NodeType nodeType
+                                           );
+
+
+
+        /// <returns>
+        /// null on success, the imp argument if it failed.
+        /// </returns>
+        public abstract NotifyContract.Imp Notify(StringBuilder! pathSpec,
+                                                  Principal pr,
+                                                  string! pattern,
+                                                  bool sendExisting,
+                                                  out bool linkFound,
+                                                  out ErrorCode error,
+                                                  out bool reparse,
+                                                  out string link,
+                                                  [Claims] NotifyContract.Imp! notifyImp);
+
+        /// QueryACL
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool QueryACL(StringBuilder! p,
+                                      Principal pr,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link,
+                                      out Acl acl
+                                      );
+
+
+        /// Register
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract ServiceProviderContract.Imp Register(StringBuilder! p,
+                                      Principal pr,
+                                      [Claims]ServiceProviderContract.Imp! sp,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      );
+
+        /// StoreACL
+        /// <returns>
+        /// true if  success false if it fails.
+        /// </returns>
+        public abstract bool StoreACL(StringBuilder! p,
+                                      Principal pr,
+                                      Acl acl,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      );
+
+
+        public NodeType Type
+        {
+            get
+            {
+                return this.nodeType;
+            }
+        }
+    }
+}

@@ -1,0 +1,50 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Kernel\YourLibrary\YourLibrary.csproj
+
+Note:   This is the template for a kernel-mode assembly.
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!--
+  Provide the relative walk-up path to $(SINGULARITY_ROOT)\Paths.targets.
+  This is annoying, but is necessary in order to get VS builds to work,
+  without requiring that you set environment variables for VS.
+
+  This is only applicable for people who launch VS from a "clean"
+  environment (e.g., not a shell which has run setenv.cmd).
+  -->
+  <Import Project="..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <AssemblyName>YourAssemblyNameHere</AssemblyName>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Foo.sg"/>
+    <Compile Include="..."/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Declare references to the projects you need, for example: -->
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Security.Contracts\Security.Contracts.Kernel.csproj" />
+    <ProjectReference Include="..."/>
+    <!--
+    Note that references to assemblies that are built separately for kernel and app (such as many of
+    the contract libraries) should refer to the correct project.   For example, kernel assemblies should refer
+    to ...\Directory.Contracts.Kernel.csproj, NOT ...\Directory.Contracts.csproj.  If you get this wrong,
+    your build will either fail (good), or succeed but fail at ngen or runtime (bad).
+    -->
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+</Project>

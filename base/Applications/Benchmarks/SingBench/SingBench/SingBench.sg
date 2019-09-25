@@ -1,0 +1,1306 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Applications.Singbench
+{
+    public class SingBench
+    {
+        private static bool atRing3;
+
+#if x64_PERF
+        [CLSCompliant(false)]
+        public struct PerfEvtSel
+        {
+            // Bits and Flags
+            public const uint CNT_MASK  = 0xff000000;
+            public const uint INV       = 0x00800000;
+            public const uint EN        = 0x00400000;
+            public const uint INT       = 0x00100000;
+            public const uint PC        = 0x00080000;
+            public const uint E         = 0x00040000;
+            public const uint OS        = 0x00020000;
+            public const uint USR       = 0x00010000;
+            public const uint UNIT_MASK = 0x0000ff00;
+            public const uint SELECTOR  = 0x000000ff;
+
+            // Common setting: Count all, but don't interrupt,
+            public const uint COUNT     = (EN | PC | OS | USR);
+
+            // Selector values.
+            public const uint DtlbL1MissL2Hit                   = 0x45; // Speculative
+            public const uint DtlbL1MissL2Miss                  = 0x46; // Speculative
+            public const uint CyclesNotHalted                   = 0x76;
+            public const uint RequestsToL2Cache                 = 0x7d;
+            public const uint ItlbL1MissL2Hit                   = 0x84;
+            public const uint ItlbL1MissL2Miss                  = 0x85;
+            public const uint RetiredInstructions               = 0xc0;
+            public const uint RetiredBranchInstructions         = 0xc2;
+            public const uint RetiredBranchesMispredicted       = 0xc3;
+            public const uint RetiredBranchesTaken              = 0xc4;
+            public const uint CyclesInterruptsMasked            = 0xcd;
+            public const uint CyclesInterruptsBlocked           = 0xce;
+        }
+
+        public static void Reset(uint pmc, ulong value)
+        {
+            // Clear the event selector.
+            Processor.WriteMsr(0xc0010000 + pmc, 0);
+            // Clear the performance counter.
+            Processor.WriteMsr(0xc0010004 + pmc, 0);
+            // Enable the event selector.
+            Processor.WriteMsr(0xc0010000 + pmc, value);
+        }
+
+        public static string EvtSelToString(ulong value)
+        {
+            switch (value & 0xff) {
+                case PerfEvtSel.DtlbL1MissL2Hit:            return "DTLB_L2_Hit";
+                case PerfEvtSel.DtlbL1MissL2Miss:           return "DTBL_L2_Miss";
+                case PerfEvtSel.CyclesNotHalted:            return "CyclesNotHalted";
+                case PerfEvtSel.RequestsToL2Cache:          return "TLB_L2_Requests";
+                case PerfEvtSel.ItlbL1MissL2Hit:            return "ITLB_L2_Hit";
+                case PerfEvtSel.ItlbL1MissL2Miss:           return "ITLB_L2_Miss";
+                case PerfEvtSel.RetiredInstructions:        return "Retired_Inst.";
+                case PerfEvtSel.RetiredBranchInstructions:  return "Branches";
+                case PerfEvtSel.RetiredBranchesMispredicted:return "Br_Mispredicted";
+                case PerfEvtSel.RetiredBranchesTaken:       return "Br_Taken";
+                case PerfEvtSel.CyclesInterruptsMasked:     return "Ints_Masked (cyc)";
+                case PerfEvtSel.CyclesInterruptsBlocked:    return "Ints_Blocked (cyc)";
+                default:
+                    return String.Format("{0:x16}", value);
+            }
+        }
+
+        private static ulong x64_i0, x64_p0;
+        private static ulong x64_i1, x64_p1;
+        private static ulong x64_i2, x64_p2;
+        private static ulong x64_i3, x64_p3;
+#endif
+
+        private static void DualWriteLine(string message)
+        {
+            Console.WriteLine(message);
+            DebugStub.WriteLine(message);
+        }
+
+        private static int peerIterations;
+        private static AutoResetEvent peerReady;
+        private static AutoResetEvent peerBegin;
+        private static AutoResetEvent peerFinish;
+
+        private static AutoResetEvent waitPerfEvent1;
+        private static AutoResetEvent waitPerfEvent2;
+
+        private static long startWaitPerfClock;
+        private static ulong startCount;
+        private static ulong endCount;
+
+        private static bool allowGC      = false;
+        private static bool pauseForKeys = false;
+        private static bool breakIn      = false;
+
+
+        //////////////////////////////////////////////// CycleCount Read Test.
+        //
+        public static void DoGetCycleCountPerf(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    Processor.GetCycleCount();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("Read CC");
+        }
+
+        /////////////////////////////////////////////////// Interlocked Tests.
+        //
+        public static void DoInterlockedIncrementPerf(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                int test = 0;
+                for (int i = 0; i < iterations; i++) {
+                    Interlocked.Increment(ref test);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("Lock Inc");
+        }
+
+        public static void DoInterlockedExchangeSucceedPerf(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                int test = 0;
+                for (int i = 0; i < iterations; i++) {
+                    Interlocked.CompareExchange(ref test, 0, 0);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("Lock Ex Succ");
+        }
+
+        public static void DoInterlockedExchangeFailPerf(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                int test = 0;
+                for (int i = 0; i < iterations; i++) {
+                    Interlocked.CompareExchange(ref test, 0, 1);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("Lock Ex Fail");
+        }
+
+        ////////////////////////////////////////////// Interrupt Disable Test.
+        //
+        public static void DoDisableIrqPerf(int iterations)
+        {
+            if (atRing3) {
+                // Skip this test; it would cause us to fault.
+                return;
+            }
+
+            PerfSnap snap = new PerfSnap();
+
+            bool saved = Processor.DisableLocalPreemption();
+            //  We no longer disable interrupts for this test.
+            //  When the scheduler implements the SIP scheduling,
+            //  we can enable this back after switching to the local preemption
+            //System.Diagnostics.Debug.Assert(saved == true);
+
+            try {
+                snap.Start();
+                for (int i = 0; i < iterations; i++) {
+                    Processor.RestoreLocalPreemption(saved);
+                    saved = Processor.DisableLocalPreemption();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+                Processor.RestoreLocalPreemption(saved);
+            }
+
+            snap.Display("Irq SVE/RSTR");
+        }
+
+        //////////////////////////////////////////////////////////// ABI Test.
+        //
+        public static void DoAbiPerf(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    Thread.NativeNoOp();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+            snap.Display("Nothing");
+
+            if (breakIn) {
+                DebugStub.Break();
+            }
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    // This ought to be approximately a minimal ABI call
+                    // Thread.SpinWait(0);
+                    // XXX Thread.SpinWait doesn't traverse ABI for the time
+                    // being.
+                    //DebugStub.Break();
+                    ProcessService.GetCyclesPerSecond();
+                    //DebugStub.Break();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("ABI Call");
+
+#if false
+            ulong min = UInt64.MaxValue;
+            ulong max = UInt64.MinValue;
+            ulong beg = UInt64.MinValue;
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    // This ought to be approximately a minimal ABI call
+                    // Thread.SpinWait(0);
+                    // XXX Thread.SpinWait doesn't traverse ABI for the time
+                    // being.
+                    beg = Processor.CycleCount;
+                    ProcessService.GetCyclesPerSecond();
+                    beg = Processor.CycleCount - beg;
+                    if (max < beg) {
+                        max = beg;
+                    }
+                    if (min > beg) {
+                        min = beg;
+                    }
+                    if (i == 50) {
+                        max = beg;
+                    }
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("ABI Call 2");
+            Console.WriteLine("beg:{0,12:d}, min:{1,12:d}, max:{2,12:d}",
+                              beg, min, max);
+#endif
+            ProcessService.GetCyclesPerSecond();
+        }
+
+        /////////////////////////////////////////////////// DateTime.Now.
+        //
+        public static void DoDateTimeNow(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+            DateTime now = new DateTime();
+
+            snap.Start();
+            for (int i = 0; i < iterations; i++) {
+                now = DateTime.Now;
+            }
+            snap.Finish(iterations);
+            snap.Display("DateTime.Now");
+
+            if (now.Ticks == 0) {
+                Console.WriteLine("It's the end of the world as we know it.");
+            }
+        }
+
+        /////////////////////////////////////////////////// Thread Yield Test.
+        //
+        public static void DoYieldPerf(int iterations)
+        {
+            ulong before, after;
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    Thread.Yield();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("Yield");
+
+            Console.WriteLine("Measuring Thread.Yield() breakdown");
+            for (int i = 0; i < iterations; i++) {
+                ProcessService.Waypoint0();
+                Thread.Yield();
+                ProcessService.WaypointDone();
+                if (i == 512) {
+                    ProcessService.WaypointDump();
+                }
+            }
+        }
+
+        /////////////////////////////////////////////////////// Wait/Set Test.
+        //
+        private static void WaitPerfThread()
+        {
+            int iterations = peerIterations;
+            peerReady.Set();
+
+            for (int i = 0; i < iterations; i++) {
+                waitPerfEvent1.WaitOne();
+                //DebugStub.Break();
+                waitPerfEvent2.Set();
+            }
+        }
+
+        public static void DoWaitPerf(int iterations)
+        {
+            int doit = iterations / 2;
+            peerIterations = doit;
+            waitPerfEvent1  = new AutoResetEvent(false);
+            waitPerfEvent2  = new AutoResetEvent(false);
+
+            Thread peer = new Thread(new ThreadStart(WaitPerfThread));
+            peer.Start();
+            peerReady.WaitOne();
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < doit; i++) {
+                    //DebugStub.Break();
+                    waitPerfEvent1.Set();
+                    waitPerfEvent2.WaitOne();
+                    //DebugStub.Break();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            peer.Join();
+            snap.Display("Wait/Set");
+        }
+
+        //==============START SEND/RECV TESTS==================================
+
+        /////////////////////////////////////////// Receive Performance Tests.
+        //
+        public contract ReceivePerfTest
+        {
+            in  message Req(int x);
+            out message Resp(int x);
+
+            state Start: Req? -> Resp! -> Start;
+        }
+
+        private static TRef<ReceivePerfTest.Exp:Start> receivePerfEndpoint;
+
+        private static void ReceivePerfThread()
+        {
+            ReceivePerfTest.Exp e1 = receivePerfEndpoint.Acquire();
+            int arg;
+
+            peerReady.Set();
+
+            for (;;) {
+                e1.RecvReq(out arg);
+                if (arg == -1) {
+                    break;
+                }
+                e1.SendResp(arg);
+            }
+
+            delete e1;
+        }
+
+        public static void DoReceivePerf(int iterations)
+        {
+            int doit = iterations / 2;
+
+            // Make a new channel.
+            ReceivePerfTest.Imp! e2;
+            ReceivePerfTest.Exp! e1;
+            ReceivePerfTest.NewChannel(out e2, out e1);
+
+            // Transfer ownership of endpoint to peer thread.
+            receivePerfEndpoint = new TRef<ReceivePerfTest.Exp:Start>(e1);
+
+            // Create our peer thread.
+            Thread peer = new Thread(new ThreadStart(ReceivePerfThread));
+            peer.Start();
+            peerReady.WaitOne();
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+
+            if (breakIn) {
+                DebugStub.Break();
+            }
+
+            try {
+                int arg;
+                for (int i = 0; i < doit; i++) {
+                    arg = i;
+                    e2.SendReq(arg);
+                    e2.RecvResp(out arg);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            e2.SendReq(-1);
+            delete e2;
+            peer.Join();
+
+            snap.Display("Send/Recv");
+        }
+
+        ////////////////////////////// Receive Performance Tests with buffer
+        //
+        public contract ReceivePerf2Test
+        {
+            in  message Req(int remain, byte[]! in ExHeap buffer);
+            out message Resp(byte[]! in ExHeap buffer);
+
+            state Start: Req? -> Resp! -> Start;
+        }
+
+        private static TRef<ReceivePerf2Test.Exp:Start> receivePerf2Endpoint;
+
+        private static void ReceivePerf2Thread()
+        {
+            ReceivePerf2Test.Exp e1 = receivePerf2Endpoint.Acquire();
+            int arg;
+            byte[]! in ExHeap buffer;
+
+            peerReady.Set();
+
+            for (;;) {
+                e1.RecvReq(out arg, out buffer);
+                e1.SendResp(buffer);
+                if (arg == 0) {
+                    break;
+                }
+            }
+
+            delete e1;
+        }
+
+        public static void DoReceivePerf2(int iterations, int messageBytes)
+        {
+            // Make a new channel.
+            ReceivePerf2Test.Imp! e2;
+            ReceivePerf2Test.Exp! e1;
+            ReceivePerf2Test.NewChannel(out e2, out e1);
+
+            // Transfer ownership of endpoint to peer thread.
+            receivePerf2Endpoint = new TRef<ReceivePerf2Test.Exp:Start>(e1);
+
+            // Create our peer thread.
+            Thread peer = new Thread(new ThreadStart(ReceivePerf2Thread));
+            peer.Start();
+            peerReady.WaitOne();
+
+            byte[]! in ExHeap buffer = new [ExHeap] byte[messageBytes];
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+
+            if (breakIn) {
+                DebugStub.Break();
+            }
+
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    e2.SendReq(iterations - i - 1, buffer);
+                    e2.RecvResp(out buffer);
+                }
+            }
+            finally {
+                // Factor of two for one-sided send-receive only
+                snap.Finish(2 * iterations);
+                delete buffer;
+            }
+
+            delete e2;
+            peer.Join();
+
+            if (messageBytes < 1024) {
+                snap.Display(String.Format("Send/RecvB-{0}", messageBytes));
+            }
+            else {
+                snap.Display(String.Format("Send/RecvB-{0}K",
+                                           messageBytes / 1024));
+            }
+        }
+
+        //////////////////////////////////////////// Switch Performance Tests.
+        //
+        public contract SwitchPerfTest
+        {
+            in  message Req(int x);
+            out message Resp(int x);
+
+            state Start: Req? -> Resp! -> Start;
+        }
+
+        private static TRef<SwitchPerfTest.Exp:Start> switchPerfEndpoint;
+
+        public static void SwitchPerfThread()
+        {
+            SwitchPerfTest.Exp e = switchPerfEndpoint.Acquire();
+            ESet<SwitchPerfTest.Exp:Start> s = new ESet<SwitchPerfTest.Exp:Start>();
+            s.Add(e);
+
+            peerReady.Set();
+
+            for (int i = 0; i != -1;) {
+                switch receive {
+                    case ep.Req(arg) in s:
+                        i = arg;
+                        if (i != -1) {
+                            ep.SendResp(i);
+                        }
+                        s.Add(ep);
+                        break;
+                    case ep.ChannelClosed() in s:
+                        s.Add(ep);
+                        break;
+                }
+            }
+            s.Dispose();
+        }
+
+        public static void DoSwitchPerf(int iterations)
+        {
+            int doit = iterations / 2;
+
+            // Make a new channel.
+            SwitchPerfTest.Imp! e;
+            SwitchPerfTest.Exp! p;
+            SwitchPerfTest.NewChannel(out e, out p);
+
+            // Transfer ownership of endpoint to peer thread.
+            switchPerfEndpoint = new TRef<SwitchPerfTest.Exp:Start>(p);
+
+            // Create our peer thread.
+            Thread peer = new Thread(new ThreadStart(SwitchPerfThread));
+            peer.Start();
+            peerReady.WaitOne();
+
+            if (breakIn) {
+                DebugStub.Break();
+            }
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+
+            ESet<SwitchPerfTest.Imp:Start> s = new ESet<SwitchPerfTest.Imp:Start>();
+
+            try {
+                e.SendReq(0);
+                s.Add(e);
+                for (int i = 0; i < doit; i++) {
+                    switch receive {
+                        case ep.Resp(arg) in s:
+                            i = arg;
+                            if (i == doit - 1) {
+                                ep.SendReq(-1);
+                            }
+                            else {
+                                ep.SendReq(i + 1);
+                            }
+                            s.Add(ep);
+                            break;
+                        case ep.ChannelClosed() in s:
+                            delete ep;
+                            break;
+                    }
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+                s.Dispose();
+            }
+
+            peer.Join();
+
+            snap.Display("Send/Switch");
+        }
+
+        //==============END SEND/RECV TESTS==================================
+
+        //////////////////////////////////////////// Create Directory Channel.
+        //
+        public static void DoPageAllocPerf(int iterations)
+        {
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    UIntPtr addr = PageTableService.Allocate(0x1000);
+                    PageTableService.Free(addr, 0x1000);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("PageAlloc");
+        }
+
+        ////////////////////////////////////////////////////// Create Channel.
+        //
+        public static void DoChannelCreatePerf(int iterations)
+        {
+            // Make a new channel.
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    SwitchPerfTest.Imp! e2;
+                    SwitchPerfTest.Exp! e1;
+                    SwitchPerfTest.NewChannel(out e2, out e1);
+                    delete e1;
+                    delete e2;
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("CreateChan");
+        }
+
+        //////////////////////////////////////////// Create Directory Channel.
+        //
+        public static void DoNamespaceChannelPerf(int iterations)
+        {
+            // Make a new channel.
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    // get NS endpoint
+                    DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+                    delete ns;
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+
+            snap.Display("NameChan");
+        }
+
+        /////////////////////////////////////////// Connect Through Directory.
+        //
+        public static void DoBindPerf(int iterations)
+        {
+            // Make a new channel.
+            PerfSnap snap = new PerfSnap();
+
+            // get NS endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    MemoryContract.Exp! exp;
+                    MemoryContract.Imp! imp;
+                    MemoryContract.NewChannel(out imp, out exp);
+                    ErrorCode error;
+                    try {
+                        SdsUtils.Bind(MemoryContract.ModuleName, ns, exp, out error);
+                    }
+                    finally {
+                    }
+                    delete imp;
+                }
+            }
+            finally {
+                delete ns;
+                snap.Finish(iterations);
+            }
+            snap.Display("NameBind");
+        }
+
+        /////////////////////////////////////////// TRef acquire/release test.
+        //
+        public static void DoTRefPerf(int iterations)
+        {
+            // Make a new channel.
+            PerfSnap snap = new PerfSnap();
+
+            // get NS endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            TRef<DirectoryServiceContract.Imp:Start> t = new TRef<DirectoryServiceContract.Imp:Start>(ns);
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                DirectoryServiceContract.Imp n = t.Acquire();
+                t.Release(n);
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+            snap.Display("Acquire/rel");
+        }
+
+        //////////////////////////////////////////////////////////////////////
+
+        private contract SelectTest {
+            in message A();
+            in message B();
+            in message C();
+            out message Ack();
+
+            state Start: one {
+                A? -> Ack! -> Start;
+                B? -> Ack! -> Start;
+                C? -> Ack! -> Start;
+            }
+        }
+
+        private static TRef<SelectTest.Imp:Start>[] impEndpoints;
+
+        const int NSELECT=99; // must be a multiple of 3
+        const int SELECT_ITERATIONS = 1000;
+
+        public static void SelectThread()
+        {
+            for (int i = 0; i < SELECT_ITERATIONS; i++) {
+                for (int j = 0; j < NSELECT; j += 3) {
+                    SelectTest.Imp imp = ((!)impEndpoints[j]).Acquire();
+
+                    imp.SendA();
+
+                    ((!)impEndpoints[j]).Release(imp);
+                }
+
+                for (int j = 1; j < NSELECT; j += 3) {
+                    SelectTest.Imp imp = ((!)impEndpoints[j]).Acquire();
+
+                    imp.SendB();
+
+                    ((!)impEndpoints[j]).Release(imp);
+                }
+
+                for (int j = 2; j < NSELECT; j += 3) {
+                    SelectTest.Imp imp = ((!)impEndpoints[j]).Acquire();
+
+                    imp.SendC();
+
+                    ((!)impEndpoints[j]).Release(imp);
+                }
+
+                for (int j = 0; j < NSELECT; j++) {
+                    SelectTest.Imp imp = ((!)impEndpoints[j]).Acquire();
+
+                    imp.RecvAck();
+
+                    ((!)impEndpoints[j]).Release(imp);
+                }
+            }
+
+            for (int i = 0; i < NSELECT; i++) {
+                SelectTest.Imp ep = ((!)impEndpoints[i]).Acquire();
+                delete ep;
+            }
+        }
+
+        private static void ActuallySelect(SelectTest.Exp! a,
+                                           SelectTest.Exp! b,
+                                           SelectTest.Exp! c,
+                                           int expect,
+                                           ref bool failed)
+        {
+            int got;
+            switch receive {
+                case c.RecvA():
+                    c.SendAck();
+                    got = 0;
+                    break;
+
+                case a.RecvB() && b.RecvC():
+                    a.SendAck();
+                    b.SendAck();
+                    got = 1;
+                    break;
+
+                case a.RecvA() && b.RecvC():
+                    a.SendAck();
+                    b.SendAck();
+                    got = 2;
+                    break;
+
+                case unsatisfiable:
+                    got = -1;
+                    break;
+            }
+
+            //Console.WriteLine("[1] expected {0}, got {1}", expect, got);
+            if (expect != got) {
+                failed = true;
+            }
+        }
+
+        public static int DoSelectB()
+        {
+            TRef<SelectTest.Exp:Start>[] expEndpoints = new TRef<SelectTest.Exp:Start>[NSELECT];
+            impEndpoints = new TRef<SelectTest.Imp:Start> [NSELECT];
+
+            for (int i = 0; i < NSELECT; i++) {
+                SelectTest.Imp! imp;
+                SelectTest.Exp! exp;
+                SelectTest.NewChannel(out imp, out exp);
+                expEndpoints[i] = new TRef<SelectTest.Exp:Start>(exp);
+                impEndpoints[i] = new TRef<SelectTest.Imp:Start>(imp);
+            }
+
+            Thread t1 = new Thread(new ThreadStart(SelectThread));
+            t1.Start();
+
+            bool failed = false;
+            for (int i = 0; i < SELECT_ITERATIONS; i++) {
+                for (int j = 0; j < NSELECT - 2; j++) {
+                    SelectTest.Exp a = ((!)expEndpoints[j+0]).Acquire();
+                    SelectTest.Exp b = ((!)expEndpoints[j+1]).Acquire();
+                    SelectTest.Exp c = ((!)expEndpoints[j+2]).Acquire();
+
+                    ActuallySelect(a, b, c, 0, ref failed);
+
+                    ((!)expEndpoints[j+0]).Release(a);
+                    ((!)expEndpoints[j+1]).Release(b);
+                    ((!)expEndpoints[j+2]).Release(c);
+                }
+            }
+
+            if (failed) {
+                Console.WriteLine("[1] Done (FAILED).");
+                return 1;
+            }
+            else {
+                Console.WriteLine("[1] Done (Success).");
+                return 0;
+            }
+        }
+
+        private static void ActuallySelect(ESet<SelectTest.Exp:Start> eset,
+                                           int expect,
+                                           ref bool failed)
+        {
+            if (eset == null) return;
+
+            int got;
+            switch receive {
+                case a.RecvA() in eset:
+                    got = 0;
+                    a.SendAck();
+                    eset.Add(a);
+                    break;
+
+                case b.RecvB() in eset:
+                    got = 1;
+                    b.SendAck();
+                    eset.Add(b);
+                    break;
+
+                case c.RecvC() in eset:
+                    got = 2;
+                    c.SendAck();
+                    eset.Add(c);
+                    break;
+
+                case unsatisfiable:
+                    got = -1;
+                    break;
+            }
+
+            //            Console.WriteLine("[1] expected {0}, got {1}", expect, got);
+            if (expect != got) {
+                //Console.WriteLine("[1] expected {0}, got {1}", expect, got);
+                failed = true;
+            }
+        }
+
+        public static int DoSelectSet()
+        {
+            int i;
+
+            Console.WriteLine("Measuring performance of set select ...");
+
+            impEndpoints = new TRef<SelectTest.Imp:Start> [NSELECT];
+
+            ESet<SelectTest.Exp:Start> eset = new ESet<SelectTest.Exp:Start>();
+
+            for (i = 0; i < NSELECT; i++) {
+                SelectTest.Imp! imp;
+                SelectTest.Exp! exp;
+                SelectTest.NewChannel(out imp, out exp);
+                impEndpoints[i] = new TRef<SelectTest.Imp:Start>(imp);
+
+                eset.Add(exp);
+            }
+
+            Console.WriteLine("  Created set of {0} endpoints", NSELECT);
+
+            Thread t1 = new Thread(new ThreadStart(SelectThread));
+
+            Console.WriteLine("  Starting client thread");
+            t1.Start();
+
+            bool failed = false;
+
+            Console.WriteLine("  Starting server loop - {0} iterations", SELECT_ITERATIONS);
+            for (i = 0; i < SELECT_ITERATIONS; i++) {
+                ActuallySelect(eset, 0, ref failed);
+                ActuallySelect(eset, 0, ref failed);
+                ActuallySelect(eset, 0, ref failed);
+                ActuallySelect(eset, 1, ref failed);
+                ActuallySelect(eset, 2, ref failed);
+                ActuallySelect(eset, 0, ref failed);
+                ActuallySelect(eset, 2, ref failed);
+                ActuallySelect(eset, 0, ref failed);
+                ActuallySelect(eset, 2, ref failed);
+                ActuallySelect(eset, 0, ref failed);
+                ActuallySelect(eset, 1, ref failed);
+                ActuallySelect(eset, 2, ref failed);
+                // ActuallySelect(eset, -1, ref failed);
+            }
+            eset.Dispose();
+            if (failed) {
+                Console.WriteLine("[1] Done (FAILED).");
+                return 1;
+            }
+            else {
+                Console.WriteLine("[1] Done (Success).");
+                return 0;
+            }
+        }
+
+        //////////////////////////////////////////// Switch Performance Tests.
+        //
+        public static void ChildThread()
+        {
+        }
+
+        public static void DoThreadPerf(int iterations)
+        {
+            ThreadStart start = new ThreadStart(ChildThread);
+
+            if (breakIn) {
+                DebugStub.Break();
+            }
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    Thread peer = new Thread(start);
+                    peer.Start();
+                    peer.Join();
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+            snap.Display("CreateThread");
+        }
+
+        ///////////////////////////////////////////////// Process Create Test.
+        //
+        public static void DoCreateProcess(int iterations)
+        {
+            ulong baseline = 0;
+            ulong created = 0;
+            ulong started = 0;
+            ulong exited = 0;
+            Process[] process = new Process[iterations];
+
+            string[] args = new string[2];
+            args[0] = "testpe";
+            args[1] = "!"; // Special flag to not notify debugger.
+
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            try {
+                for (int i = 0; i < iterations; i++) {
+                    baseline = Processor.CycleCount;
+
+                    //
+                    // Time process creation.
+                    //
+                    process[i] = new Process(args);
+                    created = Processor.CycleCount;
+
+                    //
+                    // Time process start.
+                    //
+                    ((!)process[i]).Start();
+                    started = Processor.CycleCount;
+
+                    //
+                    // Time process execution.
+                    //
+                    ((!)process[i]).Join();
+                    exited = Processor.CycleCount;
+                }
+            }
+            finally {
+                snap.Finish(iterations);
+            }
+            snap.Display("CreateProc");
+
+            for (int i = 0; i < iterations; i++) {
+                if (process[i] != null) {
+                    ((!)process[i]).Dispose(true);
+                }
+            }
+
+            //
+            // Tell the world.
+            //
+            DualWriteLine(String.Format("  Tested process: {0}", args[0]));
+            DualWriteLine(String.Format("    Create process: {0,15:d} cycles", created - baseline));
+            DualWriteLine(String.Format("    Start process:  {0,15:d} cycles", started - created));
+            DualWriteLine(String.Format("    Run process:    {0,15:d} cycles", exited - started));
+            DualWriteLine(String.Format("    Total:          {0,15:d} cycles", exited - baseline));
+            DualWriteLine(String.Format("    Process.Create: {0,15:d} cycles", started - baseline));
+        }
+
+        //////////////////////////////////////////////////////////////////////
+        //
+        public static int GetTrace()
+        {
+
+#if false
+            Tracing.LogEntry * lstart;
+            Tracing.LogEntry * llimit;
+            Tracing.LogEntry ** lhead;
+            byte * tstart;
+            byte * tlimit;
+            byte ** thead;
+
+            Tracing.GetTracingHeaders(out lstart, out llimit, out lhead,
+                                      out tstart, out tlimit, out thead);
+            Console.WriteLine("Log:  {0:X} {1:X}, {2:X}, {3:X}",
+                              (UIntPtr)lstart, (UIntPtr)llimit, (UIntPtr)lhead, (UIntPtr)(*lhead));
+            Console.WriteLine("Text: {0:X} {1:X}, {2:X}, {3:X}",
+                              (UIntPtr)tstart, (UIntPtr)tlimit, (UIntPtr)thead, (UIntPtr)(*thead));
+#endif
+            return 0;
+        }
+
+        public static void ClearEnvironment(MemoryContract.Imp:ReadyState! imp)
+        {
+            if (allowGC) {
+#if false
+                long nothing;
+                // We don't do this for now because we can't
+                // guarantee the concurrent GC running in the
+                // kernel has finished.
+                imp.SendCollectGarbage();
+                imp.RecvMemory(out nothing);
+#endif
+                GC.Collect();
+            }
+        }
+
+        public static void Pause()
+        {
+            if (pauseForKeys) {
+                Console.WriteLine("Press any key to continue.");
+                Console.Read();
+            }
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            int iterations = (int) config.iterations;
+
+            // Temporaries for command-line parsing
+            bool xmlOutput = config.xmlOutput;
+            allowGC = config.allowGC;
+            pauseForKeys = config.pauseForKeys;
+            breakIn = config.breakIn;
+
+            if (Processor.AtKernelPrivilege()) {
+                atRing3 = false;
+                DualWriteLine("Singbench running at KERNEL privilege");
+            }
+            else {
+                atRing3 = true;
+                DualWriteLine("Singbench running at USER privilege");
+            }
+
+            peerReady = new AutoResetEvent(false);
+            peerBegin = new AutoResetEvent(false);
+            peerFinish = new AutoResetEvent(false);
+
+            MemoryContract.Imp impMem = config.memoryRef.Acquire();
+            if (impMem == null) {
+                throw new ApplicationException("Error: Unable to bind to " +
+                                               MemoryContract.ModuleName);
+            }
+
+            impMem.RecvReady();
+
+            PerfSnap.SetOptions(atRing3, xmlOutput);
+
+            GetTrace();
+
+            Console.WriteLine("Benchmarks: entered");
+
+            try {
+                ClearEnvironment(impMem);
+                DoGetCycleCountPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoInterlockedIncrementPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoInterlockedExchangeSucceedPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoInterlockedExchangeFailPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoDisableIrqPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoAbiPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoDateTimeNow(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoYieldPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoWaitPerf(1000);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoReceivePerf(1024);
+                Pause();
+
+                for (int i = 1; i <= 65536; i *= 2) {
+                    ClearEnvironment(impMem);
+                    DoReceivePerf2(iterations, i);
+                    Pause();
+                }
+
+                // Child-channel tests
+                ClearEnvironment(impMem);
+                Child.ReceivePerf(1000);
+                Pause();
+
+                for (int i = 1; i <= 65536; i *= 2) {
+                    ClearEnvironment(impMem);
+                    Child.ReceivePerf2(iterations, i);
+                    Pause();
+                }
+
+                ClearEnvironment(impMem);
+                DoSwitchPerf(1000);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoPageAllocPerf(1000);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoThreadPerf(100);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoChannelCreatePerf(1000);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoNamespaceChannelPerf(100);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoTRefPerf(iterations);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoBindPerf(1000);
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoCreateProcess(10);
+
+#if false
+                Pause();
+                // select receive code currently explodes with a null pattern
+                //DoChannelPerf(1000, false);
+                // Pause();
+
+                Console.WriteLine("Skipping select recv test");
+                //DoChannelPerf(1000, true);
+                // Pause();
+                Console.WriteLine("Skipping select recv / alloc test");
+
+                //DoSelectSet();
+                // Pause();
+                Console.WriteLine("Skipping select set test");
+
+                ClearEnvironment(impMem);
+                DoSelectB();
+                Pause();
+
+                ClearEnvironment(impMem);
+                DoSelectSet();
+#endif
+            }
+            catch (Exception e) {
+                Console.WriteLine("Caught {0}", e.Message);
+                // How do I work out where an exception was thrown from these days?
+                //Console.WriteLine(e.StackTrace);
+                delete impMem;
+                return 1;
+            }
+            delete impMem;
+            return 0;
+        }
+    }
+}

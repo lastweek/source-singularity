@@ -1,0 +1,107 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity
+{
+    public class ImpatientWatcher : IDisposable
+    {
+        readonly Thread! workerThread;
+        bool ownerIsDone;
+        bool workerIsRunning;
+        string! currentStep;
+        readonly string! description;
+        readonly string! dbgprefix;
+        TimeSpan stepTime;
+
+        public void Dispose()
+        {
+            bool workerWasRunning;
+            lock (this) {
+                ownerIsDone = true;
+                workerWasRunning = workerIsRunning;
+                if (workerIsRunning) {
+                    Monitor.Pulse(this);
+                }
+            }
+
+            if (workerWasRunning)
+                workerThread.Join();
+        }
+
+        public void NextStep(string! step, int stepTimeMilliseconds)
+        {
+            NextStep(step, TimeSpan.FromMilliseconds(stepTimeMilliseconds));
+        }
+
+        public void NextStep(string! step, TimeSpan stepTime)
+        {
+            lock (this) {
+                this.currentStep = step;
+                this.stepTime = stepTime;
+                Monitor.Pulse(this);
+            }
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public ImpatientWatcher(string! description, string! firstStep, int stepTimeMilliseconds)
+            : this(description, firstStep, TimeSpan.FromMilliseconds(stepTimeMilliseconds))
+        {            
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public ImpatientWatcher(string! description, string! firstStep, TimeSpan stepTime)
+        {
+            this.workerThread = new Thread(WorkerRoutine);
+            this.ownerIsDone = false;
+            this.workerIsRunning = true;
+            this.currentStep = firstStep;
+            this.description = description;
+            this.stepTime = stepTime;
+            this.dbgprefix = String.Format("ImpatientWatcher({0}): ", description);
+            base();
+            workerThread.Start();
+        }
+
+        private void WorkerRoutine()
+        {
+            lock (this) {
+                for (;;) {
+                    if (ownerIsDone) {
+                        // Dbg("owner is done, exiting");
+                        workerIsRunning = false;
+                        return;
+                    }
+
+                    string! step = currentStep;
+                    // Dbg("waiting for step '{0}'...", step);
+
+                    if (Monitor.Wait(this, stepTime)) {
+                        // owner pulsed lock before we gave up
+                        // Dbg("step '{0}' has finished", step);
+                    }
+                    else {
+                        // timeout expired before owner pulsed
+                        Dbg("step '{0}' has timed out, still waiting...", step);
+                    }
+                }
+            }
+        }
+
+        void Dbg(string! line)
+        {
+            DebugStub.WriteLine(dbgprefix + line);
+        }
+        
+        void Dbg(string! format, params object[]! args)
+        {
+            Dbg(String.Format(format, args));
+        }
+
+    }
+}

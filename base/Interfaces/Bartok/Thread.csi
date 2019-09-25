@@ -1,0 +1,47 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.GCs;
+using System.Runtime.CompilerServices;
+
+namespace System.Threading
+{
+    [CCtorIsRunDuringStartup]
+    [RequiredByBartok]
+    public sealed class Thread
+    {
+        // These fields store the base and limit for the bottommost
+        // stack chunk for this thread.  If the thread is executing,
+        // the current base and limit are stored in the processor
+        // context structure; when the thread is switched out, those
+        // values are stored here.
+        internal UIntPtr asmStackBase;
+        internal UIntPtr asmStackLimit;
+
+        internal UIntPtr asmWriteBarrierOverflow; // Slot for overflow
+        [AccessedByRuntime("referenced from halforgc.asm")]
+        internal unsafe void *asmWriteBarrierPtr; // Used in dynamic WB
+        [AccessedByRuntime("referenced from halforgc.asm")]
+        internal unsafe void *asmWriteBarrierPtrLimit;
+
+        [RequiredByBartok]
+        private static void setLastError();
+
+        [RequiredByBartok]
+        private static Thread GetCurrentThreadNative();
+
+        [NoStackLinkCheck]
+        [RequiredByBartok]
+        private static int GetCurrentThreadIndex();
+
+        [RequiredByBartok]
+        private unsafe delegate uint ThreadProc(void *param);
+    }
+}
+
+
+

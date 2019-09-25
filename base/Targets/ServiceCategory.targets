@@ -1,0 +1,71 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+Service executables should import this file.
+
+The distro builder automatically builds a list of all service projects (projects that import 
+this file), and will add service definitions to the system manifest (metadata.xml).  When the 
+system boots, the kernel passes these service entries to the Service Manager.  So, if your
+project imports this file, then your service project will automatically be picked up by the
+Service Manager at boot time.
+
+Projects that import this file MUST define the following properties:
+
+  * ServiceActivationMode - The Service Manager uses this value to control when it should
+    start instances of the service (service processes).  Valid values:
+      
+    * Manual - The Service Manager never starts are stops processes.  Instead, management
+      clients send requests to the Service Manager to start and stop processes.
+      
+    * AlwaysActive - The Service Manager always attempts to keep an instance of the service
+      running.  If a process terminates, the Service Manager will create a new instance, etc.
+      
+    * Demand - The Service Manager does not immediately create any processes for the service.
+      Instead, processes are created when clients connect to the service, as needed.
+
+These properties are optional:
+
+  * ApplyServiceTransform - (boolean) By default, ServiceCategory.targets will automatically
+    include a source file in the build process that declares the CTR Transform attribute,
+    which applies the service resource transform to the project.  If a project does not want
+    this transform applied, it can set this property to 'false' to inhibit this.
+
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <ApplicationCategory>Service</ApplicationCategory>    
+    <OutputItemAdditionalMetadata>$(OutputItemAdditionalMetadata);ServiceActivationMode=$(ServiceActivationMode)</OutputItemAdditionalMetadata>
+    <CheckPropertiesDependsOn>$(CheckPropertiesDependsOn);CheckServiceProperties</CheckPropertiesDependsOn>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Services\Transforms\ServiceTransform.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+
+    <Compile Condition="'$(ApplyServiceTransform)'!='false'"
+      Include="$(SINGULARITY_ROOT)\Services\Transforms\ApplyServiceTransform.sg"/>
+  </ItemGroup>
+  
+  <Target Name="CheckServiceProperties">
+    <Error Condition="'$(ServiceActivationMode)' == ''"
+           Text="All service projects are required to set the ServiceActivationMode property.  This project does not."/>
+    <Error Condition="'$(ServiceActivationMode)' != 'AlwaysActive'
+           and '$(ServiceActivationMode)' != 'Demand'
+           and '$(ServiceActivationMode)' != 'Manual'
+           and '$(ServiceActivationMode)' != ''"
+           Text="The value '$(ServiceActivationMode)' is not a valid choice for the ServiceActivationMode property.  Valid values are Manual, Demand, and AlwaysActive."/>
+  </Target>
+
+  <Import Project="App.targets"/>
+  
+</Project>

@@ -1,0 +1,43 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+    // A simple Queue of objects.  Internally it is implemented as a circular
+    // buffer, so Enqueue can be O(n).  Dequeue is O(1).
+    public class Queue : ICollection, ICloneable {
+
+        public Queue();
+        public Queue(int capacity);
+        public Queue(int capacity, float growFactor);
+        public Queue(ICollection col);
+
+        public virtual int Count { get; }
+
+        public virtual Object Clone();
+
+        public virtual bool IsSynchronized { get; }
+
+        public virtual Object SyncRoot { get; }
+
+        public virtual void Clear();
+        public virtual void CopyTo(Array array, int index);
+        public virtual void Enqueue(Object obj);
+
+        public virtual IEnumerator GetEnumerator();
+
+        public virtual Object Dequeue();
+        public virtual Object Peek();
+        public static Queue Synchronized(Queue queue);
+        public virtual bool Contains(Object obj);
+
+        public virtual Object[] ToArray();
+
+        public virtual void TrimToSize();
+    }
+}

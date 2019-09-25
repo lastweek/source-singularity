@@ -1,0 +1,80 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   The common driver-code for web apps that are compiled to standalone
+//          executables
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using System.Web;
+using System.Threading;
+
+namespace Microsoft.Singularity.WebApps
+{
+    public class Driver
+    {
+#if THREAD_POOL
+        private const int workerThreads = 16;
+        private const int maxWorkItems = workerThreads * 128;
+#endif
+
+        internal class ThreadHelper
+        {
+            private IHttpRequest! m_Request;
+            private IWebApp! m_WebApp;
+
+            public ThreadHelper(IWebApp! webApp, IHttpRequest! request)
+            {
+                m_Request = request;
+                m_WebApp = webApp;
+            }
+
+            public void Run()
+            {
+                m_WebApp.ProcessRequest(m_Request);
+            }
+        }
+
+        public static void ServiceChannel(IWebApp! webApp, WebAppContract.Exp:ProcessingState! conn)
+        {
+#if THREAD_POOL
+            WebAppsThreadPool threadPool =
+                new WebAppsThreadPool(workerThreads, maxWorkItems);
+#endif
+
+            while (true) {
+                switch receive {
+                    case conn.Process(HttpRequestContract.Imp:Start! newConn) :
+                    {
+                        // Wrap the new connection
+                        RemoteHttpRequest request = new RemoteHttpRequest(newConn);
+                        ThreadHelper threadHelper = new ThreadHelper(webApp, request);
+
+                        // Service the request on a new thread
+#if THREAD_POOL
+                        threadPool.QueueUserWorkItem(
+                            new ThreadStart(threadHelper.Run));
+#else
+                        Thread newThread = new Thread(new ThreadStart(threadHelper.Run));
+                        newThread.Start();
+#endif
+
+                        // Ack
+                        conn.SendOK();
+                    }
+                    break;
+                    case conn.ChannelClosed():
+                        return;
+                }
+            }
+        }
+    }
+}

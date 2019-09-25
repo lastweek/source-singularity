@@ -1,0 +1,59 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for HTTP requests processed by web apps
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.WebApps.Contracts
+{
+    public contract HttpRequestContract
+    {
+        // Information requests
+        in message GetUriPath(); // e.g., "/foo/bar.html"
+        in message GetQueryString();
+        in message GetVerb(); // e.g., "GET"
+        in message GetHeader(char[]! in ExHeap name);
+        in message GetBody();
+        in message GetRemoteAddress();
+
+        // Response-data pushes
+        in message SendStatus(int code, char[]! in ExHeap description);
+        in message SendHeader(char[]! in ExHeap name, char[]! in ExHeap value); // Can call repeatedly
+        in message SendBodyData(byte[]! in ExHeap data); // Can call repeatedly
+
+        in message Done();
+
+        // Responses
+        out message UriPath(char[]! in ExHeap vPath);
+        out message QueryString(char[] in ExHeap queryString);
+        out message Verb(char[]! in ExHeap verb);
+        out message HeaderValue(char[] in ExHeap val);
+        out message BodyData(byte[] in ExHeap body);
+        out message RemoteAddress(char[]! in ExHeap address);
+        out message OK();
+
+        state Start : one
+        {
+            GetUriPath? -> UriPath! -> Start;
+            GetQueryString? -> QueryString! -> Start;
+            GetVerb? -> Verb! -> Start;
+            GetHeader? -> HeaderValue! -> Start;
+            GetBody? -> BodyData! -> Start;
+            GetRemoteAddress? -> RemoteAddress! -> Start;
+
+            SendStatus? -> OK! -> Start;
+            SendHeader? -> OK! -> Start;
+            SendBodyData? -> OK! -> Start;
+
+            Done? -> Completed;
+        }
+
+        state Completed : {} // Nothing is permissible here
+    }
+}

@@ -1,0 +1,60 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\Paths.targets"/>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\RuntimePaths.target"/>
+
+  <PropertyGroup>
+    <AssemblyName>Corlib.Contracts</AssemblyName>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>ENDPOINT_STRUCT;SINGULARITY;PTR_SIZE_32;_NEW_CLASSLOADER;NODEFAULTLIB;NOOWNERSHIPCHECK</DefineConstants>
+    <ShadowAssemblyPath>$(APPRUNTIMEDIR)\Corlib.dll</ShadowAssemblyPath>
+    <NoStdLib>false</NoStdLib>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <OutputPath>$(APPRUNTIMEDIR)</OutputPath>
+    <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    <SpecSharpContractsDir>$(SINGULARITY_ROOT)\Kernel\SpecSharp.Contracts</SpecSharpContractsDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(SpecSharpContractsDir)\Microsoft.Singularity.Processor.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\Microsoft.Singularity.Xml.XmlNode.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Collections.ArrayList.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Collections.DictionaryEntry.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Collections.Hashtable.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Collections.SortedList.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Boolean.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Int16.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Int32.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Int64.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.IntPtr.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Object.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.String.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Text.Encoding.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Text.StringBuilder.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.Threading.Thread.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.UInt16.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.UInt32.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.UInt64.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.UIntPtr.sg"/>
+    <Compile Include="$(SpecSharpContractsDir)\System.ValueType.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="App.Corlib.csproj"/>
+    <ProjectReference Include="System.Compiler.Runtime.App.csproj"/>
+    <!-- <ProjectReference Include="Microsoft.SingSharp.Runtime.App.csproj"/> -->
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\AppRuntime.targets"/>
+
+</Project>

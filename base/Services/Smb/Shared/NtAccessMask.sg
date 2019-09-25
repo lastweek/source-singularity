@@ -1,0 +1,71 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Runtime.InteropServices;
+
+namespace Smb.Shared
+{
+	enum AccessMask : uint
+	{
+		GenericRead = 0x80000000u,
+		GenericWrite = 0x40000000u,
+		GenericExecute = 0x20000000u,
+		MaximumAllowed = 0x02000000u,
+				
+		Delete = 0x00010000,
+		ReadControl = 0x00020000,
+		WriteDac = 0x00040000,
+		WriteOwner = 0x00080000,
+		Synchronize = 0x00100000,
+
+		StandardRightsRequired = 0x000F0000u,
+		StandardRightsRead = ReadControl,
+		StandardRightsWrite = ReadControl,
+		StandardRightsExecute = ReadControl,
+		StandardRightsAll = 0x001F0000u,
+		SpecificRightsAll = 0x0000FFFFu,
+
+
+		#region File Access Rights		
+		
+		FileReadData =  0x0001 ,// file & pipe
+		FileListDirectory =  0x0001 ,// directory
+		FileWriteData =  0x0002 ,// file & pipe
+		FileAddFile =  0x0002 ,// directory
+		FileAppendData =  0x0004 ,// file
+		FileAddSubdirectory =  0x0004 ,// directory
+		FileCreatePipeInstance =  0x0004 ,// named pipe
+		FileReadEa =  0x0008 ,// file & directory
+		FileWriteEa =  0x0010 ,// file & directory
+		FileExecute =  0x0020 ,// file
+		FileTraverse =  0x0020 ,// directory
+		FileDeleteChild =  0x0040 ,// directory
+		FileReadAttributes =  0x0080 ,// all
+		FileWriteAttributes =  0x0100 ,// all
+		FileAllAccess = StandardRightsRequired | Synchronize | 0x1FF,
+		FileGenericRead = StandardRightsRead     |
+			FileReadData           |
+			FileReadAttributes     |
+			FileReadEa             |
+			Synchronize,
+
+		FileGenericWrite = StandardRightsWrite    |
+			FileWriteData          |
+			FileWriteAttributes    |
+			FileWriteEa            |
+			FileAppendData         |
+			Synchronize,
+
+		FileGenericExecute = StandardRightsExecute  |
+			FileReadAttributes     |
+			FileExecute             |
+			Synchronize,
+			
+		#endregion
+	}
+}
+

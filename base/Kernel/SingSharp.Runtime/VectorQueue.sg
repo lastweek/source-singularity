@@ -1,0 +1,119 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   VectorQueue.sg
+//
+//  Note: File is part of Sing# runtime files and copied into Singularity tree
+//        whenever a new version of Sing# is dropped.
+//        Coordinate any changes with Sing# team.
+//
+
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Channels
+{
+
+    public class VectorQueue<T> : ITracked where T:unmanaged struct {
+
+        private Node! listHead;
+        private Node! listTail;
+
+        public VectorQueue() {
+            Node node = this.listHead = new Node();
+            this.listTail = node;
+            base();
+        }
+
+        private class Node {
+            unsafe internal T[] in ExHeap data;
+
+            internal Node! next;
+            internal Node! prev;
+
+            internal Node() {
+                this.next = this;
+                this.prev = this;
+            }
+            
+            internal Node([Claims] T[]! in ExHeap arg) {
+                this.next = this;
+                this.prev = this;
+                this.data = arg;
+            }
+
+            internal T[] in ExHeap Unlink() {
+                this.prev.next = this.next;
+                this.next.prev = this.prev;
+                this.next = this;
+                this.prev = this;
+                return this.data;
+            }
+
+            internal void LinkAsNext([Claims] T[]! in ExHeap data) {
+                Node next = new Node(data);
+                next.next = this.next;
+                this.next = next;
+                next.prev = this;
+                next.next.prev = next;
+            }
+
+            internal void LinkAsPrev([Claims] T[]! in ExHeap data) {
+                Node prev = new Node(data);
+                prev.prev = this.prev;
+                this.prev = prev;
+                prev.next = this;
+                prev.prev.next = prev;
+            }
+        }
+
+        #region ITracked members
+
+        void ITracked.Release() {}
+        void ITracked.Acquire() {}
+        public void Dispose()
+        {
+            Node current = this.listHead.next;
+            while (current != this.listHead) {
+                // temporary hack until we fix the upcast in receiver context
+                unsafe {
+                    T[] in ExHeap data = current.data;
+                    delete data;
+                }
+                current = current.next;
+            }
+            this.listTail = this.listHead = new Node();
+        }
+
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+
+        #endregion
+
+        public void AddHead([Claims] T[]! in ExHeap data) {
+            this.listHead.LinkAsNext(data);
+        }
+
+        public void AddTail([Claims] T[]! in ExHeap data) {
+            this.listTail.LinkAsPrev(data);
+        }
+
+        public bool Empty { get { return this.listHead.next == this.listTail; } }
+
+
+        public T[] in ExHeap ExtractHead() {
+            if (this.Empty) return null;
+            Node candidate = this.listHead.next;
+            return candidate.Unlink();
+        }
+
+        public T[] in ExHeap ExtractTail() {
+            if (this.Empty) return null;
+            Node candidate = this.listTail.prev;
+            return candidate.Unlink();
+        }
+
+    }
+}

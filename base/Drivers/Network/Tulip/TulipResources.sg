@@ -1,0 +1,76 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TulipResources.cs
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Drivers;
+
+[assembly: Transform(typeof(DriverResourceTransform))]
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    // create the resource object for CTR to fill in
+    [DriverCategory]
+    [Signature("pci/ven_1011&dev_0009&cc_0200")] // DEC 21140
+    internal class TulipResources : DriverCategoryDeclaration
+    {
+        [IoPortRange(0, Default = 0xec00, Length = 0x80)]
+        internal readonly IoPortRange csr;
+
+        [IoMemoryRange(1, Default = 0xfebff000, Length = 0x1000)]
+        internal readonly IoMemoryRange mem; // this is unused, but we must declare it
+
+        [IoIrqRange(6, Default = 0x0b, Shared = true)]
+        internal readonly IoIrqRange irq;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(NicDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> nicsp;
+
+        internal int DriverMain(string instance)
+        {
+            return TulipController.DriverMain(this);
+        }
+    }
+
+    // The driver transform needs to be
+    // revised to pass in the matching signature so the driver can
+    // accommodate for other differences than just ranges (as is
+    // largely the case with the PNIC and Tulip).
+    [DriverCategory]
+    [Signature("pci/ven_11ad&dev_0002&cc_0200")]
+    internal class PnicResources : DriverCategoryDeclaration
+    {
+        [IoPortRange(0, Default = 0xec00, Length = 0x100)]
+        internal readonly IoPortRange csr;
+
+        [IoMemoryRange(1, Default = 0xfebff000, Length = 0x100)]
+        internal readonly IoMemoryRange mem;
+
+        [IoIrqRange(6, Default = 0x0b, Shared = true)]
+        internal readonly IoIrqRange irq;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(NicDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> nicsp;
+
+        internal int DriverMain(string instance)
+        {
+            return TulipController.DriverMain(this);
+        }
+    }
+}

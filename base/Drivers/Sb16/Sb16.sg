@@ -1,0 +1,712 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Sb16.sg
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Runtime.CompilerServices;  //StructAlign attribute
+using System.Runtime.InteropServices;   //structLayout attribute
+using System.GCs;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+using Microsoft.Singularity.Drivers;
+[assembly: Transform(typeof(DriverResourceTransform))]
+
+namespace Microsoft.Singularity.Drivers.Sb16
+{
+    // Declare all resource needs in one place:
+    [DriverCategory]
+    [Signature("/pnp/PNPB003")]
+    internal class Sb16Resources : DriverCategoryDeclaration
+    {
+        [IoPortRange(0, Default = 0x0220, Length = 0x10)]
+        internal readonly IoPortRange basePorts;
+
+        [IoPortRange(1, Default = 0x0380, Length = 0x10)]
+        internal readonly IoPortRange gamePorts;
+
+        [IoIrqRange(2, Default = 0x05)]
+        internal readonly IoIrqRange irq;
+
+        [IoDmaRange(3, Default = 0x01)]
+        internal readonly IoDmaRange dma8;
+
+        [IoDmaRange(4, Default = 0x05)]
+        internal readonly IoDmaRange dma16;
+
+        [IoFixedMemoryRange(AddressBits = 24, Alignment = 0x20000, Length = 0x4000)]
+        internal readonly IoMemoryRange fixedMem;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(SoundDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> audiosp;
+
+        internal int DriverMain(string instance) {
+            return Sb16Channels.DriverMain(this);
+        }
+
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    //
+    //  The Sb16Channels class has a single message pump that manages messages
+    //  to/from the "/dev" namespace and incoming play requests.
+    //
+    public class Sb16Channels
+    {
+        internal static int DriverMain(Sb16Resources! resources)
+        {
+            // Create and Initialize the device
+            Sb16Device device = new Sb16Device(resources);
+            device.Initialize();
+
+            // get the endpoints and set up the main switch receive
+            ExtensionContract.Exp ec = ((!)resources.ec).Acquire();
+            ServiceProviderContract.Exp sp = ((!)resources.audiosp).Acquire();
+
+            // Signal parent that driver is initialized.
+            Tracing.Log(Tracing.Audit, "Sb16 Registered");
+            ec.SendSuccess();
+
+            // create a set of all client endpoints connected to the sound
+            // device
+            ESet<SoundDeviceContract.Exp:Ready> clients
+                = new ESet<SoundDeviceContract.Exp:Ready>();
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        // Listen for new connections
+                        case sp.Connect(candidate):
+                            SoundDeviceContract.Exp newClient = candidate as SoundDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                clients.Add(newClient);
+                                sp.SendAckConnect();
+                            }
+                            else {
+                                sp.SendNackConnect(candidate);
+                            }
+                            break;
+
+                            // Listen for client requests
+                            case ep.RecvPlayPcm(data, offset, length, sampleRate, stereo, signed,
+                                                eightBit) in clients:
+                                {
+                                    Tracing.Log(Tracing.Debug, "PlayPcm({0:d})",
+                                                (UIntPtr)unchecked((uint)length));
+                                    device.PlayPcm((!)data, offset, length, sampleRate,
+                                                   stereo, signed, eightBit);
+                                    ep.SendAckPlayPcm(data);
+                                    // add client endpoint back into set.
+                                    clients.Add(ep);
+                                    break;
+                                }
+
+                            // Listen for client requests
+                        case ep.RecvPlayWav(data) in clients:
+                            {
+                                Tracing.Log(Tracing.Debug, "PlayWav({0:d}",
+                                            (UIntPtr)unchecked((uint)data.Length));
+                                device.PlayWav(data);
+
+                                ep.SendAckPlayWav(data);
+                                // add client endpoint back into set.
+                                clients.Add(ep);
+                                break;
+                            }
+
+                            // Listen for client departure
+                        case ep.ChannelClosed() in clients:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+
+                            // Listen for extension parent
+                        case ec.Shutdown():
+                            ec.SendAckShutdown();
+                            run = false;
+                            break;
+
+                        case clients.Empty() && sp.ChannelClosed():
+                            Tracing.Log(Tracing.Debug, "Sound driver no longer needed.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                Tracing.Log(Tracing.Debug, "Sb16 finished message pump.");
+                delete sp;
+                clients.Dispose();
+            }
+
+            // Close the device
+            device.Finalize();
+
+            Tracing.Log(Tracing.Audit, "Shutdown");
+            delete ec;
+            return 0;
+        }
+    }
+
+    public class Sb16Device
+    {
+        private const ushort    BUFSIZE = 0x4000;
+        private const ushort    HALFBUFSIZE = BUFSIZE / 2;
+
+        private IoIrq!          irq;
+        private Thread          irqWorker;
+        private bool            irqWorkerStop;
+        private AutoResetEvent! playEndEvent;
+
+        private IoDma!          dma8;
+        private IoDma!          dma16;
+        private IoMemory!       fixedBuffer;
+
+        private IoPort!         resetPort;
+        private IoPort!         readDataPort;
+        private IoPort!         writePort;
+        private IoPort!         readStatPort;
+        private IoPort!         intAck16Port;
+        private IoPort!         mixAddrPort;
+        private IoPort!         mixDataPort;
+
+        // Variables re-used for each play request.
+        private unsafe SharedHeapService.Allocation *    pcmData;
+        private int             pcmLeft = 0;
+        private int             pcmOffset = 0;
+
+        //[invariant ((pcmData == null) ||
+        //(0 <= pcmOffset && pcmOffset + pcmLeft <= pcmData.Length));]
+
+        private ushort          samplesPerSec;
+        private int             halfBufOffset = 0;
+        //[invariant (halfBufOffset == 0 || halfBufOffset == HALFBUFSIZE);]
+
+        private bool            done = true;
+        private bool            exit = false;
+        private ushort          dspVersion = 0;
+
+        const ushort MIX_ADDR_REG       = 0x04; // MIXER CHIP REGISTER ADDRESS PORT : WRITE
+        const ushort MIX_DATA_REG       = 0x05; // MIXER CHIP DATA ADDRESS PORT : READ/WRITE
+        const ushort DSP_RESET_REG      = 0x06; // DSP RESET : WRITE
+        const ushort DSP_READ_DATA_REG  = 0x0A; // DSP READ DATA PORT   : READ
+        const ushort DSP_WRITE_REG      = 0x0C; // DSP WRITE COMMAND/DATA PORT  : READ/WRITE
+        const ushort DSP_READ_STAT_REG  = 0x0E; // DSP READ BUFFER STATUS PORT  : READ
+        const ushort DSP_INT_ACK16_REG  = 0x0F; // Interrupt Ack Port 16bit :READ
+
+        private const byte DSPREADY = 0xAA;// code for DSP READY
+
+        private enum DspMode
+        {
+            STEREO    = 0x20, // Stereo bit.
+            SIGNED    = 0x10, // Signed bit.
+            NORMAL    = 0x00, // Neither stereo nor signed.
+        }
+
+        private enum DspCommand
+        {
+            SETSAMPRATE     = 0x41, // Set sample rate ( only available in 4.xx)
+            PROGAUTOINIT16  = 0xb6, // program 16 bit digital input output
+            PROGAUTOINIT8   = 0xc6, // program 8 bit digital input output
+            SPKRON          = 0xd1, // turn speaker on
+            SPKROFF         = 0xd3, // turn off speaker
+            EXITAUTOINIT16  = 0xd9, // exit 16-bit auto init DMA mode
+            EXITAUTOINIT8   = 0xda, // exit 8 bit auto init DMA mode
+            GETDSPVERSION   = 0xe1, // Get DSP version number
+        }
+
+        private enum DspRegisters
+        {
+            IntStatPort = 0x82,
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        //
+        internal Sb16Device(Sb16Resources! res)
+        {
+            // Ranges[0]: Fixed I/O Port bas=0220 len=10  0220..022f
+            // Ranges[1]: Fixed I/O Port bas=0380 len=10  0380..038f
+            // Ranges[2]: IRQ 5
+            // Ranges[3]: DMA 1 - 8-bit DMA
+            // Ranges[4]: DMA 5 - 16-bit DMA
+
+            playEndEvent = new AutoResetEvent(false);
+
+            assume res.irq != null;
+            assume res.dma8 != null;
+            assume res.dma16 != null;
+            assume res.fixedMem != null;
+            assume res.basePorts != null;
+
+            // get Irq and Dma channels from the resources
+            irq = (!)res.irq.IrqAtOffset(0);
+            dma8 = (!)res.dma8.DmaAtOffset(0);
+            dma16 = (!)res.dma16.DmaAtOffset(0);
+
+            mixAddrPort  = (!)res.basePorts.PortAtOffset(MIX_ADDR_REG, 1,
+                                                         Access.Write);
+            mixDataPort  = (!)res.basePorts.PortAtOffset(MIX_DATA_REG, 1,
+                                                         Access.ReadWrite);
+            resetPort    = (!)res.basePorts.PortAtOffset(DSP_RESET_REG, 1,
+                                                         Access.Write);
+            readDataPort = (!)res.basePorts.PortAtOffset(DSP_READ_DATA_REG, 1,
+                                                         Access.Read);
+            writePort    = (!)res.basePorts.PortAtOffset(DSP_WRITE_REG, 1,
+                                                         Access.ReadWrite);
+            readStatPort = (!)res.basePorts.PortAtOffset(DSP_READ_STAT_REG, 1,
+                                                         Access.Read);
+            intAck16Port = (!)res.basePorts.PortAtOffset(DSP_INT_ACK16_REG, 1,
+                                                         Access.Read);
+
+            base();
+
+            // Now get the fixed memory region out of the resources:
+            fixedBuffer = (!)res.fixedMem.MemoryAtOffset(0, BUFSIZE,
+                                                         true, true);
+
+        }
+
+        public void Initialize()
+        {
+            Tracing.Log(Tracing.Debug, "Initialize");
+
+            Tracing.Log(Tracing.Debug, "Fixed Buffer: {0,8:x8}",
+                        fixedBuffer.PhysicalAddress.Value);
+
+            bool iflag = PrivilegedGate.DisableInterrupts();
+            try {
+                irq.RegisterInterrupt();
+
+                DspReset();
+                DspWrite(DspCommand.SPKRON);
+            }
+            finally {
+                PrivilegedGate.RestoreInterrupts(iflag);
+            }
+
+            irqWorker     = new Thread(new ThreadStart(IrqWorkerPump));
+            irqWorkerStop = false;
+            irqWorker.Start();
+        }
+
+        public void Finalize()
+        {
+            bool iflag = PrivilegedGate.DisableInterrupts();
+            try {
+                DspWrite(DspCommand.SPKROFF);
+                irqWorkerStop = true;
+                irq.ReleaseInterrupt();
+            }
+            finally {
+                PrivilegedGate.RestoreInterrupts(iflag);
+            }
+
+#if CAN_JOIN
+            if (irqWorker != null) {
+                irqWorker.Join();
+                irqWorker = null;
+            }
+#endif
+        }
+
+        public void PlayWav(byte[]! in ExHeap data)
+        {
+            if (data.Length < 64) {
+                Tracing.Log(Tracing.Warning, "File too short for WAV");
+                return;
+            }
+
+            if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F' ||
+                data[8] != 'W' || data[9] != 'A' || data[10] != 'V' || data[11] != 'E' ||
+                data[12] != 'f' || data[13] != 'm' || data[14] != 't' || data[15] != ' ' ||
+                data[20] != 1 || data[21] != 0) {
+                Tracing.Log(Tracing.Warning, "No WAVE signature");
+                return;
+            }
+
+            ushort numChannels = Bitter.ToUInt16(data, 22);
+            ushort samplesPerSec = (ushort)Bitter.ToUInt32(data, 24);
+            ushort bitsPerSample = Bitter.ToUInt16(data, 34);
+
+            if ((numChannels != 1 && numChannels != 2) ||
+                (samplesPerSec > 48000) ||
+                (bitsPerSample != 8 && bitsPerSample != 16)) {
+                Tracing.Log(Tracing.Warning, "Unrecognized WAV fmt parameters.");
+                return;
+            }
+
+            for (int offset = 12;;) {
+                if (data.Length < offset + 8) {
+                    Tracing.Log(Tracing.Warning, "Malformed WAV file at {0}.",
+                                (UIntPtr)offset);
+                    return;
+                }
+
+                if (data[offset] == 'd' &&
+                    data[offset+1] == 'a' &&
+                    data[offset+2] == 't' &&
+                    data[offset+3] == 'a') {
+
+                    PlayPcm(data,
+                            offset + 8,
+                            Bitter.ToInt32(data, offset + 4),
+                            samplesPerSec,
+                            numChannels == 2,
+                            bitsPerSample != 8,
+                            bitsPerSample == 8);
+                    return;
+                }
+
+                offset += 8 + Bitter.ToInt32(data, offset + 4);
+            }
+        }
+
+        public unsafe void PlayPcm(byte[]! in ExHeap buffer,
+                                   int offset,
+                                   int length,
+                                   ushort sampleRate,
+                                   bool stereo,
+                                   bool signed,
+                                   bool eightBit)
+            //[requires offset >= 0 && offset + length <= data.Length;]
+        {
+            Tracing.Log(Tracing.Debug, "buff.Length={0}, offset={1}, length={2} ={3}",
+                        (UIntPtr)unchecked((uint)buffer.Length),
+                        (UIntPtr)unchecked((uint)offset),
+                        (UIntPtr)unchecked((uint)length),
+                        (UIntPtr)unchecked((uint)offset + length));
+
+            done = false;
+            exit = false;
+
+            pcmData = (Allocation *)buffer;
+            pcmOffset = offset;
+            pcmLeft = length;
+            samplesPerSec = sampleRate;
+
+            if (eightBit) {
+                Tracing.Log(Tracing.Debug, "Playing 8-bit sound (byte={0}, {1} Hz, {2})",
+                            (UIntPtr)length, sampleRate, (UIntPtr)(stereo ? 2 : 1));
+                PlayDmaAutoInit8(stereo, signed);
+            }
+            else {
+                Tracing.Log(Tracing.Debug, "Playing 16-bit sound (byte={0}, {1} Hz, {2})",
+                            (UIntPtr)length, sampleRate, (UIntPtr)(stereo ? 2 : 1));
+                PlayDmaAutoInit16(stereo, signed);
+            }
+
+            playEndEvent.WaitOne();
+        }
+
+        private void PlayDmaAutoInit8(bool stereo, bool signed)
+        {
+            halfBufOffset = 0;
+
+            bool iflag = PrivilegedGate.DisableInterrupts();
+            try {
+                dma8.DisableChannel(); //Disable DMA channel while programming it
+                dma8.SetControlByteMask(IoDma.Settings.SingleMode |
+                                        IoDma.Settings.AddressIncrement |
+                                        IoDma.Settings.AutoInit |
+                                        IoDma.Settings.ReadTransfer);
+                dma8.ClearFlipFlop(); //Clear Flip-Flop [ref]swap clear and control statement
+                dma8.SetControlByte(); //Put into 8-bit Single Cycle mode
+                dma8.SetBuffer(fixedBuffer);
+                dma8.SetTransferLength(BUFSIZE - 1);
+                dma8.EnableChannel(); //enable DMA channelFillBuffer();
+
+                DspWrite(DspCommand.SETSAMPRATE);
+                DspWriteBig(samplesPerSec);
+
+                done = FillHalfBuffer();
+                DspWrite(DspCommand.PROGAUTOINIT8);
+                DspWriteBMode(stereo, signed);
+                DspWriteLittle(HALFBUFSIZE - 1);
+
+                if (done) {
+                    DspWrite(DspCommand.EXITAUTOINIT8);
+                    exit = true;
+                }
+                else {
+                    done = FillHalfBuffer();
+                }
+            }
+            finally {
+                PrivilegedGate.RestoreInterrupts(iflag);
+            }
+        }
+
+        private void PlayDmaAutoInit16(bool stereo, bool signed)
+        {
+            halfBufOffset = 0;
+
+            bool iflag = PrivilegedGate.DisableInterrupts();
+            try {
+                dma16.DisableChannel(); //Disable DMA channel while programming it
+                dma16.SetControlByteMask(IoDma.Settings.SingleMode |
+                                         IoDma.Settings.AddressIncrement |
+                                         IoDma.Settings.AutoInit |
+                                         IoDma.Settings.ReadTransfer);
+                dma16.ClearFlipFlop(); //Clear Flip-Flop [ref]swap clear and control statement
+                dma16.SetControlByte(); //Put into 8-bit Single Cycle mode
+                dma16.SetBuffer(fixedBuffer);
+                dma16.SetTransferLength((BUFSIZE / 2) - 1);
+                dma16.EnableChannel(); //enable DMA channelFillBuffer();
+
+                DspWrite(DspCommand.SETSAMPRATE);
+                DspWriteBig(samplesPerSec);
+
+                done = FillHalfBuffer();
+                DspWrite(DspCommand.PROGAUTOINIT16);
+                DspWriteBMode(stereo, signed);
+                DspWriteLittle((HALFBUFSIZE / 2) - 1);
+
+                if (done) {
+                    DspWrite(DspCommand.EXITAUTOINIT16);
+                    exit = true;
+                }
+                else {
+                    done = FillHalfBuffer();
+                }
+            }
+            finally {
+                PrivilegedGate.RestoreInterrupts(iflag);
+            }
+        }
+
+        private unsafe bool FillHalfBuffer()
+        {
+            //transfer data from snddat.Sound to Buffer
+            int use = Math.Min(pcmLeft, HALFBUFSIZE);
+            if (use != 0) {
+                byte[] in ExHeap buffer = (byte[] in ExHeap)pcmData;
+
+                Bitter.ToIoMemory(buffer, pcmOffset, use,
+                                  fixedBuffer, halfBufOffset);
+
+
+                if (use < HALFBUFSIZE) {
+                    // Pad with empty sound as needed.
+                    fixedBuffer.Write8(halfBufOffset + use, 0, HALFBUFSIZE - use);
+                }
+
+                pcmOffset += use;
+                pcmLeft -= use;
+
+                if (halfBufOffset > 0) {
+                    halfBufOffset = 0;
+                }
+                else {
+                    halfBufOffset = HALFBUFSIZE;
+                }
+            }
+            Tracing.Log(Tracing.Debug,
+                        "offset:{0,6}, left:{1,6}, use:{2,5}, buffer:{3,5}",
+                        (UIntPtr)unchecked((uint)pcmOffset),
+                        (UIntPtr)unchecked((uint)pcmLeft),
+                        (UIntPtr)unchecked((uint)use),
+                        (UIntPtr)unchecked((uint)halfBufOffset));
+            return (use < HALFBUFSIZE);
+        }
+
+        private void IrqWorkerPump()
+        {
+            //  When this IRQ is signaled, there may be two half-buffers
+            //  at play.  The first just finished (thus triggering the IRQ);
+            //  the second is going out the DSP as we process.
+            //  If the done flag is set, the last half-buffer has been filled.
+            //  If the exit flag is set, then this *IS* the last half-buffer.
+            //
+            Tracing.Log(Tracing.Audit, "Start worker thread.");
+            while (irqWorkerStop == false) {
+                irq.WaitForInterrupt();
+
+                if (irqWorkerStop) {
+                    break;
+                }
+
+                bool iflag = PrivilegedGate.DisableInterrupts();
+                try {
+                    byte bt = (byte)ReadMixPort((byte)DspRegisters.IntStatPort);
+                    bt &= 0x7u;
+
+                    if (bt == 1) {
+                        readStatPort.Read8();
+                        if (exit) {
+                            playEndEvent.Set();
+                            continue;
+                        }
+                        if (done) {
+                            DspWrite(DspCommand.EXITAUTOINIT8);
+                            exit = true;
+                        }
+                    }
+                    else if (bt == 2) {
+                        intAck16Port.Read8();
+                        if (exit) {
+                            playEndEvent.Set();
+                            continue;
+                        }
+                        if (done) {
+                            DspWrite(DspCommand.EXITAUTOINIT16);
+                            exit = true;
+                        }
+                    }
+                    else if (irqWorkerStop == false) {
+                        Tracing.Log(Tracing.Error, "Interrupt status {0}", bt);
+                        DebugStub.Break();
+                    }
+
+                    done = FillHalfBuffer();
+                }
+                finally {
+                    irq.AckInterrupt();
+                    PrivilegedGate.RestoreInterrupts(iflag);
+                }
+            }
+        }
+
+#region DSP
+
+        private void DspWaitForData()
+        {
+            for (int i = 0; i < 100; i++) {
+                if ((readStatPort.Read8() & 0x80) != 0) {
+                    return;
+                }
+            }
+            Tracing.Log(Tracing.Error, "DSP Data Avail FAILED");
+            DebugStub.Break();
+        }
+
+        private byte DspRead()
+        {
+            DspWaitForData(); // wait for data to be available
+            return readDataPort.Read8();
+        }
+
+        private void DspGetVersion()
+        {
+            byte VersionMaj;
+            byte VersionMin;
+
+            DspWrite(DspCommand.GETDSPVERSION); //send instruction
+            DspWaitForData(); //wait for dsp to flag u for instruction
+
+            VersionMaj = DspRead();
+            VersionMin = DspRead();
+
+            dspVersion = (ushort)((VersionMaj << 8) | VersionMin);
+            Tracing.Log(Tracing.Debug, "Hardware Version : {0:x4}", dspVersion);
+        }
+
+        private bool DspReset()
+        {
+            resetPort.Write8(0x01);
+            Thread.SpinWait(10000);
+            resetPort.Write8(0x00);
+
+            for (int i = 0; i < 0xffff; i++) {
+                DspWaitForData();
+                byte bt = DspRead();
+
+                if (bt == DSPREADY) {
+                    DspGetVersion();
+                    return true;
+                }
+                else {
+                    Tracing.Log(Tracing.Warning, "BT {0} is not DSP_READY", bt);
+                }
+            }
+
+            return false;
+        }
+
+        private void DspWait()
+        {
+            for (int i = 0; i < 100; i++) {
+                if ((writePort.Read8() & 0x80) == 0) {
+                    return;
+                }
+            }
+            Tracing.Log(Tracing.Error, "DSP Wait FAlLED.");
+            DebugStub.Break();
+
+        }
+
+        private void DspWrite(DspCommand cmd)
+        {
+            DspWait();
+            writePort.Write8((byte)cmd);
+        }
+
+        private void DspWriteBMode(bool stereo, bool signed)
+        {
+            DspWait();
+            DspMode mode = DspMode.NORMAL;
+            if (stereo) {
+                mode |= DspMode.STEREO;
+            }
+            if (signed) {
+                mode |= DspMode.SIGNED;
+            }
+
+            writePort.Write8((byte)mode);
+        }
+
+        // Little-endian write.
+        private void DspWriteLittle(ushort value)
+        {
+            DspWait();
+            writePort.Write8((byte)(value & 0xff));
+            DspWait();
+            writePort.Write8((byte)(value >> 8));
+        }
+
+        // Big-endian write.
+        private void DspWriteBig(ushort value)
+        {
+            DspWait();
+            writePort.Write8((byte)(value >> 8));
+            DspWait();
+            writePort.Write8((byte)(value & 0xff));
+        }
+
+        private void WriteMixPort(byte Add,byte data)
+        {
+            mixAddrPort.Write8(Add);
+            mixDataPort.Write8(data);
+        }
+
+        private byte ReadMixPort(byte Add)
+        {
+            mixAddrPort.Write8(Add);
+            return mixDataPort.Read8();
+        }
+
+#endregion // DSP
+    }
+}

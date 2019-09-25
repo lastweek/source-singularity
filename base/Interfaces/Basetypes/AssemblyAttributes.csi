@@ -1,0 +1,90 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//=============================================================================
+//
+// File: AssemblyAttributes
+//
+// Purpose: For Assembly-related custom attributes.
+//
+//=============================================================================  
+
+using System;
+
+namespace System.Reflection
+{
+    public enum AssemblyHashAlgorithm
+    {
+        //| <include file='doc\AssemblyHashAlgorithm.uex' path='docs/doc[@for="AssemblyHashAlgorithm.None"]/*' />
+        None        = 0,
+        //| <include file='doc\AssemblyHashAlgorithm.uex' path='docs/doc[@for="AssemblyHashAlgorithm.MD5"]/*' />
+        MD5         = 0x8003,
+        //| <include file='doc\AssemblyHashAlgorithm.uex' path='docs/doc[@for="AssemblyHashAlgorithm.SHA1"]/*' />
+        SHA1        = 0x8004
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyCultureAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyCultureAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyCultureAttribute.AssemblyCultureAttribute"]/*' />
+        public AssemblyCultureAttribute(String culture);
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyVersionAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyVersionAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyVersionAttribute.AssemblyVersionAttribute"]/*' />
+        public AssemblyVersionAttribute(String version);
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyKeyFileAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyKeyFileAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyKeyFileAttribute.AssemblyKeyFileAttribute"]/*' />
+        public AssemblyKeyFileAttribute(String keyFile);
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyKeyNameAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyKeyNameAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyKeyNameAttribute.AssemblyKeyNameAttribute"]/*' />
+        public AssemblyKeyNameAttribute(String keyName);
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyDelaySignAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyDelaySignAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyDelaySignAttribute.AssemblyDelaySignAttribute"]/*' />
+        public AssemblyDelaySignAttribute(bool delaySign);
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyAlgorithmIdAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyAlgorithmIdAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyAlgorithmIdAttribute.AssemblyAlgorithmIdAttribute"]/*' />
+        public AssemblyAlgorithmIdAttribute(AssemblyHashAlgorithm algorithmId);
+    }
+
+    //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyFlagsAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyFlagsAttribute : Attribute
+    {
+#if false
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyFlagsAttribute.AssemblyFlagsAttribute"]/*' />
+        [CLSCompliant(false)]
+        public AssemblyFlagsAttribute(uint flags);
+#endif
+
+        //| <include file='doc\AssemblyAttributes.uex' path='docs/doc[@for="AssemblyFlagsAttribute.AssemblyFlagsAttribute1"]/*' />
+        public AssemblyFlagsAttribute(int assemblyFlags);
+    }
+}
+

@@ -1,0 +1,997 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Format.sg
+//
+//  Note:
+//
+//  This used to be a standalone program, but is now part of the
+//  FAT service.  It deliberately makes little use of the core
+//  of the FAT FS implementation.
+//
+//  This module does not update the MBR during a format operation.
+//  The VolumeManager, or another entity, should perform the update.
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+using System;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal sealed class Format
+    {
+        //
+        // Hard-wired defaults supported by this formatting program.
+        //
+        const uint BpbBytesPerSector         = 512;
+        const uint BpbRootEntryCount16       = 512;
+        const uint BpbNumberOfFats           = 2;
+        const byte BpbFixedMedia             = 0xf8;
+        const byte BpbRemovableMedia         = 0xf0;
+        const byte BpbDefaultSectorsPerTrack = 0x3f;
+        const byte BpbDefaultNumberOfHeads   = 0x80;
+        const byte BpbDefaultDriveNumber     = 0x80;
+
+        //
+        // FAT variant specific constants
+        //
+        const string Fat12TypeLabel            = "FAT12";
+        const string Fat16TypeLabel            = "FAT16";
+        const string Fat32TypeLabel            = "FAT32";
+
+        const uint   Fat16PointerSize          = 2;
+
+        const byte   Fat32RootDirectoryCluster = 2;
+        const uint   Fat32FsInfoSector         = 1;
+        const uint   Fat32BackupSector         = 6;
+
+        const uint   Fat16CleanShutdown        = 0x8000;
+        const uint   Fat32CleanShutdown        = 0x08000000;
+        const uint   Fat32NotErrorShutdown     = 0x04000000;
+        const uint   Fat32EOC                  = 0x0ffffff8;
+
+        const uint   MinimumSectors            = 2880;
+
+        // --------------------------------------------------------------------
+        // Disk size mappings to clusters per sector mapping (from page 20)
+        //
+        // The entries for FAT12 are contrived for this
+        // implementation without reference to other Microsoft
+        // O/S code.
+        //
+        // Entries for legacy floppy drives (< 1440kB) are not
+        // supported, though could be easily added.  The code
+        // does not format 1.44MB floppies as existing Microsoft
+        // operating systems but it should be usable.
+        //
+
+        internal struct DiskSizeToSectorsPerCluster
+        {
+            internal uint    MaxDiskSectors;
+            internal uint    SectorsPerCluster;
+
+            internal DiskSizeToSectorsPerCluster(uint m, uint s)
+            {
+                this.MaxDiskSectors    = m;
+                this.SectorsPerCluster = s;
+            }
+        }
+
+        private static DiskSizeToSectorsPerCluster [] diskTable12 = {
+            new DiskSizeToSectorsPerCluster(2879, 0),
+            new DiskSizeToSectorsPerCluster(1 * 4084, 1),
+            new DiskSizeToSectorsPerCluster(2 * 4084, 2),
+            new DiskSizeToSectorsPerCluster(4 * 4084, 4),
+            new DiskSizeToSectorsPerCluster(8 * 4084, 8),
+            new DiskSizeToSectorsPerCluster(16 * 4084, 16),
+            new DiskSizeToSectorsPerCluster(32 * 4084, 32),
+            new DiskSizeToSectorsPerCluster(64 * 4084, 64)
+        };
+
+        private static DiskSizeToSectorsPerCluster [] diskTable16 = {
+            new DiskSizeToSectorsPerCluster(8400, 0),
+            new DiskSizeToSectorsPerCluster(32680, 2),
+            new DiskSizeToSectorsPerCluster(262144, 4),
+            new DiskSizeToSectorsPerCluster(524288, 8),
+            new DiskSizeToSectorsPerCluster(1048576, 16),
+            new DiskSizeToSectorsPerCluster(2097152, 32),
+            new DiskSizeToSectorsPerCluster(4194304, 64)
+        };
+
+        private static DiskSizeToSectorsPerCluster [] diskTable32 = {
+            new DiskSizeToSectorsPerCluster(66600, 0),
+            new DiskSizeToSectorsPerCluster(532480, 1),
+            new DiskSizeToSectorsPerCluster(1048576, 8),
+            new DiskSizeToSectorsPerCluster(16777216, 8),
+            new DiskSizeToSectorsPerCluster(33554432, 16),
+            new DiskSizeToSectorsPerCluster(67108864, 32),
+            new DiskSizeToSectorsPerCluster(0xffffffff, 64)
+        };
+
+        private static FatVersion GetPreferredFatVersion(uint diskSectors)
+        {
+            // These values are taken from the code comments on
+            // page 20 of the FAT specification.
+            if (diskSectors <= 8400) {
+                return FatVersion.Fat12;
+            }
+            else if (diskSectors <= 1048576) {
+                return FatVersion.Fat16;
+            }
+            return FatVersion.Fat32;
+        }
+
+        // --------------------------------------------------------------------
+        // Dimensioning and provisioning routines
+
+        private static uint
+        GetSectorsPerCluster(DiskSizeToSectorsPerCluster [] diskTable,
+                             uint diskSectors)
+        {
+            foreach (DiskSizeToSectorsPerCluster entry in diskTable) {
+                if (entry.SectorsPerCluster != 0 &&
+                    diskSectors <= entry.MaxDiskSectors) {
+                    return entry.SectorsPerCluster;
+                }
+            }
+            return 0;
+        }
+
+        private static uint GetSectorsPerCluster(FatVersion fatVersion,
+                                                 uint diskSectors)
+        {
+            switch (fatVersion) {
+                case FatVersion.Fat12 :
+                    return GetSectorsPerCluster(diskTable12, diskSectors);
+                case FatVersion.Fat16 :
+                    return GetSectorsPerCluster(diskTable16, diskSectors);
+                default :
+                    assert fatVersion == FatVersion.Fat32;
+                    return GetSectorsPerCluster(diskTable32, diskSectors);
+            }
+        }
+
+        private static string! FatVersionName(FatVersion fatVersion)
+        {
+            switch (fatVersion) {
+                case FatVersion.Fat12: return Fat12TypeLabel;
+                case FatVersion.Fat16: return Fat16TypeLabel;
+                default:
+                    assert fatVersion == FatVersion.Fat32;
+                    return Fat32TypeLabel;
+            }
+        }
+
+        private static uint GetRootDirectoryEntries(FatVersion fatVersion,
+                                                    uint       diskSectors)
+        {
+            // In future the code could
+            // support FAT12 sizes less than 1.44MB by adding
+            // the appropriate number of entries here.
+            switch (fatVersion) {
+                case FatVersion.Fat32:
+                    return 0;
+                default:
+                    return BpbRootEntryCount16;
+            }
+        }
+
+        private static uint GetRootDirectorySectors(FatVersion fatVersion,
+                                                    uint diskSectors)
+        {
+            uint rootBytes =
+                GetRootDirectoryEntries(fatVersion, diskSectors) *
+                DirectoryEntry.Length;
+            return (uint)((rootBytes + (BpbBytesPerSector - 1)) /
+                          BpbBytesPerSector);
+        }
+
+        private static uint GetReservedSectorCount(FatVersion fatVersion)
+        {
+            // From page 9 of spec
+            switch (fatVersion) {
+                case FatVersion.Fat32:
+                    return 32;
+                default:
+                    return 1;
+            }
+        }
+
+        private static uint GetSectorsPerFat(FatVersion fatVersion,
+                                             uint diskSectors)
+        {
+            uint tmpVal1 = (diskSectors -
+                            (GetReservedSectorCount(fatVersion) +
+                             GetRootDirectorySectors(fatVersion, diskSectors))
+                            );
+            uint tmpVal2;
+
+            if (fatVersion == FatVersion.Fat12) {
+                // This is a better approximation than presented
+                // in the formatting section of the FAT which
+                // has scant information for FAT12.  If one
+                // figures out the `hard' maths that the spec
+                // warns against, then one ends up with:
+                tmpVal2 = (2u * BpbBytesPerSector / 3u *
+                           GetSectorsPerCluster(fatVersion, diskSectors) +
+                           BpbNumberOfFats
+                           );
+            }
+            else {
+                tmpVal2 = (BpbBytesPerSector / Fat16PointerSize *
+                           GetSectorsPerCluster(fatVersion, diskSectors) +
+                           BpbNumberOfFats
+                           );
+                if (fatVersion == FatVersion.Fat32) {
+                    tmpVal2 /= 2;
+                }
+            }
+            uint sectorsPerFat = (tmpVal1 + (tmpVal2 - 1)) / tmpVal2;
+            assert fatVersion == FatVersion.Fat32 || sectorsPerFat <= 0xffff;
+            return sectorsPerFat;
+        }
+
+        private static uint GetMaxClusters(FatVersion fatVersion,
+                                           uint       sectorsPerFat)
+        {
+            switch (fatVersion) {
+                case FatVersion.Fat12:
+                    return (sectorsPerFat * BpbBytesPerSector * 2 / 3) - 2;
+                case FatVersion.Fat16:
+                    return (sectorsPerFat * BpbBytesPerSector / 2) - 2;
+                default:
+                    assert fatVersion == FatVersion.Fat32;
+                    return (sectorsPerFat * BpbBytesPerSector / 4) - 2;
+            }
+        }
+
+        private static uint GetCountOfClusters(FatVersion fatVersion,
+                                               uint       diskSectors)
+        {
+            uint sectorsPerCluster = GetSectorsPerCluster(fatVersion,
+                                                          diskSectors);
+            uint usedSectors = GetSectorOfFirstCluster(fatVersion,
+                                                       diskSectors);
+            return (diskSectors - usedSectors) / sectorsPerCluster;
+        }
+
+        private static uint GetSectorOfFirstCluster(FatVersion fatVersion,
+                                                    uint       diskSectors)
+        {
+            return (
+                GetReservedSectorCount(fatVersion) +
+                BpbNumberOfFats * GetSectorsPerFat(fatVersion, diskSectors) +
+                GetRootDirectorySectors(fatVersion, diskSectors)
+                );
+        }
+
+        private static uint GetSectorOfFat(FatVersion fatVersion,
+                                           uint       diskSectors,
+                                           uint       fatNumber,
+                                           uint       sectorNumber)
+            requires fatNumber < BpbNumberOfFats;
+        {
+            return (
+                GetReservedSectorCount(fatVersion) +
+                fatNumber * GetSectorsPerFat(fatVersion, diskSectors) +
+                sectorNumber
+                );
+        }
+
+        private static uint GetSectorOfRootDirectory(FatVersion fatVersion,
+                                                     uint       diskSectors,
+                                                     uint       sectorNumber)
+        {
+            return (
+                GetReservedSectorCount(fatVersion) +
+                BpbNumberOfFats * GetSectorsPerFat(fatVersion, diskSectors) +
+                sectorNumber
+                );
+        }
+
+        private static uint GetTotalSectors(FatVersion fatVersion,
+                                            uint diskSectors,
+                                            uint numberOfFats)
+        {
+            uint sectorsPerFat = GetSectorsPerFat(fatVersion, diskSectors);
+            uint sectorsPerCluster = GetSectorsPerCluster(fatVersion,
+                                                          diskSectors);
+            uint totalSectors =
+                (
+                    GetReservedSectorCount(fatVersion) +
+                    numberOfFats * sectorsPerFat +
+                    GetRootDirectorySectors(fatVersion, diskSectors) +
+                    GetMaxClusters(fatVersion,
+                                   sectorsPerFat) * sectorsPerCluster
+                );
+            return (totalSectors < diskSectors) ? totalSectors : diskSectors;
+        }
+
+        private static void SignBootSector(byte []! in ExHeap bootSector)
+        {
+            bootSector[510] = BPB.Byte510Value;
+            bootSector[511] = BPB.Byte511Value;
+        }
+
+        private static void WriteToDisk(Disk! disk,
+                                        uint  sector,
+                                        [Claims] byte []! in ExHeap data)
+        {
+            byte[] in ExHeap outBuffer = disk.Write((ulong)sector, data);
+            delete outBuffer;
+        }
+
+        private static void ClearSectors(Disk! disk,
+                                         uint  startSector,
+                                         uint  sectorCount)
+        {
+            const uint RoundSectors = 64;
+
+            byte [] in ExHeap buffer =
+                new [ExHeap] byte [RoundSectors * BpbBytesPerSector];
+
+            try {
+                while (sectorCount != 0) {
+                    uint todo = Math.Min(RoundSectors, sectorCount);
+                    buffer = disk.Write((ulong)startSector, buffer, 0,
+                                        todo * BpbBytesPerSector);
+
+                    if (buffer == null) {
+                        // TODO: ERROR HANDLING HERE
+                        DebugStub.Break();
+                        break;
+                    }
+                    Bitter.Zero(buffer, 0, (int)todo * BpbBytesPerSector);
+
+                    sectorCount -= todo;
+                    startSector += todo;
+                }
+            }
+            finally {
+                delete buffer;
+            }
+        }
+
+        private static void ClearReservedArea(Disk! disk,
+                                              FatVersion fatVersion)
+        {
+            ClearSectors(disk, 1, GetReservedSectorCount(fatVersion) - 1);
+        }
+
+        private static void ClearFat(Disk!      disk,
+                                     uint       diskSectors,
+                                     FatVersion fatVersion)
+        {
+            uint fatStart   = GetSectorOfFat(fatVersion, diskSectors, 0, 0);
+            uint fatSectors = GetSectorsPerFat(fatVersion, diskSectors);
+            ClearSectors(disk, fatStart, fatSectors * BpbNumberOfFats);
+        }
+
+        private static byte JumpSize(FatVersion version)
+        {
+            if (FatVersion.Fat32 == version) {
+                return BPB32.Length + BPB.Length - 2;
+            }
+            else {
+                return BPB1x.Length + BPB.Length - 2;
+            }
+        }
+
+        private static void InitializeBpb(Disk!      disk,
+                                          uint       diskSectors,
+                                          FatVersion version,
+                                          ref BPB    bpb)
+        {
+            bpb.JmpBoot0            = 0xeb;
+            bpb.JmpBoot1            = JumpSize(version);
+            bpb.JmpBoot2            = 0x90;
+            bpb.OemName             = "MSWIN4.1";
+            bpb.BytesPerSector      = (ushort)BpbBytesPerSector;
+            bpb.SectorsPerCluster   = (byte)GetSectorsPerCluster(version,
+                                                                 diskSectors);
+            bpb.ReservedSectorCount = (ushort)GetReservedSectorCount(version);
+            bpb.NumberOfFats        = BpbNumberOfFats;
+            bpb.RootEntryCount      =
+                (ushort)GetRootDirectoryEntries(version, diskSectors);
+
+            if ((disk.DiskAttributes & DiskAttributes.Removable) != 0) {
+                bpb.Media = BpbRemovableMedia;
+            }
+            else {
+                bpb.Media = BpbFixedMedia;
+            }
+
+            uint totalSectors = GetTotalSectors(version,
+                                                diskSectors,
+                                                bpb.NumberOfFats);
+            if (version == FatVersion.Fat32 || totalSectors > 0xffff) {
+                bpb.TotalSectors16 = 0;
+                bpb.TotalSectors32 = totalSectors;
+            }
+            else {
+                bpb.TotalSectors16 = (ushort)totalSectors;
+                bpb.TotalSectors32 = 0;
+            }
+
+            if (version == FatVersion.Fat32) {
+                bpb.FatSize16 = 0;
+            }
+            else {
+                bpb.FatSize16 = (ushort)GetSectorsPerFat(version, diskSectors);
+            }
+
+            bpb.SectorsPerTrack = BpbDefaultSectorsPerTrack;
+            bpb.NumberOfHeads   = BpbDefaultNumberOfHeads;
+
+            assert disk.StartSector <= (ulong)UInt32.MaxValue;
+            bpb.HiddenSectors   = (uint)disk.StartSector;
+        }
+
+        private static void WriteFatSector0(Disk!               disk,
+                                            uint                diskSectors,
+                                            FatVersion          fatVersion,
+                                            [Claims] byte[]! in ExHeap sector)
+        {
+            for (uint i = 1; i < BpbNumberOfFats; i++) {
+                byte []! in ExHeap copy = new [ExHeap] byte [sector.Length];
+                Bitter.Copy(copy, 0, sector.Length, sector, 0);
+                WriteToDisk(
+                    disk,
+                    GetSectorOfFat(fatVersion, diskSectors, i, 0),
+                    copy
+                    );
+            }
+            WriteToDisk(
+                disk,
+                GetSectorOfFat(fatVersion, diskSectors, 0, 0),
+                sector
+                );
+        }
+
+        private static char[]! in ExHeap GetSanitizedVolumeLabel(string! label)
+        {
+            char[]! in ExHeap buffer = new [ExHeap] char [DirectoryEntry.ShortNameEntryLength];
+            for (int i = 0; i < buffer.Length; i++) {
+                buffer[i] = ' ';
+            }
+
+            int start = 0;
+            int length = label.Length;
+
+            while (length != 0 &&
+                   (buffer[start] == ' ' || buffer[start] == '.')) {
+                start++;
+                length--;
+            }
+
+            if (length > label.Length) {
+                length = label.Length;
+            }
+            for (int i = 0; i < length; i++) {
+                char c = Char.ToUpper(label[start + i]);
+                if (DirectoryEntry.ValidShortNameCharacter(c)) {
+                    buffer[i] = c;
+                }
+                else {
+                    buffer[i] = '_';
+                }
+            }
+            return buffer;
+        }
+
+        // --------------------------------------------------------------------
+        // FAT12/16 specific routines
+
+        private static void InitializeBpb1x(string!    volumeLabel,
+                                            FatVersion version,
+                                            ref BPB1x  bpb1x)
+        {
+            bpb1x.DriveNumber   = BpbDefaultDriveNumber;
+            bpb1x.BootSignature = BPB1x.ExpectedBootSignature;
+            bpb1x.VolumeId      = (uint)DateTime.Now.Ticks;
+            bpb1x.VolumeLabel   = volumeLabel;
+            if (version == FatVersion.Fat12) {
+                bpb1x.FileSystemType = Fat12TypeLabel;
+            }
+            else {
+                bpb1x.FileSystemType = Fat16TypeLabel;
+            }
+        }
+
+        private static void InitializeBootSector1216(Disk!      disk,
+                                                     uint       diskSectors,
+                                                     FatVersion fatVersion,
+                                                     string!    volumeLabel)
+        {
+            byte [] in ExHeap sector0 = new [ExHeap] byte[BpbBytesPerSector];
+            ref BPB bpb = ref sector0[0];
+            InitializeBpb(disk, diskSectors, fatVersion, ref bpb);
+
+            ref BPB1x bpb1x = ref sector0[BPB.Length];
+            InitializeBpb1x(volumeLabel, fatVersion, ref bpb1x);
+
+            SignBootSector(sector0);
+
+            WriteToDisk(disk, 0, sector0);
+        }
+
+        private static void InitializeFat12(Disk! disk,
+                                            byte []! in ExHeap sector)
+        {
+            if ((disk.DiskAttributes & DiskAttributes.Removable) != 0) {
+                sector[0] = BpbRemovableMedia;
+            }
+            else {
+                sector[0] = BpbFixedMedia;
+            }
+            sector[1] = 0xff;   // low nibble of EOC (8) and high nibble of
+                                // FAT[0].
+            sector[2] = 0xff;   // high byte of EOC
+        }
+
+        private static void InitializeFat16(Disk! disk,
+                                            byte []! in ExHeap sector)
+        {
+            const ushort fat0hi = 0xff00;
+            ref ushort fat0 = ref sector[0];
+            if ((disk.DiskAttributes & DiskAttributes.Removable) != 0) {
+                fat0 = ByteOrder.HostToLittleEndian(
+                    (ushort)(fat0hi | (ushort)BpbRemovableMedia));
+            }
+            else {
+                fat0 = ByteOrder.HostToLittleEndian(
+                    (ushort)(fat0hi | (ushort)BpbFixedMedia));
+            }
+            ref ushort fat1 = ref sector[2];
+            fat1 = 0xffff;
+        }
+
+        private static void InitializeFat1216(Disk!      disk,
+                                              uint       diskSectors,
+                                              FatVersion fatVersion)
+        {
+            ClearFat(disk, diskSectors, fatVersion);
+
+            byte []! in ExHeap sector = new [ExHeap] byte [BpbBytesPerSector];
+            if (fatVersion == FatVersion.Fat16) {
+                InitializeFat16(disk, sector);
+            }
+            else {
+                InitializeFat12(disk, sector);
+            }
+
+            WriteFatSector0(disk, diskSectors, fatVersion, sector);
+        }
+
+        private static void ClearRootDirectory1216(Disk!      disk,
+                                                   uint       diskSectors,
+                                                   FatVersion fatVersion)
+        {
+            ClearSectors(
+                disk,
+                GetSectorOfRootDirectory(fatVersion, diskSectors, 0),
+                GetRootDirectorySectors(fatVersion, diskSectors)
+                );
+        }
+
+        private static void InitializeRootDirectory1216(Disk!      disk,
+                                                        uint       diskSectors,
+                                                        FatVersion fatVersion,
+                                                        string!    volumeLabel)
+        {
+            ClearRootDirectory1216(disk, diskSectors, fatVersion);
+
+            byte []! in ExHeap sector = new [ExHeap] byte [BpbBytesPerSector];
+            char[]! in ExHeap v = GetSanitizedVolumeLabel(volumeLabel);
+            ref DirectoryEntry de = ref sector[0];
+            de.InitializeAsVolumeId(v);
+            delete v;
+
+            WriteToDisk(
+                disk,
+                GetSectorOfRootDirectory(fatVersion, diskSectors, 0),
+                sector
+                );
+        }
+
+        private static void Format1216(Disk!      disk,
+                                       uint       diskSectors,
+                                       FatVersion fatVersion,
+                                       string!    volumeLabel)
+        {
+            ClearReservedArea(disk, fatVersion);
+            InitializeBootSector1216(
+                disk,
+                diskSectors,
+                fatVersion,
+                volumeLabel
+                );
+            InitializeFat1216(disk, diskSectors, fatVersion);
+            InitializeRootDirectory1216(
+                disk,
+                diskSectors,
+                fatVersion,
+                volumeLabel
+                );
+        }
+
+        // --------------------------------------------------------------------
+        // FAT32 specific routines
+
+        private static void InitializeBpb32(Disk!     disk,
+                                            uint      diskSectors,
+                                            string!   volumeLabel,
+                                            ref BPB32 bpb32)
+        {
+            bpb32.FatSize32 = GetSectorsPerFat(FatVersion.Fat32, diskSectors);
+            bpb32.ExtFlags       = 0;
+            bpb32.FsVersion      = 0;
+            bpb32.RootCluster    = Fat32RootDirectoryCluster;
+            bpb32.FsInfoSector   = Fat32FsInfoSector;
+            bpb32.BootRecordCopy = Fat32BackupSector;
+            bpb32.DriveNumber    = BpbDefaultDriveNumber;
+            bpb32.BootSignature  = BPB32.ExpectedBootSignature;
+            bpb32.VolumeId       = (uint)DateTime.Now.Ticks;
+            bpb32.VolumeLabel    = volumeLabel;
+            bpb32.FileSystemType = Fat32TypeLabel;
+        }
+
+        private static void
+        InitializeBootSector32(Disk!              disk,
+                               uint               diskSectors,
+                               string!            volumeLabel,
+                               byte []! in ExHeap bootSector)
+        {
+            ref BPB bpb = ref bootSector[0];
+            InitializeBpb(disk, diskSectors, FatVersion.Fat32, ref bpb);
+
+            ref BPB32 bpb32 = ref bootSector[BPB.Length];
+            InitializeBpb32(disk, diskSectors, volumeLabel, ref bpb32);
+
+            SignBootSector(bootSector);
+        }
+
+        private static void
+        InitializeFsInfo32(Disk! disk, uint diskSectors)
+        {
+            // NB When writing the FsInfo32
+            // data we need to remember that the first cluster
+            // is used by the root directory and adjust free
+            // start and free count accordingly.
+            byte [] in ExHeap sector = new [ExHeap] byte [BpbBytesPerSector];
+            ref FsInfo32 fsInfo32 = ref sector[0];
+            fsInfo32.Initialize(
+                GetCountOfClusters(FatVersion.Fat32, diskSectors) - 1,
+                Fat32RootDirectoryCluster + 1
+                );
+            WriteToDisk(disk, Fat32FsInfoSector, sector);
+        }
+
+        private static void
+        InitializeBackupBootSector(Disk! disk,
+                                   byte[]! in ExHeap bootSector)
+        {
+            byte [] in ExHeap backup = new [ExHeap] byte [BpbBytesPerSector];
+            Bitter.Copy(backup, 0, backup.Length, bootSector, 0);
+            WriteToDisk(disk, Fat32BackupSector, backup);
+        }
+
+        private static void InitializeFat32(Disk! disk,
+                                            uint diskSectors)
+        {
+            ClearFat(disk, diskSectors, FatVersion.Fat32);
+
+            const uint fat0hi = 0x0fffff00;
+
+            byte []! in ExHeap sector = new [ExHeap] byte [BpbBytesPerSector];
+
+            ref uint fat0 = ref sector[0];
+            if ((disk.DiskAttributes & DiskAttributes.Removable) != 0) {
+                fat0 = ByteOrder.HostToLittleEndian(
+                    fat0hi | (uint)BpbRemovableMedia
+                    );
+            }
+            else {
+                fat0 = ByteOrder.HostToLittleEndian(
+                    fat0hi | (uint)BpbFixedMedia
+                    );
+            }
+
+            ref uint fat1 = ref sector[4];
+            fat1 = ByteOrder.HostToLittleEndian(
+                Fat32CleanShutdown | Fat32NotErrorShutdown | 0x03fffffffu
+                );
+
+            ref uint rootCluster = ref sector[Fat32RootDirectoryCluster * 4];
+            rootCluster = ByteOrder.HostToLittleEndian(Fat32EOC);
+
+            WriteFatSector0(disk, diskSectors, FatVersion.Fat32, sector);
+        }
+
+        private static void InitializeRootDirectory32(Disk!   disk,
+                                                      uint    diskSectors,
+                                                      string! volumeLabel)
+        {
+            uint clusterLength =
+                BpbBytesPerSector *
+                GetSectorsPerCluster(FatVersion.Fat32, diskSectors);
+
+            byte []! in ExHeap cluster = new [ExHeap] byte [clusterLength];
+            char[]! in ExHeap v = GetSanitizedVolumeLabel(volumeLabel);
+
+            ref DirectoryEntry de = ref cluster[0];
+            de.InitializeAsVolumeId(v);
+            delete v;
+
+            WriteToDisk(
+                disk,
+                GetSectorOfFirstCluster(FatVersion.Fat32, diskSectors),
+                cluster
+                );
+        }
+
+        private static bool Format32(Disk!   disk,
+                                     uint    diskSectors,
+                                     string! volumeLabel)
+        {
+            ClearReservedArea(disk, FatVersion.Fat32);
+
+            byte [] in ExHeap sector0 = new [ExHeap] byte[BpbBytesPerSector];
+            InitializeBootSector32(disk, diskSectors, volumeLabel, sector0);
+            InitializeBackupBootSector(disk, sector0);
+            InitializeFsInfo32(disk, diskSectors);
+
+            WriteToDisk(disk, 0, sector0);
+
+            InitializeFat32(disk, diskSectors);
+            InitializeRootDirectory32(disk, diskSectors, volumeLabel);
+
+            return true;
+        }
+
+        // --------------------------------------------------------------------
+        // Entry point and helpers
+
+        private static bool ValidVolumeLabel(string! volumeLabel)
+        {
+            if (volumeLabel.Length > DirectoryEntry.ShortNameEntryLength) {
+                return false;
+            }
+            for (int i = 0; i < volumeLabel.Length; i++) {
+                if (!DirectoryEntry.ValidShortNameCharacter(volumeLabel[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool ParseFatType(string! fatType,
+                                         uint    limitingSectors,
+                                         out FatVersion fatVersion,
+                                         out uint       useSectors)
+        {
+            DiskSizeToSectorsPerCluster [] diskTable = null;
+
+            if (string.Compare(fatType.ToUpper(), Fat12TypeLabel) == 0) {
+                fatVersion = FatVersion.Fat12;
+                diskTable = diskTable12;
+            }
+            else if (string.Compare(fatType.ToUpper(), Fat16TypeLabel) == 0) {
+                fatVersion = FatVersion.Fat16;
+                diskTable = diskTable16;
+            }
+            else if (string.Compare(fatType.ToUpper(), Fat32TypeLabel) == 0) {
+                fatVersion = FatVersion.Fat32;
+                diskTable = diskTable32;
+            }
+            else {
+                fatVersion = FatVersion.Fat32;
+                useSectors = 0;
+                return false;
+            }
+
+            uint max   = diskTable[diskTable.Length - 1].MaxDiskSectors;
+            useSectors = Math.Min(max, limitingSectors);
+
+            return true;
+        }
+
+        public static void
+        DebugDisplayDiskInfo(FatVersion version,
+                             uint  diskSectorsUsed,
+                             ulong diskSectorsAvailable)
+        {
+            DebugStub.Print(
+                "Formatting disk with {0}\n" +
+                "Disk Sectors       = {1} / {2}\n",
+                            __arglist(
+                                FatVersionName(version),
+                                diskSectorsUsed,
+                                diskSectorsAvailable)
+                            );
+            DebugStub.Print(
+                "Root Sectors        = {0}\n" +
+                "Reserved Sectors    = {1}\n" +
+                "Sectors Per Fat     = {2}\n" +
+                "Total Clusters      = {3}\n" +
+                "Sectors Per Cluster = {4}\n",
+                __arglist(
+                    GetRootDirectorySectors(version, diskSectorsUsed),
+                    GetReservedSectorCount(version),
+                    GetSectorsPerFat(version, diskSectorsUsed),
+                    GetCountOfClusters(version, diskSectorsUsed),
+                    GetSectorsPerCluster(version, diskSectorsUsed)
+                    )
+                );
+            DebugStub.Print(
+                "Used Sectors        = {0}\n",
+                __arglist(
+                    GetReservedSectorCount(version) +
+                    GetRootDirectorySectors(version, diskSectorsUsed) +
+                    GetSectorsPerFat(version, diskSectorsUsed) *
+                    BpbNumberOfFats +
+                    GetCountOfClusters(version, diskSectorsUsed) *
+                    GetSectorsPerCluster(version, diskSectorsUsed)
+                    )
+                );
+        }
+
+        private static void GetFormatSettings(ulong             diskSectors,
+                                              out uint          usableSectors,
+                                              out FatFormatType formatType)
+        {
+
+            ulong tmp = Math.Min(diskSectors, (ulong)UInt32.MaxValue);
+            usableSectors = (uint)tmp;
+
+            FatVersion v = GetPreferredFatVersion(usableSectors);
+            formatType = FatFormatType.Automatic;
+            switch (v) {
+                case FatVersion.Fat12:
+                    formatType = FatFormatType.Fat12;
+                    break;
+                case FatVersion.Fat16:
+                    formatType = FatFormatType.Fat16;
+                    break;
+                case FatVersion.Fat32:
+                    formatType = FatFormatType.Fat32;
+                    break;
+            }
+        }
+
+        public static FatVersion
+        GetFatVersion(FatFormatType fft, uint sectors)
+        {
+            switch (fft) {
+                case FatFormatType.Fat12:
+                    return FatVersion.Fat12;
+
+                case FatFormatType.Fat16:
+                    return FatVersion.Fat16;
+
+                case FatFormatType.Fat32:
+                    return FatVersion.Fat32;
+
+                default:
+                    return GetPreferredFatVersion(sectors);
+            }
+        }
+
+        private static Disk
+        GetDiskForFormat(FatClientContract.Exp! manager,
+                         [Claims] char[]! in ExHeap diskPath)
+        {
+            DirectoryServiceContract.Imp dsImp =
+                DirectoryService.NewClientEndpoint();
+            try {
+                Disk disk = Disk.Create(dsImp, Bitter.ToString2(diskPath), 1);
+                if (disk == null) {
+                    manager.SendFail(FatContractErrorCode.DiskUnavailable);
+                    return null;
+                }
+                else if ((disk.DiskAttributes & DiskAttributes.ReadOnly)
+                         != 0) {
+                    manager.SendFail(FatContractErrorCode.ReadOnlyDisk);
+                    return null;
+                }
+                else if (disk.StartSector > (ulong)UInt32.MaxValue) {
+                    manager.SendFail(FatContractErrorCode.InvalidStartSector);
+                    return null;
+                }
+                else if (disk.TotalSectors < MinimumSectors) {
+                    manager.SendFail(FatContractErrorCode.InvalidSectorCount);
+                    return null;
+                }
+
+                // TODO: Check partition type has been
+                // set.
+
+                return disk;
+            }
+            finally {
+                delete dsImp;
+                delete diskPath;
+            }
+        }
+
+        public static void
+        SendPreferredFormatSettings(
+            FatClientContract.Exp! managerExp,
+            [Claims] char[]! in ExHeap diskPath
+            )
+        {
+            Disk disk = GetDiskForFormat(managerExp, diskPath);
+            if (disk != null) {
+                uint          sectors;
+                FatFormatType format;
+                GetFormatSettings(disk.TotalSectors, out sectors, out format);
+                FatFormatSettings*! in ExHeap ffs = new [ExHeap]
+                    FatFormatSettings(format, sectors, BpbBytesPerSector);
+                managerExp.SendPreferredFormatSettings(ffs);
+            }
+        }
+
+        public static void DoFormat(
+            FatClientContract.Exp! managerExp,
+            [Claims] char[]! in ExHeap diskPath,
+            [Claims] char[]! in ExHeap volumeLabel,
+            [Claims] FatFormatSettings*! in ExHeap fms
+            )
+        {
+            ulong         maxSectors = fms->MaxSectors;
+            FatFormatType formatType = fms->FatFormatType;
+            delete fms;
+
+            string! label = Bitter.ToString2(volumeLabel).ToUpper();
+            delete volumeLabel;
+
+            Disk disk = GetDiskForFormat(managerExp, diskPath);
+            if (disk == null) {
+                // GetDiskForFormat sends appropriate error
+                // indication to managerExp
+                return;
+            }
+
+            if (!ValidVolumeLabel(label)) {
+                managerExp.SendFail(FatContractErrorCode.InvalidVolumeLabel);
+                return;
+            }
+
+            if (maxSectors > (ulong)UInt32.MaxValue ||
+                maxSectors > disk.TotalSectors ||
+                maxSectors < MinimumSectors) {
+                managerExp.SendFail(FatContractErrorCode.InvalidFormatSettings);
+                return;
+            }
+
+            uint       sectors = (uint)maxSectors;
+            FatVersion version = GetFatVersion(formatType, sectors);
+
+            uint sectorsPerCluster = GetSectorsPerCluster(version, sectors);
+            if (sectorsPerCluster == 0) {
+                managerExp.SendFail(FatContractErrorCode.InvalidFormatSettings);
+                return;
+            }
+
+            DebugDisplayDiskInfo(version, sectors, disk.TotalSectors);
+
+            if (version == FatVersion.Fat32) {
+                Format32(disk, sectors, label);
+            }
+            else {
+                Format1216(disk, sectors, version, label);
+            }
+            managerExp->SendSuccess();
+        }
+    }
+}

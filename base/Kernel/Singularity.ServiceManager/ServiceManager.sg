@@ -1,0 +1,90 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Kernel/Singularity.ServiceManager/ServiceManager.sg
+//
+//  Note:
+//
+using System;
+using System.Collections;
+using System.Threading;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Loader;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.ServiceManager
+{
+    public class ServiceManagerModule
+    {
+        private const string Name = "sms";
+        private const string Executable = "sms";
+
+        private static void StartProcess(string! executable, String[]! args)
+        {
+            Process process = null;
+            Manifest manifest = null;
+
+            IoMemory memory = Binder.LoadImage(Thread.CurrentProcess,
+                                               executable,
+                                               out manifest);
+
+            if (memory != null && memory.Length > 0 && manifest != null) {
+                DirectoryServiceContract.Imp! ds = DirectoryService.NewClientEndpoint();
+                if (ds == null) { 
+                    DebugStub.Break(); 
+                } 
+                
+                process = new Process(Thread.CurrentProcess,
+                                      memory,
+                                      null,
+                                      args,
+                                      manifest);
+                if (process != null) {
+                    process.SetEndpoint(0, ds); 
+                    DebugStub.WriteLine("Starting SMS");
+                    process.Start();
+                }
+            }
+            else {
+                DebugStub.WriteLine("Unable to find {0}",
+                                    __arglist(executable));
+                DebugStub.Break();
+            }
+        }
+
+        public static void Initialize(XmlNode !config)
+        {
+            ArrayList args = new ArrayList();
+
+            args.Add(Name);
+
+            if (config != null) {
+                foreach (XmlNode! service in config.Children) {
+                    if (service.Name != "service") {
+                        continue;
+                    }
+
+                    string name = service.GetAttribute("name", "");
+                    string binary = service.GetAttribute("binary", "");
+                    string option = service.GetAttribute("mode", "managed");
+                    args.Add(name);
+                    args.Add(binary);
+                    args.Add(option);
+
+                    DebugStub.Print("SMS: Found " + name +
+                                    "(" + binary + ": " + option + ")\n");
+                }
+            }
+            else {
+                DebugStub.WriteLine("SMS:No Configuration");
+            }
+
+            StartProcess(Executable, (String[]!)args.ToArray(typeof(string)));
+        }
+    }
+}

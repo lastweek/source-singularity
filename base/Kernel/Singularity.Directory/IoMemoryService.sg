@@ -1,0 +1,122 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IoMemoryNode.sg
+//
+//  Note: internal node type used to support IoMemory images
+//
+
+using System;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using SharedHeap = Microsoft.Singularity.Memory.SharedHeap;
+
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.AccessControl;
+
+namespace Microsoft.Singularity.Directory
+{
+    contract IoMemFSContract
+    {
+        in  message Connect(FileContract.Exp:Start!ep,UIntPtr addr, int length);
+        out message AckConnect();
+        out message NakConnect(FileContract.Exp:Start! ep);
+
+        state Ready: one
+        {
+            Connect?  -> (AckConnect! or NakConnect!) -> Ready;
+        }
+    }
+
+    public class IoMemoryFS
+    {
+        private TRef<IoMemFSContract.Exp:Ready> ioRef;
+
+        public IoMemFSContract.Imp Start ()
+        {
+            IoMemFSContract.Imp! imp;
+            IoMemFSContract.Exp! sp;
+            IoMemFSContract.NewChannel(out imp, out sp);
+
+            ioRef = new TRef<IoMemFSContract.Exp:Ready>(sp);
+
+            // create the service thread to manage all requests for IoMemory objects
+            Thread thread = Thread.CreateThread(DirectoryService.processForWorkerThreads,
+                                                new ThreadStart(IoFSPump));
+            if (thread != null) {
+                thread.Start();
+            }
+            else {
+                // make sure caller does not hang
+                sp = ioRef.Acquire();
+                delete sp;
+            }
+            return imp;
+        }
+
+        private void IoFSPump()
+        {
+            bool success;
+            int code;
+            char[] in ExHeap path;
+            EMap<FileContract.Exp:Ready,IoMemory> clients;
+
+            assert ioRef != null;
+            IoMemFSContract.Exp io = ioRef.Acquire();
+            clients = new EMap<FileContract.Exp:Ready,IoMemory>();
+
+            for (bool run = true; run;) {
+                switch receive  {
+                    case io.Connect(ep,UIntPtr addr, int len):
+                        Kernel.Waypoint(3310);
+                        // TODO: this must be mapped into *user* space
+                        IoMemory ioMem = IoMemory.Wrap(addr, (uint)len, true, true);
+                        ep.SendSuccess();
+                        Kernel.Waypoint(3311);
+                        clients.Add(ep,ioMem);
+                        Kernel.Waypoint(3312);
+                        io.SendAckConnect();
+                        Kernel.Waypoint(3313);
+                        break;
+                    case ep.Read(i_buffer, i_bufferOffset, fileOffset, count)in clients~>ioMem:
+                        Kernel.Waypoint(3300);
+                        int ioLength = 0;
+                        if (ioMem != null) {
+                            ioLength = ioMem.Length;
+                        }
+                        int offset = (int) fileOffset;
+                        //DebugStub.Print(" NS read. fileOff="+
+                        if (offset >= ioLength) {
+                            ep.SendAckRead(i_buffer,0,1); //error
+                            clients.Add(ep,ioMem);
+                            Kernel.Waypoint(3301);
+                            break;
+                        }
+                        int readLen = Math.Min((int) count,  Math.Max(0,ioLength - (int)fileOffset) );
+                        Bitter.FromIoMemory(i_buffer, (int) i_bufferOffset, readLen,
+                                            ioMem, (int)fileOffset);
+                        ep.SendAckRead(i_buffer,readLen,0);
+                        clients.Add(ep,ioMem);
+                        Kernel.Waypoint(3302);
+                        break;
+                    case ep.ChannelClosed() in clients~>ioMem :
+                        delete ep;
+                        break;
+                    case unsatisfiable :
+                        run = false;
+                        break;
+                }
+            }
+            clients.Dispose(); //delete ep;
+            delete io;
+        }
+    } //IoMemory Service
+}

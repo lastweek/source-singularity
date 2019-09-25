@@ -1,0 +1,63 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+
+namespace System.Collections
+{
+    // The Hashtable class represents a dictionary of associated keys and
+    // values with constant lookup time.
+
+    public class Hashtable : IDictionary, ICloneable
+    {
+        protected IHashCodeProvider hcp { get; set; }
+        protected IComparer comparer { get; set; }
+
+        public Hashtable();
+        public Hashtable(int capacity);
+        public Hashtable(int capacity, float loadFactor);
+        public Hashtable(int capacity, float loadFactor, IHashCodeProvider hcp, IComparer comparer);
+        public Hashtable(IHashCodeProvider hcp, IComparer comparer);
+        public Hashtable(int capacity, IHashCodeProvider hcp, IComparer comparer);
+        public Hashtable(IDictionary d);
+        public Hashtable(IDictionary d, float loadFactor);
+        public Hashtable(IDictionary d, IHashCodeProvider hcp, IComparer comparer);
+        public Hashtable(IDictionary d, float loadFactor, IHashCodeProvider hcp, IComparer comparer);
+
+        public virtual void Add(Object key, Object value);
+        public virtual void Clear();
+        public virtual Object Clone();
+        public virtual bool Contains(Object key);
+        public virtual bool ContainsKey(Object key);
+        public virtual bool ContainsValue(Object value);
+        public virtual void CopyTo(Array array, int arrayIndex);
+
+        public virtual Object this[Object key] { get; set; }
+
+        IEnumerator IEnumerable.GetEnumerator();
+        public virtual IDictionaryEnumerator GetEnumerator();
+
+        protected virtual int GetHash(Object key);
+
+        public virtual bool IsReadOnly { get; }
+        public virtual bool IsFixedSize { get; }
+        public virtual bool IsSynchronized { get; }
+
+        protected virtual bool KeyEquals(Object item, Object key);
+
+        public virtual ICollection Keys { get; }
+        public virtual ICollection Values { get; }
+
+        public virtual void Remove(Object key);
+
+        public virtual Object SyncRoot { get; }
+        public virtual int Count { get; }
+
+        public static Hashtable Synchronized(Hashtable table);
+    }
+}

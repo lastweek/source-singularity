@@ -1,0 +1,33 @@
+﻿<!--
+###############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SmpTest</AssemblyName>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="ForkTest.sg" />
+    <Compile Include="HeapTest.sg" />
+    <Compile Include="Settings.sg" />
+    <Compile Include="SmpTest.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Test.Contracts\app.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\UnitTest\UnitTestLib.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

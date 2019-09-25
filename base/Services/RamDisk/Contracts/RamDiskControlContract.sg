@@ -1,0 +1,42 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RamDiskControlContract.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.RamDisk.Contracts
+{
+    /// <summary> The contract between the ramdisk command
+    /// line program and the RAM disk client manager
+    /// service. </summary>
+    public contract RamDiskControlContract : ServiceContract
+    {
+        in message Create(ulong diskSizeBytes);
+        out message CreateSuccess(char []! in ExHeap diskName);
+        out message Fail(RamDiskContractErrorCode reason);
+
+        in message Destroy(char []! in ExHeap diskName, bool force);
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready : one {
+            Create? -> (CreateSuccess! or Fail!) -> Ready;
+            Destroy? -> (Success! or Fail!) -> Ready;
+        }
+
+        public const string ManagerControlPath = "/service/services/RamDiskService";
+    }
+}

@@ -1,0 +1,89 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//=============================================================================
+//
+// File: AssemblyReflectionAttributes.cool
+//
+// Purpose: For Assembly-related reflection custom attributes.
+//
+//=============================================================================  
+
+using System;
+
+namespace System.Reflection
+{
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyCopyrightAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyCopyrightAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyCopyrightAttribute.AssemblyCopyrightAttribute"]/*' />
+        public AssemblyCopyrightAttribute(String copyright);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyTrademarkAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyTrademarkAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyTrademarkAttribute.AssemblyTrademarkAttribute"]/*' />
+        public AssemblyTrademarkAttribute(String trademark);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyProductAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyProductAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyProductAttribute.AssemblyProductAttribute"]/*' />
+        public AssemblyProductAttribute(String product);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyCompanyAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyCompanyAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyCompanyAttribute.AssemblyCompanyAttribute"]/*' />
+        public AssemblyCompanyAttribute(String company);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyDescriptionAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyDescriptionAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyDescriptionAttribute.AssemblyDescriptionAttribute"]/*' />
+        public AssemblyDescriptionAttribute(String description);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyTitleAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyTitleAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyTitleAttribute.AssemblyTitleAttribute"]/*' />
+        public AssemblyTitleAttribute(String title);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyConfigurationAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyConfigurationAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyConfigurationAttribute.AssemblyConfigurationAttribute"]/*' />
+        public AssemblyConfigurationAttribute(String configuration);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyDefaultAliasAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyDefaultAliasAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyDefaultAliasAttribute.AssemblyDefaultAliasAttribute"]/*' />
+        public AssemblyDefaultAliasAttribute(String defaultAlias);
+    }
+
+    //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyInformationalVersionAttribute"]/*' />
+    [AttributeUsage (AttributeTargets.Assembly, AllowMultiple=false)]
+    public sealed class AssemblyInformationalVersionAttribute : Attribute
+    {
+        //| <include file='doc\AssemblyReflectionAttributes.uex' path='docs/doc[@for="AssemblyInformationalVersionAttribute.AssemblyInformationalVersionAttribute"]/*' />
+        public AssemblyInformationalVersionAttribute(String informationalVersion);
+    }
+}

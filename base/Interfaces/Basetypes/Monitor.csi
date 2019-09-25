@@ -1,0 +1,24 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System.Threading
+{
+    public sealed class Monitor
+    {
+        public static void Enter(Object obj);
+        public static void Exit(Object obj);
+        public static bool TryEnter(Object obj);
+        public static bool TryEnter(Object obj, int millisecondsTimeout);
+        public static bool TryEnter(Object obj, TimeSpan timeout);
+        public static bool Wait(Object obj, int millisecondsTimeout, bool exitContext);
+        public static bool Wait(Object obj, TimeSpan timeout, bool exitContext);
+        public static bool Wait(Object obj, int millisecondsTimeout);
+        public static bool Wait(Object obj, TimeSpan timeout);
+        public static bool Wait(Object obj);
+        public static void Pulse(Object obj);
+        public static void PulseAll(Object obj);
+    }
+}

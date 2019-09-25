@@ -1,0 +1,19 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+namespace System
+{
+    [RequiredByBartok]
+    public struct VarargList
+    {
+#if !DONT_DO_BARTOK
+        private int count;
+#endif
+        [RequiredByBartok]
+        private static VarargList Create(int count);
+    }
+}

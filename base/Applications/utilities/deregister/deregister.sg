@@ -1,0 +1,79 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using System.Diagnostics;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Security;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "path", Position=0, Mandatory=true)]
+        internal string nsPath;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Deregister.AppMain(this);
+        }
+    }
+    class Deregister
+    {
+        internal static int AppMain(Parameters! config)
+        {
+
+            ErrorCode errorOut;
+            ServiceProviderContract.Imp:Start  service;
+
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+            ds.RecvSuccess();
+
+            bool ok = SdsUtils.Deregister((!)config.nsPath, ds, out service, out errorOut);
+            delete service;
+            delete ds;
+
+            if (!ok) {
+                Console.WriteLine(" {0} of {1} failed. reason:{2}",
+                                  "deregister", config.nsPath, SdsUtils.ErrorCodeToString(errorOut));
+                return -1;
+            }
+            return 0;
+        }
+    }//Deregister
+}//namespace

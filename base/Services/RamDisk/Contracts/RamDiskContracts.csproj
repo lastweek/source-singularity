@@ -1,0 +1,29 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Services.RamDisk.Contracts</AssemblyName>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="RamDiskControlContract.sg" />
+    <Compile Include="RamDiskClientContract.sg" />
+    <Compile Include="RamDiskContractErrorCode.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj" />
+  </ItemGroup>  
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+
+</Project>

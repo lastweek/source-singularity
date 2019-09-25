@@ -1,0 +1,50 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//------------------------------------------------------------------------------
+
+using System;
+
+namespace System.Collections
+{
+    // Useful base class for typed read/write collections where items derive from object
+    public abstract class CollectionBase : IList {
+        ArrayList list;
+
+        protected ArrayList InnerList { get; }
+
+        protected IList List { get; }
+
+        public int Count { get; }
+
+        public void Clear();
+        public void RemoveAt(int index);
+
+        bool IList.IsReadOnly { get; }
+        bool IList.IsFixedSize { get; }
+        bool ICollection.IsSynchronized { get; }
+        Object ICollection.SyncRoot { get; }
+        void ICollection.CopyTo(Array array, int index);
+
+        Object IList.this[int index] { get; set; }
+        bool IList.Contains(Object value);
+        int IList.Add(Object value);
+        void IList.Remove(Object value);
+        int IList.IndexOf(Object value);
+        void IList.Insert(int index, Object value);
+
+        public IEnumerator GetEnumerator();
+
+        protected virtual void OnSet(int index, Object oldValue, Object newValue);
+        protected virtual void OnInsert(int index, Object value);
+        protected virtual void OnClear();
+        protected virtual void OnRemove(int index, Object value);
+        protected virtual void OnValidate(Object value);
+        protected virtual void OnSetComplete(int index, Object oldValue, Object newValue);
+        protected virtual void OnInsertComplete(int index, Object value);
+        protected virtual void OnClearComplete();
+        protected virtual void OnRemoveComplete(int index, Object value);
+    }
+}

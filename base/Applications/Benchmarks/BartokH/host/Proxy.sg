@@ -1,0 +1,388 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Compiler Phase
+//
+
+//#define DO_LOCAL
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+using Bartok.Contracts;
+using Bartok.Analysis.Lir;
+using Bartok.Convert;
+using Bartok.Datatype;
+using Bartok.CfgUtil;
+using Bartok.Lir;
+using Bartok.Opt.Lir;
+using Bartok.Utility;
+using Bartok.DebugInfo;
+using Bartok.Regalloc;
+using Bartok.Marshal;
+using Bartok.Regalloc;
+
+namespace Bartok.Regalloc
+{
+    public class GraphColoring : Phase{
+        private CheapState! cs;
+        private VContainer<byte> bufferData;
+#if DO_LOCAL
+        private GraphColoringReal gcr;
+#else
+        private TRef<CompilerPhaseContract.Imp:Running> child;
+#endif
+
+        private static void ReadOpen(CheapState! cs, byte[]! in ExHeap bytes)
+        {
+            uint regionSize;
+            uint region;
+            regionSize = (uint)bytes.Length;
+            unsafe {
+                byte *pdst = &bytes[0];
+                region = (uint)pdst;
+                cs.ReadOpen(region, regionSize);
+            }
+        }
+
+        private static void ReadClose(CheapState! cs)
+        {
+#if false
+            if (cs.oig != null) {
+                DebugStub.WriteLine("--- Proxy.Read Close {0,8} bytes {1,5} objects",
+                                    __arglist(cs.read, cs.loadCount));
+            }
+#endif
+            cs.ReadClose();
+        }
+
+        private static void WriteOpen(CheapState! cs, byte[]! in ExHeap bytes)
+        {
+            uint regionSize;
+            uint region;
+            regionSize = (uint)bytes.Length;
+            unsafe {
+                byte *pdst = &bytes[0];
+                region = (uint)pdst;
+                cs.WriteOpen(region, regionSize);
+            }
+        }
+
+        private static void WriteClose(CheapState! cs)
+        {
+#if false
+            if (cs.oig != null) {
+                DebugStub.WriteLine("--- Proxy.WriteClose {0,8} bytes {1,5} objects",
+                                    __arglist(cs.used, cs.oig.m_currentCount));
+            }
+#endif
+            cs.WriteClose();
+        }
+
+        [Microsoft.Contracts.NotDelayed]
+        public GraphColoring(RegDesc regs, CallConv conv, AbstractTarget target,
+                             GlobalLayoutData globalLayoutData,
+                             int pageSize, int stackThreshhold,
+                             bool isNoisy)
+        {
+            CheapMarshal.InitTypes();
+
+            cs = new CheapState(0, true);
+            base();
+#if false
+
+            Console.WriteLine("-------- GraphColoring Init -----");
+            DebugStub.WriteLine("-------- GraphColoring::Proxy Init -----");
+#endif
+
+#if DO_LOCAL
+            gcr = new GraphColoringReal(regs,
+                                        conv,
+                                        target,
+                                        globalLayoutData,
+                                        pageSize,
+                                        stackThreshhold,
+                                        isNoisy);
+#else // !DO_LOCAL
+            // Make a new channel.
+            CompilerPhaseContract.Imp! cp;
+            CompilerPhaseContract.Exp! ep;
+            CompilerPhaseContract.NewChannel(out cp, out ep);
+
+            // Start up our child
+            string[] args = new string[3];
+            args[0] = "BartokP";
+            args[1] = "-where";
+            args[2] = "!";
+            Process cproc = new Process(args, (Endpoint * in ExHeap)ep);
+
+            // set the where parameter to true
+            ParameterCode code;
+            code = cproc.SetStartupBoolArg(0, true);
+            if (code != ParameterCode.Success){
+                Console.WriteLine("unable to set bool index 0. error={0}", code);
+                delete cp;
+                return;
+            }
+
+            byte[]! in ExHeap bytes = (!)new [ExHeap] byte [2 * 1024 * 1024];
+
+            cproc.Start();
+
+            // Track statics before they can be replicated in a method call.
+            RegisterX86.TrackAsGlobal(cs);
+            OpCodesX86.TrackAsGlobal(cs);
+
+            cp.RecvReadyToInit();
+
+            StageControlProxy controls = new StageControlProxy();
+            controls.GetValues();
+
+            ulong beg = Processor.GetCycleCount();
+            WriteOpen(cs, bytes);
+            RegDesc.CheapWrite(cs, regs);
+            CallConv.CheapWrite(cs, conv);
+            AbstractTarget.CheapWrite(cs, target);
+            GlobalLayoutData.CheapWrite(cs, globalLayoutData);
+            cs.Write(pageSize);
+            cs.Write(stackThreshhold);
+            cs.Write(isNoisy);
+            CSRT.CheapWrite(cs, CSRT.runtime);
+            StageControlProxy.CheapWrite(cs, controls);
+            WriteClose(cs);
+            DebugStub.AddToPerfCounter(0, Processor.GetCycleCount() - beg);
+
+            //DebugStub.WriteLine(":: Host Targ Globals");
+            target.TrackAsGlobal(cs);
+            //DebugStub.WriteLine(":: Host Regs Globals");
+            regs.TrackAsGlobal(cs);
+            //DebugStub.WriteLine(":: Host Conv Globals");
+            conv.TrackAsGlobal(cs);
+            //DebugStub.WriteLine(":: Host CSRT Globals");
+            CSRT.runtime.TrackAsGlobal(cs);
+
+            //cs.DumpGlobal("host");
+
+            cp.SendInitPhaseReq(bytes);
+#if USE_SWITCH_RECEIVE
+            switch receive
+            {
+                case cp.InitPhaseRsp(byte[]! in ExHeap obytes):
+                    ReadOpen(cs, obytes);
+                    ReadClose(cs);
+                    bufferData = new VContainer<byte> (obytes);
+                    child = new TRef<CompilerPhaseContract.Imp:Running>(cp);
+                    return;
+                case cp.ChannelClosed():
+                    Console.WriteLine("Child closed channel!");
+                    throw new Exception("Child closed channel!");
+            }
+#else
+            byte[]! in ExHeap obytes;
+            cp.RecvInitPhaseRsp(out obytes);
+            ReadOpen(cs, obytes);
+            ReadClose(cs);
+            bufferData = new VContainer<byte> (obytes);
+            child = new TRef<CompilerPhaseContract.Imp:Running>(cp);
+#endif
+#endif // !DO_LOCAL
+        }
+
+        private string GetPhaseName()
+        {
+#if DO_LOCAL
+            return gcr.PhaseName;
+#else // !DO_LOCAL
+            if (child == null) {
+                Console.WriteLine("!!! Internal Error!");
+                return "<error>";
+            }
+
+#if USE_SWITCH_RECEIVE
+            CompilerPhaseContract.Imp! cp = child.Acquire();
+
+            cp.SendGetPhaseNameReq();
+            switch receive
+            {
+                case cp.GetPhaseNameRsp(char[]! in ExHeap name):
+                    string ph = Bitter.ToString(name);
+                    child.Release(cp);
+                    delete name;
+                    return ph;
+                case cp.ChannelClosed():
+                    Console.WriteLine("Child closed channel!");
+                    throw new Exception("Child closed channel!");
+            }
+#else
+            return "[regalloc]";
+#endif
+#endif // !DO_LOCAL
+        }
+
+        public override string PhaseName
+        {
+            get {
+                return GetPhaseName();
+            }
+        }
+
+        public override void Term()
+        {
+#if DO_LOCAL
+            gcr.Term();
+#else // !DO_LOCAL
+            if (child == null) {
+                Console.WriteLine("!!! Internal Error!");
+                return;
+            }
+
+#if USE_SWITCH_RECEIVE
+            CompilerPhaseContract.Imp! cp = child.Acquire();
+
+            cp.SendTermPhaseReq();
+            switch receive
+            {
+                case cp.TermPhaseRsp():
+                    ReadOpen(cs, obytes);
+                    ReadClose(cs);
+                    child.Release(cp);
+                    return;
+                case cp.ChannelClosed():
+                    Console.WriteLine("Child closed channel!");
+                    throw new Exception("Child closed channel!");
+            }
+#else
+            if (bufferData == null) {
+                Console.WriteLine("!!! Internal Error!");
+                return;
+            }
+
+            CompilerPhaseContract.Imp! cp = child.Acquire();
+            byte[]! in ExHeap bytes = bufferData.Acquire();
+            WriteOpen(cs, bytes);
+            WriteClose(cs);
+            cp.SendRequest((int)RequestKind.Terminate, bytes);
+            cp.RecvResponse(out bytes);
+            ReadOpen(cs, bytes);
+            ReadClose(cs);
+            bufferData.Release(bytes);
+            child.Release(cp);
+#endif
+#endif // !DO_LOCAL
+        }
+
+        protected override void run(FunctionDef f, object r)
+        {
+#if DO_LOCAL
+            gcr.Go(f, r);
+#else // !DO_LOCAL
+            if (child == null || bufferData == null || f == null || r == null) {
+                Console.WriteLine("!!! Internal Error!");
+                return;
+            }
+
+#if false
+            Console.WriteLine("-------- GraphColoring Run {0} -----", f.ToString());
+#endif
+
+            CompilerPhaseContract.Imp! cp = child.Acquire();
+            byte[]! in ExHeap bytes = bufferData.Acquire();
+
+            ulong beg = Processor.GetCycleCount();
+            WriteOpen(cs, bytes);
+            FunctionDef.CheapWrite(cs, f);
+            ChooseRepResult.CheapWrite(cs, (ChooseRepResult)r);
+            WriteClose(cs);
+            DebugStub.AddToPerfCounter(0, Processor.GetCycleCount() - beg);
+
+#if USE_SWITCH_RECEIVE
+            cp.SendProcessFunctionReq(bytes);
+            switch receive
+            {
+                case cp.ProcessFunctionRsp(obytes):
+                    beg = Processor.GetCycleCount();
+                    ReadOpen(cs, obytes);
+                    OperandArray.CheapRead(cs, out f.actualArgs);
+                    LirBasicBlock.CheapRead(cs, out f.prolog);
+                    LirBasicBlock.CheapRead(cs, out f.epilog);
+                    LirBasicBlock.CheapRead(cs, out f.unwind);
+                    cs.Read(out f.omitFramePointer);
+                    cs.Read(out f.spillSlotCount);
+                    Operand.CheapRead(cs, out f.stackSlotMap);
+                    SequencedCfg.CheapRead(cs, out f.code);
+                    OperandArray.CheapRead(cs, out f.pinned);
+                    OperandArray.CheapRead(cs, out f.formals);
+                    Operand.CheapRead(cs, out f.ret);
+                    ReadClose(cs);
+                    DebugStub.AddToPerfCounter(3, Processor.GetCycleCount() - beg);
+
+                    bufferData.Release(obytes);
+                    child.Release(cp);
+                    return;
+
+                case cp.ChannelClosed():
+                    Console.WriteLine("Child closed channel!");
+                    throw new Exception("Child closed channel!");
+            }
+#else
+            cp.SendRequest((int)RequestKind.ProcessFunction, bytes);
+            cp.RecvResponse(out bytes);
+
+            beg = Processor.GetCycleCount();
+            ReadOpen(cs, bytes);
+            OperandArray.CheapRead(cs, out f.actualArgs);
+            LirBasicBlock.CheapRead(cs, out f.prolog);
+            LirBasicBlock.CheapRead(cs, out f.epilog);
+            LirBasicBlock.CheapRead(cs, out f.unwind);
+            cs.Read(out f.omitFramePointer);
+            cs.Read(out f.spillSlotCount);
+            Operand.CheapRead(cs, out f.stackSlotMap);
+            SequencedCfg.CheapRead(cs, out f.code);
+            OperandArray.CheapRead(cs, out f.pinned);
+            OperandArray.CheapRead(cs, out f.formals);
+            Operand.CheapRead(cs, out f.ret);
+            ReadClose(cs);
+            DebugStub.AddToPerfCounter(3, Processor.GetCycleCount() - beg);
+
+            bufferData.Release(bytes);
+            child.Release(cp);
+#endif
+#endif // !DO_LOCAL
+        }
+
+#if TIMING
+        private const string componentName = "Back End Coloring";
+        private static int componentId;
+        private const string allocFunctionName = "Back End Coloring allocFunction";
+        private static int allocFunctionId;
+        private const string deadCodeName = "Back End Coloring dead code elimination";
+        private static int deadCodeId;
+        private const string copyPropName = "Back End Coloring copy propagation";
+        private static int copyPropId;
+        private const string coalesceName = "Back End Coloring coalescing";
+        private static int coalesceId;
+        private const string interferenceName = "Back End Coloring interference";
+        private static int interferenceId;
+        private const string colorAndSpillName = "Back End Coloring ColorAndSpill";
+        private static int colorAndSpillId;
+        private const string coloringName = "Back End Coloring Coloring";
+        private static int coloringId;
+#endif
+    } // class GraphColoring   
+}

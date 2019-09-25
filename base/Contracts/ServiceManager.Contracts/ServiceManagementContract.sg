@@ -1,0 +1,423 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Contracts\ServiceManager.Contracts\ServiceManagementContracts.sg
+//
+//  Note:   SMS-clients contract
+//
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.ServiceManager
+{
+
+    public rep struct ExSchedulerTime
+    {
+        public long Ticks;
+    }
+
+    /// <summary>
+    /// This enumeration defines the activation mode for services, which controls when
+    /// the Service Manager starts services.
+    /// </summary>
+    public enum ServiceActivationMode
+    {
+        /// <summary>
+        /// In this mode, the Service Manager will start the service, if necessary, when clients
+        /// attempt to connect to the service.  When the service is created, the Service Manager
+        /// will not attempt to start the service.
+        /// </summary>
+        Demand = 1,
+
+        /// <summary>
+        /// In this mode, the Service Manager will always attempt to keep the service running.
+        /// The StartService and StopService control messages cannot be used to control these
+        /// services.  The only way to stop a service that uses this activation mode is to
+        /// disable the service (set IsAdministrativelyDisabled to true), or to delete the service.
+        /// If a service process terminates unexpectedly, the Service Manager may attempt to restart
+        /// the service.
+        /// </summary>
+        AlwaysActive = 2,
+
+        /// <summary>
+        /// In this mode, management clients control the state of the service.  When the service
+        /// is created, the Service Manager leaves the service in the Stopped state.
+        /// </summary>
+        Manual = 3,
+    }
+
+    /// <summary>
+    /// This structure describes all of the configuration parameters of a service.
+    /// </summary>
+    public rep struct ServiceConfig : ITracked
+    {
+        /// <summary>
+        /// Specifies the name of the service.  This field is arbitrary; the Service Manager does not
+        /// impose any interpretation on the service name.  It only serves to distinguish services.
+        /// The field is case-sensitive.
+        /// </summary>
+        public char[]! in ExHeap ServiceName;
+
+        /// <summary>
+        /// Specifies the name to display to the user for this service.
+        /// </summary>
+        public char[]! in ExHeap DisplayName;
+
+        /// <summary>
+        /// Specifies the name of the executable (a manifest name).
+        /// </summary>
+        public char[]! in ExHeap ExecutableName;
+
+
+        /// <summary>
+        /// Controls when the Service Manager starts the service.
+        /// </summary>
+        public ServiceActivationMode ActivationMode;
+
+        /// <summary>
+        /// If this field is set to true, then this service has been administratively disabled.
+        /// This allows administrators to disable a service, without affecting any other aspect
+        /// of its configuration.
+        /// </summary>
+        public bool IsAdministrativelyDisabled;
+
+        /// <summary>
+        /// Specifies the minimum number of processes that the Service Manager should create for this
+        /// service.  If this field is 0, then the Service Manager will not create any processes for
+        /// the service, until the Service Manager receives a Connect request.  Later, when demand
+        /// for the service decreases, the Service Manager may stop the process (or processes) that
+        /// it created.
+        /// </summary>
+        public int MinProcesses;
+
+        /// <summary>
+        /// Specifies the maximum number of processes that the Service Manager should create for
+        /// this service.  If this field is 1, then the service is a singleton.  If this field is
+        /// UnlimitedProcesses (-1), then the Service Manager will not limit the number of processes.
+        /// </summary>
+        public int MaxProcesses;
+
+        /// <summary>
+        /// Specifies the maximum number of clients that each service process should handle.  If this
+        /// field is 1, then there is a 1:1 relationship between service processes and clients.
+        /// If this field is UnlimitedClientsPerProcess, then the Service Manager will not create more
+        /// than one service process (per service).
+        /// </summary>
+        public int MaxClientsPerProcess;
+
+        /// <summary>
+        /// The maximum age, in seconds, of each service process.  The Service Manager records the
+        /// time when it created each service process.  When a process reaches the age specified by
+        /// this field, the Service Manager will no longer route requests to that process.  Instead,
+        /// it will route requests to an existing process (whose age limit has not yet been reached),
+        /// or will create a new process, if needed.
+        ///
+        /// If this field is set to UnlimitedProcessAge, then the Service Manager will not perform
+        /// service process aging.
+        /// </summary>
+        public int MaxProcessAgeInSeconds;
+
+        public const int UnlimitedProcesses = -1;
+        public const int UnlimitedClientsPerProcess = -1;
+        public const int UnlimitedProcessAge = -1;
+    }
+
+
+    public enum ServiceProcessState
+    {
+        /// <summary>
+        /// In this state, the Service Manager has created a new service process,
+        /// and is waiting for the process to indicate that it has finished starting.
+        /// The process must either indicate that it has finished starting by sending
+        /// a StartSucceeded message, indicate that it failed to start by sending a
+        /// StartFailed message.  If the service process does not send either of these
+        /// messages within a reasonable period of time, then the Service Manager will
+        /// mark the process as Defective.
+        /// </summary>
+        Starting = 1,
+
+        /// <summary>
+        /// In this state, the service process is ready for use; the Service Manager
+        /// will route client connection requests to the process.
+        /// </summary>
+        Running = 2,
+
+        /// <summary>
+        /// In this state, the Service Manager is stopping the service process.
+        /// There may be important substates to consider, but this is the overall
+        /// state of the service.
+        /// </summary>
+        Stopping = 3,
+
+        /// <summary>
+        /// In this state, the Service Manager considers this process to be defective.
+        /// The Service Manager has (or will) close all channels to this process, and
+        /// will not route any new client connections to the service.
+        /// </summary>
+        Defective = 4,
+    }
+
+
+    public enum ServiceState
+    {
+        Stopped = 1,
+        Starting,
+        Running,
+        Stopping,
+    }
+
+    /// <summary>
+    /// This structure describes the operational status of a service.
+    /// </summary>
+    public rep struct ServiceStatus
+    {
+        public ServiceState State;
+
+        /// <summary>
+        /// The total number of clients that are connect to the service.
+        /// </summary>
+        public int TotalActiveClients;
+
+        /// <summary>
+        /// The total number of processes that the Service Manager has created for this service.
+        /// </summary>
+        public int TotalActiveProcesses;
+
+        public int ConnectQueueLength;
+
+        public long ProcessId;
+
+        public bool LastStartFailed;
+        public ServiceError LastStartError;
+    }
+
+    public rep struct ServiceProcessStatus
+    {
+        public long ProcessId;
+
+        public ServiceProcessState State;
+
+        /// <summary>
+        /// The total number of client connections that have ever been routed to this
+        /// service process.
+        /// </summary>
+        public int TotalConnects;
+
+        /// <summary>
+        /// The system time (actually, scheduler time) when the process was created.
+        /// </summary>
+        public ExSchedulerTime TimeCreated;
+
+        /// <summary>
+        /// The number of clients that the Service Manager believes are being
+        /// serviced by this process.
+        /// </summary>
+        public int ActiveClientCount;
+
+        public ServiceHealth Health;
+
+        public ServiceLoad Load;
+    }
+
+    public rep struct ServiceInfo : ITracked
+    {
+        public ServiceConfig Config;
+        public ServiceStatus Status;
+    }
+
+    [Flags]
+    public enum ServiceManagerEventMask
+    {
+        AnyServiceConfig = 1,
+        AnyServiceStatus = 2,
+    }
+
+    //
+//
+    //This contract is implemented (exported) by the Service Manager, and is published at
+    //the well-known path "/service/services".  This contract allows management clients (such as
+    //svconf) to connect to the Service Manager, and:
+//
+    //  * query the status of the Service Manager,
+    //  * enumerate services,
+    //  * query the status of services,
+    //  * subscribe to the status of a service or services,
+    //  * start and stop services,
+    //  * create, modify, and delete services,
+//
+    //
+    public contract ServiceManagerContract : ServiceContract
+    {
+        public const string ModuleName = "/service/services";
+
+        out message Success();
+        override state Start : one {
+            Success! -> Ready;
+        }
+
+        //
+        // Enumeration of services
+        //
+        in message EndEnumeration();
+        out message EnumerationTerminated(ServiceInfo[]! in ExHeap infos, int count);
+        out message NextServiceInfo(ServiceInfo[]! in ExHeap infos, int count);
+
+        state EnumeratingServices : one {
+            NextServiceInfo! -> EnumerateAck;
+            EnumerationTerminated! -> Ready;
+        }
+
+        state EnumerateAck : one {
+            EnumerateServices? -> EnumeratingServices;
+            EndEnumeration? -> Ready;
+        }
+
+        //
+        // Main request state.
+        //
+
+        state Ready : one {
+            EnumerateServices? -> EnumeratingServices;
+            SelectService? -> SelectingService;
+            CreateService? -> (Ok! or RequestFailed!);
+            WatchServiceManager? -> RequestingWatchServiceManager;
+        }
+
+        in message WatchServiceManager(ServiceManagerEventMask mask);
+        in message EnumerateServices(ServiceInfo[]! in ExHeap infos);
+        in message CreateService(ServiceConfig config);
+        in message SelectService(char[]! in ExHeap serviceName);
+
+        state SelectingService : one {
+            Ok! -> ServiceSelected;
+            RequestFailed! -> Ready;
+        }
+
+        state RequestingWatchServiceManager : one {
+            Ok! -> ReadyWatchServiceManager;
+            RequestFailed! -> Ready;
+        }
+
+        //
+        // ReadyWatchServiceManager - In this state, a client is watching the overall status
+        // of the Service Manager, and uses WaitNextChange() to be notified of the next change
+        // in the configuration or in status of any service.  The client and SM then
+        // oscillate between ReadyWatchAll <--> WaitingNext
+        //
+
+        state ReadyWatchServiceManager : one {
+            WaitNextServiceManagerChange? -> WaitingServiceManagerChange;
+            StopWatchingServiceManager? -> Ready;
+        }
+
+        state WaitingServiceManagerChange : one {
+            ServiceManagerChanged! -> ReadyWatchServiceManager;
+        }
+
+        in message StopWatchingServiceManager();
+        in message WaitNextServiceManagerChange();
+        out message ServiceManagerChanged(ServiceManagerEventMask mask);
+
+        //
+        // In this state, the client has chosen a specific service to act on, using the
+        // SelectService request.  All of the requests in this state act on that server,
+        // except for UnselectService, which returns the client to the Ready state.
+        //
+
+        state ServiceSelected : one {
+            WatchServiceStatus? -> RequestingWatchServiceStatus;
+            StartServiceWait? -> StartingServiceWait;
+            StartServiceNoWait? -> StartingServiceNoWait;
+            StopServiceWait? -> StoppingServiceWait;
+            StopServiceNoWait? -> StoppingServiceNoWait;
+            QueryServiceStatus? -> (CurrentServiceStatus! or RequestFailed!) -> ServiceSelected;
+            QueryServiceConfig? -> (CurrentServiceConfig! or RequestFailed!) -> ServiceSelected;
+            DeleteService? -> (Ok! or RequestFailed!);
+            UnselectService? -> Ready;
+            EnableService? -> (Ok! or RequestFailed!);
+            TerminateServiceAllProcesses? -> (Ok! or RequestFailed!);
+            TerminateServiceProcess? -> (Ok! or RequestFailed!);
+        }
+
+        in message StartServiceNoWait();
+        in message StartServiceWait();
+        in message StopServiceWait();
+        in message StopServiceNoWait();
+        in message DeleteService();
+        in message UnselectService();
+        in message QueryServiceConfig();
+        in message QueryServiceStatus();
+        in message WatchServiceStatus();
+        in message EnableService(bool enable);
+        in message TerminateServiceAllProcesses();
+        in message TerminateServiceProcess(int processId);
+
+        state RequestingWatchServiceStatus : one {
+            Ok! -> ReadyWatchService;
+            RequestFailed! -> Ready;
+        }
+
+        state StartingServiceWait : one {
+            ServiceStarted! -> ServiceSelected;           // service has successfully started
+            RequestFailed! -> ServiceSelected;
+        }
+
+        state StartingServiceNoWait : one {
+            ServiceStarting! -> ServiceSelected;          // service is starting, but may not be finished.
+            RequestFailed! -> ServiceSelected;
+        }
+
+        state StoppingServiceWait : one {
+            ServiceStopped! -> ServiceSelected;           // service has stopped.
+            RequestFailed! -> ServiceSelected;
+        }
+
+        state StoppingServiceNoWait : one {
+            ServiceStopping! -> ServiceSelected;          // service is stopping, but may not be finished.
+            RequestFailed! -> ServiceSelected;
+        }
+
+        out message CurrentServiceConfig(ServiceConfig config);
+        out message CurrentServiceStatus(ServiceStatus status);
+
+        out message ServiceStarting();
+        out message ServiceStarted();
+        out message ServiceStopping();
+        out message ServiceStopped();
+
+
+        //
+        // ReadyWatchService - In this state, the client has subscribed to the status of a
+        // service (the Service Manager has already approved the subscription), and the client
+        // is the next message sender.  The client can now wait for the next notification,
+        // or can end the subscription.
+        //
+
+        state ReadyWatchService : one {
+            WaitServiceChange? -> WaitingServiceChange;
+            StopWatchingService? -> Ready;
+        }
+
+        state WaitingServiceChange : one {
+            ServiceStatusChanged! -> ReadyWatchService;
+            RequestFailed! -> Ready;
+        }
+
+        in message WaitServiceChange();
+        in message StopWatchingService();
+        out message ServiceStatusChanged(ServiceStatus status, bool missedChanges);
+
+
+        //
+        // Generic response codes.
+        //
+
+        out message Ok();
+        out message RequestFailed(ServiceError err);
+    }
+}

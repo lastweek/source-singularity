@@ -1,0 +1,200 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+using System;
+using System.Threading;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [LongParameter( "count", Position=0, Default=1000, HelpMessage="count")]
+        internal long count;
+
+        [BoolParameter( "a", Default=false, HelpMessage="Do Allocation")]
+        internal bool doAlloc;
+
+        [BoolParameter( "t", Default=false, HelpMessage="Do ThreadCount2 test")]
+        internal bool doThread2;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return ChannelPerf.AppMain(this);
+        }
+    }
+
+    public class ChannelPerf
+    {
+        public contract ChannelPerfTest {
+            message Req(int x);
+            message Resp(int x);
+
+            state Start: Req? -> Resp! -> Start;
+        }
+
+        private static TRef<ChannelPerfTest.Exp:Start>! cpendpoint1;
+        private static TRef<ChannelPerfTest.Imp:Start>! cpendpoint2;
+
+        public static void ChannelPerfThread1()
+        {
+            ChannelPerfTest.Exp e1 = cpendpoint1.Acquire();
+            int arg;
+
+            while (true) {
+                e1.RecvReq(out arg);
+                if (arg == -1) break;
+                e1.SendResp(arg);
+            }
+
+            delete e1;
+        }
+
+        public static void ChannelPerfThread3( int count, bool doAlloc )
+        {
+            ChannelPerfTest.Imp e2 = cpendpoint2.Acquire();
+            int arg;
+            int num = count;
+            byte [] foo;
+
+            int collectorCountStart;
+            long collectorMillisStart, collectorBytesStart;
+
+            int collectorCountEnd;
+            long collectorMillisEnd, collectorBytesEnd;
+
+            Console.WriteLine("Sending/(switch) recving {0} messages ...", num);
+            if (doAlloc)
+                Console.WriteLine(" will do allocation ");
+
+            ulong before = Processor.CycleCount;
+            GC.PerformanceCounters(out  collectorCountStart, out collectorMillisStart, out collectorBytesStart);
+
+            for (int i = 0; i < num; i++) {
+                arg = i;
+                e2.SendReq(arg);
+                switch receive {
+                    case e2.Resp(reply):
+                        if (doAlloc) {
+                            foo = new byte[20000];
+                            foo[1] = 0x3; // keep the compiler happy
+                        }
+                        break;
+                    case e2.ChannelClosed():
+                        throw new Exception("Didn't e2.Resp(arg)");
+                        break;
+                }
+            }
+
+            GC.PerformanceCounters( out collectorCountEnd, out collectorMillisEnd, out collectorBytesEnd);
+            ulong after = Processor.CycleCount;
+            Console.WriteLine("Done sending messages ...");
+            e2.SendReq(-1);
+            delete e2;
+            Console.WriteLine("Elapsed cycles {0}", after - before);
+            Console.WriteLine("Cycles/RPC {0}", (after - before)/(ulong)num);
+
+            Console.WriteLine(" num GCs:{0}, milli={1}, bytes={2}\n",
+                              (collectorCountEnd - collectorCountStart),
+                              (collectorMillisEnd - collectorMillisStart),
+                              (collectorBytesEnd - collectorBytesStart)
+                              );
+        }
+
+        public static void ChannelPerfThread2()
+        {
+            ChannelPerfTest.Imp e2 = cpendpoint2.Acquire();
+            int arg;
+            const int num = 1000;
+            int collectorCountStart;
+            long collectorMillisStart, collectorBytesStart;
+
+            int collectorCountEnd;
+            long collectorMillisEnd, collectorBytesEnd;
+
+            Console.WriteLine("Sending/recving {0} messages ...", num);
+            GC.PerformanceCounters(out  collectorCountStart, out collectorMillisStart, out collectorBytesStart);
+
+            Console.WriteLine(" Start: num GCs:{0}, milli={1}, bytes={2}\n",
+                              collectorCountStart,
+                              collectorMillisStart,
+                              collectorBytesStart
+                              );
+
+            ulong before = Processor.CycleCount;
+            for (int i = 0; i < num; i++) {
+                arg = i;
+                e2.SendReq(arg);
+                e2.RecvResp(out arg);
+            }
+
+            GC.PerformanceCounters( out collectorCountEnd, out collectorMillisEnd, out collectorBytesEnd);
+
+            ulong after = Processor.CycleCount;
+            Console.WriteLine("Done sending messages ...");
+            e2.SendReq(-1);
+            delete e2;
+            Console.WriteLine("Elapsed cycles {0}", after - before);
+            Console.WriteLine("Cycles/RPC {0}", (after - before)/num);
+            Console.WriteLine(" num GCs:{0}, milli={1}, bytes={2}\n",
+                              (collectorCountEnd - collectorCountStart),
+                              (collectorMillisEnd - collectorMillisStart),
+                              (collectorBytesEnd - collectorBytesStart)
+                              );
+
+        }
+
+        //[ShellCommand("channelperf", "Measure channel performance")]
+        internal static int AppMain(Parameters! config)
+        {
+
+            bool doAlloc = config.doAlloc;
+            int count = (int) config.count;
+
+            // Make a new channel.
+            ChannelPerfTest.Imp! e2;
+            ChannelPerfTest.Exp! e1;
+
+            ChannelPerfTest.NewChannel(out e2, out e1);
+
+            // Endpoints are initially owned by the creating thread.
+            // We're going to transfer ownership to other threads, so
+            // we release them here.
+            cpendpoint1 = new TRef<ChannelPerfTest.Exp:Start>(e1);
+            cpendpoint2 = new TRef<ChannelPerfTest.Imp:Start>(e2);
+
+            // Create our two threads.
+            Thread t1 = new Thread(new ThreadStart(ChannelPerfThread1));
+            t1.Start();
+
+            //Thread t2 = new Thread(new ThreadStart(ChannelPerfThread2));
+            //t2.Start();
+
+            // Actually just call into Thread2 so we don't have to sit here
+            // twiddling our thumbs! :-)
+
+            if (config.doThread2) ChannelPerfThread2();
+            else  ChannelPerfThread3(count,doAlloc);
+            return 0;
+        }
+    }
+}

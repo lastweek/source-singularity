@@ -1,0 +1,137 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TRef.cs
+//
+//  Note: File is part of Sing# runtime files and copied into Singularity tree
+//        whenever a new version of Sing# is dropped.
+//        Coordinate any changes with Sing# team.
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Memory;
+
+namespace Microsoft.Singularity.Channels
+{
+  using System.Threading;
+  using Allocation = Microsoft.Singularity.Memory.SharedHeap.Allocation;
+
+  /// <summary>
+  /// In order to capture the state of an endpoint when stored in a TRef, we
+  /// need to attach the state to the type itself, because instance types cannot have attributes.
+  ///
+  /// We use opt modifier types for this.
+  ///
+  /// The syntax is TRef&lt; C.Imp @(State) &gt;
+  /// </summary>
+  public sealed class TRef<T,State> where T : unmanaged struct, ITracked
+  {
+    unsafe T* opt(ExHeap) opt(State) obj;
+    Mutex! mutex;
+
+    public TRef([Claims] T* opt(ExHeap) opt(State)! i_obj)
+    {
+      if (i_obj == null) {
+        throw new ArgumentNullException("TRef must be initialized with a non-null value!");
+      }
+      i_obj->Release();
+#if SINGULARITY_KERNEL
+      // In the Kernel, TRefs are used sometimes to pass endpoints between threads
+      // of different processes. So we have to set it to the kernel on release.
+      unsafe {
+          Process kernelProcess = Process.KernelProcess;
+          Process currentProcess = Thread.CurrentProcess;
+          if ((kernelProcess != null) && (currentProcess != null)) {
+              i_obj = (T* opt(ExHeap) opt(State)!)EndpointCore.MoveEndpoint(
+                  currentProcess.ProcessSharedHeap, SharedHeap.KernelSharedHeap,
+                  kernelProcess, (Allocation*)i_obj);
+          }
+      }
+#endif
+      obj = i_obj;
+      this.mutex = new Mutex();
+    }
+
+    // invariant:
+    //   If mutex is held, thread holding mutex is responsible for calling Release
+    //   during that time, the obj slot is empty and if the thread tries to acquire it
+    //   again, an exception is thrown.
+
+    /// <summary>
+    /// Will block until the TRef is free.
+    /// </summary>
+    /// <returns>Acquired tracked type protected by TRef</returns>
+    public T* opt(ExHeap) opt(State)! Acquire()
+    {
+      this.mutex.WaitOne();
+      T* opt(ExHeap) opt(State) elem = this.obj;
+      if (elem == null) {
+        throw new ApplicationException("thread already holds TRef!");
+      }
+#if SINGULARITY_KERNEL
+      // In the Kernel, TRefs are used sometimes to pass endpoints between threads
+      // of different processes. So we have to set the new owner correctly.
+      unsafe {
+          Process currentProcess = Thread.CurrentProcess;
+          if (currentProcess != null) {
+              elem = (T* opt(ExHeap) opt(State)!)EndpointCore.MoveEndpoint(
+                  SharedHeap.KernelSharedHeap, currentProcess.ProcessSharedHeap,
+                  currentProcess, (Allocation*)elem);
+          }
+      }
+#endif
+      elem->Acquire();
+      this.obj = null;
+      return elem;
+    }
+
+    /// <summary>
+    /// Releases tracked data into the TRef so other threads can access it.
+    /// </summary>
+    /// <param name="newObj">tracked data to be released</param>
+    public void Release([Claims] T* opt(ExHeap) opt(State)! newObj)
+    {
+      if (newObj == null) {
+        throw new ArgumentNullException("TRef must be released with a non-null value!");
+      }
+      newObj->Release();
+#if SINGULARITY_KERNEL
+      // In the Kernel, TRefs are used sometimes to pass endpoints between threads
+      // of different processes. So we have to set it to the kernel on release.
+      unsafe {
+          Process kernelProcess = Process.KernelProcess;
+          Process currentProcess = Thread.CurrentProcess;
+          if ((kernelProcess != null) && (currentProcess != null)) {
+              newObj = (T* opt(ExHeap) opt(State)!)EndpointCore.MoveEndpoint(
+                  currentProcess.ProcessSharedHeap, SharedHeap.KernelSharedHeap,
+                  kernelProcess, (Allocation*)newObj);
+          }
+      }
+#endif
+      obj = newObj;
+      this.mutex.ReleaseMutex();
+    }
+
+    /// <summary>
+    /// Finalizer to dispose of any left over contents
+    /// </summary>
+    ~TRef() {
+      T* opt(ExHeap) opt(State) toDelete = this.obj;
+      if (toDelete != null) {
+        this.obj = null;
+        unsafe {
+#if SINGULARITY_KERNEL
+          Tracing.Log(Tracing.Audit, "TRef finalizing {0:x}", (UIntPtr)toDelete);
+#endif
+          toDelete->Dispose(); // Explicit call needed due to generics
+        }
+        delete toDelete;
+      }
+    }
+
+  }
+}

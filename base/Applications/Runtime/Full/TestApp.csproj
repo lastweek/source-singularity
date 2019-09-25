@@ -1,0 +1,43 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\..\..\Paths.targets"/>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\RuntimePaths.target"/>
+
+  <PropertyGroup>
+    <AssemblyName>testapp.$(Runtime)</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <OutputPath>$(APPRUNTIMEDIR)</OutputPath>
+    <Language>C#</Language>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="testapp.cs"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Singularity.V1\Singularity.V1.App.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj"/>
+    <ProjectReference Include="$(APPRUNTIMESRCDIR)\Corlibsg.csproj"/>
+    <ProjectReference Include="Microsoft.SingSharp.Runtime.App.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets"/>
+
+  <!--
+  <Target Name="AfterBuild"
+          DependsOnTargets="CompileNative">
+  </Target>
+  -->
+
+</Project>
+

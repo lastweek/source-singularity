@@ -1,0 +1,245 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Text.RegularExpressions;
+using System.Threading;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Configuration;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$truncate-history-privilege.localhost")]
+[assembly: AssertPrivilegeAttribute("$trusted-auth-privilege.localhost")]
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications.Login
+{
+    [ConsoleCategory(HelpMessage="Login", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Login.AppMain(this);
+        }
+    }
+
+    /// <summary>
+    /// Simple login process implementation.
+    /// Asks the user for its user name and starts a new instance of itself under
+    /// the new role. The new instance invokes the shell.
+    /// </summary>
+
+    // See WaitForChildThread below
+    internal contract WaitForChildContract {
+        out message Finish();
+        state Start: one {Finish! -> Done;}
+        state Done: one {}
+    }
+
+    public class Login
+    {
+        /// <summary>
+        /// Regular expression specifying a valid user name
+        /// </summary>
+        public const string Arc = @"[a-zA-Z1-90_\.]+";
+        /// <summary>
+        /// The name of the shell process
+        /// </summary>
+        public const string Shell = "shell";
+        private Regex! nameRegex = new Regex(Arc);
+
+        internal static int AppMain(Parameters! config)
+        {
+            Login login = new Login();
+            return login.Run();
+        }
+
+        internal int Run()
+        {
+            for (;;) {
+                Console.Write("login: ");
+                string line = Console.ReadLine();
+                if (line != null && nameRegex.IsMatch(line)) {
+                    return RunShell(line);
+                }
+            }
+        }
+
+        internal int RunShell(string! username)
+        {
+            int exitCode = 0;
+            string path;
+            try {
+                Process process = new Process(Shell, null, username);
+                UnicodePipeContract.Imp! stdInImp;
+                UnicodePipeContract.Exp! stdInExp;
+                UnicodePipeContract.NewChannel(out stdInImp, out stdInExp);
+                UnicodePipeContract.Imp! stdOutImp;
+                UnicodePipeContract.Exp! stdOutExp;
+                UnicodePipeContract.NewChannel(out stdOutImp, out stdOutExp);
+                process.SetStartupEndpoint(0, (Endpoint * in ExHeap) stdInExp);
+                process.SetStartupEndpoint(1, (Endpoint * in ExHeap) stdOutImp);
+                process.Start();
+                exitCode = WaitForShell(process, stdInImp, stdOutExp);
+                if (exitCode != 0) {
+                    Console.WriteLine("-- Exit code: {0}", exitCode);
+                }
+            }
+            catch (ProcessCreateException) {
+                Console.WriteLine("Can't create shell");
+            }
+            catch (Exception e) {
+                Console.Write("Can't start shell: Exception '{0}' caught.", e.Message);
+            }
+            return exitCode;
+        }
+
+        /// <summary>
+        /// Copy and echo characters from shell stdin to job stdin,
+        /// and from job stdout to shell stdout.
+        ///
+        /// Known limitation: if the child process opens
+        /// its own keyboard channel, the shell may never see the control-c
+        /// message.
+        /// </summary>
+        private int WaitForShell(Process! process,
+                                 [Claims] UnicodePipeContract.Imp:READY! childStdIn,
+                                 [Claims] UnicodePipeContract.Exp:READY! childStdOut)
+        {
+            WaitForChildContract.Imp! waitImp;
+            WaitForChildContract.Exp! waitExp;
+            WaitForChildContract.NewChannel(out waitImp, out waitExp);
+
+            PipeLookAhead cinput = ConsoleInput.AcquireInput();
+
+            ESet<UnicodePipeContract.Imp:ACK> childStdInAck =
+                new ESet<UnicodePipeContract.Imp:ACK>();
+            ESet<UnicodePipeContract.Imp:READY> childStdInReady =
+                new ESet<UnicodePipeContract.Imp:READY>();
+            ESet<UnicodePipeContract.Exp:READY> childStdOutReady =
+                    new ESet<UnicodePipeContract.Exp:READY>();
+
+            char[] in ExHeap exChar = new [ExHeap] char[1];
+            try {
+                WaitForChildThread.StartWaiting(process,
+                                                new TRef<WaitForChildContract.Exp:Start>(waitExp));
+
+                childStdInReady.Add(childStdIn);
+                childStdOutReady.Add(childStdOut);
+
+                bool done = false;
+                while (!done) {
+                    // invariant exChar != null && childStdInReady.Head(ep) ||
+                    //           exChar == null && childStdInReady.Empty
+                    switch receive {
+
+                        case cinput.Char(ch) && childStdInReady.Head(ep):
+                            // we have a char and childStdIn is ready
+                            assert exChar != null;
+                            // echo character
+                            //Console.Write(ch);
+                            exChar[0] = (char) ch;
+                            ep.SendWrite(exChar,0,1);
+                            exChar = null;
+                            childStdInAck.Add(ep);
+                            continue;
+
+                        case ep.AckWrite(buffer) in childStdInAck:
+                            assert exChar == null;
+                            exChar = buffer;
+                            childStdInReady.Add(ep);
+                            continue;
+
+                        case waitImp.Finish():
+                            //Console.WriteLine("finish");
+                            done = true;
+                            break;
+
+                        case ep.Write(buffer, index, count) in childStdOutReady:
+                            string s = Bitter.ToString2(buffer, index, count);
+                            Console.Write(s);
+                            ep.SendAckWrite(buffer);
+                            childStdOutReady.Add(ep);
+                            continue;
+
+                        case ep.ChannelClosed() in childStdInAck:
+                            delete ep;
+                            continue;
+
+                        case ep.ChannelClosed() in childStdOutReady:
+                            delete ep;
+                            continue;
+                    }
+                }
+            }
+            finally {
+                childStdInReady.Dispose();
+                childStdInAck.Dispose();
+                childStdOutReady.Dispose();
+                ConsoleInput.ReleaseInput(cinput);
+                delete waitImp;
+                delete exChar;
+            }
+            int exitCode = process.ExitCode;
+            process.Dispose(true);
+            return exitCode;
+        }
+
+        // TODO: better ways to wait on a child process
+        private class WaitForChildThread
+        {
+            private Process! process;
+            private TRef<WaitForChildContract.Exp:Start>! expRef;
+
+            private WaitForChildThread(Process! process,
+                                       TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                this.process = process;
+                this.expRef = expRef;
+                base();
+            }
+
+            public static void StartWaiting(Process process,
+                                            TRef<WaitForChildContract.Exp:Start>! expRef)
+            {
+                if (process == null) {
+                    WaitForChildContract.Exp exp = expRef.Acquire();
+                    exp.SendFinish();
+                    delete exp;
+                    return;
+                }
+
+                WaitForChildThread wft = new WaitForChildThread(process, expRef);
+                Thread t = new Thread(new ThreadStart(wft.Wait));
+                t.Start();
+            }
+
+            private void Wait()
+            {
+                process.Join();
+                WaitForChildContract.Exp exp = expRef.Acquire();
+                exp.SendFinish();
+                delete exp;
+            }
+        }
+    }
+}

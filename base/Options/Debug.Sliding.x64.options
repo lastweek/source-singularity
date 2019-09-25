@@ -1,0 +1,52 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<options>
+  <assembly name="Singularity.V1.ill"
+            version="1.0.0"
+            publickey="00240000048000009400000006020000002400005253413100040000010001002b96128273b1f0b289a15381a7a11abf0740a0082151dedf0d8c660d619a9719070876e494445aab22bcb397d7b4ff97ca80ed49b3fc2b87bb767b60cafbf949aa435fcf17deb31901be16493c87dfe61d71f5185f0697a70ab5e0f1e05c7046db0d28c1be6d83da3fac58161c563ca59dc2ef9ce30230d9377aa63dd276cdbf">
+    <replacement name="Singularity.V1.dll"
+                 cache="Libraries\Debug.Sliding\Singularity.V1.dll"
+                 version="1.0.0.0"
+                 publickey="00240000048000009400000006020000002400005253413100040000010001002b96128273b1f0b289a15381a7a11abf0740a0082151dedf0d8c660d619a9719070876e494445aab22bcb397d7b4ff97ca80ed49b3fc2b87bb767b60cafbf949aa435fcf17deb31901be16493c87dfe61d71f5185f0697a70ab5e0f1e05c7046db0d28c1be6d83da3fac58161c563ca59dc2ef9ce30230d9377aa63dd276cdbf" />
+  </assembly>
+  <codegen>
+    <parameter value="/Singularity" />
+    <parameter value="/Verbosity:silence" />
+    <parameter value="/GCInlineArrayAllocations=false" />
+    <parameter value="/GCInlineFixedAllocations=false" />
+    <parameter value="/GCIntrinsicFixedAllocations=false" />
+    <parameter value="/GCInlineWriteBarrier=false" />
+    <parameter value="/LinkedStacks=true"
+               Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'" />
+    <parameter value="/LinkedStacksRequireExternalBound=true"
+               Condition="'$(SINGULARITY_LINKED_STACKS)'=='true'" />
+    <parameter value="/StackOverflowChecks=true"
+               Condition="'$(SINGULARITY_STACK_CHECKS)'=='true'" />
+    <parameter value="/OmitFramePointer=false" />
+    <parameter value="/SymbolicDebug=true" />
+    <parameter value="/OptimizeLocals=false" />
+    <parameter value="/DebugInline=true" />
+    <parameter value="/UnnameTracedPtrs=true" />
+    <parameter value="/Warnings=true" />
+    <parameter value="/WholeProgram=true" />
+    <parameter value="/SlidingGC" />
+    <parameter value="/minopt" />
+    <parameter value="/IrSimpleInliner=false" />
+    <parameter value="/IrImproveTypes=false" />
+    <parameter value="/CoalesceExceptionThrow=false" />
+  </codegen>
+  <linker>
+    <parameter value="/nologo" />
+    <parameter value="/debug" />
+    <parameter value="/debugtype:cv" />
+    <parameter value="/incremental:no" />
+    <parameter value="/opt:ref" />
+    <parameter value="/release" />
+    <parameter value="/nod" />
+    <parameter value="/subsystem:native" />
+    <parameter value="/fixed:no" />
+    <parameter value="/base:0x2000000" />
+    <parameter value="/entry:RuntimeEntryPoint" />
+    <library name="native.$(RUNTIME).lib" cache="AppRuntimeNative\Debug.x64.Sliding\native.$(RUNTIME).lib" />
+    <library name="singularity.V1.$(RUNTIME).lib" cache="AppRuntimeNative\Debug.x64.Sliding\Singularity.V1.$(RUNTIME).lib" />
+  </linker>
+</options>

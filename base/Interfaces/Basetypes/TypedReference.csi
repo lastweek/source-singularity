@@ -1,0 +1,33 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    public struct TypedReference
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public static Object ToObject(TypedReference value);
+
+        public override int GetHashCode();
+        public override bool Equals(Object o);
+
+        public static Type GetTargetType(TypedReference value);
+        public static RuntimeTypeHandle TargetTypeToken(TypedReference value);
+
+        public static void SetTypedReference(TypedReference target,
+                                             Object value);
+        [RequiredByBartok]
+        public static TypedReference MakeRefAny(IntPtr value, RuntimeType type);
+        [RequiredByBartok]
+        public static RuntimeTypeHandle RefAnyType(TypedReference tr);
+        [RequiredByBartok]
+        public static IntPtr RefAnyValue(TypedReference tr, RuntimeType type);
+    }
+}

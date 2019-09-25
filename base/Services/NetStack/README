@@ -1,0 +1,71 @@
+      NetStack
+      A managed code IP host implementation
+
+This directory contains the code for NetStack.  NetStack was
+developed by Yaron Weinsberg during an internship at Microsoft
+Research during the summer of 2004.
+
+The code base has since had a fair amount of hacking.  The
+changes include:
+
+- localizing code that can not work in Singularity (ie anything
+  using reflection)
+
+- replacement of types (System.Net.IPAddress -> IPv4/IPv6 classes).
+
+- clean-up dependencies between types, factoring out base types, etc.
+
+- addition of UDP and DHCP client code.
+
+- Bug fixes and applying naming and coding conventions.
+
+The code is still fairly rough, but it's a tough task to write
+an IP stack in short period of time.  There is very little test
+code here and this is an area that needs to be worked on if
+NetStack is going to be used in the longer term.
+
+NetStack support builds in Singularity and outside of Singularity.
+
+Building and running outside of Singularity
+===========================================
+
+Warning: The following information is not up-to-date with the
+current build system.
+
+The top-level nmake file 'Makefile' is set up to make builds
+outside of the Singularity environment.  Simply typing nmake
+will build the appropriate assemblies.  Unit tests can be run
+by typing 'nmake check'.
+
+To send and receive packets in userland the PacketTap NDIS
+module is needed.  It is available from:
+
+       \\cam-01-srv\dfsroot\groups\sysperf\topology\rawether\
+
+At the time of writing the raw ethernet driver is not connected
+to the build.  The relevant file that needs to be plumbed into the
+build is NetDrivers\RawEtherPacketTap.cs.
+
+Building and running within Singularity
+=======================================
+
+The NetStack directory must be located under the top-level
+Singularity source directory.  It's plumbed into the Singularity
+build by the top-level makefile.  Builds from within the
+directory can be performed with:
+
+  nmake /F Makefile.Singularity
+
+NetStack Directory Organization
+===============================
+
+Base - Base types IPv4, IPv6, EthernetAddress, NetPacket, ByteOrder.
+
+Compat - classes that NetStack uses that are not in Singularity's Kernel BCL.
+
+NetDrivers - Driver interface code.
+
+Protocol - Protocol packet formats and utilities.
+
+Runtime - Most of the code - protocol implementations, mux/demux code, etc.
+

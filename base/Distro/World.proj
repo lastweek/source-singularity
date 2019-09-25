@@ -1,0 +1,41 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+  <Import Project="ExcludeTests.targets"/>
+
+  <ItemGroup>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\**\*.csproj"
+                 Exclude="$(SINGULARITY_ROOT)\Applications\Namespace\AtomicTestDSP\AtomicTestDSP.csproj;
+                          $(SINGULARITY_ROOT)\Applications\CHello2\CHello2.csproj;
+                          $(SINGULARITY_ROOT)\Applications\Benchmarks\bartokh\**\*.csproj;
+                          $(SINGULARITY_ROOT)\Applications\Tests\InsightTests\WpfObserverTest\WpfObserverTest.csproj;
+                          $(SINGULARITY_ROOT)\Applications\Tests\InsightTests\InsightTestsVs.csproj;
+                          $(SINGULARITY_ROOT)\Applications\**\*.Win.*proj;
+                          $(ExcludePhoenixTestApp)"
+                  />
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\**\*.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Libraries\**\*.csproj" 
+                 Exclude="
+                 $(SINGULARITY_ROOT)\Libraries\Insight\WpfObserver\Insight.WpfObserver.csproj;
+                 $(SINGULARITY_ROOT)\Libraries\**\*.Win.csproj;
+                 "/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\**\*.csproj"/>
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.World.proj"/>
+  <ItemGroup Condition="!Exists('$(SINGULARITY_ROOT)\internal')">
+      <Application Include="$(SINGULARITY_ROOT)\precompiled\Drivers\**\*.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

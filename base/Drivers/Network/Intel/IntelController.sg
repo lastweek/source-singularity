@@ -1,0 +1,77 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Drivers.Network.Intel
+{
+    internal class IntelController
+    {
+        public static int DriverMain(IntelResources! resources)
+        {
+            ExtensionContract.Exp! ep = ((!)resources.ec).Acquire();
+            ServiceProviderContract.Exp! sp = ((!)resources.nicsp).Acquire();
+
+            Intel! device = new Intel(resources);
+
+            device.Initialize();
+
+            ep.SendSuccess();
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        case sp.Connect(ServiceContract.Exp:Start! exp):
+                            NicDeviceContract.Exp nd = exp as NicDeviceContract.Exp;
+                            if (nd != null) {
+                                Tracing.Log(Tracing.Debug, "Connect success.");
+                                sp.SendAckConnect();
+                                IntelDeviceChannel.CreateThread(device, nd);
+                            }
+                            else {
+                                Tracing.Log(Tracing.Error, "Connect failed.");
+                                sp.SendNackConnect(exp);
+                            }
+                            break;
+
+                        case sp.ChannelClosed():
+                            device.Shutdown();
+                            run = false;
+                            break;
+
+                        case ep.Shutdown():
+                            device.Shutdown();
+                            ep.SendAckShutdown();
+                            break;
+
+                        case ep.ChannelClosed():
+                            device.Shutdown();
+                            run = false;
+                            break;
+
+                        case unsatisfiable:
+                            DebugStub.Break();
+                            break;
+                    }
+                }
+            }
+            finally {
+                delete ep;
+                delete sp;
+            }
+            return 0;
+        }
+    }
+}

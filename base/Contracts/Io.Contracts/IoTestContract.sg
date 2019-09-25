@@ -1,0 +1,87 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IoTestContract.sg
+//
+//  Defines Message contracts for communications over channels with the I/O Test Driver
+
+using System;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract IoTestContract : DeviceContract
+    {
+            in  message GetDeviceName();
+            out message AckGetDeviceName(char* opt(ExHeap[])data);
+
+            /// <summary>
+            /// Read data from device.
+            /// <parameter name="length">Size of data to read from. </parameter>
+            /// </summary>
+            in  message Read(byte []! in ExHeap data,
+                             ulong offset,
+                             ulong length);
+            out message AckRead(byte []! in ExHeap data, ulong lengthRead);
+            out message NakRead();
+
+            /// <summary>
+            /// Write data to device.
+            /// <parameter name="length">Length of data to write. </parameter>
+            /// </summary>
+            in  message Write(byte []! in ExHeap data,
+                               ulong offset,
+                               ulong length);
+            out message AckWrite(byte []! in ExHeap data, ulong lengthWritten);
+            out message NakWrite();
+
+            in  message NoOp();
+            out message AckNoOp();
+
+            out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one
+        {
+            GetDeviceName?      -> DoGetDeviceName;
+            Read?               -> DoRead;
+            Write?              -> DoWrite;
+            NoOp?               -> DoNoOp;
+        }
+
+        state DoGetDeviceName: one
+        {
+            AckGetDeviceName! -> Ready;
+        }
+
+        state DoRead: one
+        {
+            AckRead! -> Ready;
+            NakRead! -> Ready;
+        }
+
+        state DoWrite: one
+        {
+            AckWrite! -> Ready;
+            NakWrite! -> Ready;
+        }
+
+        state DoNoOp: one
+        {
+            AckNoOp! -> Ready;
+        }
+    }
+
+}

@@ -1,0 +1,62 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DebugService.csi
+//
+//  Note:
+//
+
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct DebugService
+    {
+        public readonly int id;
+
+        [NoHeapAllocation]
+        public static unsafe void PrintBegin(out char * buffer, out int length);
+        [NoHeapAllocation]
+        public static unsafe void PrintComplete(char * buffer, int used);
+
+        [NoHeapAllocation]
+        public static unsafe void Print(char * buffer);
+        [NoHeapAllocation]
+        public static unsafe void Print(char * buffer, int length);
+
+        [NoHeapAllocation]
+        public static void Print(bool value);
+        [NoHeapAllocation]
+        public static void Print(char value);
+        [NoHeapAllocation]
+        public static void Print(byte value);
+        [NoHeapAllocation]
+        public static void Print(int value);
+        [NoHeapAllocation]
+        public static void Print(uint value);
+        [NoHeapAllocation]
+        public static void Print(long value);
+        [NoHeapAllocation]
+        public static void Print(ulong value);
+
+        [NoHeapAllocation]
+        public static void Break();
+        [NoHeapAllocation]
+        public static void WalkStack();
+
+        [NoHeapAllocation]
+        public static bool IsDebuggerPresent();
+
+        [NoHeapAllocation]
+        public static ulong ReadPerfCounter(uint which);
+
+        [NoHeapAllocation]
+        public static bool WritePerfCounter(uint which, ulong value);
+
+        [NoHeapAllocation]
+        public static bool AddToPerfCounter(uint which, ulong value);
+    }
+}

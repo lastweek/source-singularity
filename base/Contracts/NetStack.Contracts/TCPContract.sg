@@ -1,0 +1,38 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TcpContract.sg
+//
+//  Note:   Contract definition for TCP channels
+//
+
+using Microsoft.Singularity.Directory;
+
+namespace NetStack.Contracts
+{
+    public contract TcpContract : ServiceContract
+    {
+        // The name you should use to look up this module using the NameServer.
+        public const string ModuleName = "/service/tcp";
+
+        // Signal our identity
+        out message Ready();
+
+        // Create a new TCP connection
+        in message CreateTcpSession(TcpConnectionContract.Exp:Start! endpoint);
+        out message Ack();
+
+        override state Start : one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState : one
+        {
+            CreateTcpSession? -> Ack! -> ReadyState;
+        }
+    }
+}

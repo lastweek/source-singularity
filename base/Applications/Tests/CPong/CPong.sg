@@ -1,0 +1,56 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple ping-pong second child process
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.PingPong.Contracts;
+using System;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class CPong
+    {
+        public static int Main()
+        {
+            Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            PongContract.Exp conn = ep as PongContract.Exp;
+            if (conn == null) {
+                delete ep;
+                Console.WriteLine("CPong  : Missing PongContract endpoint.");
+                return 2;
+            }
+
+            Console.WriteLine("CPong  : Ready...");
+            conn.SendPongReady();
+
+            try {
+                while (true) {
+                    switch receive {
+                        case conn.Ping(int data):
+                            Console.WriteLine("CPong  : Ping({0}) to Pong...", data);
+                            conn.SendPong(data + 1);
+                            break;
+
+                        case conn.ChannelClosed():
+                            return 0;
+                    }
+                }
+            }
+            finally {
+                delete conn;
+            }
+            Console.WriteLine("CPong  : Exiting...");
+            return 3;
+        }
+    }
+}

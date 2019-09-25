@@ -1,0 +1,157 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace System.Text
+{
+
+    public class Encoding
+    {
+
+        public int WindowsCodePage
+        {
+          get;
+        }
+
+        public bool IsMailNewsDisplay
+        {
+          get;
+        }
+
+        public static Encoding! UTF8
+        {
+          get;
+        }
+
+        public static Encoding! Default
+        {
+          get;
+        }
+
+        public bool IsMailNewsSave
+        {
+          get;
+        }
+
+        public string EncodingName
+        {
+          get;
+        }
+
+        public string BodyName
+        {
+          get;
+        }
+
+        public static Encoding! UTF7
+        {
+          get;
+        }
+
+        public string HeaderName
+        {
+          get;
+        }
+
+        public int CodePage
+        {
+          get;
+        }
+
+        public bool IsBrowserSave
+        {
+          get;
+        }
+
+        public static Encoding! Unicode
+        {
+          get;
+        }
+
+        public string WebName
+        {
+          get;
+        }
+
+        public static Encoding! BigEndianUnicode
+        {
+          get;
+        }
+
+        public static Encoding! ASCII
+        {
+          get;
+        }
+
+        public bool IsBrowserDisplay
+        {
+          get;
+        }
+
+        public string! GetString (byte[] bytes, int index, int count);
+
+        public string! GetString (byte[]! bytes)
+            requires bytes != null otherwise ArgumentNullException;
+
+        public int GetMaxCharCount (int arg0);
+
+        public int GetMaxByteCount (int arg0);
+
+        public Encoder GetEncoder ();
+
+        public Decoder GetDecoder ();
+
+        public int GetChars (byte[] arg0, int arg1, int arg2, char[] arg3, int arg4);
+
+        public char[]! GetChars (byte[] bytes, int index, int count);
+
+        public char[]! GetChars (byte[]! bytes)
+            requires bytes != null otherwise ArgumentNullException;
+
+        public int GetCharCount (byte[] arg0, int arg1, int arg2);
+
+        public int GetCharCount (byte[]! bytes)
+            requires bytes != null otherwise ArgumentNullException;
+
+        public int GetBytes (string! s, int charIndex, int charCount, byte[] bytes, int byteIndex)
+            requires s != null otherwise ArgumentNullException;
+
+        public byte[]! GetBytes (string! s)
+            requires s != null otherwise ArgumentNullException;
+
+        public int GetBytes (char[] arg0, int arg1, int arg2, byte[] arg3, int arg4);
+
+        public byte[]! GetBytes (char[] chars, int index, int count);
+
+        public byte[]! GetBytes (char[]! chars)
+            requires chars != null otherwise ArgumentNullException;
+
+        public int GetByteCount (char[] arg0, int arg1, int arg2);
+
+        public int GetByteCount (string! s)
+            requires s != null otherwise ArgumentNullException;
+
+        public int GetByteCount (char[]! chars)
+            requires chars != null otherwise ArgumentNullException;
+
+        public byte[]! GetPreamble ();
+
+        public static Encoding GetEncoding (string name);
+
+        public static Encoding GetEncoding (int codepage)
+            requires codepage >= 0 otherwise ArgumentOutOfRangeException;
+            requires codepage <= 65535 otherwise ArgumentOutOfRangeException;
+
+        public static byte[] Convert (Encoding! srcEncoding, Encoding! dstEncoding, byte[]! bytes, int index, int count)
+            requires srcEncoding != null otherwise ArgumentNullException;
+            requires dstEncoding != null otherwise ArgumentNullException;
+            requires bytes != null otherwise ArgumentNullException;
+
+        public static byte[] Convert (Encoding srcEncoding, Encoding dstEncoding, byte[]! bytes)
+            requires bytes != null otherwise ArgumentNullException;
+    }
+}

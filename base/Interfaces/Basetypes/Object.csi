@@ -1,0 +1,82 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+using Microsoft.Bartok.Runtime;
+
+namespace Microsoft.Bartok.Runtime
+{
+
+    [RequiredByBartok]
+    internal struct PreHeader {
+	// declare a dummy field so that struct size won't be zero
+	int dummy;
+    }
+
+    internal struct PostHeader {
+	[AccessedByRuntime("accessed from halexn.cpp")]
+	System.VTable vtableObject;
+	static int Size;
+    }
+
+}
+
+namespace System
+{
+    [CCtorIsRunDuringStartup]
+    public class Object
+    {
+        public Object();
+
+#if !DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+        [RequiredByBartok]
+        ~Object();
+#endif
+
+        public virtual String ToString();
+        [RequiredByBartok]
+        public virtual bool Equals(Object obj);
+        public virtual int GetHashCode();
+
+        public static bool Equals(Object objA, Object objB);
+        public static bool ReferenceEquals (Object objA, Object objB);
+
+        public Type GetType();
+
+        protected Object MemberwiseClone();
+
+#if !DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+        public PreHeader  preHeader;
+        public PostHeader postHeader;
+
+        public VTable vtable { get; }
+
+        public static int HEADER_POINTERS { get; }
+        public static int HEADER_BYTES { get; }
+        public static int VTABLE_OFFSET { get; }
+        public uint NUM_REFS { get; set; }
+
+        public int GetSyncBlockIndex();
+        public bool GcMark(bool flag);
+        public bool GcMark();
+
+        public UIntPtr GetHeader(int index);
+        // public UIntPtr GetHeader(int index, UIntPtr mask);
+        public void SetHeader(int index, UIntPtr val);
+        public bool ExchangeHeader(int index, UIntPtr val, UIntPtr oldVal);
+        // public void SetHeader(int index, UIntPtr mask, UIntPtr val);
+
+        public int SyncBlockIndex { get; set; }
+#endif
+    }
+
+#if DONT_INCLUDE_TEMPORARY_STUFF_FOR_GC
+    public sealed class VTable {
+    }
+#endif
+
+}

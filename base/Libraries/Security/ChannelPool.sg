@@ -1,0 +1,134 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security
+{
+    using System;
+    using System.Collections;
+    using System.Threading;
+
+    using Microsoft.SingSharp;
+    using Microsoft.Contracts;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Directory;
+
+    /// <summary>
+    /// A <code>ChannelPool</code> maintains a pool of open channels.
+    /// (to the security service). It should be possible to parameterize this
+    /// class for general use.
+    /// </summary>
+    internal class ChannelPool
+    {
+
+#if POOLED
+        const int POOL_CAPACITY = 10;
+#else
+        const int POOL_CAPACITY = 1;
+#endif
+
+        /// <summary>
+        /// The unused channels
+        /// </summary>
+        TRef<SecurityDiagnosticsContract.Imp, SecurityDiagnosticsContract.ReadyState>[]! trefs;
+        int capacity = POOL_CAPACITY;
+        int nalloc = 0;
+        int navail = 0;
+        /// <summary>
+        /// Synchronization token
+        /// </summary>
+        object token;
+        bool disposed;
+
+        public ChannelPool()
+        {
+            int i;
+            trefs = new TRef<SecurityDiagnosticsContract.Imp, SecurityDiagnosticsContract.ReadyState>[capacity];
+            token = new object();
+            disposed = false;
+        }
+
+        // opens a connection to the security service
+        private static SecurityDiagnosticsContract.Imp  OpenChannel()
+        {
+            SecurityDiagnosticsContract.Imp! imp;
+            SecurityDiagnosticsContract.Exp! exp;
+            SecurityDiagnosticsContract.NewChannel(out imp, out exp);
+            // open a channel to the nameservice
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+            // try to bind
+            ns.SendBind(Bitter.FromString2(SecurityDiagnosticsContract.ModuleName), exp);
+
+            switch receive {
+            case ns.AckBind():
+                break;
+            case ns.NakBind(rejected, error):
+                delete imp;
+                delete rejected;
+                delete ns;
+                return null;
+            }
+            delete ns;
+
+            imp.RecvReady();
+            return imp;
+        }
+
+        /// <summary>
+        /// Returns a free channel. Blocks if none is available.
+        /// </summary>
+        public SecurityDiagnosticsContract.Imp! Acquire()
+        {
+            lock (token) {
+                // wait if no channel is available
+                while (true) {
+                    if (navail != 0) {
+                        navail--;
+                        return ((!)trefs[navail]).Acquire();
+                    }
+                    if (nalloc < capacity) {
+                        SecurityDiagnosticsContract.Imp imp = OpenChannel();
+                        if (imp != null) {
+                            trefs[nalloc] = new
+                                TRef<SecurityDiagnosticsContract.Imp, SecurityDiagnosticsContract.ReadyState>
+                                (imp);
+                            return ((!)trefs[nalloc++]).Acquire();
+                        }
+                    }
+                    Monitor.Wait(token);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Releases a channel
+        /// </summary>
+        public void Release([Claims]SecurityDiagnosticsContract.Imp! imp)
+        {
+            lock (token) {
+                ((!)trefs[navail++]).Release(imp);
+                Monitor.PulseAll(token);
+            }
+        }
+
+        /// <summary>
+        /// Closes the channels
+        /// </summary>
+        public void Dispose()
+        {
+            lock (token) {
+                if (!disposed) {
+                    int i;
+                    for (i = 0; i < navail; i++) {
+                        SecurityDiagnosticsContract.Imp! imp = ((!)trefs[i]).Acquire();
+                        delete imp;
+                    }
+                    disposed = true;
+                }
+            }
+        }
+    }
+}
+

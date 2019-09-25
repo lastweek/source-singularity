@@ -1,0 +1,195 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Utils;
+
+namespace Smb.Protocol
+{
+    public enum SmbErrorClass : byte
+    {
+        Success         = 0,
+        OperatingSystem = 1,
+        FileServer      = 2,
+        HardwareError   = 3,
+        Unrecognized    = 0xff
+
+    }
+
+    public enum SmbSuccessMessage : byte
+    {
+        Success   = 0,
+        Buffered  = 0x54,
+        Logged    = 0x55,
+        Displayed = 0x56,
+
+    }
+
+    public enum SmbOsError : byte
+    {
+        BadFunction                  = 1,
+        FileNotFound                 = 2,
+        PathNotFound                 = 3,
+        TooManyFilesOpen             = 4,
+        AccessDenied                 = 5,
+        InvalidFileHandle            = 6,
+        MemoryControlBlocksDestroyed = 7,
+        InsufficientMemory           = 8,
+        InvalidMemoryBlockAddress    = 9,
+        InvalidEnvironment           = 10,
+        InvalidFormat                = 11,
+        InvalidOpenMode              = 12,
+        InvalidData                  = 13,
+        Reserved14                   = 14,
+        InvalidDriveSpecified        = 15,
+        CannotDeleteCurrentDirectory = 16,
+        CannotRenameAcrossVolumes    = 17,
+        NoMatchingFiles              = 18,
+        SharedAccessDenied           = 32,
+        LockRequestDenied            = 33,
+        FileExists                   = 80,
+
+    }
+
+    public enum SmbFileServerError : byte
+    {
+        GeneralFailure        = 1,
+        BadPassword           = 2,
+        BadType               = 3,
+        AccessDenied          = 4,
+        InvalidTreeId         = 5,
+        InvalidNetworkName    = 6,
+        InvalidDevice         = 7,
+        PrintQueueFull        = 49,
+        PrintQueueTooBig      = 50,
+        PrintQueueEof         = 51,
+        InvalidPrintFileId    = 52,
+        ServerIsPaused        = 81,
+        NotReceivingMessages  = 82,
+        NoRoomToBufferMessage = 83,
+        TooManyUserNames      = 87,
+
+    }
+
+    public enum SmbHardwareError : byte
+    {
+        WriteAccessDenied         = 19,
+        UnknownUnit               = 20,
+        DriveNotReady             = 21,
+        InvalidDiskCommand        = 22,
+        DataErrorCrc              = 23,
+        BadRequestStructureLength = 24,
+        SeekError                 = 25,
+        UnknownMediaType          = 26,
+        SectorNotFound            = 27,
+        PrinterOutOfPaper         = 28,
+        WriteFault                = 29,
+        ReadFault                 = 30,
+        GeneralFailure            = 31,
+        SharedAccessDenied        = 32,
+
+    }
+
+    public enum SmbNtErrorClass : uint
+    {
+        SmbFacilityCode = 0x00980000,
+        SmbErrorBase = 0xc0000000 | SmbFacilityCode,
+
+        Srv = SmbErrorBase + 0,
+        Dos = SmbErrorBase + 0x1000,
+        FileServer = SmbErrorBase + 0x2000,
+        Hardware = SmbErrorBase + 0x3000,
+        Win32 = SmbErrorBase + 0xe000,
+        OS2 = SmbErrorBase + 0xf000,
+
+        /// <summary>
+        /// I made this up.
+        /// </summary>
+        Unrecognized = SmbErrorBase + 0xc000,
+    }
+
+    /// <summary>
+    /// SMB status codes, packed similar to NT status codes.
+    /// In fact, they're compatible.
+    /// Use SmbProtocol.IsSuccess(SmbError), etc.
+    /// 
+    /// 
+    /// </summary>
+    public enum SmbError : uint
+    {
+        Success = 0,
+
+        NoMatchingErrorCode             = SmbNtErrorClass.Unrecognized | 0xfff,
+
+        BadFunction                     = SmbNtErrorClass.Dos | 1,
+        FileNotFound                    = SmbNtErrorClass.Dos | 2,
+        PathNotFound                    = SmbNtErrorClass.Dos | 3,
+        TooManyFilesOpen                = SmbNtErrorClass.Dos | 4,
+        DosAccessDenied                 = SmbNtErrorClass.Dos | 5,
+        InvalidFileHandle               = SmbNtErrorClass.Dos | 6,
+        MemoryControlBlocksDestroyed    = SmbNtErrorClass.Dos | 7,
+        InsufficientMemory              = SmbNtErrorClass.Dos | 8,
+        InvalidMemoryBlockAddress       = SmbNtErrorClass.Dos | 9,
+        InvalidEnvironment              = SmbNtErrorClass.Dos | 10,
+        InvalidFormat                   = SmbNtErrorClass.Dos | 11,
+        InvalidOpenMode                 = SmbNtErrorClass.Dos | 12,
+        InvalidData                     = SmbNtErrorClass.Dos | 13,
+        Reserved14                      = SmbNtErrorClass.Dos | 14,
+        InvalidDriveSpecified           = SmbNtErrorClass.Dos | 15,
+        CannotDeleteCurrentDirectory    = SmbNtErrorClass.Dos | 16,
+        CannotRenameAcrossVolumes       = SmbNtErrorClass.Dos | 17,
+        NoMatchingFiles                 = SmbNtErrorClass.Dos | 18,
+        DosSharedAccessDenied           = SmbNtErrorClass.Dos | 32,
+        LockRequestDenied               = SmbNtErrorClass.Dos | 33,
+        FileExists                      = SmbNtErrorClass.Dos | 80,
+
+
+
+
+        WriteAccessDenied               = SmbNtErrorClass.Hardware | 19,
+        UnknownUnit                     = SmbNtErrorClass.Hardware | 20,
+        DriveNotReady                   = SmbNtErrorClass.Hardware | 21,
+        InvalidDiskCommand              = SmbNtErrorClass.Hardware | 22,
+        DataErrorCrc                    = SmbNtErrorClass.Hardware | 23,
+        BadRequestStructureLength       = SmbNtErrorClass.Hardware | 24,
+        SeekError                       = SmbNtErrorClass.Hardware | 25,
+        UnknownMediaType                = SmbNtErrorClass.Hardware | 26,
+        SectorNotFound                  = SmbNtErrorClass.Hardware | 27,
+        PrinterOutOfPaper               = SmbNtErrorClass.Hardware | 28,
+        WriteFault                      = SmbNtErrorClass.Hardware | 29,
+        ReadFault                       = SmbNtErrorClass.Hardware | 30,
+        GeneralFailure                  = SmbNtErrorClass.Hardware | 31,
+        HardwareSharedAccessDenied      = SmbNtErrorClass.Hardware | 32,
+
+
+
+
+        FileServerGeneralFailure        = SmbNtErrorClass.FileServer | 1,
+        BadPassword                     = SmbNtErrorClass.FileServer | 2,
+        BadType                         = SmbNtErrorClass.FileServer | 3,
+        FileServerAccessDenied          = SmbNtErrorClass.FileServer | 4,
+        InvalidTreeId                   = SmbNtErrorClass.FileServer | 5,
+        InvalidNetworkName              = SmbNtErrorClass.FileServer | 6,
+        InvalidDevice                   = SmbNtErrorClass.FileServer | 7,
+        PrintQueueFull                  = SmbNtErrorClass.FileServer | 49,
+        PrintQueueTooBig                = SmbNtErrorClass.FileServer | 50,
+        PrintQueueEof                   = SmbNtErrorClass.FileServer | 51,
+        InvalidPrintFileId              = SmbNtErrorClass.FileServer | 52,
+        ServerIsPaused                  = SmbNtErrorClass.FileServer | 81,
+        NotReceivingMessages            = SmbNtErrorClass.FileServer | 82,
+        NoRoomToBufferMessage           = SmbNtErrorClass.FileServer | 83,
+        TooManyUserNames                = SmbNtErrorClass.FileServer | 87,
+
+
+
+
+
+    }
+
+}
+

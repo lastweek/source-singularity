@@ -1,0 +1,28 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets"/>
+
+  <ItemGroup>
+    <!-- app contracts -->
+    <ProjectReference Include="Directory.Contracts\Directory.Contracts.csproj"/>
+    <ProjectReference Include="Diagnostics.Contracts\Diagnostics.Contracts.csproj"/>
+    <ProjectReference Include="FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="Io.Contracts\Io.Contracts.csproj"/>
+    <ProjectReference Include="Io.Net.Contracts\Io.Net.Contracts.csproj"/>
+    <ProjectReference Include="NetStack.Contracts\NetStack.Contracts.csproj"/>
+    <ProjectReference Include="Security.Contracts\Security.Contracts.csproj"/>
+    <ProjectReference Include="Stress.Contracts\Stress.Contracts.csproj"/>
+    <ProjectReference Include="WebApps.Contracts\WebApps.Contracts.csproj"/>
+    <ProjectReference Include="Test.Contracts\app.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets"/>
+
+</Project>

@@ -1,0 +1,174 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace System.Text
+{
+
+    public class StringBuilder
+    {
+
+        public Char this [int index]
+        {
+          get;
+          set;
+        }
+
+        public int MaxCapacity
+        {
+          get;
+        }
+
+        public int Length
+        {
+          get;
+          set;
+        }
+
+        public int Capacity
+        {
+          get;
+          set;
+        }
+
+        public StringBuilder Replace (Char oldChar, Char newChar, int startIndex, int count)
+            requires count >= 0 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder Replace (Char oldChar, Char newChar);
+
+        public bool Equals (StringBuilder sb);
+
+        public StringBuilder Replace (string arg0, string arg1, int arg2, int arg3);
+
+        public StringBuilder Replace (string oldValue, string newValue);
+
+        public StringBuilder AppendFormat (string format, Object[] args);
+
+        public StringBuilder AppendFormat (string format, object arg0, object arg1, object arg2);
+
+        public StringBuilder AppendFormat (string format, object arg0, object arg1);
+
+        public StringBuilder AppendFormat (string format, object arg0);
+
+        public StringBuilder Insert (int index, object value);
+
+        public StringBuilder Insert (int index, UInt64 value);
+
+        public StringBuilder Insert (int index, UInt32 value);
+
+        public StringBuilder Insert (int index, UInt16 value);
+
+        public StringBuilder Insert (int index, Decimal value);
+
+        public StringBuilder Insert (int index, double value);
+
+        public StringBuilder Insert (int index, Single value);
+
+        public StringBuilder Insert (int index, Int64 value);
+
+        public StringBuilder Insert (int index, int value);
+
+        public StringBuilder Insert (int arg0, Char[] arg1, int arg2, int arg3);
+
+        public StringBuilder Insert (int index, Char[] value);
+
+        public StringBuilder Insert (int index, Char value);
+
+        public StringBuilder Insert (int index, Int16 value);
+
+        public StringBuilder Insert (int index, byte value);
+
+        public StringBuilder Insert (int index, SByte value);
+
+        public StringBuilder Insert (int index, bool value);
+
+        public StringBuilder Insert (int index, string value);
+
+        public StringBuilder Append (Char[] value);
+
+        public StringBuilder Append (object value);
+
+        public StringBuilder Append (UInt64 value);
+
+        public StringBuilder Append (UInt32 value);
+
+        public StringBuilder Append (UInt16 value);
+
+        public StringBuilder Append (Decimal value);
+
+        public StringBuilder Append (double value);
+
+        public StringBuilder Append (Single value);
+
+        public StringBuilder Append (Int64 value);
+
+        public StringBuilder Append (int value);
+
+        public StringBuilder Append (Int16 value);
+
+        public StringBuilder Append (Char value);
+
+        public StringBuilder Append (byte value);
+
+        public StringBuilder Append (SByte value);
+
+        public StringBuilder Append (bool value);
+
+        public StringBuilder Remove (int arg0, int arg1);
+
+        public StringBuilder Insert (int index, string! value, int count)
+            requires value != null || index == 0 otherwise ArgumentNullException;
+            requires count == 0 otherwise ArgumentNullException;
+            requires index >= 0 otherwise ArgumentOutOfRangeException;
+            requires count >= 1 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder Append (string! value, int startIndex, int count)
+            requires value != null || startIndex == 0 otherwise ArgumentNullException;
+            requires count == 0 otherwise ArgumentNullException;
+            requires count > 0 || count == 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires startIndex <= (value.Length - count) otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder Append (string value);
+
+        public StringBuilder Append (Char[]! value, int startIndex, int charCount)
+            requires value != null || startIndex == 0 otherwise ArgumentNullException;
+            requires charCount == 0 otherwise ArgumentNullException;
+            requires charCount == 0 || startIndex >= 0 otherwise ArgumentOutOfRangeException;
+            requires charCount >= 0 otherwise ArgumentOutOfRangeException;
+            requires charCount <= (value.Length - startIndex) otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder Append (Char value, int repeatCount)
+            requires repeatCount == 0 || repeatCount >= 0 otherwise ArgumentOutOfRangeException;
+
+        public string! ToString (int startIndex, int length);
+
+        public string! ToString ();
+
+        public int EnsureCapacity (int capacity)
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder (int capacity, int maxCapacity)
+            requires capacity <= maxCapacity otherwise ArgumentOutOfRangeException;
+            requires maxCapacity >= 1 otherwise ArgumentOutOfRangeException;
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder (string value, int startIndex, int length, int capacity)
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+            requires length >= 0 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder (string value, int capacity)
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder (string value);
+
+        public StringBuilder (int capacity)
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+
+        public StringBuilder ();
+    }
+}

@@ -1,0 +1,33 @@
+<!--
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+
+This project builds a distribution project ("distro"), which is a complete, bootable
+image of the operating system and applications.  The default distro is "BVT".  You
+can select a different default by setting the environment variable SINGULARITY_DISTRO_NAME
+to the name of the distro.  The name must identify a distro project file in the \Distros
+directory, and must not include the ".proj" extension.  You can also set the distro name
+when setting up your command-line environment, by specifying "setenv /distro <name>".
+
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <SINGULARITY_DISTRO_NAME Condition="'$(SINGULARITY_DISTRO_NAME)'==''">BVT</SINGULARITY_DISTRO_NAME>
+    <DistroProjectPath Condition="'$(SINGULARITY_DISTRO_NAME)'!=''">$(SINGULARITY_ROOT)\Distro\$(SINGULARITY_DISTRO_NAME).proj</DistroProjectPath>
+  </PropertyGroup>
+
+  <Target Name="Build">
+    <Error Condition="'$(DistroProjectPath)'==''"
+           Text="No distro project was specified.
+Please specify a distro (distribution) to build, by setting SINGULARITY_DISTRO_NAME to the basename of a Distro project stored in the Distro directory.
+For example, 'BVT'.  Use 'setenv /distro=BVT' or 'setenv /distro=MyDistroName' to set this from a command-line."/>
+    <Error Condition="!exists('$(DistroProjectPath)')"
+           Text="The distro name '$(SINGULARITY_DISTRO_NAME)' is invalid; there is no such distro project."/>
+    
+    <MSBuild Projects="$(DistroProjectPath)"/>
+  </Target>
+
+</Project>

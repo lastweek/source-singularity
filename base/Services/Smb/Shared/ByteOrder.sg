@@ -1,0 +1,137 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+#define LITTLE_ENDIAN
+
+using System;
+
+namespace Smb.Shared
+{
+	/// <summary>
+	/// <para>
+	/// This class provides static methods for swapping byte order.
+	/// You might think this was overkill for such a simple purpose -- why not just have two methods?
+	/// The reason for providing so many methods is to allow developers to document what they are doing
+	/// by choosing an appropriate method.  "x = HostToBe(y)" clearly shows that y is in big-endian,
+	/// and is being converted to host order.
+	/// </para>
+	///
+	/// <para>
+	/// I have avoided the traditional terminology of "host order" vs "network order", and instead have
+	/// used "host order", "big endian" (Be), and "little endian" (Le).  This is because not all network
+	/// protocols use big-endian order.  The TCP/IP family does, but many others do not, especially those
+	/// involving Microsoft products, such as SMB.
+	/// </para>
+	/// </summary>
+	/*static*/ sealed class ByteOrder
+	{
+		private ByteOrder() {}
+		
+		public static ushort Swap(ushort value)
+		{
+			return unchecked((ushort)((value >> 8) | (value << 8)));
+		}
+		
+		public static short Swap(short value)
+		{
+			ushort uvalue = unchecked((ushort)value);
+			return unchecked((short)((uvalue >> 8) | (uvalue << 8)));
+		}
+		
+		public static uint Swap(uint value)
+		{
+			return ((value & 0xff000000u) >> 24)
+			| ((value & 0x00ff0000u) >> 8)
+			| ((value & 0x0000ff00u) << 8)
+			| ((value & 0x000000ffu) << 24);
+		}
+		
+		public static int Swap(int value)
+		{
+			return unchecked((int)Swap((uint)value));
+		}
+		
+		public static ulong Swap(ulong value)
+		{
+			value = (value >> 32) | (value << 32);
+			value = ((value >> 16) & 0x0000ffff0000ffffUL) | ((value << 16) & 0xffff0000ffff0000UL);
+			value = ((value >>  8) & 0x00ff00ff00ff00ffUL) | ((value << 8 ) & 0xff00ff00ff00ff00UL);
+			return value;
+		}
+		
+		public static long Swap(long value)
+		{
+			ulong uvalue = unchecked((ulong)value);
+			uvalue = (uvalue >> 32) | (uvalue << 32);
+			uvalue = ((uvalue >> 16) & 0x0000ffff0000ffffUL) | ((uvalue << 16) & 0xffff0000ffff0000UL);
+			uvalue = ((uvalue >> 8 ) & 0x00ff00ff00ff00ffUL) | ((uvalue << 8 ) & 0xff00ff00ff00ff00UL);
+			return unchecked((long)uvalue);
+		}
+
+#if LITTLE_ENDIAN		
+
+		// Host order is little-endian, so these are swaps.
+		public static ushort HostToBe(ushort value) { return Swap(value); }
+		public static ushort BeToHost(ushort value) { return Swap(value); }
+		public static short HostToBe(short value) { return Swap(value); }
+		public static short BeToHost(short value) { return Swap(value); }
+		public static uint HostToBe(uint value) { return Swap(value); }
+		public static uint BeToHost(uint value) { return Swap(value); }
+		public static int HostToBe(int value) { return Swap(value); }
+		public static int BeToHost(int value) { return Swap(value); }
+		public static ulong HostToBe(ulong value) { return Swap(value); }
+		public static ulong BeToHost(ulong value) { return Swap(value); }
+		public static long HostToBe(long value) { return Swap(value); }
+		public static long BeToHost(long value) { return Swap(value); }
+		
+		// Host order is little-endian, so these are no-ops.
+		public static ushort HostToLe(ushort value) { return value; }		
+		public static ushort LeToHost(ushort value) { return value; }		
+		public static short HostToLe(short value) { return value; }
+		public static short LeToHost(short value) { return value; }
+		public static uint HostToLe(uint value) { return value; }
+		public static uint LeToHost(uint value) { return value; }
+		public static int HostToLe(int value) { return value; }
+		public static int LeToHost(int value) { return value; }
+		public static long HostToLe(long value) { return value; }
+		public static long LeToHost(long value) { return value; }
+		public static ulong HostToLe(ulong value) { return value; }
+		public static ulong LeToHost(ulong value) { return value; }
+		
+#else
+
+		// If host order is big-endian, then these are no-ops.
+		public static ushort HostToBe(ushort value) { return value; }		
+		public static ushort BeToHost(ushort value) { return value; }		
+		public static short HostToBe(short value) { return value; }
+		public static short BeToHost(short value) { return value; }
+		public static uint HostToBe(uint value) { return value; }
+		public static uint BeToHost(uint value) { return value; }
+		public static int HostToBe(int value) { return value; }
+		public static int BeToHost(int value) { return value; }
+		public static long HostToBe(long value) { return value; }
+		public static long BeToHost(long value) { return value; }
+		public static ulong HostToBe(ulong value) { return value; }
+		public static ulong BeToHost(ulong value) { return value; }
+		
+		// Host order is big-endian, so these are swaps.
+		public static ushort HostToLe(ushort value) { return Swap(value); }
+		public static ushort LeToHost(ushort value) { return Swap(value); }
+		public static short HostToLe(short value) { return Swap(value); }
+		public static short LeToHost(short value) { return Swap(value); }
+		public static uint HostToLe(uint value) { return Swap(value); }
+		public static uint LeToHost(uint value) { return Swap(value); }
+		public static int HostToLe(int value) { return Swap(value); }
+		public static int LeToHost(int value) { return Swap(value); }
+		public static ulong HostToLe(ulong value) { return Swap(value); }
+		public static ulong LeToHost(ulong value) { return Swap(value); }
+		public static long HostToLe(long value) { return Swap(value); }
+		public static long LeToHost(long value) { return Swap(value); }
+		
+#endif
+		
+	}
+}

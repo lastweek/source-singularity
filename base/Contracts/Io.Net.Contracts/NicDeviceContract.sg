@@ -1,0 +1,111 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NicDeviceContract.sg
+//
+
+namespace Microsoft.Singularity.Io.Net
+{
+    using System;
+    using System.Runtime.InteropServices;
+    using Microsoft.Contracts;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Io;
+
+    public contract NicDeviceContract : DeviceContract
+    {
+        // START messages
+        out message Success();
+
+        // READY messages
+        in message GetDeviceProperties(NicDeviceProperties*! in ExHeap props);
+        out message DeviceProperties(NicDeviceProperties*! in ExHeap props);
+
+        in  message ConfigureIO();
+        out message AckConfigureIO();
+
+        // IO_CONFIGURE_X messages
+        //
+        // Return success or specific error
+        in  message RegisterForEvents(NicDeviceEventContract.Exp:READY! ep);
+
+        in  message SetChecksumProperties(ChecksumSupport properties);
+        out message UnsupportedChecksumProperties();
+
+        in  message StartIO();
+        out message AckStartIO();
+
+        // IO_RUNNING messages
+
+        in message GiveTxPacketsToDevice(PacketFifo*! in ExHeap packetFifo);
+        out message TakeTxPacketsFromDevice(PacketFifo*! in ExHeap packetFifo);
+
+        in message GiveRxPacketsToDevice(PacketFifo*! in ExHeap packetFifo);
+        out message TakeRxPacketsFromDevice(PacketFifo*! in ExHeap packetFifo);
+
+        in  message StopIO();
+        out message AckStopIO();
+
+        override state Start: one
+        {
+            Success! -> READY;
+        }
+
+        state READY: one
+        {
+            GetDeviceProperties? -> DeviceProperties! ->
+            ConfigureIO?         -> AckConfigureIO!   ->
+            IO_CONFIGURE_BEGIN;
+        }
+
+        //
+        // Configuration states
+        //
+        // We're expecting a sequence of configuration messages.
+        // If a configuration step fails the configuration
+        // process must be restarted.  This makes the
+        // implementation very clean for the sending and
+        // receiving parties.  Programs should not be be
+        // failing at any stage as they've completed the READY
+        // queries and have all of the pertinent information on hand.
+        //
+        state IO_CONFIGURE_BEGIN: one
+        {
+            RegisterForEvents? -> IO_CONFIGURE_0;
+        }
+        state IO_CONFIGURE_0: one
+        {
+            Success! -> IO_CONFIGURE_1;
+        }
+        state IO_CONFIGURE_1: one
+        {
+            SetChecksumProperties?  -> IO_CONFIGURE_2;
+            ConfigureIO?            -> IO_CONFIGURE_BEGIN;
+        }
+        state IO_CONFIGURE_2: one
+        {
+            UnsupportedChecksumProperties! -> IO_CONFIGURE_BEGIN;
+            Success! -> IO_CONFIGURED;
+        }
+        state IO_CONFIGURED: one
+        {
+            ConfigureIO?            -> IO_CONFIGURE_BEGIN;
+            StartIO?                -> AckStartIO! -> IO_RUNNING;
+        }
+
+        //
+        // Running state
+        //
+        state IO_RUNNING: one
+        {
+            GiveTxPacketsToDevice? -> TakeTxPacketsFromDevice! -> IO_RUNNING;
+            GiveRxPacketsToDevice? -> TakeRxPacketsFromDevice! -> IO_RUNNING;
+            StopIO? -> AckStopIO! -> IO_CONFIGURED;
+        }
+    }
+}

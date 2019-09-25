@@ -1,0 +1,78 @@
+.assembly 'struct2' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class sealed 'Sky'
+	extends [mscorlib]System.ValueType
+{
+.field public int32 'sun'
+.field public int32 'rain'
+} // end of struct Sky
+.class public 'Test'
+	extends [mscorlib]System.Object
+{
+.field private value class 'Sky' 'sky'
+.method hidebysig public instance int32 'F'() {
+.locals init ([0]int32 't0')
+ldarg.0
+call instance int32 'Test'::'G'()
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 1
+} // end of method Test.F
+.method hidebysig public instance int32 'G'() {
+.locals init ([0]int32 't0')
+ldarg.0
+ldflda value class 'Sky' 'Test'::'sky'
+ldc.i4 30
+stfld int32 'Sky'::'sun'
+ldarg.0
+ldflda value class 'Sky' 'Test'::'sky'
+ldc.i4 70
+stfld int32 'Sky'::'rain'
+ldarg.0
+ldflda value class 'Sky' 'Test'::'sky'
+box value class 'Sky'
+callvirt instance string [mscorlib]System.ValueType::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ldarg.0
+ldflda value class 'Sky' 'Test'::'sky'
+ldflda int32 'Sky'::'sun'
+callvirt instance string [mscorlib]System.Int32::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ldarg.0
+ldflda value class 'Sky' 'Test'::'sky'
+ldfld int32 'Sky'::'rain'
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 2
+} // end of method Test.G
+.method hidebysig public static int32 'Main'() {
+.entrypoint
+.locals init ([0]int32 't0')
+.locals init ([1]class 'Test' 't1')
+newobj instance void 'Test'::.ctor()
+stloc 1 // t
+ldloc 1 // t
+call instance int32 'Test'::'F'()
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 1
+} // end of method Test.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor Test.Test
+} // end of class Test

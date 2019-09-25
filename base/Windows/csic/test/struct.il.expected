@@ -1,0 +1,54 @@
+.assembly 'struct' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class sealed 'Sky'
+	extends [mscorlib]System.ValueType
+{
+.field public int32 'sun'
+.field public int32 'rain'
+.method hidebysig public virtual instance string 'ToString'() {
+.locals init ([0]string 't0')
+ldarg.0
+ldobj value class 'Sky'
+box value class 'Sky'
+call instance string [mscorlib]System.ValueType::'ToString'()
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 1
+} // end of method Sky.ToString
+} // end of struct Sky
+.class 'test'
+	extends [mscorlib]System.Object
+{
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]int32 't0')
+ldc.i4 10
+stloc 0 // x
+ldloca 0 // x
+callvirt instance string [mscorlib]System.Int32::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+.locals init ([1]value class 'Sky' 't1')
+.locals init ([2]value class 'Sky' 't2')
+ldloca 2 // t2
+initobj value class 'Sky'
+ldloc 2 // t2
+stloc 1 // y
+ldloca 1 // y
+call instance string 'Sky'::'ToString'()
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of method test.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor test.test
+} // end of class test

@@ -1,0 +1,506 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.GC;
+using System.Runtime.Remoting;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Collections;
+using System.Diagnostics;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Channels;
+using Keyboard = Microsoft.Singularity.Io.Keyboard;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class Pong
+    {
+        const uint Black    = 0x000000;
+        const uint Blue     = 0x0000ff;
+        const uint Green    = 0x00ff00;
+        const uint Red      = 0xff0000;
+        const uint White    = 0xffffff;
+
+        const int screenWidth = 1024;
+        const int screenHeight = 768;
+
+        const int paddleWidth = 16;
+        const int paddleHeight = 128;
+
+        const int ballSize = 8;
+
+        const double paddleSpeed = 0.20;
+        const double ballSpeed = 0.35;
+
+        const double ballStartAngle = Math.PI / 8;
+        const double ballMaxAngle = Math.PI / 3;
+
+        const int screenMinX = 0;
+        const int screenMinY = 0;
+
+        const int screenMaxX = screenMinX + screenWidth - 1;
+        const int screenMaxY = screenMinY + screenHeight - 1;
+
+        const int paddleMin = screenMinY;
+        const int paddleMax = screenMaxY - paddleHeight;
+
+        const int ballMinX = screenMinX + paddleWidth;
+        const int ballMaxX = screenMaxX - paddleWidth - ballSize;
+
+        const int ballMinY = screenMinY;
+        const int ballMaxY = screenMaxY - ballSize;
+
+        const int paddleInit = screenMinY + ((screenHeight - paddleHeight) / 2);
+
+        static double ballX = 0.0;
+        static double ballY = 0.0;
+        static double ballAngle = 0.0;
+
+        static int ballDrawX = 0;
+        static int ballDrawY = 0;
+
+        static double[] paddlesY = new double [2] { paddleInit, paddleInit };
+
+        static int[] paddlesDrawX = new int [2] { screenMinX,
+                                                  screenMaxX - paddleWidth + 1 };
+
+        static int[] paddlesDrawY = new int [2] { paddleInit, paddleInit };
+
+        static bool[] inputUp   = new bool [2] { false, false };
+        static bool[] inputDown = new bool [2] { false, false };
+
+        static int[] scores = new int [2] { 0, 0 };
+
+        static int lastWinner = 0;
+
+        static bool done = false;
+        static bool playing = false;
+
+        static Random random = new Random();
+
+        public static KeyboardDeviceContract.Imp:Ready OpenKeyboard(string! devName)
+        {
+            KeyboardDeviceContract.Exp! exp;
+            KeyboardDeviceContract.Imp! imp;
+            KeyboardDeviceContract.NewChannel(out imp, out exp);
+
+            // get NS endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            bool success = false;
+
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Bind(devName, ns, exp, out errorOut);
+            if (!ok) {
+                if (errorOut == ErrorCode.ChannelClosed) {
+                    throw new Exception("Encountered a ChannelClosed while opening Keyboard");
+                }
+            }
+            else {
+                success = true;
+            }
+            //
+            ////            ns.SendBind(Bitter.FromString2(devName),exp);
+            //switch receive {
+            //case ns.AckBind():
+            //success = true;
+            //break;
+            //case ns.NakBind(rejected,error):
+            //delete rejected;
+            //break;
+            //case ns.ChannelClosed():
+            //delete ns;
+            //throw new Exception("ns unexpectedly closed");
+            //}
+            //
+            if (!success) {
+                DebugStub.WriteLine("OpenKeyboard lookup of {0} failed\n",
+                                    __arglist(devName));
+
+                delete imp;
+                delete ns;
+                return null;
+            }
+
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    throw new Exception("Contract not supported");
+                case imp.ChannelClosed():
+                    throw new Exception("Didn't imp.RecvActConnect");
+            }
+
+            delete ns;
+            return imp;
+        }
+
+        public static VideoDeviceContract.Imp:Ready OpenVideo(string! devName)
+        {
+            VideoDeviceContract.Exp! exp;
+            VideoDeviceContract.Imp! imp;
+            VideoDeviceContract.NewChannel(out imp, out exp);
+
+            // get NS endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            bool success = false;
+            ns.SendBind(Bitter.FromString2(devName),exp);
+            switch receive {
+                case ns.AckBind():
+                    success = true;
+                    break;
+                case ns.NakBind(rejected, error):
+                    delete rejected;
+                    break;
+                case ns.ChannelClosed():
+                    delete ns;
+                    throw new Exception("ns unexpectedly closed");
+            }
+
+            if (!success) {
+                DebugStub.WriteLine("OpenVideo lookup of {0} failed\n",
+                                    __arglist(devName));
+
+                delete imp;
+                delete ns;
+                return null;
+            }
+
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    throw new Exception("Contract not supported");
+                case imp.ChannelClosed():
+                    throw new Exception("Didn't imp.RecvActConnect");
+            }
+
+            delete ns;
+            return imp;
+        }
+
+        private static void DrawPaddle(VideoDeviceContract.Imp:Ready! video, int paddle, bool erase)
+        {
+            video.SendFill(paddlesDrawX[paddle],
+                           paddlesDrawY[paddle],
+                           paddlesDrawX[paddle] + paddleWidth - 1,
+                           paddlesDrawY[paddle] + paddleHeight - 1,
+                           erase ? Black : Blue);
+            video.RecvAckFill();
+        }
+
+        private static void RedrawPaddle(VideoDeviceContract.Imp:Ready! video, int paddle)
+        {
+            if (paddlesDrawY[paddle] != (int) paddlesY[paddle]) {
+                DrawPaddle(video, paddle, true);
+
+                paddlesDrawY[paddle] = (int) paddlesY[paddle];
+
+                DrawPaddle(video, paddle, false);
+            }
+        }
+
+        private static void MovePaddle(VideoDeviceContract.Imp:Ready! video, int paddle)
+        {
+            paddlesY[paddle] += GetPaddleState(paddle) * paddleSpeed;
+
+            if (paddlesY[paddle] > paddleMax) {
+                paddlesY[paddle] = paddleMax;
+            }
+            else if (paddlesY[paddle] < paddleMin) {
+                paddlesY[paddle] = paddleMin;
+            }
+
+            RedrawPaddle(video, paddle);
+        }
+
+        private static bool PaddleHit(int paddle)
+        {
+            return ((ballY > paddlesY[paddle] - ballSize) &&
+                    (ballY < paddlesY[paddle] + paddleHeight));
+        }
+
+        private static void ResetBall()
+        {
+            ballY = screenMinY + ((screenHeight - ballSize) / 2);
+            ballAngle = (random.NextDouble() * ballStartAngle) -
+                (ballStartAngle / 2);
+
+            if (lastWinner == 0) {
+                ballX = ballMinX;
+                if (ballAngle < 0) {
+                    ballAngle += 2 * Math.PI;
+                }
+            }
+            else {
+                ballX = ballMaxX;
+                ballAngle += Math.PI;
+            }
+
+            ballDrawX = (int) ballX;
+            ballDrawY = (int) ballY;
+        }
+
+        private static void DrawBall(VideoDeviceContract.Imp:Ready! video, bool erase)
+        {
+            video.SendFill(ballDrawX, ballDrawY,
+                           ballDrawX + ballSize - 1, ballDrawY + ballSize - 1,
+                           erase ? Black : Red);
+            video.RecvAckFill();
+        }
+
+        private static void RedrawBall(VideoDeviceContract.Imp:Ready! video)
+        {
+            if (ballDrawX != (int) ballX || ballDrawY != (int) ballY) {
+                DrawBall(video, true);
+
+                ballDrawX = (int) ballX;
+                ballDrawY = (int) ballY;
+
+                DrawBall(video, false);
+            }
+        }
+
+        private static void ReflectBallY(int line)
+        {
+            ballY = (2 * line) - ballY;
+            ballAngle = (2 * Math.PI) - ballAngle;
+        }
+
+        private static void SetAngle(int paddle)
+        {
+            // Find out where the ball hit the paddle, from -1 to 1.
+            double ratio = ((ballY + (ballSize / 2)) -
+                            (paddlesY[paddle] + (paddleHeight / 2))) /
+                ((paddleHeight + ballSize) / 2);
+
+            // Set the new angle accordingly.
+            ballAngle = ratio * ballMaxAngle;
+
+            if (paddle == 0) {
+                if (ballAngle < 0) {
+                    ballAngle += 2 * Math.PI;
+                }
+            }
+            else {
+                ballAngle = Math.PI - ballAngle;
+            }
+        }
+
+        private static void MoveBall(VideoDeviceContract.Imp:Ready! video)
+        {
+            ballY += Math.Sin(ballAngle) * ballSpeed;
+            if (ballY < ballMinY) {
+                ReflectBallY(ballMinY);
+            }
+            else if (ballY > ballMaxY) {
+                ReflectBallY(ballMaxY);
+            }
+
+            ballX += Math.Cos(ballAngle) * ballSpeed;
+            if (ballX < ballMinX) {
+                if (PaddleHit(0)) {
+                    SetAngle(0);
+                }
+                else {
+                    lastWinner = 1;
+                    playing = false;
+                }
+            }
+            else if (ballX > ballMaxX) {
+                if (PaddleHit(1)) {
+                    SetAngle(1);
+                }
+                else {
+                    lastWinner = 0;
+                    playing = false;
+                }
+            }
+
+            RedrawBall(video);
+        }
+
+        private static int GetPaddleState(int paddle)
+        {
+            if (inputUp[paddle]) {
+                return -1;
+            }
+            else if (inputDown[paddle]) {
+                return 1;
+            }
+            else {
+                return 0;
+            }
+        }
+
+        private static void SetStateFromChar(char c, bool @state)
+        {
+            switch (c) {
+                case (char)Keyboard.Keys.UP_ARROW:
+                    inputUp[1] = @state;
+                    break;
+                case (char)Keyboard.Keys.DOWN_ARROW:
+                    inputDown[1] = @state;
+                    break;
+                case 'a':
+                    inputUp[0] = @state;
+                    break;
+                case 'z':
+                    inputDown[0] = @state;
+                    break;
+            }
+        }
+
+        private static void FillScreen(VideoDeviceContract.Imp:Ready! video, uint color)
+        {
+            video.SendFill(screenMinX, screenMinY, screenMaxX, screenMaxY, color);
+            video.RecvAckFill();
+        }
+
+        private static void ClearScreen(VideoDeviceContract.Imp:Ready! video)
+        {
+            FillScreen(video, Black);
+        }
+
+        private static void FlashScreen(VideoDeviceContract.Imp:Ready! video)
+        {
+            FillScreen(video, Red);
+            Sleep(1000);
+            FillScreen(video, Green);
+            Sleep(1000);
+            FillScreen(video, Blue);
+            Sleep(1000);
+        }
+
+        private static void ShowMessage(VideoDeviceContract.Imp:Ready! video)
+        {
+            ClearScreen(video);
+
+            for (int i = 0; i < 100; i++) {
+                Console.WriteLine();
+            }
+
+            Console.Write("                                 ");
+            Console.Write("Left: {0,-10}", scores[0]);
+            Console.Write("                                 ");
+            Console.Write("Right: {0,-10}", scores[1]);
+            Console.WriteLine();
+            Console.WriteLine();
+            Console.Write("                                         ");
+            Console.Write("Press space to begin or escape to quit...");
+            Console.WriteLine();
+
+            DrawPaddle(video, 0, false);
+            DrawPaddle(video, 1, false);
+            DrawBall(video, false);
+        }
+
+        private static void Sleep(int multiplier)
+        {
+            for (int j = 0; j < multiplier; j++) {
+                for (int i = 0; i < 10000; i++) {
+                    // Do nothing.
+                }
+            }
+        }
+
+        public static int Main(string[] args)
+        {
+            VideoDeviceContract.Imp video = OpenVideo("/dev/video");
+
+            Console.WriteLine("Singularity Pong (PID={0})",
+                              ProcessService.GetCurrentProcessId());
+
+            if (video == null) {
+                Console.WriteLine("Can only play pong on a graphic display.");
+                return 1;
+            }
+
+            KeyboardDeviceContract.Imp keyboard = OpenKeyboard("/dev/keyboard");
+            if (keyboard == null) {
+                // TODO: show keyboardless slides with timer?
+                delete video;
+                return 1;
+            }
+
+            ShowMessage(video);
+
+            while (!done) {
+                uint key = 0;
+                keyboard.SendPollKey();
+                switch receive {
+                    case keyboard.AckKey(ikey):
+                        key = ikey;
+                        break;
+                    case keyboard.NakKey():
+                        key = 0;
+                        break;
+                    case keyboard.ChannelClosed():
+                        throw new Exception("Didn't get keyboard closed.");
+                }
+
+                char c = (char) (key & (uint) Keyboard.Qualifiers.KEY_BASE_CODE);
+
+                if ((key & (uint) Keyboard.Qualifiers.KEY_DOWN) != 0) {
+                    switch (c) {
+                        case (char) Keyboard.Keys.ESCAPE:
+                            done = true;
+                            break;
+                        case ' ':
+                            if (!playing) {
+                                ResetBall();
+                                ClearScreen(video);
+                                DrawPaddle(video, 0, false);
+                                DrawPaddle(video, 1, false);
+                                DrawBall(video, false);
+                                playing = true;
+                            }
+                            break;
+                        default:
+                            SetStateFromChar(c, true);
+                            break;
+                    }
+                }
+                else if ((key & (uint) Keyboard.Qualifiers.KEY_UP) != 0) {
+                    SetStateFromChar(c, false);
+                }
+
+                if (playing) {
+                    MovePaddle(video, 0);
+                    MovePaddle(video, 1);
+                    MoveBall(video);
+
+                    if (!playing) {
+                        scores[lastWinner]++;
+                        FlashScreen(video);
+                        ShowMessage(video);
+                    }
+                }
+
+                Sleep(10);
+            }
+
+            ClearScreen(video);
+
+            delete keyboard;
+            delete video;
+
+            return 0;
+        }
+    }
+}

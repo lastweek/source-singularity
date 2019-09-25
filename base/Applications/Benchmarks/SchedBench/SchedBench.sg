@@ -1,0 +1,1072 @@
+//------------------------------------------------------------------------------
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Description: $filename$
+//      SchedBench is a benchmark based on SingBench that measures the CPU scheduler
+//      performance.
+//------------------------------------------------------------------------------
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications.SchedBench
+{
+    /// <summary>Application wrapper class and argument options</summary>
+    [ConsoleCategory(HelpMessage="Singularity Scheduling Benchmark Application", DefaultAction=true)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<MemoryContract.Imp:Start> memoryRef;
+
+        /// <summary>When true break in debugger before running benchmark</summary>
+        [BoolParameter( "b", Default=false , HelpMessage="Break at start of tests.")]
+        internal bool breakIn;
+
+        /// <summary>When set no GC during benchmarks</summary>
+        [BoolParameter( "n", Default=true , HelpMessage="No GC between tests.")]
+        internal bool allowGC;
+
+        /// <summary>Wait for a key between benchmarks</summary>
+        [BoolParameter( "w", Default=false , HelpMessage="Wait for key press between tests.")]
+        internal bool pauseForKeys;
+
+        /// <summary>Produce XML output</summary>
+        [BoolParameter( "x", Default=false , HelpMessage="XML output.")]
+        internal bool xmlOutput;
+
+        /// <summary>Iterations per benchmark (when applicable)</summary>
+        [LongParameter( "i", Default=10000 , HelpMessage="Iterate tests <n> times.")]
+        internal long iterations;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SchedBench.AppMain(this);
+        }
+    }
+
+    /// <summary>CPU Scheduler Benchmark</summary>
+    public class SchedBench
+    {
+        ///
+        /// <summary>
+        ///        Display on the console and in the debugger
+        /// </summary>
+        /// <param name="message">Message displayed</param>
+        ///
+        private static void DualWriteLine(string message)
+        {
+            Console.WriteLine(message);
+            DebugStub.WriteLine(message);
+        }
+
+        // ----------------------------------------------------------------------------------------
+        // Yield Tests
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///        Thread Yield Test - Create threads that each yields a
+        ///        predefined number of times. Report yields per tick.
+        /// </summary>
+        /// <param name="numThreads">Number of threads yielding</param>
+        /// <param name="iterations">Number of yield operations</param>
+        ///
+        public static void DoYieldPerf(uint numThreads, uint iterations)
+        { 
+             Thread[] yieldThreads = new Thread[numThreads];
+
+            // Set worker thread iteration count
+            workerIterations = iterations;
+
+            // Initialize sync signal before starting threads
+            syncStart.Reset();
+
+              // Create and start yield worker threads
+            for( uint i = 0; i < numThreads; i++ ) {
+                yieldThreads[i] = new Thread(YieldThread);
+                ((!)yieldThreads[i]).Start();
+            }
+
+            // Start performance snap
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+
+            // Synchnously start threads by signalling
+            syncStart.Set();
+            
+            // Wait for threads to complete
+            for( uint i = 0; i < numThreads; i++ ) {
+                ((!)yieldThreads[i]).Join();
+            }
+
+            snap.Finish(iterations);
+
+            snap.Display("Yield " + numThreads.ToString());
+            DualWriteLine(String.Format("Yield {0}:Ticks per yield: {1,2:F}",
+                                           numThreads.ToString(),
+                                           (float)snap.ElapsedTicks / 
+                                           (float)(iterations*numThreads)));
+        }
+
+        ///
+        /// <summary>
+        ///        YieldThread - Yield a number of times and synchnoize with
+        ///        main thread 
+        /// </summary>
+        /// <param name="iterations">Number of yield operations</param>
+        ///
+        public static void YieldThread()
+        {
+            // Wait for signal from master thread to start
+            syncStart.WaitOne();
+
+            for (uint i = 0; i < workerIterations; i++) {
+                Thread.Yield();
+            }
+        }
+
+        // ----------------------------------------------------------------------------------------
+        // Wait/Set Tests
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///        Wait / Set Benchmarks - Create pairs of threads that wait and set events
+        /// </summary>
+        /// <param name="numThreads">Number of threads</param>
+        /// <param name="iterations">Number of wait/set operations</param>
+        ///
+        public static void DoWaitPerf(uint numThreads, uint iterations)
+        {
+            // Number of ping-pong pairs
+            uint pairs = numThreads / 2;
+
+            // Allocate AutoResetEvents
+            waitPerfEvent1  = new AutoResetEvent[pairs];
+            waitPerfEvent2  = new AutoResetEvent[pairs];
+
+            for(uint i = 0; i < pairs; i++) {
+                waitPerfEvent1[i] = new AutoResetEvent(false);
+                waitPerfEvent2[i] = new AutoResetEvent(false);
+            }
+
+            // Create threads
+            Thread[] pingThreads = new Thread[pairs];
+            Thread[] pongThreads = new Thread[pairs];
+
+            // Set worker thread iteration count
+            workerIterations = iterations;
+
+            // Initialize sync signal before starting threads
+            syncStart.Reset();
+            syncContext.Reset();
+        
+            // Create and start yield worker threads
+            for( uint i = 0; i < pairs; i++ ) {
+                // Use curWorkerThread to set the context of worker thread
+                curWorkerThread = i;
+
+                // Begin ping thread
+                pingThreads[i] = new Thread(PingThread);
+                ((!)pingThreads[i]).Start();
+
+                // Wait for ping thread to notify that has acquired context
+                syncContext.WaitOne();
+                syncContext.Reset();
+
+                // Begin pong thread                
+                pongThreads[i] = new Thread(PongThread);
+                ((!)pongThreads[i]).Start();
+
+                // Wait for pong thread to notify that has acquired context
+                syncContext.WaitOne();
+                syncContext.Reset();
+            }
+        
+            // Start performance snap
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            
+            // Synchnously start threads by signalling
+            syncStart.Set();            
+
+            // Wait for threads to complete
+            for( uint i = 0; i < pairs; i++ ) {
+                ((!)pingThreads[i]).Join();
+                ((!)pongThreads[i]).Join();                    
+            }
+
+            snap.Finish(iterations);
+        
+            snap.Display("Wait " + numThreads.ToString());
+            DualWriteLine(String.Format("Wait {0}:Ticks per wait: {1,2:F}",
+                                         numThreads.ToString(),
+                                         (float)snap.ElapsedTicks / 
+                                         (float)(iterations*numThreads)));
+        }
+
+        ///
+        /// <summary>
+        ///        Perform a ping operation in the wait handle (Set-Wait)
+        /// </summary>
+        ///
+        private static void PingThread()
+        {
+            // Acquire context and notify master thread
+            uint myIdx = curWorkerThread;
+            syncContext.Set();
+            
+            // Wait for signal from master thread to start
+            syncStart.WaitOne();
+            
+            for (uint i = 0; i < workerIterations; i++) {
+                // Set event (ping)
+                ((!)waitPerfEvent1[myIdx]).Set();
+                // Wait event (pong)
+                ((!)waitPerfEvent2[myIdx]).WaitOne();
+            }
+        }
+        
+        ///
+        /// <summary>
+        ///        Perform a pong operation in the wait handle (Wait-Set)
+        /// </summary>
+        ///
+        private static void PongThread()
+        {
+            // Acquire context and notify master thread
+            uint myIdx = curWorkerThread;
+            syncContext.Set();
+            
+            // Wait for signal from master thread to start
+            syncStart.WaitOne();
+            
+            for (uint i = 0; i < workerIterations; i++) {
+                // Wait event (pong)
+                ((!)waitPerfEvent1[myIdx]).WaitOne();
+                // Set event (ping)
+                ((!)waitPerfEvent2[myIdx]).Set();
+            }
+        }
+
+
+        // ----------------------------------------------------------------------------------------
+        // WaitAny Benchmark
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///        WaitAny benchmark - Main thread waits for any of the slave thread to set event
+        ///        Measures average time to receive signal.
+        /// </summary>
+        /// <param name="iterations">Number of wait/set operations</param>
+        ///
+        public static void DoWaitAnyPerf(uint numThreads,uint iterations)
+        {
+
+            // Allocate AutoResetEvents
+            waitPerfEvent1  = new AutoResetEvent[numThreads];
+
+            for(uint i = 0; i < numThreads; i++) {
+                waitPerfEvent1[i] = new AutoResetEvent(false);
+            }
+
+            // Create slave threads
+            Thread[] setEventThread = new Thread[numThreads];
+
+            // Set worker thread iteration count
+            workerIterations = iterations;
+
+            // Set operation flag array for worker threads
+            opFlag = new bool[numThreads];
+
+            // Initialize barrier
+            loopBarrier = new SyncBarrier(numThreads);
+            
+            // Create and start worker threads
+            for( uint i = 0; i < numThreads; i++ ) {
+                // Use curWorkerThread to set the context of worker thread
+                curWorkerThread = i;
+
+                // Begin SetEvent thread
+                setEventThread[i] = new Thread(WaitAnyThread);
+                ((!)setEventThread[i]).Start();
+
+                // Wait for SetEvent thread to notify that has acquired context
+                syncContext.WaitOne();
+                syncContext.Reset();
+            }
+
+            // Start performance snap
+            PerfSnap snap = new PerfSnap();
+
+            // Random generator used to pick threads to set event
+            // Use fix seed to replicate same sequence
+            Random rnd = new Random(0);
+
+            // Aggregate time for operation
+            long opTimer = 0;
+
+            snap.Start();
+            
+            // Run the benchmark iteration
+            for( uint i = 0; i < iterations; i++ ) {
+                // Number of events to be set
+                int nevent = 0;
+           
+                // Pick random threads to set events
+                for( uint j = 0; j < numThreads; j++ ) {
+                   // 50% chance to pick thread to set event
+                   opFlag[j] = rnd.NextDouble() < 0.5 ? true : false;
+                   if( opFlag[j] == true ) {
+                        nevent++;
+                   }
+                }
+
+                // if no events picked (very unlikely)
+                if( nevent == 0 ) {
+                    // Select one thread randomly
+                    opFlag[rnd.Next(0,(int)numThreads)] = true;
+                }
+
+                // Join barrier
+                loopBarrier.Join();
+
+                // Start timer
+                long begTicks = DateTime.Now.Ticks;
+
+                WaitHandle.WaitAny(waitPerfEvent1);
+                
+                // Start timer
+                opTimer += DateTime.Now.Ticks - begTicks;
+
+                loopBarrier.Signal();
+            }
+
+            snap.Finish(iterations);
+
+            snap.Display("WaitAny " + numThreads.ToString());
+            DualWriteLine(String.Format("WaitAny {0}:Ticks per WaitAny: {1,2:F}",
+                                         numThreads.ToString(),                                            
+                                         (float)opTimer/ (float)iterations));
+        }
+
+        ///
+        /// <summary>
+        ///        Set event to contribute in WaitAny
+        /// </summary>
+        ///
+        private static void WaitAnyThread()
+        {
+            // Acquire context and notify master thread
+            uint myIdx = curWorkerThread;
+            syncContext.Set();          
+
+            for (uint i = 0; i < workerIterations; i++) { 
+                // Increase the barrier (completed worker threads) counter
+                loopBarrier.JoinWorker();
+
+                // If thread selected to perform set
+                if( opFlag[myIdx] ) {
+                    // Set event (ping)
+                    ((!)waitPerfEvent1[myIdx]).Set();
+                }
+
+                // Wait for randevouz when everybody is done
+                loopBarrier.Wait();
+
+            }
+        }
+        
+        // ----------------------------------------------------------------------------------------
+        // Context Switch Performance
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///        Calculate the cost of context switches
+        /// </summary>
+        /// <param name="numThreads">Number of threads yielding</param>
+        /// <param name="iterations">Number of yield operations</param>
+        ///
+        public static void DoContextSwitchPerf(uint numThreads, uint iterations)
+        { 
+            Thread[] workerThreads = new Thread[numThreads];
+           
+            // Set worker thread iteration count
+            workerIterations = iterations;
+
+            // Initialize sync signal before starting threads
+            syncStart.Reset();
+            syncContext.Reset();
+
+            // Calculate the minimum mandelbrot time - use fix point (0.0,0.0)
+            long mbrotTicks = MandelbrotTicks(0.0,0.0,iterations);
+
+            // Create and start worker threads
+            for( uint i = 0; i < numThreads; i++ ) {
+                // Initialize wallClock
+                wallClock[i] = 0;
+
+                // Use curWorkerThread to set the context of worker thread
+                curWorkerThread = i;
+
+                // Begin worket thread
+                workerThreads[i] = new Thread(ContextThread);
+                ((!)workerThreads[i]).Start();
+
+                // Wait for ping thread to notify that has acquired context
+                syncContext.WaitOne();
+                syncContext.Reset();
+            }
+
+            // Start performance snap
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+
+            // Synchonously start threads by signalling
+            syncStart.Set();
+            
+            // Wait for threads to complete
+            for( uint i = 0; i < numThreads; i++ ) {
+                ((!)workerThreads[i]).Join();
+            }
+
+            snap.Finish(iterations);
+
+            snap.Display("Context " + numThreads.ToString());
+
+            // Calculate context overhead
+            float contextOverhead = 0;
+
+            for( uint i = 0; i < numThreads; i++ ) {
+                contextOverhead += (float)wallClock[i] / (float)iterations;
+            }
+            
+            contextOverhead = (float)contextOverhead / numThreads - mbrotTicks;
+
+            if( contextOverhead < 0.0 ) {
+                // It is possible that the context overhead is not valid especially in hosted
+                // execution environments such as Win32. This might occur if during the
+                // calculation of the mbrot baseline computation (single thread) an execution
+                // environment process context switch causes S to stall mbrot operation
+                DualWriteLine(String.Format("Context {0}:Context overhead: Invalid",
+                              numThreads.ToString()));               
+            } else {
+                DualWriteLine(String.Format("Context {0}:Context overhead: {1,2:F}",
+                              numThreads.ToString(), contextOverhead));
+            }
+
+            // Calculate fairness variation
+            long min = 0;
+            long max = 0;
+            float avg = 0.0F;
+            float stddev = 0.0F;
+
+            CalcTimeStats(wallClock, numThreads, iterations, out min, out max, out avg, out stddev);
+
+            DualWriteLine(String.Format("Context {0}:Operations per cycle: {1,4:F}", 
+                          numThreads.ToString(),
+                          (float)(iterations*numThreads) / snap.ElapsedTicks));
+            DualWriteLine(String.Format("Context {0}:Fairness min:{1}", 
+                          numThreads.ToString(), min));
+            DualWriteLine(String.Format("Context {0}:Fairness max:{1}", 
+                          numThreads.ToString(), max));
+            DualWriteLine(String.Format("Context {0}:Fairness avg:{1,2:F}", 
+                          numThreads.ToString(), avg));
+            DualWriteLine(String.Format("Context {0}:Fairness stddev:{1,2:F}", 
+                          numThreads.ToString(), stddev));
+        }
+
+
+        ///
+        /// <summary>
+        ///     Thread that calculate a mandelbrot pixels
+        /// </summary>
+        /// <param name="iterations">Number of yield operations</param>
+        ///
+        public static void ContextThread()
+        {
+            // Acquire context and notify master thread
+            uint myIdx = curWorkerThread;
+            syncContext.Set();
+
+            // Wait for signal from master thread to start
+            syncStart.WaitOne();
+            
+            // Start timer
+            long begTicks = DateTime.Now.Ticks;
+         
+            for (uint i = 0; i < workerIterations; i++) {
+                // Calc point - use fix point
+                ComputePoint(0.0,0.0);
+            }
+
+            // Add to wall clock
+            wallClock[myIdx] = DateTime.Now.Ticks - begTicks;
+        }
+
+        // ----------------------------------------------------------------------------------------
+        // Latency Benchmark
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///        Multiple threads a series of mbrot calculations / Sleeps. The sleep random interval.
+        ///        The latency of the operation is measured.
+        /// </summary>
+        /// <param name="numThreads">Number of threads yielding</param>
+        /// <param name="iterations">Number of operations</param>
+        ///
+        public static void DoLatencyPerf(uint numThreads, uint iterations)
+        { 
+            Thread[] workerThreads = new Thread[numThreads];
+           
+            // Set worker thread iteration count
+            workerIterations = iterations;
+
+            // Initialize sync signal before starting threads
+            syncStart.Reset();
+            syncContext.Reset();
+
+            // Create and start worker threads
+            for( uint i = 0; i < numThreads; i++ ) {
+                // Initialize wallClock, min and max latencies
+                wallClock[i] = 0;
+
+                // Use curWorkerThread to set the context of worker thread
+                curWorkerThread = i;
+
+                // Begin worket thread
+                workerThreads[i] = new Thread(LatencyThread);
+                ((!)workerThreads[i]).Start();
+
+                // Wait for ping thread to notify that has acquired context
+                syncContext.WaitOne();
+                syncContext.Reset();
+            }
+
+            // Start performance snap
+            PerfSnap snap = new PerfSnap();
+
+            snap.Start();
+            
+            // Synchonously start threads by signalling
+            syncStart.Set();
+            
+            // Wait for threads to complete
+            for( uint i = 0; i < numThreads; i++ ) {
+                ((!)workerThreads[i]).Join();
+            }
+
+            snap.Finish(iterations);
+
+            snap.Display("Latency " + numThreads.ToString());
+
+            // Calculate latency statistics
+            long min = 0;
+            long max = 0;
+            float avg = 0.0F;
+            float stddev = 0.0F;
+
+            CalcTimeStats(wallClock, numThreads, iterations, out min, out max, out avg, out stddev);
+
+            DualWriteLine(String.Format("Latency {0}:min:{1}", 
+                          numThreads.ToString(), min));
+            DualWriteLine(String.Format("Latency {0}:max:{1}", 
+                          numThreads.ToString(), max));
+            DualWriteLine(String.Format("Latency {0}:mean:{1,2:F}", 
+                          numThreads.ToString(), avg));
+            DualWriteLine(String.Format("Latency {0}:stddev:{1,2:F}", 
+                          numThreads.ToString(), stddev));            
+        }
+
+        ///
+        /// <summary>
+        ///     Thread that calculate a mandelbrot pixels and then sleeps random interval
+        /// </summary>
+        /// <param name="iterations">Number of yield operations</param>
+        ///
+        public static void LatencyThread()
+        {
+            // Max sleep time interval
+            const uint MaxSleep = 5;
+
+            // Random generator used for a random interval
+            Random rnd = new Random(0);
+            
+            // Acquire context and notify master thread
+            uint myIdx = curWorkerThread;
+            syncContext.Set();
+
+            // Wait for signal from master thread to start
+            syncStart.WaitOne();
+         
+            for (uint i = 0; i < workerIterations; i++) {
+                // Start timer
+                long begTicks = DateTime.Now.Ticks;
+
+                // Calc point - use fix point
+                ComputePoint(0.0,0.0);
+
+                // Store timers
+                long computeTime = DateTime.Now.Ticks - begTicks;
+                wallClock[myIdx] += computeTime;
+
+                // Sleep for random period
+                Thread.Sleep(rnd.Next(0,MaxSleep));
+            }
+            
+        }
+        
+        // ----------------------------------------------------------------------------------------
+        // Mandelbrot computation task and helper functions
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///     Return the time required to calculate a mandelbrot pixel
+        ///     Run multiple times and return minimum time trying to exclude
+        ///     context switching time.
+        /// </summary>
+        /// <param name="x">X coordinate</param>
+        /// <param name="y">Y coordinate</param>
+        /// <param name="iterations">Number of iterations</param>
+        ///
+        private static long MandelbrotTicks(double x, double y, uint iterations)
+        {
+            long ticks = 0; // Min ticks for mandelbrot point calculation
+
+            // Calc the same pixel many times
+            for( uint i = 0; i < iterations; i++ ) {
+                //Start timer
+                long begTicks = DateTime.Now.Ticks;
+
+                // Disable interrupts only mandelbrot is running
+                bool saved = Processor.DisableLocalPreemption(); 
+
+                // Calc point
+                ComputePoint(x,y);
+               
+                Processor.RestoreLocalPreemption(saved);
+  
+                //Stop timer
+                long endTicks = DateTime.Now.Ticks;
+
+                // Save value of minimum
+                ticks = i == 0 || ticks > endTicks - begTicks ? 
+                        endTicks - begTicks : ticks;
+
+            }
+
+            return ticks;
+        }
+
+        ///
+        /// <summary>
+        ///     Calculate a single mandelbrot point
+        /// </summary>
+        /// <param name="x">X coordinate</param>
+        /// <param name="y">Y coordinate</param>
+        ///
+        static private int ComputePoint(double x, double y)
+        {
+           const int maxIterations = 128; // Maximum number of iterations for mandelbrot loop
+           const int convergence = 4;     // Convergence value
+           int nIterations = 0;           // Result of calculation
+
+           // Temp vars for mandelbrot calculation
+           double x1 = 0;
+           double y1 = 0;
+           double xx;
+
+           // Mandelbrot magic
+           while (nIterations < maxIterations && ((x1 * x1) + (y1 * y1)) < convergence) {
+               nIterations++;
+               xx = (x1 * x1) - (y1 * y1) + x;
+               y1 = 2 * x1 * y1 + y;
+               x1 = xx;
+           }
+
+           return nIterations;
+        }
+        
+        // ----------------------------------------------------------------------------------------
+        // Helper functions 
+        // ----------------------------------------------------------------------------------------
+
+        ///
+        /// <summary>
+        ///     Calculate statistics on wall clock times
+        /// </summary>
+        /// <param name="wallClock">Wall clock times</param>
+        /// <param name="numThreads">Number of worker threads (ignore other array entries)</param>
+        /// <param name="iterations">Experiment iterations per thread</param>
+        /// <param name="min">Min value (out)</param>
+        /// <param name="max">Max value (out)</param>
+        /// <param name="avg">Mean value (out)</param>
+        /// <param name="stddev">Standard deviation (out)</param>
+        ///
+        private static void CalcTimeStats(long[] wallClock,
+                                          uint numThreads,
+                                          uint iterations,
+                                          out long min,
+                                          out long max,
+                                          out float avg,
+                                          out float stddev)
+        {
+            min = 0;
+            max = 0;
+            avg = 0;
+            stddev = 0;
+
+            for( uint i = 0; i < numThreads; i++ ) {
+                // Calc time per iteration
+                long clockPerIter= ((!)wallClock)[i] / iterations;
+            
+                // Find min / max / avg
+                min = i == 0 ? clockPerIter : 
+                      min > clockPerIter ? clockPerIter :
+                      min;
+                max = max < clockPerIter ? clockPerIter : max;
+                avg += clockPerIter;
+            }
+            
+            avg /= numThreads;
+
+            // Standard deviation
+            for( uint i = 0; i < numThreads; i++ ) {
+                long clockPerIter= ((!)wallClock)[i] / iterations;
+                
+                stddev += (float)Math.Pow((float)clockPerIter - avg,2.0);
+            }
+
+            stddev = (float)Math.Sqrt(stddev / ((float)numThreads - 1.0) );
+        }
+
+        /// <summary>Write log trace profile in console</summary> 
+        public static int GetTrace()
+        {
+#if false            
+            Tracing.LogEntry * lstart;
+            Tracing.LogEntry * llimit;
+            Tracing.LogEntry ** lhead;
+            byte * tstart;
+            byte * tlimit;
+            byte ** thead;
+
+            Tracing.GetTracingHeaders(out lstart, out llimit, out lhead,
+                                      out tstart, out tlimit, out thead);
+            Console.WriteLine("Log:  {0:X} {1:X}, {2:X}, {3:X}",
+                              (UIntPtr)lstart, (UIntPtr)llimit, (UIntPtr)lhead, (UIntPtr)(*lhead));
+            Console.WriteLine("Text: {0:X} {1:X}, {2:X}, {3:X}",
+                              (UIntPtr)tstart, (UIntPtr)tlimit, (UIntPtr)thead, (UIntPtr)(*thead));
+#endif            
+            return 0;
+        }
+
+        /// <summary>Clean up after each benchmark</summary>
+        public static void ClearEnvironment(MemoryContract.Imp:ReadyState! imp)
+        {
+            if (allowGC) {
+                GC.Collect();
+            }
+        }
+
+        /// <summary>Pause between benchmarks</summary>
+        public static void Pause()
+        {
+            if (pauseForKeys) {
+                Console.WriteLine("Press any key to continue.");
+                Console.Read();
+            }
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+
+            // Command-line parsing options            
+            int iterations = (int) config.iterations;
+            bool xmlOutput = config.xmlOutput;
+            allowGC = config.allowGC;
+            pauseForKeys = config.pauseForKeys;
+            breakIn = config.breakIn;
+
+            if( breakIn ) {
+                DebugStub.Break();
+            }
+
+            // Display CPU privilidge level and set flag
+            if (Processor.AtKernelPrivilege()) {
+                atRing3 = false;
+                DualWriteLine("Schedbench running at KERNEL privilege");
+            } else {
+                atRing3 = true;
+                DualWriteLine("Schedbench running at USER privilege");
+            }
+
+            // Allocate clock arrays for each worker thread
+            wallClock = new long[threadCountTests[threadCountTests.Length-1]];
+
+            // Connect to memory channel
+            MemoryContract.Imp impMem = config.memoryRef.Acquire();
+            if (impMem == null) {
+                throw new ApplicationException("Error: Unable to bind to " +
+                                               MemoryContract.ModuleName);
+            }
+
+            impMem.RecvReady();
+
+            // Set options for performance snap module
+            PerfSnap.SetOptions(atRing3, xmlOutput);
+
+            GetTrace();
+
+            Console.WriteLine("Benchmarks: entered");
+
+            try {
+
+                // Run yield benchmark
+                foreach( uint threads in threadCountTests ) {
+                    ClearEnvironment(impMem);
+                    DoYieldPerf(threads,(uint)iterations);
+                    Pause();
+                }
+
+                // Run wait-set benchmark
+                foreach( uint threads in threadCountTests ) {
+                    ClearEnvironment(impMem);
+                    DoWaitPerf(threads, (uint)iterations);
+                    Pause();
+                }
+
+                // Run wait-set benchmark
+                foreach( uint threads in threadCountTests ) {
+                    ClearEnvironment(impMem);
+                    DoWaitAnyPerf(threads, (uint)iterations);
+                    Pause();
+                }
+
+                // Run context switch benchmark
+                foreach( uint threads in threadCountTests ) {
+                    ClearEnvironment(impMem);
+                    DoContextSwitchPerf(threads, (uint)iterations);
+                    Pause();
+                }
+
+                // Run latency benchmark
+                foreach( uint threads in threadCountTests ) {
+                    ClearEnvironment(impMem);
+                    // Because latency test is slow run 1/10th of iterations
+                    DoLatencyPerf(threads, (uint)iterations / 10 );
+                    Pause();
+                }
+
+            } catch (Exception e) {
+                Console.WriteLine("Caught {0}", e.Message);
+                delete impMem;
+                return 1;
+            }
+            
+            delete impMem;
+
+            return 0;
+            
+        } // AppMain
+
+        /// <summary>
+        ///        Experiments are repeated with the numbers of threads specified in the array
+        /// </summary>
+        private static readonly uint[] threadCountTests = {25, 50, 100 };
+
+        /// <summary>Signal for notification that worker thread acquired context</summary>
+        private static ManualResetEvent syncContext =  new ManualResetEvent(false);
+
+        /// <summary>Signal for synchonous start of working threads</summary>
+        private static ManualResetEvent syncStart =  new ManualResetEvent(false);
+
+        /// <summary>Signal for synchonous start of working threads</summary>
+        private static SyncBarrier loopBarrier;
+
+        /// </summary>Iterations of an operation for worker threads</summary>
+        private static uint workerIterations;
+
+        /// <summary>
+        ///        Thread id is used to communicate to worker therads its current id.
+        ///        This is necessary because Thread.Start(object) is not supported
+        /// </summary>
+        private static uint curWorkerThread;
+        
+        /// <summary>Wall clock for each worker thread </summary>
+        private static long[] wallClock;
+
+        /// <summary>True when running in Ring 3 processor mode</summary>
+        private static bool atRing3;
+
+        /// <summary>Wait events used in Wait/Set benchmarks</summary>
+        private static AutoResetEvent[] waitPerfEvent1;
+        
+        /// <summary>Wait events used in Wait/Set benchmarks</summary>       
+        private static AutoResetEvent[] waitPerfEvent2;
+
+        /// <summary>
+        ///     When opFlag[idx] is set to true, Thread idx performs an operation (e.g. Event.Set) 
+        /// </summary>
+        private static bool[] opFlag;
+
+        private static bool allowGC      = false;
+        private static bool pauseForKeys = false;
+        private static bool breakIn      = false;
+
+    } //class SchedBench
+
+    /// <summary>
+    ///     SyncBarrier
+    ///     A master thread runs a loop and assigns work to worker threads.
+    ///     All of the slave threads need to synchnonize at the end of the loop
+    ///     before proceeding to the next iteration.
+    ///
+    ///     Usage pattern for master thread:
+    ///         - FixedSyncBarrier barrier = new FixedSyncBarrier(numThreads)
+    ///         - Loop
+    ///             barrier.Join()
+    ///             Do work here
+    ///             barrier.Signal()
+    ///
+    ///     Usage pattern for worker thread:
+    ///         - Loop
+    ///             barrier.JoinWorker()
+    ///             Do work here
+    ///             barrier.Wait()
+    ///  
+    ///     Currently works with fixed number of workers to simplify APIs
+    /// </summary>
+    public class SyncBarrier
+    {
+
+        /// <summary>Constructor</summary>
+        /// <param name="numThreads">Number of worker threads participating in loop</param>
+        public SyncBarrier(uint numThreads)
+        {
+            this.numThreads = numThreads;
+        }
+
+
+        // ----------------------------------------------------------------------------------------
+        // Master thread operations 
+        // ----------------------------------------------------------------------------------------        
+
+        /// <summary>Master thread joins barrier at the beggining of the loop</summary>
+        public void Join()
+        {
+            // Wait for all threads to be ready
+            notifyMaster.WaitOne();
+            
+            // Reset ready count and end event - all worker threads are ready for next loop
+            this.cntJoin = 0;
+            this.syncEnd.Reset();
+            
+            // Synchonously start threads by signalling 
+            this.syncStart.Set();
+        }
+        
+
+        // <summary>Master thread signals workers when everybody is done</symmary>
+        public void Signal()
+        {
+            // Wait for all threads to complete
+            notifyMaster.WaitOne();
+            
+            // Reset thread start synchonization objects so no worker gets ahead of master
+            this.syncStart.Reset();
+            
+            // Signal workers to continue
+            this.syncEnd.Set();
+
+            // Reset completed counter
+            this.cntCompleted = 0;
+        }
+
+        // ----------------------------------------------------------------------------------------
+        // Worker thread operations 
+        // ----------------------------------------------------------------------------------------
+
+        /// <summary>Worker thread joins barrier</summary>
+        public void JoinWorker()
+        {
+            // Increase the barrier join cnt (ready worker threads)
+            int incJoin = Interlocked.Increment(ref this.cntJoin);
+
+            // If this is the last worker notify master thread that we are done
+            if( incJoin == this.numThreads ) {
+                // Notify master thread that we are done
+                notifyMaster.Set();
+            }
+            
+            // Wait for signal from master thread to proceed
+            this.syncStart.WaitOne();
+        }
+
+        /// <summary>Worker thread waits for randevouz signal</summary>
+        public void Wait()
+        {
+            // Increase the barrier (completed worker threads) counter
+            int incCompleted = Interlocked.Increment(ref this.cntCompleted);
+
+            // If this is the last worker notify master thread that we are done
+            if( incCompleted == this.numThreads ) {
+                notifyMaster.Set();
+            }
+
+            // Wait for signal from master thread to proceed
+            this.syncEnd.WaitOne();
+        }
+
+
+        /// <summary>Number of working threads</summary>
+        private uint numThreads;
+
+        /// <summary>Signal for synchonous start of working threads</summary>
+        private ManualResetEvent syncStart =  new ManualResetEvent(false);
+
+        /// <summary>Signal for synchonous start of working threads</summary>
+        private ManualResetEvent syncEnd =  new ManualResetEvent(false);
+
+        /// <summary>Signal master thread that all workers are done</summary>
+        private AutoResetEvent notifyMaster =  new AutoResetEvent(false);
+
+        /// </summary>Number of worker threads completed the iteration</summary>
+        private int cntCompleted = 0;
+
+        /// </summary>Number of worker threads joined in barrier</summary>
+        private int cntJoin = 0;
+    } // SyncBarrier
+    
+
+} // namespace SchedBench

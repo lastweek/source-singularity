@@ -1,0 +1,244 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FormatCommand.sg
+//
+//  Note:
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.Fat.Contracts;
+using FileSystem.Utils;
+
+namespace Microsoft.Singularity.Services.Fat.FatControl
+{
+    [ConsoleCategory(Action = "format",
+                     DefaultAction = false,
+                     HelpMessage = "Create a FAT filesystem.")]
+    internal class FormatCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringParameter("l", Default = "NO NAME", Mandatory = false,
+                       HelpMessage = "Specify volume label")]
+        public string VolumeLabel;
+
+        [LongParameter("m", Default = 0, Mandatory = false,
+                       HelpMessage = "Maximum disk sectors to use")]
+        public long MaxDiskSectors;
+
+        [BoolParameter("u", Default = false, Mandatory = false,
+                       HelpMessage = "Format without prompting confirmation")]
+        public bool Unconditional;
+
+        [StringParameter("t", Default = "Automatic", Mandatory = false,
+                         HelpMessage = "Fat type (Automatic, FAT12, FAT16, or FAT32)")]
+        string FatType;
+
+        [StringParameter("diskpath", Position = 0, Mandatory = true,
+                         HelpMessage = "Filesystem to unmount.")]
+        string DiskPath;
+
+        reflective internal FormatCommand();
+
+        internal int AppMain()
+        {
+            FatFormatType fatFormatType;
+            if (!GetFormatType((!)this.FatType, out fatFormatType)) {
+                Console.WriteLine("Unknown format type \"{0}\"",
+                                  this.FatType);
+                return -1;
+            }
+
+            FatControlContract.Imp imp = Utilities.ConnectToManager();
+            if (imp != null) {
+                return DoFormat(imp,
+                                (!)this.DiskPath,
+                                (!)this.VolumeLabel,
+                                fatFormatType,
+                                (ulong)this.MaxDiskSectors
+                                );
+            }
+            return -1;
+        }
+
+        private static bool
+        GetPreferredFormatSettings(
+            FatControlContract.Imp! controller,
+            string!                 diskPath,
+            out FatFormatType       formatType,
+            out ulong               sectors,
+            out ushort              bytesPerSector
+            )
+        {
+            formatType     = FatFormatType.Automatic;
+            sectors        = 0;
+            bytesPerSector = 0;
+
+            controller.SendGetPreferredFormatSettings(
+                Bitter.FromString2(diskPath)
+                );
+
+            switch receive {
+                case controller.PreferredFormatSettings(fms):
+                    formatType     = fms->FatFormatType;
+                    sectors        = fms->MaxSectors;
+                    bytesPerSector = fms->BytesPerSector;
+                    delete fms;
+                    return true;
+
+                case controller.Fail(error):
+                    Utilities.DisplayError(error);
+                    return false;
+
+                case controller.ChannelClosed():
+                    Utilities.DisplayChannelClosedError();
+                    return false;
+            }
+        }
+
+        private static
+        int CommitFormat(
+            FatControlContract.Imp! controller,
+            string!                 diskPath,
+            string!                 volumeLabel,
+            FatFormatType           type,
+            ulong                   sectors,
+            ushort                  bytesPerSector
+            )
+        {
+            FatFormatSettings*! in ExHeap formatSettings = new [ExHeap]
+                FatFormatSettings(type, sectors, bytesPerSector);
+
+            controller.SendFormat(
+                Bitter.FromString2(diskPath),
+                Bitter.FromString2(volumeLabel),
+                formatSettings
+                );
+
+            switch receive {
+                case controller.Success():
+                    Console.WriteLine(
+                        "Formatted disk {0}\n" +
+                        "Label:    {1}\n" +
+                        "Type:     Fat{2}\n" +
+                        "Capacity: {3}",
+                        diskPath,
+                        volumeLabel,
+                        (int)type,
+                        DiskSizeUtils.GetPrettySizeString(sectors * bytesPerSector)
+                        );
+                    return 0;
+                case controller.Fail(error):
+                    Utilities.DisplayError(error);
+                    return -1;
+                case controller.ChannelClosed():
+                    Utilities.DisplayChannelClosedError();
+                    return -1;
+            }
+        }
+
+        private static ulong GetMaxSectors(FatFormatType requestedType)
+        {
+            // The following values align with Fat/Fs/Format.sg,
+            // whose values derive from Page 20 of the spec for
+            // Fat16/32. Fat12 values were pulled from a hat.
+            switch (requestedType) {
+                case FatFormatType.Fat12: return 4084u * 64u;
+                case FatFormatType.Fat16: return 65536u * 64u;
+                default: // case FatFormatType.Fat32:  
+                    return UInt32.MaxValue;
+            }
+        }
+
+        private static
+        int DoFormat(
+            [Claims] FatControlContract.Imp! controller,
+            string!                          diskPath,
+            string!                          volumeLabel,
+            FatFormatType                    requestedType,
+            ulong                            requestedSectors
+            )
+        {
+            FatFormatType preferredType;
+            ulong         preferredSectors;
+            ushort        preferredBytesPerSector;
+
+            try {
+                if (GetPreferredFormatSettings(controller,
+                                               diskPath,
+                                               out preferredType,
+                                               out preferredSectors,
+                                               out preferredBytesPerSector))
+                {
+                    if (requestedType == FatFormatType.Automatic) {
+                        requestedType = preferredType;
+                    }
+
+                    if (requestedSectors == FatFormatSettings.NoMaxSectors) {
+                        requestedSectors = Math.Min(
+                            GetMaxSectors(requestedType), preferredSectors
+                            );
+                    }
+
+                    if (requestedSectors <= preferredSectors) {
+                        return CommitFormat(controller, diskPath, volumeLabel,
+                                            requestedType, requestedSectors,
+                                            preferredBytesPerSector);
+                    }
+                    else {
+                        Console.WriteLine(
+                            "Failed: Maximum number of sectors is {0}.",
+                            preferredSectors
+                            );
+                    }
+                }
+                return -1;
+            }
+            finally {
+                delete controller;
+            }
+
+        }
+
+        private static bool GetFormatType(string! s, out FatFormatType t)
+        {
+            t = FatFormatType.Automatic;
+
+            string! label = s.ToLower();
+            if (label.StartsWith("auto")) {
+                return true;
+            }
+            else if (label == "fat12") {
+                t = FatFormatType.Fat12;
+                return true;
+            }
+            else if (label == "fat16") {
+                t = FatFormatType.Fat16;
+                return true;
+            }
+            else if (label == "fat32") {
+                t = FatFormatType.Fat32;
+                return true;
+            }
+            return false;
+        }
+    }
+}

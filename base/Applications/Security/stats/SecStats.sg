@@ -1,0 +1,79 @@
+//////////////////////////////////////////////////////////////////////$
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Singularity micro-benchmark program.
+//
+using System;
+using System.Collections;
+using System.Text;
+using System.Threading;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Channels;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [BoolParameter( "c", Default=false, HelpMessage="Clean")]
+        internal bool doClear;
+
+        [BoolParameter( "d", Default=false, HelpMessage="Disable Kernel Stats")]
+        internal bool doDisable;
+
+        [BoolParameter( "e", Default=false, HelpMessage="Enable Kernel Stats")]
+        internal bool doEnable;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return StatisticsTool.AppMain(this);
+        }
+    }
+
+    public class StatisticsTool
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            SecurityDiagnostics sd = new SecurityDiagnostics();
+
+            string s = sd.GetStatistics();
+            Console.Write(s);
+
+            if (config.doClear) {
+                sd.ClearStatistics();
+                Console.Write("Statistics cleared.\n");
+            }
+            else if (config.doDisable) {
+                sd.Disable(true);
+                Console.Write("Kernel ACL checks disabled.\n");
+            }
+            else if (config.doEnable) {
+                sd.Disable(false);
+                Console.Write("Kernel ACL checks enabled.\n");
+            }
+            return 0;
+        }
+    }
+}
+

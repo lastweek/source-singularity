@@ -1,0 +1,924 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Omap3430Video.sg
+//
+//  Note:
+//
+
+using System;
+using System.Collections;
+using System.Configuration.Assemblies;
+using System.Runtime.InteropServices;
+using System.Runtime.Remoting;
+using System.Text;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Threads;
+using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+
+namespace Microsoft.Singularity.Drivers.Omap3430Video
+{
+    // create the resource object for CTR to fill in
+    [DriverCategory]
+    [Signature("/arm/ti/3430/GFX")]
+    internal class VideoResources : DriverCategoryDeclaration
+    {
+        [IoMemoryRange(0, Default = 0x80010000, Length = 0x25800)]
+        internal IoMemoryRange frameBuffer;
+
+        [IoMemoryRange(1, Default = 0x48050400, Length = 0x400)]
+        internal IoMemoryRange controls;
+
+        [IoIrqRange(2, Default = 21, Length = 1)]
+        internal IoIrqRange gfxInterrupt;
+
+        [IoIrqRange(3, Default = 25, Length = 1)]
+        internal IoIrqRange displayInterrupt;
+
+        [ExtensionEndpoint]
+        internal TRef<ExtensionContract.Exp:Start> ec;
+
+        [ServiceEndpoint(typeof(VideoDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> video;
+
+        [ServiceEndpoint(typeof(ConsoleDeviceContract))]
+        internal TRef<ServiceProviderContract.Exp:Start> console;
+
+        // This should have a custom attribute.
+        internal static VideoResources Values;
+
+        // LTR will create the rest of this class:
+
+        // LTR creates a private constructor so that the app writer can't
+        // instantiate objects of this class
+        private VideoResources()
+        {
+            // endpoint initialization
+            ec = new TRef<ExtensionContract.Exp:Start>
+                ((!)(Process.GetStartupEndpoint(0) as ExtensionContract.Exp));
+            video = new TRef<ServiceProviderContract.Exp:Start>
+                ((!)(Process.GetStartupEndpoint(1) as ServiceProviderContract.Exp));
+            console = new TRef<ServiceProviderContract.Exp:Start>
+                ((!)(Process.GetStartupEndpoint(2) as ServiceProviderContract.Exp));
+
+            // Io Resource initialization
+            IoConfig config = (IoConfig!)IoConfig.GetConfig();
+
+            // dynamic resources
+            frameBuffer = (IoMemoryRange)config.DynamicRanges[0];
+            controls = (IoMemoryRange)config.DynamicRanges[1];
+            gfxInterrupt = (IoIrqRange)config.DynamicRanges[2];
+            displayInterrupt = (IoIrqRange)config.DynamicRanges[3];
+
+            base();
+        }
+
+        static VideoResources()
+        {
+            Values = new VideoResources();
+        }
+    }
+
+    public class VideoControl
+    {
+        private static VideoDevice device;
+
+        public static int Main(String[] args)
+        {
+            ExtensionContract.Exp! ec = VideoResources.Values.ec.Acquire();
+            ServiceProviderContract.Exp! ve = VideoResources.Values.video.Acquire();
+            ServiceProviderContract.Exp! te = VideoResources.Values.console.Acquire();
+
+            // Create the device
+            device = new VideoDevice(VideoResources.Values);
+            device.Initialize();
+
+            // Signal I/O system that we are initialized.
+            ec.SendSuccess();
+
+            // create a set of all client endpoints connected to the video
+            // interface.
+            ESet<VideoDeviceContract.Exp:Ready> vs
+                = new ESet<VideoDeviceContract.Exp:Ready>();
+            // create a set of all client endpoints connected to the text
+            // interface.
+            ESet<ConsoleDeviceContract.Exp:Ready> ts
+                = new ESet<ConsoleDeviceContract.Exp:Ready>();
+
+            try {
+                for (bool run = true; run;) {
+                    switch receive {
+                        ///////////////////////////////////// I/O System Messages.
+                        case ec.Shutdown():
+                            ec.SendAckShutdown();
+                            run = false;
+                            break;
+
+                            /////////////////////////////// Service Provider Messages.
+                        case ve.Connect(candidate):
+                            VideoDeviceContract.Exp newClient
+                                = candidate as VideoDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                vs.Add(newClient);
+                                ve.SendAckConnect();
+                            }
+                            else {
+                                ve.SendNackConnect(candidate);
+                            }
+                            break;
+
+                        case te.Connect(candidate):
+                            ConsoleDeviceContract.Exp newClient
+                                = candidate as ConsoleDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                ts.Add(newClient);
+                                te.SendAckConnect();
+                            }
+                            else {
+                                te.SendNackConnect(candidate);
+                            }
+                            break;
+
+                            ////////////////////////////////// Video Service Messages.
+                        case ep.Plot(x, y, color32) in vs:
+                            device.Plot(x, y, new RGB(color32));
+                            ep.SendAckPlot();
+                            vs.Add(ep);
+                            break;
+
+                        case ep.Fill(x1, y1, x2, y2, color32) in vs:
+                            device.Fill(x1, y1, x2, y2, new RGB(color32));
+                            ep.SendAckFill();
+                            vs.Add(ep);
+                            break;
+
+                        case ep.BitBltBmp(x, y, buffer) in vs:
+                            device.BitBltBmp(x, y, (!)buffer);
+                            ep.SendAckBitBltBmp(buffer);
+                            vs.Add(ep);
+                            break;
+
+                        case ep.BitBltPng(x, y, buffer) in vs:
+                            device.BitBltPng(x, y, (!)buffer);
+                            ep.SendAckBitBltPng(buffer);
+                            vs.Add(ep);
+                            break;
+
+                        case ep.Scroll(x1, y1, x2, y2, dy) in vs:
+                            device.Scroll(x1, y1, x2, y2, dy);
+                            ep.SendAckScroll();
+                            vs.Add(ep);
+                            break;
+
+                        case ep.ChannelClosed() in vs:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+
+                            //////////////////////////////// Console Service Messages.
+                        case ep.Clear() in ts:
+                            device.Window.Clear();
+                            ep.SendAckClear();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.ClearCursorToEndOfLine() in ts:
+                            device.Window.ClearCursorToEndOfLine();
+                            ep.SendAckClearCursorToEndOfLine();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.Write(buffer, offset, count) in ts:
+                            if (offset + count <= buffer.Length) {
+                                device.Window.Write(buffer, offset, count);
+                                ep.SendAckWrite(buffer);
+                            }
+                            else {
+                                ep.SendNakWrite(buffer);
+                            }
+                            ts.Add(ep);
+                            break;
+
+                        case ep.PutChar(c) in ts:
+                            device.Window.PutChar(c);
+                            ep.SendAckPutChar();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.PutCharAt(c, column, row) in ts:
+                            if (device.Window.PutCharAt(c, column, row)) {
+                                ep.SendAckPutCharAt();
+                            }
+                            else {
+                                ep.SendInvalidPosition();
+                            }
+                            ts.Add(ep);
+                            break;
+
+                        case ep.GetDisplayDimensions() in ts:
+                            ep.SendDisplayDimensions(device.Window.TextColumns,
+                                                     device.Window.TextRows);
+                            ts.Add(ep);
+                            break;
+
+                        case ep.GetCursorPosition() in ts:
+                            ep.SendCursorPosition(device.Window.TextColumn,
+                                                  device.Window.TextRow);
+                            ts.Add(ep);
+                            break;
+
+                        case ep.SetCursorPosition(int column, int row) in ts:
+                            if (device.Window.SetTextCursor(column, row)) {
+                                ep.SendAckSetCursorPosition();
+                            }
+                            else {
+                                ep.SendInvalidPosition();
+                            }
+                            ts.Add(ep);
+                            break;
+
+                        case ep.SetCursorSize(cursorSize) in ts:
+                            ep.SendNotSupported();
+                            ts.Add(ep);
+                            break;
+
+                        case ep.CursorFlash() in ts:
+                            device.Window.CursorFlash();
+                            ep.SendAckCursorFlash();
+                            ts.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.CursorHide() in ts:
+                            device.Window.CursorHide();
+                            ep.SendAckCursorHide();
+                            ts.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.CursorShow() in ts:
+                            device.Window.CursorShow();
+                            ep.SendAckCursorShow();
+                            ts.Add(ep);    // add client endpoint back into set.
+                            break;
+
+                        case ep.ChannelClosed() in ts:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+
+                        case unsatisfiable:
+                            Tracing.Log(Tracing.Debug, "Unsatisfiable.");
+                            run = false;
+                            break;
+                    }
+                }
+            }
+            finally {
+                Tracing.Log(Tracing.Debug, "Omap3430Video finished message pump.");
+            }
+
+            // Close the device
+            device.Finalize();
+
+            Tracing.Log(Tracing.Audit, "Shutdown");
+            delete ec;
+            delete te;
+            delete ve;
+            vs.Dispose();
+            ts.Dispose();
+
+            return 0;
+        }
+    }
+
+    public class VideoDevice
+    {
+        private SvgaWindow console;
+        private bool Ready;
+
+        public const int BytesPerPixel = 2;
+        public const int ScreenWidth = 240;
+        public const int ScreenStride = BytesPerPixel * ScreenWidth;
+        public const int ScreenHeight = 320;
+        private ushort[]! lineBuffer;
+        private IoMemory! screenBuffer;   // Screen buffer within PCI-mapped memory.
+
+        internal VideoDevice(VideoResources! res)
+        {
+            screenBuffer = (!)res.frameBuffer.MemoryAtOffset(0, 0x25800, Access.ReadWrite);
+
+#if DONT
+            DebugStub.WriteLine("Omap3430Video linear buffer at {0:x}",
+                                __arglist((uint)screenBuffer.PhysicalAddress.Value));
+#endif
+
+            lineBuffer = new ushort [2048];
+
+            base();
+
+            Ready = true;
+        }
+
+        public void Initialize()
+        {
+#if DONT
+            DebugStub.Print("Initializing Video Display\n");
+#endif
+
+            Fill(0, 0, ScreenWidth - 1, ScreenHeight - 1, RGB.Black);
+
+            console = new SvgaWindow(this, 0, 0, ScreenWidth - 1, ScreenHeight - 1);
+
+            console.Write("Singularity 3430 Video Driver\n");
+            console.Write("");
+            console.Write("");
+            console.Write("");
+        }
+
+        public SvgaWindow! Window
+        {
+            get { return console; }
+        }
+
+        public void Finalize()
+        {
+            Ready = false;
+        }
+
+        public void Plot(int x, int y, RGB color)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            int offset = y * ScreenStride + x * BytesPerPixel;
+
+            // The read triggers the latch register.
+            screenBuffer.Write16(offset, (ushort)color);
+
+        }
+
+        public void Fill(int x1, int y1, int x2, int y2, RGB color)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            if (x1 < 0 || x1 >= ScreenWidth ||
+                x2 < 0 || x2 >= ScreenWidth ||
+                y1 < 0 || y1 >= ScreenHeight ||
+                y2 < 0 || y2 >= ScreenHeight)
+            {
+
+                throw new OverflowException("Draw bounds invalid.");
+            }
+
+            ushort clr = (ushort)color;
+            int pDst = y1 * ScreenStride + x1 * BytesPerPixel;
+            for (int y = y1; y <= y2; y++) {
+                screenBuffer.Write16(pDst, clr, x2 - x1 + 1);
+                pDst += ScreenStride;
+            }
+        }
+
+        public void BitBltChr(int x, int y, int width, int height,
+                              byte[]! buffer, int offset, int ScanWidth,
+                              RGB color, RGB background)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            ushort clr = (ushort)color;
+            ushort bkg = (ushort)background;
+
+            int pSrc = offset;
+            // int pDst = (y + height - 1) * ScreenStride + x * BytesPerPixel;
+            int pDst = y * ScreenStride + x * BytesPerPixel;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    byte b = buffer[pSrcTemp++];
+
+                    lineBuffer[i++] = ((b & 0x80) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x40) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x20) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x10) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x08) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x04) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x02) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x01) != 0) ? clr : bkg;
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                // pDst -= ScreenStride;
+                pDst += ScreenStride;
+            }
+        }
+        private void BitBlt24(int x, int y, int width, int height,
+                              byte[]! in ExHeap buffer, int offset, int ScanWidth)
+
+        {
+            int pDst = (y + height - 1) * ScreenStride + x * BytesPerPixel;
+            int pSrc = offset;
+            byte[] raw = new byte[ScanWidth];
+
+            for (int j = 0; j < height; j++) {
+                int pRaw = 0;
+
+                // Decompress first
+                while (pRaw < ScanWidth) {
+                    ushort len = (ushort)(buffer[pSrc] + ((ushort)buffer[pSrc+1] << 8));
+                    pSrc += 2;
+
+                    short val = unchecked((short)len);
+                    if (val < 0) {
+                        for (int i = 0; i > val; i--) {
+                            raw[pRaw++] = buffer[pSrc+0];
+                            raw[pRaw++] = buffer[pSrc+1];
+                            raw[pRaw++] = buffer[pSrc+2];
+                        }
+                        pSrc += 3;
+                    }
+                    else {
+                        for (int i = 0; i < val; i++) {
+                            raw[pRaw++] = buffer[pSrc++];
+                        }
+                    }
+                }
+
+                // Now draw the decompressed bits.
+                pRaw = 0;
+                for (int i = 0; i < width;) {
+                    lineBuffer[i++] = RGB.Compute16(raw[pRaw+2],
+                                                    raw[pRaw+1],
+                                                    raw[pRaw+0]);
+                    pRaw += 3;
+                }
+
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pDst -= ScreenStride;
+            }
+        }
+
+        private void BitBlt8(int x, int y, int width, int height,
+                             byte[]! in ExHeap buffer, int offset, int ScanWidth,
+                             ushort[]! palette)
+        {
+            int pDst = (y + height - 1) * ScreenStride + x * BytesPerPixel;
+            int pSrc = offset;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    lineBuffer[i++] = palette[buffer[pSrcTemp++]];
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ScreenStride;
+            }
+        }
+
+        private void BitBlt4(int x, int y, int width, int height,
+                             byte[]! in ExHeap buffer, int offset, int ScanWidth,
+                             ushort[]! palette)
+        {
+            int pDst = (y + height - 1) * ScreenStride + x * BytesPerPixel;
+            int pSrc = offset;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    byte b = buffer[pSrcTemp++];
+
+                    lineBuffer[i++] = palette[b >> 4];
+                    lineBuffer[i++] = palette[b & 0xf];
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ScreenStride;
+            }
+        }
+
+        public void BitBlt1(int x, int y, int width, int height,
+                            byte[]! in ExHeap buffer, int offset, int ScanWidth,
+                            RGB color, RGB background)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            ushort clr = (ushort)color;
+            ushort bkg = (ushort)background;
+
+            int pSrc = offset;
+            int pDst = (y + height - 1) * ScreenStride + x * BytesPerPixel;
+
+            for (int j = 0; j < height; j++) {
+                int pSrcTemp = pSrc;
+
+                for (int i = 0; i < width;) {
+                    byte b = buffer[pSrcTemp++];
+
+                    lineBuffer[i++] = ((b & 0x80) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x40) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x20) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x10) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x08) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x04) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x02) != 0) ? clr : bkg;
+                    lineBuffer[i++] = ((b & 0x01) != 0) ? clr : bkg;
+                }
+                screenBuffer.Write16(pDst, lineBuffer, 0, width);
+
+                pSrc += ScanWidth;
+                pDst -= ScreenStride;
+            }
+        }
+
+        public void BitBltBmp(int x, int y, byte[]! in ExHeap buffer)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            try {
+                BITMAPFILEHEADER bfh;
+                BITMAPINFOHEADER bih;
+                int lDelta;
+                int cbScanLine;
+                int used;
+                int offset = 0;
+
+                bfh = BITMAPFILEHEADER.Read(buffer, offset, out used);
+                bih = BITMAPINFOHEADER.Read(buffer, used, out used);
+                RGB[] Palette = bih.ReadPalette(buffer, used, out used);
+
+                if (bih.biWidth == 0 || bih.biHeight == 0) {
+                    return;
+                }
+
+                if (x < 0) {
+                    x = ScreenWidth + x - bih.biWidth;
+                }
+                if (y < 0) {
+                    y = ScreenHeight + y - bih.biHeight;
+                }
+
+                if (x < 0 || x + bih.biWidth > ScreenWidth ||
+                    y < 0 || y + bih.biHeight > ScreenHeight)
+                {
+
+                    throw new OverflowException("Draw bounds invalid.");
+                }
+
+                offset = offset + bfh.bfOffBits;
+                used = offset;
+
+                ushort[] palette = null;
+
+                if (Palette != null) {
+                    palette = new ushort [Palette.Length];
+                    for (int i = 0; i < Palette.Length; i++) {
+                        palette[i] = (ushort)Palette[i];
+                    }
+                }
+
+                //
+                // Make sure this is a 1bpp, 4bpp, or 8bpp bitmap.
+                //
+
+                if (bih.biPlanes != 1) {
+                    DebugStub.Print("biPlanes != 1");
+                    return;
+                }
+
+                cbScanLine = (((bih.biWidth * bih.biBitCount) + 31) & ~31) / 8;
+
+                if (bih.biHeight < 0) {
+                    DebugStub.Print("bih.biHeight = {0} < 0\n",
+                                    __arglist(bih.biHeight));
+                    return;
+                }
+
+#if DONT
+                if (used + cbScanLine * bih.biHeight > buffer.Length) {
+                    DebugStub.Print("{0} + {1} * {2} = {3} > {4}\n",
+                                    __arglist(used,
+                                              cbScanLine,
+                                              bih.biHeight,
+                                              used + cbScanLine * bih.biHeight,
+                                              buffer.Length));
+
+                    throw new OverflowException("Bitmap invalid.");
+                }
+#endif
+
+                if (bih.biBitCount == 1) {
+                    BitBlt1(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine,
+                            RGB.White, RGB.Black);
+                }
+                else if (bih.biBitCount == 4) {
+                    assert palette != null;
+                    BitBlt4(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine,
+                            palette);
+                }
+                else if (bih.biBitCount == 8) {
+                    assert palette != null;
+                    BitBlt8(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine,
+                            palette);
+                }
+                else if (bih.biBitCount == 24) {
+                    BitBlt24(x, y, bih.biWidth, bih.biHeight, buffer, offset, cbScanLine);
+                }
+                else {
+                    //
+                    // We don't support this type of bitmap.
+                    //
+                    DebugStub.Print("((bih.biBitCount * bih.biPlanes) <= 4");
+                }
+            }
+            catch (Exception e) {
+                DebugStub.WriteLine("Exception in BitBltBmp: {0}", __arglist(e.ToString()));
+            }
+        }
+
+        public void BitBltPng(int x, int y, byte[]! in ExHeap buffer)
+        {
+            DebugStub.Print("BitBltPng not supported currently.\n");
+        }
+
+        public void Scroll(int x1, int y1, int x2, int y2, int CharHeight)
+        {
+            if (!Ready) {
+                return;
+            }
+
+            if (x1 < 0 || x1 >= ScreenWidth ||
+                x2 < 0 || x2 >= ScreenWidth ||
+                y1 < 0 || y1 >= ScreenHeight ||
+                y2 < 0 || y2 >= ScreenHeight ||
+                y2 - y1 < CharHeight)
+            {
+
+                throw new OverflowException("Draw bounds invalid.");
+            }
+
+            int width = x2 - x1 + 1;
+            int pDst = y1 * ScreenStride + x1 * BytesPerPixel;
+            int pSrc = pDst + ScreenStride * CharHeight;
+
+            for (int i = y1; i <= y2 - CharHeight; i++) {
+                screenBuffer.Copy16(pSrc, pDst, width);
+
+                pDst += ScreenStride;
+                pSrc += ScreenStride;
+            }
+        }
+    }
+
+    public class SvgaWindow
+    {
+        private readonly VideoDevice screen;
+        private readonly int regionLeft;
+        private readonly int regionTop;
+        private readonly int regionRight;
+        private readonly int regionBottom;
+
+        private int cursorX = 0;
+        private int cursorY = 0;
+        private bool cursorVisible = true;
+        private bool cursorView = true;
+        private RGB foreColor = RGB.White;
+        private RGB backColor = RGB.Black;
+
+        public const int FONT_HEIGHT = 8;
+        public const int FONT_WIDTH = 8;
+
+        [NotDelayed]
+        public SvgaWindow(VideoDevice! screen, int x1, int y1, int x2, int y2)
+            requires x1 < x2 && y1 < y2;
+        {
+            this.screen = screen;
+
+            regionLeft = x1;
+            regionTop = y1;
+            regionRight = x2;
+            regionBottom = y2;
+
+            cursorX = regionLeft;
+            cursorY = regionTop;
+
+            screen.Fill(regionLeft, regionTop, regionRight, regionBottom, backColor);
+        }
+
+        public void Initialize()
+        {
+        }
+
+        public void Finalize()
+        {
+        }
+
+        public void SetTextColor(RGB color, RGB background)
+        {
+            foreColor = color;
+            backColor = background;
+        }
+
+        public int TextColumn
+        {
+            get { return (cursorX - regionLeft) / FONT_WIDTH; }
+        }
+
+        public int TextRow
+        {
+            get { return (cursorY - regionTop) / FONT_HEIGHT; }
+        }
+
+        public bool SetTextCursor(int column, int row)
+        {
+            if (column >= 0 && column < TextColumns &&
+                row >= 0 && row < TextRows) {
+                bool wasVisible = cursorVisible;
+                CursorHide();
+                cursorX = regionLeft + column * FONT_WIDTH;
+                cursorY = regionTop + row * FONT_HEIGHT;
+                if (wasVisible) {
+                    CursorShow();
+                }
+                return true;
+            }
+            return false;
+        }
+
+        public int TextColumns
+        {
+            get { return (regionRight - regionLeft) / FONT_WIDTH; }
+        }
+
+        public int TextRows
+        {
+            get { return (regionBottom - regionTop) / FONT_HEIGHT; }
+        }
+
+        private void DrawCursor()
+        {
+            cursorView = true;
+            CursorFlash();
+        }
+
+        public void CursorHide()
+        {
+            cursorView = false;
+            CursorFlash();
+            cursorVisible = false;
+        }
+
+        public void CursorShow()
+        {
+            cursorVisible = true;
+            DrawCursor();
+        }
+
+        public void CursorFlash()
+        {
+            if (cursorVisible) {
+                int x = cursorX;
+                int y = cursorY;
+
+                if (x + FONT_WIDTH > regionRight) {
+                    x -= FONT_WIDTH;
+                }
+
+                if (cursorView) {
+                    screen.BitBltChr(x, y, FONT_WIDTH, FONT_HEIGHT,
+                                     Fonts.Font8, 256 * FONT_HEIGHT, 1, foreColor, backColor);
+                }
+                else {
+                    screen.BitBltChr(x, y, FONT_WIDTH, FONT_HEIGHT,
+                                     Fonts.Font8, 32 * FONT_HEIGHT, 1, foreColor, backColor);
+                }
+                cursorView = !cursorView;
+            }
+        }
+
+        public void Clear()
+        {
+            screen.Fill(regionLeft, regionTop, regionRight, regionBottom, backColor);
+            cursorX = regionLeft;
+            cursorY = regionTop;
+            DrawCursor();
+        }
+
+        public void ClearCursorToEndOfLine()
+        {
+            screen.Fill(cursorX, cursorY,
+                        regionRight, cursorY + FONT_HEIGHT,
+                        backColor);
+        }
+
+        public void Write(String! s)
+        {
+            for (int i = 0; i < s.Length; i++) {
+                Write((byte)s[i]);
+            }
+            DrawCursor();
+        }
+
+        public void Write(char[]! in ExHeap buffer, int offset, int count)
+        {
+            while (count-- > 0) {
+                Write((byte)buffer[offset++]);
+            }
+            DrawCursor();
+        }
+
+        public void PutChar(char c)
+        {
+            Write((byte)c);
+            DrawCursor();
+        }
+
+        public bool PutCharAt(char c, int column, int row)
+        {
+            if (column >= 0 && column < TextColumns &&
+                row >= 0 && row < TextRows) {
+                screen.BitBltChr(regionLeft + column * FONT_WIDTH,
+                                 regionTop  + row * FONT_HEIGHT,
+                                 FONT_WIDTH, FONT_HEIGHT,
+                                 Fonts.Font8, c * FONT_HEIGHT, 1,
+                                 foreColor, backColor);
+                return true;
+            }
+            return false;
+        }
+
+        private void Write(byte c)
+        {
+            switch (c) {
+
+                case (byte)'\n':
+                    cursorY += FONT_HEIGHT;
+                    cursorX = regionLeft;
+                    break;
+
+                case (byte)'\r':
+                    screen.Fill(cursorX, cursorY, regionRight,
+                                cursorY + FONT_HEIGHT,
+                                backColor);
+                    cursorX = regionLeft;
+                    break;
+
+                case (byte)'\b':
+                    CursorHide();
+                    cursorX = cursorX - FONT_WIDTH;
+                    CursorShow();
+                    break;
+
+                default:
+                    screen.BitBltChr(cursorX, cursorY, FONT_WIDTH, FONT_HEIGHT,
+                                     Fonts.Font8, c * FONT_HEIGHT, 1, foreColor, backColor);
+
+                    cursorX += FONT_WIDTH;
+                    break;
+            }
+
+            if (cursorX + FONT_WIDTH > regionRight) {
+                cursorY += FONT_HEIGHT;
+                cursorX = regionLeft;
+            }
+
+            if (cursorY + FONT_HEIGHT > regionBottom) {
+                screen.Scroll(regionLeft, regionTop, regionRight, regionBottom,
+                              FONT_HEIGHT);
+                cursorY = cursorY - FONT_HEIGHT;
+                screen.Fill(regionLeft, cursorY, regionRight, regionBottom, backColor);
+            }
+        }
+
+    }
+}

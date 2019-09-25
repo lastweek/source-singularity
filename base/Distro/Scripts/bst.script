@@ -1,0 +1,37 @@
+bootCount
+boots = $?
+
+msg = "Starting Tests pass ${boots}..."
+echo $msg
+decho $msg
+
+singunit '-Timings' 'bvt' "-Pass:${boots}"
+
+if ($boots == 0) {
+    msg = 'Running suspend/stop test.'
+    echo $msg
+    decho $msg
+    arg1 = '(& p2 (* 9999999 print 2 delay 2 ) wall )'
+    arg2 = ' (* 5 print 1 delay 2 ) suspend p2'
+    arg3 = ' (* 5 print 1 delay 2 ) resume p2'
+    arg4 = ' (* 5 print 1 delay 2 ) stop p2'
+    arg5 = ' (* 5 print 1 delay 2 )'
+    arg = $arg1 . $arg2 . $arg3 . $arg4 . $arg5
+    kptest $arg
+    msg = 'Completed suspend/stop test.'
+    echo $msg
+    decho $msg
+}
+
+if ($boots < 2) {
+   msg = "Complete tests pass ${boots}...rebooting"
+   echo $msg
+   decho $msg
+   warmboot
+}
+else {
+     msg = 'Tests Finished.  Shutting down...'
+     echo $msg
+     decho $msg
+     shutdown
+}

@@ -1,0 +1,419 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Anti-virus scanner.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Crypto;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Email.Contracts;
+using Microsoft.Singularity.Endpoint;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.V1.Services;
+
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Email
+{
+    // VirusDef
+    //
+    // This class holds the information from the virus definition files,
+    // such as the virus name, pattern, and type of file to which the
+    // definition applies.  Some virus definitions refer to MD5 hashes,
+    // in which case the pattern represents the hash.
+
+    class VirusDefError : ApplicationException { }
+
+    class VirusDef
+    {
+        public VirusDef(string name, int length, Pattern pattern)
+        {
+            Name = name;
+            Type = TargetType.TYPE_ANY;
+            IsMD5 = true;
+            AnyOffset = false;
+            Offset = 0;
+            Length = length;
+            Pattern = pattern;
+        }
+
+        public VirusDef(string name, int type, string! offset, Pattern pattern)
+        {
+            Name = name;
+            Type = (TargetType)type;
+            IsMD5 = false;
+            Length = 0;
+            Pattern = pattern;
+
+            if (offset == "*") {
+                AnyOffset = true;
+                Offset = 0;
+            } else if (offset.Length >= 4 && offset.Substring(0, 4) == "EOF-") {
+                AnyOffset = false;
+                Offset = Int32.Parse(offset.Substring(3));
+            } else if (Type != TargetType.TYPE_PE && Type != TargetType.TYPE_ELF) {
+                AnyOffset = false;
+                Offset = Int32.Parse(offset);
+            } else {
+                AnyOffset = false;
+                Offset = 0;
+            }
+        }
+
+        public enum TargetType
+        {
+            TYPE_ANY      = 0,
+            TYPE_PE       = 1,
+            TYPE_OLE      = 2,
+            TYPE_HTML     = 3,
+            TYPE_MAIL     = 4,
+            TYPE_GRAPHICS = 5,
+            TYPE_ELF      = 6,
+        }
+
+        public string Name;
+        public TargetType Type;
+        public bool IsMD5;
+        public bool AnyOffset;
+        public int Offset;
+        public int Length;
+        public Pattern Pattern;
+    }
+
+    // AntiVirus
+    //
+    // This class contains the main appliation logic for the virus scanner.
+    // We load three virus definition files from disk, set up the pattern
+    // matcher, and then wait for incoming requests for virus checking.
+
+    [ConsoleCategory(HelpMessage="Anti-Virus Service", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter("db", Mandatory=false, Default="/init/virus.db",
+                         HelpMessage="File with universal virus signatures (.db).")]
+        internal string dbfile;
+
+        [StringParameter("hdb", Mandatory=false, Default="/init/virus.hdb",
+                         HelpMessage="File with h virus signatures (.hdb).")]
+        internal string hdbfile;
+
+        [StringParameter("ndb", Mandatory=false, Default="/init/virus.ndb",
+                         HelpMessage="File with n virus signatures (.ndb).")]
+        internal string ndbfile;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return AntiVirus.AppMain(this);
+        }
+    }
+
+    class AntiVirus
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            // Publish our service endpoint before loading virus definitions as
+            // they can take minutes to load.
+            DirectoryServiceContract.Imp ds = (config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("AntiVirus: Unable to acquire handle to Directory Service.");
+            }
+            ds.RecvSuccess();
+
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            try {
+                ds.SendRegister(Bitter.FromString2(AntiVirusContract.ModuleName), nsImp);
+
+                switch receive {
+                    case ds.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case ds.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        Console.WriteLine("AntiVirus: Failed to register endpoint as {0}.",
+                                          AntiVirusContract.ModuleName);
+                        delete nsExp;
+                        delete rejectedEP;
+                        return -1;
+
+                    case ds.ChannelClosed():
+                        Console.WriteLine("AntiVirus: ds channel closed");
+                        delete nsExp;
+                        return -1;
+                }
+            }
+            finally {
+                delete ds;
+            }
+
+            Console.WriteLine("AntiVirus: Loading virus definition files.");
+            LoadDefinitions(config.dbfile);
+            LoadDefinitions(config.hdbfile);
+            LoadDefinitions(config.ndbfile);
+
+            PrepareMatcher();
+
+            Console.WriteLine("AntiVirus: Ready at {0}", AntiVirusContract.ModuleName);
+
+            // Here is the set of client channels we service
+
+            for (;;) {
+                switch receive {
+                    // ------------------------------- Requests for new connections
+
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp):
+                        // We expect people top give us AntiVirusContract.Exp instances
+                        AntiVirusContract.Exp newClient = newEp as AntiVirusContract.Exp;
+
+                        if (newClient == null) {
+                            // Invalid contract type. Fail.
+                            nsExp.SendNackConnect(newEp);
+                        }
+                        else {
+                            // Signal ready and start servicing this contract
+                            nsExp.SendAckConnect();
+
+                            // Launch the thread to handle the incoming requests.
+                            AntiVirus child = new AntiVirus(newClient);
+                            Thread thread = new Thread(child.Run);
+                            thread.Start();
+                        }
+                        break;
+
+                    case nsExp.ChannelClosed():
+                        // The namespace channel is closed so quit.
+                        delete nsExp;
+                        return -1;
+                }
+            }
+            return 0;
+        }
+
+                //////////////////////////////////////////////////////////////////////////////
+        //
+        public AntiVirus([Claims]AntiVirusContract.Exp:Start! ep)
+        {
+            epRef = new TRef<AntiVirusContract.Exp:Start>(ep);
+        }
+
+        private TRef<AntiVirusContract.Exp:Start> epRef;
+
+        public void Run()
+        {
+            AntiVirusContract.Exp ep = epRef.Acquire();
+
+            if (ep == null) {
+                return;
+            }
+
+            ep.SendAntiVirusReady();
+            int arg;
+
+            for (;;) {
+                switch receive {
+                    case ep.CheckFile(byte[]! in ExHeap buffer):
+#if false
+                        Console.WriteLine("AnitVirus: CheckFile");
+#endif
+                        // decide if the buffer contains a virus
+                        // possible crack the MIME content.
+                        string virus = CheckData(Bitter.ToByteArray(buffer));
+
+                        delete buffer;
+                        if (virus != null) {
+                            ep.SendFileContaminated(Bitter.FromString2(virus));
+                        }
+                        else {
+                            ep.SendFileClean();
+                        }
+                        break;
+
+                    case ep.ChannelClosed():
+                        delete ep;
+                        return;
+                }
+            }
+        }
+
+        delegate VirusDef VirusDefParser(string! line);
+
+        static void LoadDefinitions(string! filename)
+        {
+            VirusDefParser parser = null;
+
+            string ext = GetExtension(filename);
+            switch (ext) {
+                case "db":
+                    parser = LoadDB;
+                    break;
+                case "hdb":
+                    parser = LoadHDB;
+                    break;
+                case "ndb":
+                    parser = LoadNDB;
+                    break;
+                default:
+                    Console.WriteLine("Invalid definition file {0}.", filename);
+                    break;
+            }
+
+            if (parser != null) {
+                FileStream fsInput = new FileStream(filename, FileMode.Open, FileAccess.Read);
+                StreamReader reader = new StreamReader(fsInput);
+                // StreamReader reader = new StreamReader(filename);
+                string line;
+                int linenum = 1;
+
+                while ((line = reader.ReadLine()) != null) {
+                    try {
+                        VirusDef def = parser(line);
+                        if (def != null) {
+                            defs.Add(def);
+                        }
+                    } catch (VirusDefError) {
+                        Console.WriteLine("Invalid virus definition at {0}:{1}.", filename, linenum);
+                    }
+                    linenum++;
+                }
+            }
+        }
+
+        static string GetExtension(string! filename)
+        {
+            int dot = filename.LastIndexOf('.');
+            return (dot >= 0) ? filename.Substring(dot + 1) : null;
+        }
+
+        static VirusDef LoadDB(string! line)
+        {
+            VirusDef def = null;
+
+            string[] split = line.Split(new char[] { '=' });
+            if (split.Length == 2) {
+                string name    = (!)split[0];
+                string pattern = (!)split[1];
+                def = new VirusDef(name, 0, "*", parser.Parse(name, pattern));
+            } else {
+                throw new VirusDefError();
+            }
+
+            return def;
+        }
+
+        static VirusDef LoadHDB(string! line)
+        {
+            VirusDef def = null;
+
+            string[] split = line.Split(new char[] { ':' });
+            if (split.Length == 3) {
+                string hash   = (!)split[0];
+                string length = (!)split[1];
+                string name   = (!)split[2];
+                def = new VirusDef(name, Int32.Parse(length), parser.Parse(name, hash));
+            } else {
+                throw new VirusDefError();
+            }
+
+            return def;
+        }
+
+        static VirusDef LoadNDB(string! line)
+        {
+            VirusDef def = null;
+
+            string[] split = line.Split(new char[] { ':' });
+            if (split.Length >= 4 && split.Length <= 6) {
+                string name    = (!)split[0];
+                string type    = (!)split[1];
+                string offset  = (!)split[2];
+                string pattern = (!)split[3];
+
+                def = new VirusDef(name, Int32.Parse(type), offset, parser.Parse(name, pattern));
+
+                // Discard PE, ELF, and HTML definitions for now
+                if (def.Type == VirusDef.TargetType.TYPE_PE ||
+                    def.Type == VirusDef.TargetType.TYPE_ELF ||
+                    def.Type == VirusDef.TargetType.TYPE_HTML) {
+                    def = null;
+                }
+            } else {
+                throw new VirusDefError();
+            }
+
+            return def;
+        }
+
+        static void PrepareMatcher()
+        {
+            // TODO: Handle Length & Type fields.
+
+            foreach (VirusDef! def in defs) {
+                if (def.IsMD5) {
+                    Debug.Assert(!def.AnyOffset);
+                    md5Matcher.AddPattern(def.Pattern, def.Offset);
+                } else {
+                    if (def.AnyOffset) {
+                        matcher.AddPattern(def.Pattern);
+                    } else {
+                        matcher.AddPattern(def.Pattern, def.Offset);
+                    }
+                }
+            }
+        }
+
+        static string CheckData(byte[]! data)
+        {
+            byte[] hash = (!)hasher.Hash(data);
+
+            string found;
+
+            found = md5Matcher.Match(hash);
+            if (found == null) {
+                found = matcher.Match(data);
+            }
+
+            return found;
+        }
+
+        static private MD5 hasher = new MD5();
+
+        static private ArrayList defs = new ArrayList();
+
+        static private PatternParser parser = new PatternParser();
+
+        static private PatternMatcher matcher = new PatternMatcher();
+        static private PatternMatcher md5Matcher = new PatternMatcher();
+    }
+}

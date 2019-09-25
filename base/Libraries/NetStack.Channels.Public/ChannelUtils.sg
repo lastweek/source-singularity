@@ -1,0 +1,51 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Utilities for using the NetStack channels
+//
+
+using System;
+using System.Net.IP;
+using NetStack.Contracts;
+
+namespace NetStack.Channels.Public
+{
+    public class ChannelUtils
+    {
+        public static string AddressToString(uint address)
+        {
+            return String.Format("{0}.{1}.{2}.{3}",
+                                 (address & 0xff000000) >> 24,
+                                 (address & 0x00ff0000) >> 16,
+                                 (address & 0x0000ff00) >> 8,
+                                 (address & 0x000000ff));
+        }
+
+        public static string HardwareAddressToString(HardwareAddress addr)
+        {
+            return String.Format("{0:x2}:{1:x2}:{2:x2}:{3:x2}:{4:x2}:{5:x2}",
+                                 addr.b0, addr.b1, addr.b2, addr.b3, addr.b4, addr.b5);
+        }
+
+        public static string NetworkToString(Network nwrk)
+        {
+            return AddressToString(nwrk.network) + " / " + AddressToString(nwrk.netmask);
+        }
+
+        public static Network NetworkToChannelNetwork(IPv4Network nwrk)
+        {
+            Network retval = new Network();
+            retval.network = (uint)nwrk.Network;
+            retval.netmask = (uint)nwrk.NetMask;
+            return retval;
+        }
+
+        public static IPv4Network ChannelNetworkToNetwork(Network nwrk)
+        {
+            return new IPv4Network(new IPv4(nwrk.network), new IPv4(nwrk.netmask));
+        }
+    }
+}

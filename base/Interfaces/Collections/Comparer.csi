@@ -1,0 +1,20 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Globalization;
+
+namespace System.Collections
+{
+
+    public sealed class Comparer : IComparer
+    {
+        public static readonly Comparer Default;
+
+        public Comparer();
+        public int Compare(Object a, Object b);
+    }
+}

@@ -1,0 +1,381 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+
+using System;
+using System.Threading;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.SingSharp;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications.Tests
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return ConsoleDemo.AppMain(this);
+        }
+    }
+
+    public class ConsoleDemo
+    {
+        private static ConsoleDeviceContract.Imp
+        OpenConsoleInternal(DirectoryServiceContract.Imp! nsImp,
+                            [Claims] char[]! in ExHeap    deviceName)
+        {
+            ConsoleDeviceContract.Exp! exp;
+            ConsoleDeviceContract.Imp! imp;
+            ConsoleDeviceContract.NewChannel(out imp, out exp);
+
+            nsImp.SendBind(deviceName, exp);
+            switch receive {
+                case nsImp.AckBind():
+                    return imp;
+                    break;
+                case nsImp.NakBind(rejectImp, error):
+                    delete rejectImp;
+                    delete imp;
+                    break;
+                case nsImp.ChannelClosed():
+                    throw new Exception("Channel closed during Console bind.");
+                    delete imp;
+                    break;
+                case nsImp.NakBindReparse(path, rest, linked, backExp):
+                    assert linked == true;
+                    assert rest   == null;
+                    delete backExp;
+                    delete imp;
+
+                    return OpenConsoleInternal(nsImp, path);
+                    break;
+            }
+            return null;
+        }
+
+        private static ConsoleDeviceContract.Imp OpenConsole(string! devName)
+        {
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+            ConsoleDeviceContract.Imp imp =
+                OpenConsoleInternal(ns, Bitter.FromString2(devName));
+            delete ns;
+
+            if (imp != null) {
+                switch receive {
+                    case imp.Success():
+                        break;
+                    case imp.ContractNotSupported():
+                        throw new Exception("ConsoleOutput: ContractNotSupported");
+                        break;
+                    case imp.ChannelClosed():
+                        throw new Exception("ConsoleOutput: ChannelClosed");
+                        break;
+                }
+            }
+            return imp;
+        }
+
+        private static void ConsoleWrite(ConsoleDeviceContract.Imp! imp,
+                                         string! message)
+        {
+            char[]! in ExHeap m = Bitter.FromString2(message);
+            imp.SendWrite(m, 0, m.Length);
+            imp.RecvAckWrite(out m);
+            delete m;
+        }
+
+        private static void DrawLine(ConsoleDeviceContract.Imp! imp,
+                                     int x1, int y1, int x2, int y2,
+                                     char c)
+        {
+            int dx = x2 - x1;
+            int dy = y2 - y1;
+
+            if (dx == 0) {
+                if (dy == 0) {
+                    imp.SendPutCharAt(c, x1, y1);
+                    imp.RecvAckPutCharAt();
+                    return;
+                }
+
+                dy = dy / Math.Abs(dy);
+                for (int y = y1; y != y2; y += dy) {
+                    imp.SendPutCharAt(c, x1, y);
+                    imp.RecvAckPutCharAt();
+                }
+                return;
+            }
+            else if (dy == 0) {
+                dx = dx / Math.Abs(dx);
+                for (int x = x1; x != x2; x += dx) {
+                    imp.SendPutCharAt(c, x, y1);
+                    imp.RecvAckPutCharAt();
+                }
+                return;
+            }
+
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+
+            double scale = 0;
+            int end     = 0;
+            if (dx > dy) {
+                scale = 1.0 / (double)dx;
+                end = dx;
+            }
+            else {
+                scale = 1.0 / (double)dy;
+                end   = dy;
+            }
+            for (int i = 0; i < end; i++) {
+                double x = (x1 * i * scale) + (x2 * (end - i - 1) * scale);
+                double y = (y1 *i* scale) + (y2 * (end - i - 1) * scale);
+                imp.SendPutCharAt(c, (int)x, (int)y);
+                imp.RecvAckPutCharAt();
+            }
+        }
+
+        private static void BoxDemo(ConsoleDeviceContract.Imp! imp,
+                                    int columns, int rows)
+        {
+            int cc = columns / 2;
+            int cr = rows / 2;
+            int edge = Math.Min(cc, cr);
+            for (int i = 0; i < edge; i++) {
+                DrawLine(imp, cc - i, cr - i, cc - i, cr + i, '*');
+                DrawLine(imp, cc - i, cr + i, cc + i, cr + i, '*');
+                DrawLine(imp, cc + i, cr + i, cc + i, cr - i, '*');
+                DrawLine(imp, cc + i, cr - i, cc - i, cr - i, '*');
+                Thread.Sleep(TimeSpan.FromMilliseconds(20));
+                DrawLine(imp, cc - i, cr - i, cc - i, cr + i, ' ');
+                DrawLine(imp, cc - i, cr + i, cc + i, cr + i, ' ');
+                DrawLine(imp, cc + i, cr + i, cc + i, cr - i, ' ');
+                DrawLine(imp, cc + i, cr - i, cc - i, cr - i, ' ');
+            }
+        }
+
+        private static void SpinBoxDemo(ConsoleDeviceContract.Imp! imp,
+                                    int columns, int rows)
+        {
+            const int twoPiSteps = 16;
+            int cc = columns / 2;
+            int cr = rows / 2;
+            int r = 2 * Math.Min(cc, cr) / 3;
+            double tau = 2 * Math.PI / twoPiSteps;
+            for (int i = 0; i < 5 * twoPiSteps; i++) {
+                double theta = i * tau;
+                int x = (int)(r * Math.Sin(theta));
+                int y = (int)(r * Math.Cos(theta));
+                DrawLine(imp, cc + x, cr + y, cc + y, cr - x, 'O');
+                DrawLine(imp, cc + y, cr - x, cc - x, cr - y, 'O');
+                DrawLine(imp, cc - x, cr - y, cc - y, cr + x, 'O');
+                DrawLine(imp, cc - y, cr + x, cc + x, cr + y, 'O');
+                Thread.Sleep(TimeSpan.FromMilliseconds(20));
+                DrawLine(imp, cc + x, cr + y, cc + y, cr - x, ' ');
+                DrawLine(imp, cc + y, cr - x, cc - x, cr - y, ' ');
+                DrawLine(imp, cc - x, cr - y, cc - y, cr + x, ' ');
+                DrawLine(imp, cc - y, cr + x, cc + x, cr + y, ' ');
+            }
+        }
+
+        private static void AnnounceDemo(ConsoleDeviceContract.Imp! imp,
+                                         string! title)
+        {
+            Thread.Sleep(TimeSpan.FromSeconds(3));
+            imp.SendClear();
+            imp.RecvAckClear();
+            imp.SendSetCursorPosition(0, 1); // Avoid top line for thread state
+            imp.RecvAckSetCursorPosition();
+            char []! in ExHeap buffer = Bitter.FromString2(title);
+            imp.SendWrite(buffer, 0, title.Length);
+            imp.RecvAckWrite(out buffer);
+            delete buffer;
+            Thread.Sleep(TimeSpan.FromSeconds(1));
+        }
+
+        private static void RunDemo(ConsoleDeviceContract.Imp! imp)
+        {
+            // This is just a quick placeholder that shows
+            // we can write at arbitrary points on the screen.
+
+            AnnounceDemo(imp, "Text positioning demo (diagonal 2:1)");
+
+            int columns, rows;
+            imp.SendGetDisplayDimensions();
+            imp.RecvDisplayDimensions(out columns, out rows);
+
+            int oldColumn, oldRow;
+            imp.SendGetCursorPosition();
+            imp.RecvCursorPosition(out oldColumn, out oldRow);
+
+            char []! in ExHeap message = Bitter.FromString2("Hello World");
+
+            for (int i = 2; i < 11; i++) {
+                imp.SendSetCursorPosition(2 * i, i);
+                imp.RecvAckSetCursorPosition();
+                imp.SendWrite(message, 0, message.Length);
+                imp.RecvAckWrite(out message);
+            }
+            Thread.Sleep(TimeSpan.FromMilliseconds(3000));
+            delete message;
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Testing PutCharAt(). Cursor here...");
+
+            for (int i = 0; i < columns; i++) {
+                imp.SendPutCharAt('#', i, 0);
+                imp.RecvAckPutCharAt();
+                imp.SendPutCharAt('#', i, rows - 1);
+                imp.RecvAckPutCharAt();
+                Thread.Sleep(TimeSpan.FromMilliseconds(10));
+            }
+            for (int i = 0; i < rows; i++) {
+                imp.SendPutCharAt('#', 0, i);
+                imp.RecvAckPutCharAt();
+                imp.SendPutCharAt('#', columns - 1, i);
+                imp.RecvAckPutCharAt();
+                Thread.Sleep(TimeSpan.FromMilliseconds(10));
+            }
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Testing SetCursorSize(Large)...");
+
+            imp.SendSetCursorSize(CursorSize.Large);
+            switch receive {
+                case imp.AckSetCursorSize():
+                    ConsoleWrite(imp, "okay");
+                    break;
+                case imp.NotSupported():
+                    ConsoleWrite(imp, "not supported");
+                    break;
+            }
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Testing SetCursorSize(Small)...");
+
+            imp.SendSetCursorSize(CursorSize.Small);
+            switch receive {
+                case imp.AckSetCursorSize():
+                    Console.Write("okay");
+                    break;
+                case imp.NotSupported():
+                    Console.Write("not supported");
+                    break;
+            }
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Testing SetCursorPosition()/PutChar().  Cursor moving.");
+
+            imp.SendSetCursorPosition(columns / 2, rows / 2);
+            imp.RecvAckSetCursorPosition();
+
+            imp.SendCursorShow();
+            imp.RecvAckCursorShow();
+            for (int i = 0; i < columns; i++) {
+                imp.SendSetCursorPosition(i, rows / 2);
+                imp.RecvAckSetCursorPosition();
+                imp.SendPutChar('>');
+                imp.RecvAckPutChar();
+                Thread.Sleep(TimeSpan.FromMilliseconds(10));
+            }
+            for (int i = 0; i < columns; i++) {
+                imp.SendSetCursorPosition(columns - i - 1, rows / 2);
+                imp.RecvAckSetCursorPosition();
+                imp.SendPutChar('<');
+                imp.RecvAckPutChar();
+                Thread.Sleep(TimeSpan.FromMilliseconds(10));
+            }
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Testing ClearCursorToEndOfLine().");
+
+            for (int c = 0; c < columns; c++) {
+                for (int r = 0; r < 10; r++) {
+                    imp.SendPutCharAt('A', c, r + 3);
+                    imp.RecvAckPutCharAt();
+                }
+            }
+            for (int r = 0; r < 5; r++) {
+                imp.SendSetCursorPosition(columns - r - 1, r + 3);
+                imp.RecvAckSetCursorPosition();
+                imp.SendClearCursorToEndOfLine();
+                imp.RecvAckClearCursorToEndOfLine();
+                Thread.Sleep(TimeSpan.FromMilliseconds(1000));
+            }
+            for (int r = 5; r < 10; r++) {
+                imp.SendSetCursorPosition(columns - 10 + r, r + 3);
+                imp.RecvAckSetCursorPosition();
+                imp.SendClearCursorToEndOfLine();
+                imp.RecvAckClearCursorToEndOfLine();
+                Thread.Sleep(TimeSpan.FromMilliseconds(1000));
+            }
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Cursor is about to be hidden and boxes drawn.");
+
+            imp.SendCursorHide();
+            imp.RecvAckCursorHide();
+
+            BoxDemo(imp, columns, rows);
+
+            // ---------------------------------------------------------------
+
+            AnnounceDemo(imp, "Spinning Box demo.");
+
+            SpinBoxDemo(imp, columns, rows);
+
+            // ---------------------------------------------------------------
+
+            imp.SendCursorShow();
+            imp.RecvAckCursorShow();
+
+            imp.SendClear();
+            imp.RecvAckClear();
+
+            imp.SendSetCursorPosition(oldColumn, oldRow);
+            imp.RecvAckSetCursorPosition();
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            foreach (string s in new string [] { "/dev/video-text",
+                                                 "/dev/conout" }) {
+                ConsoleDeviceContract.Imp imp = OpenConsole((!)s);
+                if (imp != null) {
+                    Console.WriteLine("Opened {0}\n", s);
+                    RunDemo(imp);
+                    delete imp;
+                    break;
+                }
+            }
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,513 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   The Singularity Diagnostics web application
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using Microsoft.Singularity.PingPong.Contracts;
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.Text;
+using System.Web;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.WebApps
+{
+    [Category("WebApp")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<WebAppContract.Exp:Start> webAppRef;
+
+#if false
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+#endif
+        reflective private Parameters();
+    }
+
+    public class DiagnosticsWebApp : IWebApp
+    {
+        private TRef<ChannelContract.Imp:ReadyState> m_ChanConn;
+        private TRef<ProcessContract.Imp:ReadyState> m_ProcConn;
+        private TRef<MemoryContract.Imp:ReadyState> m_MemConn;
+        private TRef<PingContract.Imp:PendingState> m_PingConn;
+
+        private class ProcPairInfo
+        {
+            public int numChannels;
+            public int numMessages;
+        }
+
+        private Hashtable m_ProcPairInfoTable; // State from the last snapshot
+
+        public DiagnosticsWebApp()
+        {
+            ChannelContract.Imp! impChanConn;
+            ChannelContract.Exp! expChanConn;
+            ChannelContract.NewChannel(out impChanConn, out expChanConn);
+
+            ProcessContract.Imp! impProcConn;
+            ProcessContract.Exp! expProcConn;
+            ProcessContract.NewChannel(out impProcConn, out expProcConn);
+
+            MemoryContract.Imp! impMemConn;
+            MemoryContract.Exp! expMemConn;
+            MemoryContract.NewChannel(out impMemConn, out expMemConn);
+
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                // Look up the general Diagnostics contract (this will go away!)
+                epNS.SendBind(Bitter.FromString2(ChannelContract.ModuleName), expChanConn);
+                switch receive {
+                    case epNS.NakBind(ServiceContract.Exp:Start rejectedEP, error) :
+                        delete impChanConn;
+                        delete rejectedEP;
+                        break;
+
+                    case epNS.AckBind() :
+                        impChanConn.RecvReady();
+                        m_ChanConn = new TRef<ChannelContract.Imp:ReadyState>(impChanConn);
+                        // success
+                        break;
+
+                    case epNS.ChannelClosed() :
+                        throw new Exception("epNS channel closed");
+                }
+
+                // Look up the specific diagnostic modules we need
+                epNS.SendBind(Bitter.FromString2(ProcessContract.ModuleName), expProcConn);
+
+                switch receive {
+                    case epNS.NakBind(ServiceContract.Exp:Start rejectedEP, error) :
+                        delete impProcConn;
+                        delete rejectedEP;
+                        break;
+
+                    case epNS.AckBind() :
+                        impProcConn.RecvReady();
+                        m_ProcConn = new TRef<ProcessContract.Imp:ReadyState>(impProcConn);
+                        // success
+                        break;
+
+                    case epNS.ChannelClosed() :
+                        throw new Exception("epNS channel closed");
+                }
+
+                epNS.SendBind(Bitter.FromString2(MemoryContract.ModuleName), expMemConn);
+
+                switch receive {
+                    case epNS.NakBind(ServiceContract.Exp:Start rejectedEP, error) :
+                        delete impMemConn;
+                        delete rejectedEP;
+                        break;
+
+                    case epNS.AckBind() :
+                        impMemConn.RecvReady();
+                        m_MemConn = new TRef<MemoryContract.Imp:ReadyState>(impMemConn);
+                        // success
+                        break;
+
+                    case epNS.ChannelClosed() :
+                        throw new Exception("epNS channel closed");
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            // Spawn the Ping child process so we can do simulated IPC bursts
+            PingContract.Imp! childImp;
+            PingContract.Exp! childExp;
+            PingContract.NewChannel(out childImp, out childExp);
+
+            string[] args = new string[1];
+            args[0] = "ChildPing";
+            Process child = new Process(args, (Endpoint * in ExHeap)childExp);
+            child.Start();
+
+            childImp.RecvPingReady();
+            childImp.SendStartPingPong(1);
+            m_PingConn = new TRef<PingContract.Imp:PendingState>(childImp);
+        }
+
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            if (m_ChanConn == null) {
+                ReportInternalError(request, "No channel to the channel diagnostic module");
+            }
+            else if (m_ProcConn == null) {
+                ReportInternalError(request, "No channel to the process diagnostic module");
+            }
+            else if (m_MemConn == null) {
+                ReportInternalError(request, "No channel to the memory diagnostic module");
+            }
+            else if (m_PingConn == null) {
+                ReportInternalError(request, "No channel to the pingpong child apps");
+            }
+            else {
+                ChannelContract.Imp impChanConn = m_ChanConn.Acquire();
+                ProcessContract.Imp impProcConn = m_ProcConn.Acquire();
+                MemoryContract.Imp impMemConn = m_MemConn.Acquire();
+                PingContract.Imp impPingConn = m_PingConn.Acquire();
+
+                try {
+                    string uri = request.GetUriPath();
+
+                    if (uri.EndsWith("diagram.png")) {
+                        // Serve the image
+                        request.SendStatus(200, "OK");
+                        request.SendHeader("Content-type", "image/jpeg");
+                        request.SendBodyData(
+                            (!)((!)DiagnosticImage.ImageData)[0]
+                            );
+                    }
+                    else if (uri.IndexOf("pingpong") > 0) {
+                        string queryString = request.GetQueryString();
+                        int numReps = 10000;
+
+                        if (queryString != null) {
+                            string paramPreamble = "numreps=";
+                            int preambleIndex = queryString.IndexOf(paramPreamble);
+
+                            if (preambleIndex != -1) {
+                                int nextParamIndex = queryString.IndexOf(';', preambleIndex);
+                                string numRepsStr;
+                                int start = preambleIndex + paramPreamble.Length;
+
+                                if (nextParamIndex == -1) {
+                                    numRepsStr = queryString.Substring(start);
+                                }
+                                else {
+                                    numRepsStr = queryString.Substring(start, nextParamIndex - start);
+                                }
+
+                                numReps = Int32.Parse(numRepsStr);
+                            }
+                        }
+
+                        // Start the ping-pong exchange
+                        impPingConn.RecvDone();
+                        impPingConn.SendStartPingPong(numReps);
+
+                        // Serve the reply
+                        request.SendStatus(200, "OK");
+                        request.SendHeader("Content-type", "text/plain");
+                        request.SendBodyData(Encoding.ASCII.GetBytes("Started " + numReps + " ping-pong exchanges."));
+                    }
+                    else if (uri.IndexOf("dumpheap") > 0) {
+                        ServeHeapDump(impMemConn, request);
+                    }
+                    else {
+                        ServeMasterPage(impChanConn, impProcConn, impMemConn, request);
+                    }
+
+                }
+                catch (Exception e) {
+                    ReportInternalError(request, "Caught an exception: " + e);
+                }
+                finally {
+                    m_PingConn.Release(impPingConn);
+                    m_MemConn.Release(impMemConn);
+                    m_ProcConn.Release(impProcConn);
+                    m_ChanConn.Release(impChanConn);
+                }
+            }
+
+            request.Done();
+        }
+
+
+        private void ServeMasterPage(ChannelContract.Imp:ReadyState! impChanConn,
+                                     ProcessContract.Imp:ReadyState! impProcConn,
+                                     MemoryContract.Imp:ReadyState! impMemConn,
+                                     IHttpRequest! request)
+        {
+            // Serve the master page
+
+            // -----------------------------------------------
+            // First, get all our data in order.
+            long maxMemory, usedMemory, freeMemory;
+            long totalCommBlocks, totalCommBytes;
+
+            impMemConn.SendGetFreeMemory();
+            impMemConn.RecvMemory(out freeMemory);
+            impMemConn.SendGetUsedMemory();
+            impMemConn.RecvMemory(out usedMemory);
+            impMemConn.SendGetMaxMemory();
+            impMemConn.RecvMemory(out maxMemory);
+            impMemConn.SendTotalUsedCommunicationHeap();
+            impMemConn.RecvBlocksAndTotal(out totalCommBlocks, out totalCommBytes);
+
+            // This structure hashes process 2-tuples to the
+            // ProcPairInfo structure. The key
+            // is "procA:procB", using the process names,
+            // with the lower-ID process on the left.
+            Hashtable procPairTable = new Hashtable();
+
+            // This table lets us look up process names
+            Hashtable procNames = new Hashtable();
+
+            // Fill in the name table
+            int[]! in ExHeap procIDs;
+            impProcConn.SendGetProcessIDs();
+            impProcConn.RecvProcessIDs(out procIDs);
+
+            try {
+                for (int i = 0; i < procIDs.Length; ++i) {
+                    impProcConn.SendGetProcessName(procIDs[i]);
+
+                    switch receive {
+                        case impProcConn.NotFound() :
+                            // Do nothing; go to the next ID
+                            break;
+
+                        case impProcConn.ProcessName(char[]! in ExHeap procName) :
+                            // Drop the name into the table
+                            int procID = procIDs[i];
+                            string valCopy = Bitter.ToString(procName);
+                            delete procName;
+                            procNames[procID] = valCopy;
+                            break;
+
+                        case impProcConn.ChannelClosed():
+                            throw new Exception("impProcConn channel closed");
+                    }
+                }
+            }
+            finally {
+                delete procIDs;
+            }
+
+            // Now fill in the table of channels
+            ChannelInfo[]! in ExHeap channels;
+            impChanConn.SendGetChannels();
+            impChanConn.RecvChannels(out channels);
+
+            try {
+                for (int i = 0; i < channels.Length; i++) {
+                    int leftProcID, rightProcID;
+                    string leftProcName, rightProcName;
+
+                    // Ignore loop channels for now
+                    if (channels[i].ImpProcessId != channels[i].ExpProcessId) {
+                        if (channels[i].ImpProcessId < channels[i].ExpProcessId) {
+                            leftProcID = channels[i].ImpProcessId;
+                            rightProcID = channels[i].ExpProcessId;
+                        }
+                        else {
+                            leftProcID = channels[i].ExpProcessId;
+                            rightProcID = channels[i].ImpProcessId;
+                        }
+
+                        leftProcName = procNames[leftProcID] as string;
+                        rightProcName = procNames[rightProcID] as string;
+
+                        if ((leftProcName != null) && (rightProcName != null)) {
+                            string compoundName = leftProcName + ":" + rightProcName;
+                            ProcPairInfo pairInfo = procPairTable[compoundName] as ProcPairInfo;
+
+                            if (pairInfo == null) {
+                                pairInfo = new ProcPairInfo();
+                            }
+
+                            // Add to the list of channels between these processes
+                            pairInfo.numChannels++;
+                            pairInfo.numMessages += channels[i].MessagesDeliveredToExp + channels[i].MessagesDeliveredToImp;
+                            procPairTable[compoundName] = pairInfo;
+                        }
+                    }
+                }
+            }
+            finally {
+                // This is done below, where we dump the channels; uncomment this if we get rid of that HTML.
+                //delete channels;
+            }
+
+            // -----------------------------------------------
+            // Now generate the page.
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-type", "text/html");
+            request.SendHeader("charset", "utf-8");
+
+            // Serve up the canned page preamble. This leaves us in a <script> context.
+            request.SendBodyData((!)((!)MasterPage.HTMLData)[0]);
+
+            // Drop in Javascript statements to drive the dynamic portions of the page
+
+            foreach (string! pairName in procPairTable.Keys) {
+                ProcPairInfo info = (ProcPairInfo!)procPairTable[pairName];
+                ProcPairInfo prevInfo = null;
+
+                if (m_ProcPairInfoTable != null) // might be first run
+                {
+                    prevInfo = m_ProcPairInfoTable[pairName] as ProcPairInfo; // might be null
+                }
+
+                int msgDelta;
+
+                if (prevInfo != null) {
+                    msgDelta = info.numMessages - prevInfo.numMessages;
+                }
+                else {
+                    msgDelta = info.numMessages;
+                }
+
+                // The scaling value of 3 means that 1,000 tops out the thermometer; change as
+                // appropriate!
+                double scaledValue = (msgDelta <= 0
+                                      ? 0
+                                      : 3 * (Math.Sqrt(msgDelta)));
+
+                int roundedValue = (int)scaledValue;
+
+                if (roundedValue < 80) {
+                    request.SendBodyData(Encoding.ASCII.GetBytes("setThermometerValue(\"" + pairName + "\", \"" + roundedValue + "%\");\n"));
+                }
+                else {
+                    request.SendBodyData(Encoding.ASCII.GetBytes("setThermometerToOverflow(\"" + pairName + "\", \"" + roundedValue + "%\");\n"));
+                }
+
+                request.SendBodyData(Encoding.ASCII.GetBytes("setThermometerLabel(\"" + pairName + "\", \"(" + info.numMessages + " / " + info.numChannels + ")\");\n"));
+            }
+
+            // Stash our new snapshot for next time
+            m_ProcPairInfoTable = procPairTable;
+
+            // Push data into the memory thermometer
+            request.SendBodyData(Encoding.ASCII.GetBytes("setThermometerValue(\"usedMemory\", \"" + ((usedMemory * 100) / freeMemory) + "%\");\n"));
+            request.SendBodyData(Encoding.ASCII.GetBytes("setThermometerLabel(\"usedMemory\", \"(" + usedMemory + " of " + maxMemory + " used, " + freeMemory + " bytes free)\");\n"));
+
+            // Don't forget to close out the <script> context
+            request.SendBodyData(Encoding.ASCII.GetBytes("</script>"));
+
+            //
+            // Preserve some of the old-style HTML tables for now...
+            //
+
+            // Send total amount of communication heap blocks and memory
+            request.SendBodyData(Encoding.ASCII.GetBytes("<hr><h1>Communication heap used</h1><table border=2>"));
+            request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>Total blocks</td><td>" + totalCommBlocks + "</td></tr>"));
+            request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>Total bytes</td><td>" + totalCommBytes + "</td></tr>"));
+
+            request.SendBodyData(Encoding.ASCII.GetBytes("</table>"));
+
+            // Dump the table of processes with their names
+            request.SendBodyData(Encoding.ASCII.GetBytes("<hr><h1>Processes</h1><table border=2>"));
+            request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>PID</td><td>Image</td></tr>"));
+            foreach (int procId in procNames.Keys) {
+                string procName = (string)procNames[procId];
+                request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>" + procId + "</td><td>" + procName + "</td></tr>"));
+            }
+            request.SendBodyData(Encoding.ASCII.GetBytes("</table>"));
+
+
+            // Dump the table of channels that exist at the moment
+            request.SendBodyData(Encoding.ASCII.GetBytes("<hr><h1>Channels</h1><table border=2>"));
+            request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>CID</td><td>Exp PID</td><td>Imp PID</td><td>Exp Bytes</td><td>Imp Bytes</td></tr>"));
+
+            for (int i = 0; i < channels.Length; i++) {
+                request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>"+
+                                                             channels[i].ChannelId+
+                                                             "</td><td>"+
+                                                             channels[i].ExpProcessId+
+                                                             "</td><td>"+
+                                                             channels[i].ImpProcessId+
+                                                             "</td><td>"+
+                                                             channels[i].MessagesDeliveredToExp+
+                                                             "</td><td>"+
+                                                             channels[i].MessagesDeliveredToImp+
+                                                             "</td></tr>"));
+            }
+
+            // Don't forget this...
+            delete channels;
+
+            request.SendBodyData(Encoding.ASCII.GetBytes("</table></body></html>"));
+        }
+
+        private void ServeHeapDump(MemoryContract.Imp:ReadyState! impMemConn,
+                                   IHttpRequest! request)
+        {
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-type", "text/html");
+            request.SendHeader("charset", "utf-8");
+
+            request.SendBodyData(Encoding.ASCII.GetBytes("<html><head><title>ExHeap dump</title></head><body><h1>ExHeap Dump</h1><table border=2><tr><td>Ptr</td><td>PID</td><td>Type</td><td>Size</td></tr>"));
+
+            Hashtable procCounts = new Hashtable();
+            MemoryContract.BlockInfo[]! in ExHeap dump;
+
+            impMemConn.SendDumpExHeap();
+            impMemConn.RecvExHeapDump(out dump);
+
+            for (int i = 0; i < dump.Length; i++) {
+                string text = String.Format("<tr><td>{0:x}</td><td>{1}</td><td>{2:x}</td><td>{3}</td></tr>", dump[i].ptrVal, dump[i].ownerProcID, dump[i].type, dump[i].size);
+                request.SendBodyData(Encoding.ASCII.GetBytes(text));
+                object count = procCounts[dump[i].ownerProcID];
+
+                if (count == null) {
+                    procCounts[dump[i].ownerProcID] = 1;
+                }
+                else {
+                    procCounts[dump[i].ownerProcID] = ((int)count) + 1;
+                }
+            }
+
+            delete dump;
+
+            request.SendBodyData(Encoding.ASCII.GetBytes("</table><hr><h1>Totals by ProcID</h1><table border=2><tr><td>ProcID</td><td>Total Blocks</td></tr>"));
+
+            foreach (DictionaryEntry entry in procCounts) {
+                request.SendBodyData(Encoding.ASCII.GetBytes("<tr><td>" + entry.Key + "</td><td>" + entry.Value + "</td></tr>"));
+            }
+
+            request.SendBodyData(Encoding.ASCII.GetBytes("</table></body></html>"));
+        }
+
+        // ======================================================
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        internal static int AppMain(Parameters! config)
+        {
+            //Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            WebAppContract.Exp conn = ((!)config.webAppRef).Acquire();
+            if (conn == null) {
+                // Wrong contract type!
+                return -1;
+            }
+
+            conn.SendWebAppReady();
+            DiagnosticsWebApp webApp = new DiagnosticsWebApp();
+            Driver.ServiceChannel(webApp, conn);
+            delete conn;
+            return 0;
+        }
+
+        private void ReportInternalError(IHttpRequest! request, string! description)
+        {
+            request.SendStatus(500, "Internal Error");
+            request.SendHeader("Content-type", "text/plain");
+            request.SendHeader("charset", "utf-8");
+            request.SendBodyData(Encoding.ASCII.GetBytes(description));
+        }
+
+    }
+}

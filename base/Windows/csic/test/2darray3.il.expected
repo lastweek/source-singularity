@@ -1,0 +1,221 @@
+.assembly '2darray3' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class public 'test'
+	extends [mscorlib]System.Object
+{
+.class nested private sealed 'box'
+	extends [mscorlib]System.ValueType
+{
+.field public int32 'x'
+.field public int32 'y'
+.method hidebysig specialname rtspecialname public void .ctor(int32 'x') {
+ldarg.0
+ldarg 1 // x
+stfld int32 'test/box'::'x'
+ldarg.0
+ldc.i4 0
+stfld int32 'test/box'::'y'
+ret
+.maxstack 2
+} // end of constructor test.box.box
+.method hidebysig virtual public instance string 'ToString'() {
+.locals init ([0]string 't0')
+ldstr "{0},{1}"
+ldarg.0
+ldfld int32 'test/box'::'x'
+box int32
+ldarg.0
+ldfld int32 'test/box'::'y'
+box int32
+call  string [mscorlib]System.String::'Format'(string,object,object)
+stloc 0 // t0
+br $1
+$1:
+ldloc 0 // t0
+ret
+.maxstack 3
+} // end of method test.box.ToString
+} // end of struct test.box
+.method hidebysig static public void 'Main'() {
+.entrypoint
+.locals init ([0]value class 'test/box'[0...,0...] 't0')
+ldc.i4 5
+ldc.i4 2
+newobj instance void value class 'test/box'[0...,0...]::.ctor(int32,int32)
+dup
+ldc.i4 0
+ldc.i4 0
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([1]value class 'test/box' 't1')
+ldloca 1 // t1
+ldc.i4 10
+call instance void 'test/box'::.ctor(int32)
+ldloc 1 // t1
+stobj value class 'test/box'
+dup
+ldc.i4 0
+ldc.i4 1
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([2]value class 'test/box' 't2')
+ldloca 2 // t2
+ldc.i4 11
+call instance void 'test/box'::.ctor(int32)
+ldloc 2 // t2
+stobj value class 'test/box'
+dup
+ldc.i4 1
+ldc.i4 0
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([3]value class 'test/box' 't3')
+ldloca 3 // t3
+ldc.i4 12
+call instance void 'test/box'::.ctor(int32)
+ldloc 3 // t3
+stobj value class 'test/box'
+dup
+ldc.i4 1
+ldc.i4 1
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([4]value class 'test/box' 't4')
+ldloca 4 // t4
+ldc.i4 13
+call instance void 'test/box'::.ctor(int32)
+ldloc 4 // t4
+stobj value class 'test/box'
+dup
+ldc.i4 2
+ldc.i4 0
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([5]value class 'test/box' 't5')
+ldloca 5 // t5
+ldc.i4 14
+call instance void 'test/box'::.ctor(int32)
+ldloc 5 // t5
+stobj value class 'test/box'
+dup
+ldc.i4 2
+ldc.i4 1
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([6]value class 'test/box' 't6')
+ldloca 6 // t6
+ldc.i4 15
+call instance void 'test/box'::.ctor(int32)
+ldloc 6 // t6
+stobj value class 'test/box'
+dup
+ldc.i4 3
+ldc.i4 0
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([7]value class 'test/box' 't7')
+ldloca 7 // t7
+ldc.i4 16
+call instance void 'test/box'::.ctor(int32)
+ldloc 7 // t7
+stobj value class 'test/box'
+dup
+ldc.i4 3
+ldc.i4 1
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([8]value class 'test/box' 't8')
+ldloca 8 // t8
+ldc.i4 17
+call instance void 'test/box'::.ctor(int32)
+ldloc 8 // t8
+stobj value class 'test/box'
+dup
+ldc.i4 4
+ldc.i4 0
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([9]value class 'test/box' 't9')
+ldloca 9 // t9
+ldc.i4 18
+call instance void 'test/box'::.ctor(int32)
+ldloc 9 // t9
+stobj value class 'test/box'
+dup
+ldc.i4 4
+ldc.i4 1
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+.locals init ([10]value class 'test/box' 't10')
+ldloca 10 // t10
+ldc.i4 19
+call instance void 'test/box'::.ctor(int32)
+ldloc 10 // t10
+stobj value class 'test/box'
+stloc 0 // b
+ldloc 0 // b
+ldc.i4 4
+ldc.i4 1
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+ldc.i4 20
+stfld int32 'test/box'::'x'
+ldstr "{0} {1}"
+ldloc 0 // b
+ldc.i4 0
+call instance int32 [mscorlib]System.Array::'GetUpperBound'(int32)
+box int32
+ldloc 0 // b
+ldc.i4 1
+call instance int32 [mscorlib]System.Array::'GetUpperBound'(int32)
+box int32
+call  void [mscorlib]System.Console::'WriteLine'(string,object,object)
+.locals init ([11]int32 't11')
+ldc.i4 0
+stloc 11 // i
+br $4
+$1:
+.locals init ([12]int32 't12')
+ldc.i4 0
+stloc 12 // j
+br $8
+$5:
+ldloc 0 // b
+ldloc 11 // i
+ldloc 12 // j
+call instance value class 'test/box' & value class 'test/box'[0...,0...]::Address(int32,int32)
+ldobj value class 'test/box'
+box value class 'test/box'
+call  void [mscorlib]System.Console::'WriteLine'(object)
+$6:
+ldloc 12 // j
+ldc.i4.1
+add
+.locals init ([13]int32 't13')
+stloc 13 // t13
+ldloc 13 // t13
+stloc 12 // j
+$8:
+ldloc 12 // j
+ldloc 0 // b
+ldc.i4 1
+call instance int32 [mscorlib]System.Array::'GetUpperBound'(int32)
+ble $5
+$7:
+$2:
+ldloc 11 // i
+ldc.i4.1
+add
+.locals init ([14]int32 't14')
+stloc 14 // t14
+ldloc 14 // t14
+stloc 11 // i
+$4:
+ldloc 11 // i
+ldloc 0 // b
+ldc.i4 0
+call instance int32 [mscorlib]System.Array::'GetUpperBound'(int32)
+ble $1
+$3:
+ret
+.maxstack 4
+} // end of method test.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor test.test
+} // end of class test

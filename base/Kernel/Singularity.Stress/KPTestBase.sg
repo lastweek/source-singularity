@@ -1,0 +1,146 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   KPTestBase.sg
+//
+//  Note:   Tests the kernel-process boundary.
+//
+//  Warning: this file is compiled in two separate places:
+//    - Applications/Tests/KPTest
+//    - Kernel/Singularity.Stress
+//
+//  Feel free to add more commands to this file.
+
+using System;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+
+namespace Microsoft.Singularity.Stress
+{
+    public class KPTestBase
+    {
+        public virtual uint Go(string[]! args, int i)
+        {
+            if (i >= args.Length) return 0xdeafbead;
+            string! arg = (!) (args[i]);
+            if (arg == "print") {
+                DebugStub.WriteLine("{0}", __arglist(args[i + 1]));
+                return Go(args, i + 2);
+            }
+            else if (arg == "print-") {
+                uint r = Go(args, i + 2);
+                DebugStub.WriteLine("{0} (print-after) {1:x}", __arglist(args[i + 1], r));
+                return r;
+            }
+            else if (arg == "print^") {
+                DebugStub.WriteLine(args[i + 1] + " (print-before)");
+                uint r = Go(args, i + 2);
+                DebugStub.WriteLine("{0} (print-after) {1:x}", __arglist(args[i + 1], r));
+                return r;
+            }
+            else if (arg == "catch" || arg == "_catch") {
+                try {
+                    return Go(args, i + 2);
+                }
+                catch (Exception) {
+                    if (arg == "catch") {
+                        DebugStub.WriteLine("{0} (catch)", __arglist(args[i + 1]));
+                    }
+                }
+                return 0xdeadbeef;
+            }
+            else if (arg == "finally" || arg == "_finally") {
+                try {
+                    return Go(args, i + 2);
+                }
+                finally {
+                    if (arg == "finally") {
+                        DebugStub.WriteLine(" (finally)", __arglist(args[i + 1]));
+                    }
+                }
+            }
+            else if (arg == "throw") {
+                throw new ArgumentException("ArgumentException");
+            }
+            else if (arg == "break" || arg == "_break") {
+                if (arg == "break") {
+                    DebugStub.WriteLine("break-before");
+                }
+                DebugService.Break();
+                uint r = Go(args, i + 1);
+                if (arg == "break") {
+                    DebugStub.WriteLine("break-after");
+                }
+                DebugService.Break();
+                return r;
+            }
+            else if (arg == "frames") {
+                return RecN(Int32.Parse(args[i + 1]), args, i + 2);
+            }
+            else if (arg == "delay") {
+                int n = Int32.Parse(args[i + 1]);
+                uint dummy = 100;
+                for (int k = 0; k < n; k++) {
+                    for (int j = 0; j < 10000000; j++) {
+                        dummy = dummy % 100;
+                    }
+                }
+                return (dummy % 100) + Go(args, i + 2);
+            }
+            else if (arg == "sleep") {
+                int n = Int32.Parse(args[i + 1]);
+                Thread.Sleep(n);
+                return Go(args, i + 2);
+            }
+            else if (arg == "yield") {
+                Thread.Yield();
+                return Go(args, i + 1);
+            }
+            else if (arg == "wall" || arg == "_wall") {
+                if (arg == "wall") {
+                    DebugStub.WriteLine("wall");
+                }
+                new AutoResetEvent(false).WaitOne();
+                return 0;
+            }
+            else if (arg == "(*") {
+                int n = Int32.Parse(args[i + 1]);
+                int rParen = FindClosingRParen(args, i + 2);
+                string[] before = new string[rParen - (i + 2)];
+                Array.Copy(args, i + 2, before, 0, before.Length);
+                string[] after = new string[args.Length - (rParen + 1)];
+                Array.Copy(args, rParen + 1, after, 0, after.Length);
+                for (int j = 0; j < n; j++) {
+                    Go(before, 0);
+                }
+                return Go(after, 0);
+            }
+            else {
+                DebugStub.WriteLine("unknown command: {0}", __arglist(arg));
+                return 0;
+            }
+        }
+
+        public virtual uint RecN(int n, String[]! args, int i)
+        {
+            if (n == 0) return Go(args, i);
+            else return RecN(n - 1, args, i);
+        }
+
+        public int FindClosingRParen(string[]! args, int i)
+        {
+            int count = 1;
+            for (; i < args.Length; i++) {
+                if (((!) (args[i]))[0] == '(') count++;
+                else if (args[i] == ")") count--;
+                if (count == 0) return i;
+            }
+            return i;
+        }
+    }
+}

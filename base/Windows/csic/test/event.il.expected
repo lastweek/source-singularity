@@ -1,0 +1,147 @@
+.assembly 'event' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class public sealed 'E'
+	extends [mscorlib]System.MulticastDelegate
+{
+.method hidebysig public instance void .ctor(object 'object',native int 'method') runtime managed {
+} // end of method E.E
+.method hidebysig public virtual instance void 'Invoke'(object 'sender',string 'msg') runtime managed {
+} // end of method E.Invoke
+} // end of delegate E
+.class 'T'
+	extends [mscorlib]System.Object
+{
+.field private class 'E' x
+.event 'E' 'x' {
+.addon instance void 'T'::'add_x'(class 'E')
+.removeon instance void 'T'::'remove_x'(class 'E')
+} // end of event T.x
+.method hidebysig specialname public instance void 'add_x'(class 'E' 'value') cil managed synchronized {
+ldarg.0
+ldarg.0
+ldfld class 'E' 'T'::'x'
+ldarg 1 // value
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'E'
+stfld class 'E' 'T'::'x'
+ret
+.maxstack 3
+} // end of method T.add_x
+.method hidebysig specialname public instance void 'remove_x'(class 'E' 'value') cil managed synchronized {
+ldarg.0
+ldarg.0
+ldfld class 'E' 'T'::'x'
+ldarg 1 // value
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Remove'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'E'
+stfld class 'E' 'T'::'x'
+ret
+.maxstack 3
+} // end of method T.remove_x
+.field private static class 'E' y
+.event 'E' 'y' {
+.addon void 'T'::'add_y'(class 'E')
+.removeon void 'T'::'remove_y'(class 'E')
+} // end of event T.y
+.method hidebysig specialname public static void 'add_y'(class 'E' 'value') cil managed synchronized {
+ldsfld class 'E' 'T'::'y'
+ldarg 0 // value
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'E'
+stsfld class 'E' 'T'::'y'
+ret
+.maxstack 2
+} // end of method T.add_y
+.method hidebysig specialname public static void 'remove_y'(class 'E' 'value') cil managed synchronized {
+ldsfld class 'E' 'T'::'y'
+ldarg 0 // value
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Remove'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'E'
+stsfld class 'E' 'T'::'y'
+ret
+.maxstack 2
+} // end of method T.remove_y
+.method hidebysig public instance void 'fire'(string 's') {
+ldarg.0
+ldfld class 'E' 'T'::'x'
+ldstr "x"
+ldarg 1 // s
+callvirt instance void 'E'::'Invoke'(object,string)
+ldsfld class 'E' 'T'::'y'
+ldstr "y"
+ldarg 1 // s
+callvirt instance void 'E'::'Invoke'(object,string)
+ret
+.maxstack 3
+} // end of method T.fire
+.method hidebysig public instance void 'F'(class 'E' 'handler') {
+ldarg.0
+ldfld class 'E' 'T'::'x'
+ldarg 1 // handler
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'E'
+.locals init ([0]class 'E' 't0')
+stloc 0 // t0
+ldarg.0
+ldloc 0 // t0
+stfld class 'E' 'T'::'x'
+ldsfld class 'E' 'T'::'y'
+ldarg 1 // handler
+call  class [mscorlib]System.Delegate [mscorlib]System.Delegate::'Combine'(class [mscorlib]System.Delegate,class [mscorlib]System.Delegate)
+castclass class 'E'
+.locals init ([1]class 'E' 't1')
+stloc 1 // t1
+ldloc 1 // t1
+stsfld class 'E' 'T'::'y'
+ret
+.maxstack 2
+} // end of method T.F
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor T.T
+} // end of class T
+.class 'U'
+	extends [mscorlib]System.Object
+{
+.method hidebysig static public void 'handler'(object 'sender',string 'msg') {
+ldstr "{0}: {1}"
+ldarg 0 // sender
+ldarg 1 // msg
+call  void [mscorlib]System.Console::'WriteLine'(string,object,object)
+ret
+.maxstack 3
+} // end of method U.handler
+.method hidebysig static public void 'Main'() {
+.entrypoint
+.locals init ([0]class 'T' 't0')
+newobj instance void 'T'::.ctor()
+stloc 0 // t
+ldloc 0 // t
+ldnull
+ldftn  void 'U'::'handler'(object,string)
+newobj instance void 'E'::.ctor(object,native int)
+call instance void 'T'::'add_x'(class 'E')
+ldloc 0 // t
+ldnull
+ldftn  void 'U'::'handler'(object,string)
+newobj instance void 'E'::.ctor(object,native int)
+call instance void 'T'::'F'(class 'E')
+ldloc 0 // t
+ldstr "fire!"
+call instance void 'T'::'fire'(string)
+ret
+.maxstack 4
+} // end of method U.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor U.U
+} // end of class U

@@ -1,0 +1,18 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Services
+{
+    public contract ThreadTerminationContract
+    {
+        in message Stop();
+        out message AckStop();
+        
+        state Start : one {
+            Stop? -> AckStop! -> Start;
+        }
+    }
+}

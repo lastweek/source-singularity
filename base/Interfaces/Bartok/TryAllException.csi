@@ -1,0 +1,7 @@
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+
+namespace System
+{
+  public sealed class TryAllFakeException : Exception {}
+  public sealed class AtomicFakeException : Exception {}
+}

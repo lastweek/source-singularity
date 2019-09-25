@@ -1,0 +1,36 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SdsAclPerms.sg
+//
+//  Note:
+//
+
+namespace Microsoft.Singularity.Security.SDS
+{
+    using Microsoft.Singularity.Security;
+
+    // These are access modes used by all SDS implementations.
+    public class SdsAclPerms
+    {
+        public static readonly AccessMode! ModeTraverse;        // can pass through
+        public static readonly AccessMode! ModeRead;            // can read/enumerate
+        public static readonly AccessMode! ModeWrite;           // can create/write an object
+        public static readonly AccessMode! ModeSetAcl;          // can modify access control
+        public static readonly AccessMode! ModeRegister;        // can register/deregister
+        public static readonly AccessMode! ModeNotify;          // can receive notifications
+
+        static SdsAclPerms() {
+            ModeTraverse = new AccessMode("traverse");
+            ModeRead = new AccessMode("read");
+            ModeWrite = new AccessMode("write");
+            ModeSetAcl = new AccessMode("setacl");
+            ModeRegister = new AccessMode("register");
+            ModeNotify = new AccessMode("notify");
+        }
+    }
+}
+
+

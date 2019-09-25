@@ -1,0 +1,171 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TulipDeviceChannel.sg
+//
+
+using Microsoft.SingSharp;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    internal class TulipDeviceChannel
+    {
+        Tulip! device;
+        TRef<NicDeviceContract.Exp:Start> channel;
+
+        private TulipDeviceChannel(
+            Tulip! theDevice,
+            [Claims] NicDeviceContract.Exp:Start! channel
+            )
+            ensures this.channel != null;
+        {
+            this.device  = theDevice;
+            this.channel = new TRef<NicDeviceContract.Exp:Start>(channel);
+            base();
+        }
+
+        private bool IoRunningMessageLoop(NicDeviceContract.Exp! ep)
+        {
+            device.StartIo();
+
+            for (;;) {
+                switch receive {
+                    case ep.GiveRxPacketsToDevice(rxFifo):
+                        device.ReceivePackets(rxFifo);
+                        device.GetReceivedPackets(rxFifo);
+                        ep.SendTakeRxPacketsFromDevice(rxFifo);
+                        break;
+
+                    case ep.GiveTxPacketsToDevice(txFifo):
+                        device.TransmitPackets(txFifo);
+                        device.GetTransmittedPackets(txFifo);
+                        ep.SendTakeTxPacketsFromDevice(txFifo);
+                        break;
+
+                    case ep.StopIO():
+                        device.StopIo();
+                        return true;
+
+                    case ep.ChannelClosed():
+                        device.StopIo();
+                        return false;
+                }
+            }
+            return false;
+        }
+
+        private bool IoConfigureMessagePump(NicDeviceContract.Exp! ep)
+        {
+            Tracing.Log(Tracing.Debug,
+                        "Tulip entered {0} state", ep.CurrentState());
+
+            for (;;) {
+                switch receive{
+                    case ep.RegisterForEvents(eventExp):
+                        ep.SendSuccess();
+                        eventExp.SendSuccess();
+                        device.SetEventRelay(
+                            new TulipEventRelay(eventExp)
+                            );
+                        break;
+
+                    case ep.SetChecksumProperties(checksumSupport):
+                        if (checksumSupport == ChecksumSupport.None) {
+                            ep.SendSuccess();
+                        }
+                        else {
+                            ep.SendUnsupportedChecksumProperties();
+                        }
+                        break;
+
+                    case ep.StartIO():
+                        ep.SendAckStartIO();
+                        return IoRunningMessageLoop(ep);
+
+                    case ep.ChannelClosed():
+                        return false;
+
+                    case unsatisfiable:
+                        DebugStub.Break();
+                        break;
+                }
+            }
+
+            return false;
+        }
+
+        private void GetDeviceProperties(NicDeviceProperties*! in ExHeap ndp)
+        {
+            expose (ndp) {
+                delete ndp->DriverName;
+                ndp->DriverName = Bitter.FromString2(device.Name);
+
+                delete ndp->DriverVersion;
+                ndp->DriverVersion = Bitter.FromString2(device.Version);
+
+                ndp->MacType    = MacType.Ethernet;
+                delete ndp->MacAddress;
+                ndp->MacAddress =
+                    Bitter.FromByteArray(device.HardwareAddressBytes);
+
+                ndp->ChecksumSupport         = ChecksumSupport.None;
+                ndp->MtuBytes                = Tulip.MtuBytes;
+                ndp->MaxRxFragmentsPerPacket = Tulip.MaxRxFragmentsPerPacket;
+                ndp->MaxTxFragmentsPerPacket = Tulip.MaxTxFragmentsPerPacket;
+                ndp->MaxRxPacketsInDevice    = Tulip.MaxRxPackets;
+                ndp->MaxTxPacketsInDevice    = Tulip.MaxTxPackets;
+            }
+        }
+
+        private void ReadyMessagePump()
+            requires this.channel != null;
+        {
+            NicDeviceContract.Exp! ep = channel.Acquire();
+            channel = null;
+
+            assert ep.InState(NicDeviceContract.Start.Value);
+            ep.SendSuccess();
+            assert ep.InState(NicDeviceContract.READY.Value);
+
+            try {
+                NicDeviceProperties*! in ExHeap ndp;
+                ep.RecvGetDeviceProperties(out ndp);
+                GetDeviceProperties(ndp);
+                ep.SendDeviceProperties(ndp);
+
+                ep.RecvConfigureIO();
+                ep.SendAckConfigureIO();
+                IoConfigureMessagePump(ep);
+            }
+            catch (Exception e) {
+                DebugStub.Print("Caught exception: {0}\n",
+                                __arglist(e.ToString()));
+            }
+            finally
+            {
+                delete ep;
+            }
+        }
+
+        internal static bool
+        CreateThread(Tulip! tulip, [Claims] NicDeviceContract.Exp:Start! ep)
+        {
+            TulipDeviceChannel tdc = new TulipDeviceChannel(tulip, ep);
+            Thread thread = new Thread(new ThreadStart(tdc.ReadyMessagePump));
+            thread.Start();
+            return true;
+        }
+    }
+}

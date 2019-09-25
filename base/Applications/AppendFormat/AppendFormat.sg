@@ -1,0 +1,60 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory( DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return AppendFormat.AppMain(this);
+        }
+    }
+
+    public class AppendFormat 
+    { 
+        public static string ToLegibleString(byte[]! b) 
+        {
+            StringBuilder legible = new StringBuilder();
+            for (int i = 0; i < b.Length; i++) {
+                legible.AppendFormat("{0:x2}", b[i]);
+            }
+            return legible.ToString();
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            byte [] key = new byte[2]; 
+            string s = ToLegibleString(key); 
+            Console.WriteLine("s="+s);         
+            return 0;
+        }
+    }
+}

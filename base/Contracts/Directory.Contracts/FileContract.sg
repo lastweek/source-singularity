@@ -1,0 +1,42 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FileContract.sg
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Directory
+{
+    contract FileContract : ServiceContract {
+        out message Success();
+    
+        in message Read(byte []! in ExHeap buf, long bufOffset, 
+                        long fileOffset, long maxLength);
+        out message AckRead(byte []! in ExHeap buf, long bytesRead, int error);
+        
+        in message Write(byte []! in ExHeap buf, long bufOffset, 
+                         long fileOffset, long maxLength);
+        out message AckWrite(byte []! in ExHeap buf, long bytesWritten, 
+                             int error);
+        
+        in message Close();
+        out message AckClose();
+        
+        override state Start: one {
+            Success! -> Ready;
+        }
+        
+        state Ready: one {
+            Read? ->  AckRead! -> Ready;
+            Write? -> AckWrite! -> Ready;
+            Close? -> AckClose! -> Ready;
+        }
+    }
+}

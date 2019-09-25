@@ -1,0 +1,819 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Channels
+{
+
+    using Microsoft.Singularity.V1.Threads;
+    using Microsoft.Singularity.V1.Services;
+    using Microsoft.Singularity.V1.Types;
+    using Microsoft.Singularity.V1.Security;
+    using Allocation = Microsoft.Singularity.V1.Services.SharedHeapService.Allocation;
+    using EndpointCore = Microsoft.Singularity.V1.Services.EndpointCore;
+
+    [CLSCompliant(false)]
+    public enum EndpointEvent : ushort
+    {
+        Notify = 10,
+        Dispose = 1,
+        Select = 2,
+        RetrieveHook = 6,
+        DeliverHook = 7,
+    }
+
+    /// <summary>
+    /// Provides an adapter class between the runtime provided Endpoint and the compiler generated contract specific
+    /// Imp and Exp endpoints.
+    /// </summary>
+    public rep struct Endpoint : EndpointCore, IEventCollectionElement {
+
+        public const int ANY_MESSAGE_TAG = 1;
+        public const int CHANNEL_CLOSED_TAG = -1;
+
+        protected StateStack stateStack;
+
+        // some cached info for Monitoring
+#if MONITORING
+        uint contractTag;
+        uint peerContractTag;
+#endif
+
+        // Initialization of EndpointCore happens during Allocation!
+        protected Endpoint(int initialState)
+        {
+          Initialize(initialState);
+        }
+
+#if SINGULARITY_KERNEL
+        public
+#endif
+        void Initialize(int initialState) {
+          stateStack = new StateStack(initialState);
+          assert stateStack.Top() == initialState;
+        }
+
+        new public bool Closed { get { return EndpointCore.Closed(ref this); } }
+
+        new public void Close() {
+            EndpointCore.Close(ref this);
+        }
+
+        new public bool PeerClosed
+        {
+            get {
+                return EndpointCore.PeerClosed(ref this);
+            }
+        }
+
+        new public virtual SyncHandle GetWaitHandle() {
+            return EndpointCore.GetWaitHandle(ref this);
+        }
+
+        new public virtual void ResetWaitSignal() {
+            // dummy for now
+        }
+
+        new protected void NotifyPeer() {
+            EndpointCore.NotifyPeer(ref this);
+        }
+
+#if false
+        new protected void Notify() {
+          // would like to determine if there are any outstanding messages
+          // on this endpoint and only signal if there are not.
+          // With new message allocation scheme, it is tricky to determine
+          // this without grabbing locks, which I'm trying to avoid
+          // So we just signal it all.
+          //
+          // The access to setHead also needs to change eventually when
+          // we have endpoints in the shared heap. We'll need to figure out
+          // how to encode sets again.
+          //
+
+          Monitoring.Log(Monitoring.Provider.Endpoint,
+                         (ushort)EndpointEvent.Notify,
+                         0, (uint)this.ChannelID, 0, 0, 0, 0);
+
+          if (this.collectionEvent.id != UIntPtr.Zero) {
+            AutoResetEventHandle.Set(this.collectionEvent);
+          }
+          base.Notify();
+        }
+#endif
+
+        /// <summary>
+        /// Wait for a message to arrive on this endpoint.
+        /// </summary>
+        new protected void Wait() {
+          EndpointCore.Wait(ref this);
+        }
+
+        /// <summary>
+        /// Obtain the channel identifier of this endpoint.
+        /// </summary>
+        public new int ChannelID {
+            [NoHeapAllocation]
+            get {
+                return EndpointCore.GetChannelID(ref this);
+            }
+        }
+
+        /// <summary>
+        /// Obtain the process identifier of the owner.
+        /// </summary>
+        public new int OwnerProcessID {
+            [NoHeapAllocation]
+            get {
+                return EndpointCore.GetOwnerProcessID(ref this);
+            }
+        }
+
+        unsafe public static void AcceptDelegation(Endpoint*! in ExHeap imp,
+                                                   Endpoint*! in ExHeap exp,
+                                                   Endpoint*! in ExHeap ep)
+        {
+            EndpointCore.AcceptDelegation((Allocation*)imp, (Allocation*)exp, (Allocation*)ep);
+        }
+
+        public void EnableDelegation(bool allowMediation)
+        {
+            EndpointCore.EnableDelegation(ref this, allowMediation);
+        }
+
+
+        /// <summary>
+        /// Obtain the principal identifier of the owner.
+        /// </summary>
+        public new PrincipalHandle OwnerPrincipalHandle {
+            [NoHeapAllocation]
+            get {
+                return EndpointCore.GetOwnerPrincipalHandle(ref this);
+            }
+        }
+
+        /// <summary>
+        /// Obtain the process identifier of the owner of the other endpoint
+        /// </summary>
+        public new int PeerProcessID {
+            [NoHeapAllocation]
+            get {
+                return EndpointCore.GetPeerProcessID(ref this);
+            }
+        }
+
+        /// <summary>
+        /// Obtain the principal identifier of the owner of the other endpoint
+        /// </summary>
+        public new PrincipalHandle PeerPrincipalHandle {
+            [NoHeapAllocation]
+            get {
+                return EndpointCore.GetPeerPrincipalHandle(ref this);
+            }
+        }
+
+
+        ///
+        /// Closes this end of the channel and frees associated resources, EXCEPT the block
+        /// of memory for this endpoint. It must be released by the caller. Sing# does this
+        /// for the programmer.
+        ///
+        public void Dispose() {
+            if (this.Closed) {
+                throw new ApplicationException("Endpoint already closed");
+            }
+#if MONITORING
+            Monitoring.Log(Monitoring.Provider.Endpoint,
+                           (ushort)EndpointEvent.Dispose,
+                           0, (uint)this.ChannelID, 0, 0, 0, 0);
+#endif
+            if (!EndpointCore.Dispose(ref this)) {
+                throw new ApplicationException("ChannelService.Dispose returned false");
+            }
+        }
+
+
+        [return:Borrowed]
+        new unsafe protected Endpoint*! in ExHeap GetPeer(out bool marshall)
+        {
+            return (Endpoint* in ExHeap!)EndpointCore.GetPeer(ref this, out marshall);
+        }
+
+
+        unsafe public static SystemType RegisterSystemType(string! name,  long lower, long upper, SystemType systemType)
+        {
+            char [] typeName = new char[name.Length];
+
+            if (typeName == null) {
+                throw new Exception("no more memory!");
+            }
+
+            for (int i = 0; i < name.Length; i++) {
+                typeName[i] = name[i];
+            }
+            fixed (char* start = &typeName[0]) {
+                return SystemType.Register(start, name.Length, lower, upper, systemType);
+            }
+        }
+
+        /// <summary>
+        /// Connects up the endpoints and initializes
+        /// the kernel part of the endpoints. The context needs to call the .ctor on the two
+        /// endpoints returned in order to initialize the contract specific structures as well
+        /// as those of the Endpoint struct itself.
+        /// </summary>
+        unsafe public static void Connect(Endpoint*! in ExHeap imp,
+                                          Endpoint*! in ExHeap exp)
+        {
+#if MONITORING
+            uint impContractTag = getContractTag(imp);
+            uint expContractTag = getContractTag(exp);
+            imp->contractTag = impContractTag;
+            imp->peerContractTag = expContractTag;
+            exp->contractTag = expContractTag;
+            exp->peerContractTag = impContractTag;
+#endif
+            EndpointCore.Connect( (Allocation*)imp, (Allocation*)exp, null);
+        }
+
+        unsafe public static void Connect(Endpoint*! in ExHeap imp,
+                                          Endpoint*! in ExHeap exp,
+                                          Endpoint*  in ExHeap ep)
+        {
+#if MONITORING
+            uint impContractTag = getContractTag(imp);
+            uint expContractTag = getContractTag(exp);
+            imp->contractTag = impContractTag;
+            imp->peerContractTag = expContractTag;
+            exp->contractTag = expContractTag;
+            exp->peerContractTag = impContractTag;
+#endif
+            EndpointCore.Connect( (Allocation*)imp, (Allocation*)exp, (Allocation*)ep);
+        }
+
+        /// <summary>
+        /// Transfer any content of this endpoint to target endpoint
+        /// </summary>
+        public void TransferContentsOwnership(ref Endpoint target) {
+            EndpointCore.TransferContentOwnership(ref this, ref target);
+        }
+
+
+        /// <summary>
+        /// Transfer actual block of data ownership to this endpoint.
+        /// </summary>
+        unsafe public void TransferBlockOwnership(void* in ExHeap data) {
+            if (data != null) {
+            EndpointCore.TransferBlockOwnership((Microsoft.Singularity.V1.Services.SharedHeapService.Allocation*)data, ref this);
+        }
+        }
+
+
+        /// <summary>
+        /// Instruct the selectable object to signal events on the given AutoResetEvent
+        /// rather than its normal event in order to aggregate signalling into a set.
+        /// A selectable object need only support being part of a single collection at
+        /// any point in time.
+        /// </summary>
+        new public void LinkIntoCollection(AutoResetEventHandle ev) {
+            //          Debug.Assert(this.collectionEvent.id == UIntPtr.Zero);
+            EndpointCore.LinkIntoCollection(ref this, ev);
+        }
+
+        /// <summary>
+        /// Instruct the selectable object to stop signalling events on the given
+        /// AutoResetEvent.
+        /// </summary>
+        new public void UnlinkFromCollection(AutoResetEventHandle ev) {
+            // Debug.Assert(this.collectionEvent.id != UIntPtr.Zero);
+            EndpointCore.UnlinkFromCollection(ref this, ev);
+        }
+
+        void ITracked.Release() {
+        }
+        void ITracked.Acquire() {
+        }
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+
+        public virtual bool HeadMatches(int tag, ref bool possible, ref object setMatch)
+        {
+          throw new ApplicationException("HeadMatches must be implemented by contract specific endpoints");
+        }
+
+        public static ISelectable[]! ThreadLocalObjectArray(int size) {
+            return (!)(((!)Thread.CurrentThread).PopSelectObjects(size));
+        }
+
+        // Bugfix 167 BY SXIA -- make a consistent statement in previous comments.
+        // This function (and its twin function below with an extra timeout parameter)
+        // End Bugfix 167
+        // is the main interface for receiving on multiple
+        // endpoints and endpoint sets.
+        //
+        // The first parameter is an array of patterns.  Each pattern is
+        // an array of integers whose length is equal to the number of
+        // endpoints.  Each integer in a pattern indicates the message
+        // that must be received on the corresponding endpoint for that
+        // pattern to match.  (All elements of a pattern must match for
+        // the pattern to match.)  Possible pattern entries include:
+        //
+        //   > 1: wait for a message with this tag on this endpoint
+        //     1: wait for any message on this endpoint
+        //     0: don't wait on this endpoint
+        //    -1: wait for channel closed
+        //  < -1: illegal
+        //
+        // The second parameter contains ISelectable objects.
+        //
+        // The return value is the index of the pattern that matched or -1
+        // if a match is impossible.
+        //
+        // the setMatch out parameter is used to indicate which object of an underlying
+        // set was part of the match.
+        //
+        // NOTE: the endpoint array may contain more elements than the pattern refers to
+        //       thus the patterns 2nd level array Lengths is the indication how many endpoints are actually used.
+        //
+        public static int Select(int[][]! patterns, ISelectable[]! endpoints, out object setMatch)
+        {
+            Thread currentThread = (!)Thread.CurrentThread;
+
+            try
+              // Give back cache (caller should do this, but we do it here for now)
+              // we assume that caller does not use this for any other purpose
+              // true for the generated code, but might not be true for other Select
+              // uses.
+            {
+#if MONITORING
+                Monitoring.Log(Monitoring.Provider.Endpoint,
+                               (ushort)EndpointEvent.Select);
+#endif
+                int numCases = patterns.Length;
+                if (numCases == 0) {
+                    setMatch = null;
+                    return -1;
+                }
+
+                int numEndpoints = ((!)patterns[0]).Length;
+
+                #region Debugging asserts
+#if DEBUG_SELECT
+                for (int i = 0; i < numCases; i++) {
+                    if (((!)patterns[i]).Length != numEndpoints) {
+                        throw new ArgumentException("Invalid pattern size.");
+                    }
+                }
+#endif
+                #endregion
+
+                // local resources
+                SyncHandle[] handles = null;
+                bool[] possible = null;
+
+                try
+                    // Give back bool array on all returns
+                {
+                    possible = (!)currentThread.PopSelectBools(numCases);
+
+                    for (int i = 0; i < numCases; i++) {
+                        possible[i] = true;
+                    }
+
+                    int match = -1;
+                    int hint = -1;
+                    int numPossible = numCases;
+                    setMatch = null;
+
+                    while (numPossible > 0 &&
+                           ! FindRowMatch(hint, endpoints, patterns, possible,
+                                          ref numPossible,
+                                          out match,
+                                          out setMatch))
+                    {
+                        // only wait if last FindMatch didn't decrement numPossible to 0.
+                        if (numPossible > 0) {
+
+                            // special case case where we have 1 endpoint.
+                            if (numEndpoints == 1) {
+                                hint = 0;
+                                SyncHandle.WaitOne(((!)endpoints[0]).GetWaitHandle());
+                            }
+                            else {
+                                if (handles == null) {
+                                    // initialize
+                                    handles = (!)currentThread.PopSelectSyncHandles(numEndpoints);
+                                    for (int i = 0; i < numEndpoints; i++) {
+                                        handles[i] = ((!)endpoints[i]).GetWaitHandle();
+                                    }
+                                }
+                                hint = WaitAnyEndpoint(handles, numEndpoints);
+                            }
+                        }
+                    }
+                    return match;
+                }
+                finally {
+                    // return thread local resources
+                    if (possible != null) {
+                        currentThread.PushSelectBools(possible);
+                    }
+                    if (handles != null) {
+                        currentThread.PushSelectSyncHandles(handles);
+                    }
+                }
+            }
+            finally {
+                // return thread local resources
+                currentThread.PushSelectObjects(endpoints);
+            }
+        }
+
+        /// <summary>
+        /// We compute the index of the row that represents timeout case
+        /// See Parser.cs: the label for timeout is -2, unsatisfiable is -1
+        /// </summary>
+        const int TimeOutIndex = -2;
+
+        // Bugfix 167 By SXIA -- Add a different version of select here. I keep two versions of select here
+        //                       which differs in whether there is an extra timeout parameter. If the only
+        //                       callee of this select is the compilation of switch-receive, then we probably should
+        //                       delete the older version.
+        // This function is the second version of the main interface for receiving on multiple
+        // endpoints and endpoint sets.
+        //
+        // The first parameter is an array of patterns.  Each pattern is
+        // an array of integers whose length is equal to the number of
+        // endpoints.  Each integer in a pattern indicates the message
+        // that must be received on the corresponding endpoint for that
+        // pattern to match.  (All elements of a pattern must match for
+        // the pattern to match.)  Possible pattern entries include:
+        //
+        //   > 1: wait for a message with this tag on this endpoint
+        //     1: wait for any message on this endpoint
+        //     0: don't wait on this endpoint
+        //    -1: wait for channel closed
+        //  < -1: illegal
+        //
+        // The second parameter contains ISelectable objects.
+        //
+        // The return value is the index of the pattern that matched or -1
+        // if a match is impossible.
+        //
+        // the setMatch out parameter is used to indicate which object of an underlying
+        // set was part of the match.
+        //
+        // We add an extra integer parameter that represents the timeout value (in milliseconds)
+        // The timeout value is passed to the function call to SyncHandle.WaitXXXX in appropriate type
+        //
+        // NOTE: the endpoint array may contain more elements than the pattern refers to
+        //       thus the patterns 2nd level array Lengths is the indication how many endpoints are actually used.
+        //
+
+        public static int Select(int[][]! patterns, ISelectable[]! endpoints,
+                                 out object setMatch, System.TimeSpan timeOutAfter)
+        {
+            Thread currentThread = (!)Thread.CurrentThread;
+
+            try
+              // Give back cache (caller should do this, but we do it here for now)
+              // we assume that caller does not use this for any other purpose
+              // true for the generated code, but might not be true for other Select
+              // uses.
+            {
+#if MONITORING
+                Monitoring.Log(Monitoring.Provider.Endpoint,
+                               (ushort)EndpointEvent.Select);
+#endif
+
+                int numCases = patterns.Length;
+                if (numCases == 0) {
+                    setMatch = null;
+                    return -1;
+                }
+
+                int numEndpoints = ((!)patterns[0]).Length;
+
+                #region Debugging asserts
+#if DEBUG_SELECT
+                for (int i = 0; i < numCases; i++) {
+                    if (((!)patterns[i]).Length != numEndpoints) {
+                        throw new ArgumentException("Invalid pattern size.");
+                    }
+                }
+#endif
+                #endregion
+
+                SyncHandle[] handles = null;
+                bool[] possible = null;
+
+                try
+                    // Give back thread local resources.
+                {
+                    possible = (!)currentThread.PopSelectBools(numCases);
+
+                    for (int i = 0; i < numCases; i++) {
+                        possible[i] = true;
+                    }
+
+                    int match = -1;
+                    int hint = -1;
+                    int numPossible = numCases;
+                    setMatch = null;
+
+                    SchedulerTime deadline = (timeOutAfter.Ticks == 0)?SchedulerTime.MinValue:SchedulerTime.Now + timeOutAfter;
+
+                    while (numPossible > 0 &&
+                           ! FindRowMatch(hint, endpoints, patterns, possible,
+                                          ref numPossible,
+                                          out match,
+                                          out setMatch))
+                    {
+
+                        // only wait if last FindMatch didn't decrement numPossible to 0.
+                        if (numPossible > 0) {
+
+                            // Optimization
+                            //   If timeout is 0 and we got here, then we will definitely
+                            //   take the timeout. So let's not call Wait at all
+                            if (timeOutAfter.Ticks == 0) {
+                                setMatch = null;
+                                return Endpoint.TimeOutIndex;
+                            }
+
+                            // special case case where we have 1 endpoint.
+                            if (numEndpoints == 1) {
+                                hint = 0;
+                                bool gotTimeout = ! SyncHandle.WaitOne(((!)endpoints[0]).GetWaitHandle(), deadline);
+                                if (gotTimeout) {
+                                    setMatch = null;
+                                    return Endpoint.TimeOutIndex;
+                                }
+                            }
+                            else {
+                                if (handles == null) {
+                                    // initialize
+                                    handles = (!)currentThread.PopSelectSyncHandles(numEndpoints);
+                                    for (int i = 0; i < numEndpoints; i++) {
+                                        handles[i] = ((!)endpoints[i]).GetWaitHandle();
+                                    }
+                                }
+
+                                hint = WaitAnyEndpoint(handles, numEndpoints, deadline);
+
+                                // if the return value is WaitHandle.WaitTimeOut (-1),
+                                // then we know it is timeout
+                                // currently, we check for all out of range cases.
+                                if (hint < 0 || hint > numEndpoints) {
+                                    setMatch = null;
+                                    return Endpoint.TimeOutIndex;
+                                }
+                            }
+                        }
+                    }
+                    return match;
+                }
+                finally {
+                    // return thread local resources
+                    if (possible != null) {
+                        currentThread.PushSelectBools(possible);
+                    }
+                    if (handles != null) {
+                        currentThread.PushSelectSyncHandles(handles);
+                    }
+                }
+            }
+            finally {
+                // return thread local resources
+                currentThread.PushSelectObjects(endpoints);
+            }
+        }
+
+        // End Bugfix 167
+
+        /// <summary>
+        /// If hint &lt; 0, scan all patterns for a match. Otherwise, hint specifies which
+        /// endpoint changed. Thus only that column has to be reexamined.
+        /// If we find a row that matches, we return the row index, and true.
+        /// Updates possibleCount and possible array. When possibleCount goes down to
+        /// 0, no more matches are possible.
+        /// match is set to -1 when false is returned.
+        /// </summary>
+        private static bool FindRowMatch(int hint, ISelectable[]! endpoints, int[][]! patterns,
+                                        bool[]! possible, ref int possibleCount, out int match,
+                                        out object setMatch)
+        {
+            int numRows = patterns.Length;
+            setMatch = null;
+
+            if (hint < 0) {
+                // scan all patterns
+                for (int i = 0; i < numRows; i++) {
+                    if (possible[i]) {
+                        if (RowMatches(endpoints, (!)patterns[i], out setMatch, ref possible[i])) {
+                            match = i;
+                            return true;
+                        }
+
+                        if (!possible[i]) {
+                            // i no longer possible
+                            possibleCount--;
+                        }
+                    }
+                }
+
+                match = -1;
+                return false;
+            }
+            else {
+                // hint tells us which column to scan
+                for (int i = 0; i < numRows; i++) {
+
+                    if (possible[i]) {
+                        int pat = ((!)patterns[i])[hint];
+
+                        if (pat != 0) {
+                            if (((!)endpoints[hint]).HeadMatches(pat, ref possible[i], ref setMatch)) {
+                                // matches. Check rest of this row
+                                if (RowMatches(endpoints, (!)patterns[i], out setMatch, ref possible[i])) {
+                                    // found a match.
+                                    match = i;
+                                    return true;
+                                }
+                            }
+                            if (!possible[i]) {
+                                // i no longer possible
+                                possibleCount--;
+                            }
+                        }
+                    }
+                }
+                match = -1;
+                return false;
+            }
+        }
+
+        // This method determines whether a given pattern row has been matched.
+        // It also indicates whether a match is possible in the future.
+        // If the row involves an endpoint set, the particular endpoint in the set
+        // that matches is returned in setMatch. Note there can be at most one
+        // endpoint set per row pattern.
+        //
+        private static bool RowMatches(ISelectable[]! endpoints, int[]! conjuncts,
+                                      out object setMatch,
+                                      ref bool possible)
+        {
+            setMatch = null;
+            int numEndpoints = conjuncts.Length;
+
+            for (int i = 0; i < numEndpoints; i++) {
+                int tag = conjuncts[i];
+                if (tag != 0) {
+                    if (!((!)endpoints[i]).HeadMatches(tag, ref possible, ref setMatch)) {
+                        return false;
+                    }
+                }
+                // Otherwise, we don't care about this endpoint (conjunct[i] pattern == 0),
+                // so anything is fine.
+            }
+            return true;
+        }
+
+        // Wait on all endpoints that have not yet received a message.
+        // This function returns when any of these endpoints gets a
+        // new message.
+        unsafe private static int WaitAnyEndpoint(SyncHandle[]! handles, int handleCount)
+        {
+            // Debug.Assert(handles.Length > 0, "Can't wait on no handles");
+
+            fixed (SyncHandle* start = &handles[0]) {
+                return SyncHandle.WaitAny(start, handleCount);
+            }
+        }
+
+        // Bugfix 167 by SXIA -- duplicate a version of WaitAnyEndpoint, adding a timeout deadline
+        // Same as above, with an extra timeout (stop) parameter
+        unsafe private static int WaitAnyEndpoint(SyncHandle[]! handles, int handleCount,
+                                                  System.SchedulerTime deadline)
+        {
+            // Debug.Assert(handles.Length > 0, "Can't wait on no handles");
+
+            fixed (SyncHandle* start = &handles[0]) {
+                return SyncHandle.WaitAny(start, handleCount, deadline);
+            }
+        }
+        // End Bugfix 167
+
+
+        /// <summary>
+        /// Return a uint tag uniquely identifying the contract
+        /// which endpoint "ep" adheres to.
+        /// REVIEW: HACK: this isn't 64-bit clean, nor is the
+        /// tag returned particularly stable (it depends on the
+        /// order in which types and handles are allocated).  Ideally we
+        /// would use the SystemType's MD5 hash, but we can't access
+        /// it here; is this correct?
+        /// </summary>
+        unsafe private static uint getContractTag(Endpoint*! in ExHeap ep)
+        {
+            UIntPtr runtimeSystemTypeHandle =
+                SharedHeapService.GetType((Allocation*)ep);
+            return (uint)runtimeSystemTypeHandle;
+        }
+
+        /// <summary>
+        /// Called whenever a message is retrieved from on an endpoint.
+        /// </summary>
+        public static void RetrieveHook(ref Endpoint receiver, uint channelId, int messageTag)
+        {
+#if MONITORING
+            Monitoring.Log(Monitoring.Provider.Endpoint,
+                           (ushort)EndpointEvent.RetrieveHook, 0,
+                           (uint)messageTag, channelId,
+                           receiver.contractTag, 0, 0);
+#endif
+        }
+
+        /// <summary>
+        /// Called whenever a message is retrieved from an endpoint. The "this" parameter
+        /// is the receiving endpoint. In order to get a pointer to the descriptor block
+        /// that includes a pointer to the system type, we use the funky this.Peer->Peer
+        /// expression.
+        /// </summary>
+        [Conditional("DEBUG")]
+        protected void RetrieveHookInternal(int messageTag) {
+            RetrieveHook(ref this, (uint)this.ChannelID, messageTag);
+        }
+
+        /// <summary>
+        /// Called whenever a message is actually on an endpoint.
+        /// </summary>
+        public static void DeliverHook(ref Endpoint receiver, uint channelId, int messageTag)
+        {
+#if MONITORING
+            Monitoring.Log(Monitoring.Provider.Endpoint,
+                           (ushort)EndpointEvent.DeliverHook, 0,
+                           (uint)messageTag, channelId,
+                           receiver.peerContractTag, 0, 0);
+#endif
+        }
+
+
+        /// <summary>
+        /// Called whenever a message is delivered on an endpoint. The "this" parameter
+        /// is the receiving endpoint, but the static ReceiveHook is called with the
+        /// sender.
+        /// </summary>
+        [Conditional("DEBUG")]
+        protected void DeliverHookInternal(int messageTag) {
+            DeliverHook(ref this, (uint)this.ChannelID, messageTag);
+        }
+
+
+        new unsafe public void MarshallMessage(byte*! basep,
+                                               byte*! source,
+                                               int*! tagAddress,
+                                               System.Type! type)
+        {
+
+            EndpointCore.MarshallMessage(ref this, basep, source, tagAddress, Marshal.StructSize(type));
+        }
+
+        new unsafe public void MarshallPointer(byte*! basep, void**! target, System.Type! type, byte* parent, int offset)
+        {
+            // assert type!=null;
+            if (*target == null) return;
+#if false
+            DebugStub.Print("type is {0} full name is {1}\n", __arglist(type.ToString(), type.FullName));
+            unsafe {
+                EndpointCore ep = this;
+                DebugStub.Print("base p is {0,8:x} this is {1,8:x}\n", __arglist((uint) basep, (uint) &ep));
+            }
+            if (SystemType.IsSubtype(type.GetSystemType(), typeof(char []).GetSystemType())) {
+                DebugStub.Print("MarshallPointer: Got endpoint\n");
+                DebugStub.Break();
+            }
+                EndpointCore.MarshallEndpoint(ref this,
+                                              basep, (byte**)target, type.GetSystemType(), type.ToString(), parent);
+                return;
+            }
+#endif
+            EndpointCore.MarshallPointer(ref this,
+                                         basep, (byte**)target, type.GetSystemType(), parent, offset);
+        }
+    }
+}
+
+
+

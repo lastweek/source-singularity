@@ -1,0 +1,255 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   OpenHash.sg
+//
+
+using System;
+using System.Diagnostics;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <remarks>
+    /// An Open Addressing Hash Table designed for use with
+    /// directory name-location hashing in FAT.  It supports a
+    /// maximum of 65536 entries which is the maximum number of
+    /// directory entries in a FAT directory.
+    ///
+    /// The table size grows as required and in the current
+    /// implementation does not shrink.
+    ///
+    /// The table reallocates in two circumstances and flushes
+    /// removed nodes when it does so.  Because open addressing
+    /// ceases to be efficient as the load increases, we
+    /// reallocate when the load reaches 50%.  We also
+    /// reallocate when the number of deleted nodes in the table
+    /// exceeds 25%.
+    ///
+    /// For FAT on Singularity we expect the maximum number
+    /// of entries to be 32728 since there is one short-name
+    /// entry and at least one long-name entry per file or
+    /// sub-directory.
+    /// </remarks>
+    internal class OpenHash
+    {
+        private struct Node {
+            internal int Key;
+            internal int Value;
+        }
+
+        public const int MaxNodes    = 65536;
+        public const int DefaultSize = 256;
+        public const int MaxKeyValue = 0x00ffffff;
+        public const int MaxKeyBits  = 24;
+
+        private const int RemovedKey = 0x40000000;
+        private const int UnusedKey  = 0;
+        private const int UsedKeyBit = 0x20000000;
+
+        Node [] /*!*/ nodes;
+        int     liveCount;
+        int     deadCount;
+
+        bool    searchValid;
+        int     searchAttempts;
+
+        internal OpenHash(int initialSize)
+            /*^ requires initialSize > 0 && initialSize < MaxNodes; ^*/
+        {
+            initialSize = RoundUpPowerOfTwo(initialSize);
+
+            this.nodes          = new Node[initialSize];
+            this.liveCount      = 0;
+            this.deadCount      = 0;
+            this.searchValid    = false;
+            this.searchAttempts = 0;
+        }
+
+        internal OpenHash() : this(DefaultSize)
+        {
+        }
+
+        private int GrowThreshold
+        {
+            get { return this.nodes.Length / 2; }
+        }
+
+        private int PackThreshold
+        {
+            get { return this.nodes.Length / 4; }
+        }
+
+        public int Capacity
+        {
+            get { return this.nodes.Length; }
+        }
+
+        public int Count
+        {
+            get { return this.liveCount; }
+        }
+
+        /*^ [ Microsoft.Contracts.Pure ] ^*/
+        internal static bool IsPowerOfTwo(int n)
+        {
+            return (n & (n - 1)) == 0 && n != 0;
+        }
+
+        internal static int RoundUpPowerOfTwo(int n)
+            /*^ requires n >= 0; ^*/
+        {
+            n--;
+            n |= (n >> 1) | (n >> 2) | (n >> 4) | (n >> 8) | (n >> 16);
+            return ++n;
+        }
+
+        private static int GetHash1(int key, int modulus)
+        {
+            return key & (modulus - 1);
+        }
+
+        private static int GetHash2(int key, int modulus)
+        {
+            key = key << 2;
+            return 1 + ((key) & (modulus - 1));  // Must return an odd number
+        }
+
+        private static int GetHash(int hash1,
+                                   int hash2,
+                                   int attempt,
+                                   int modulus)
+        {
+            return (hash1 + attempt * hash2) & (modulus - 1);
+        }
+
+        private static void CopyNodes(Node []/*!*/ oldNodes,
+                                      Node []/*!*/ newNodes)
+            /*^ requires newNodes.Length >= oldNodes.Length; ^*/
+        {
+            for (int i = 0; i < oldNodes.Length; i++) {
+                if ((oldNodes[i].Key & UsedKeyBit) == UsedKeyBit) {
+                    int h1 = GetHash1(oldNodes[i].Key, newNodes.Length);
+                    int h2 = GetHash2(oldNodes[i].Key, newNodes.Length);
+                    int j;
+                    for (j = 0; j < newNodes.Length; j++) {
+                        int index = GetHash(h1, h2, j, newNodes.Length);
+                        if (newNodes[index].Key == UnusedKey) {
+                            newNodes[index].Key   = oldNodes[i].Key;
+                            newNodes[index].Value = oldNodes[i].Value;
+                            break;
+                        }
+                    }
+                    Debug.Assert(j != newNodes.Length);
+                }
+            }
+        }
+
+        private void ReallocateNodes(int size)
+            /*^ requires IsPowerOfTwo(size); ^*/
+        {
+            Node [] newNodes = new Node[size];
+            CopyNodes(this.nodes, newNodes);
+            this.nodes     = newNodes;
+            this.deadCount = 0;
+        }
+
+        public bool Insert(int key, int value)
+            /*^ requires key >= 0 && key <= MaxKeyValue; ^*/
+        {
+            key |= UsedKeyBit;
+
+            this.searchValid = false;
+
+            if (this.liveCount > this.GrowThreshold &&
+                this.nodes.Length < MaxNodes) {
+                ReallocateNodes(2 * this.nodes.Length);
+            }
+
+            int h1 = GetHash1(key, this.nodes.Length);
+            int h2 = GetHash2(key, this.nodes.Length);
+
+            for (int i = 0; i < nodes.Length; i++) {
+                int index = GetHash(h1, h2, i, this.nodes.Length);
+                if (this.nodes[index].Key == UnusedKey) {
+                    this.nodes[index].Key   = key;
+                    this.nodes[index].Value = value;
+                    this.liveCount++;
+                    return true;
+                }
+                else if (this.nodes[index].Key == RemovedKey) {
+                    this.nodes[index].Key   = key;
+                    this.nodes[index].Value = value;
+                    this.liveCount++;
+                    this.deadCount--;
+                    Debug.Assert(deadCount >= 0);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public bool Remove(int key, int value)
+            /*^ requires key >= 0 && key <= MaxKeyValue; ^*/
+        {
+            key |= UsedKeyBit;
+
+            this.searchValid = false;
+
+            int h1 = GetHash1(key, this.nodes.Length);
+            int h2 = GetHash2(key, this.nodes.Length);
+            for (int i = 0; i < this.nodes.Length; i++) {
+                int index = GetHash(h1, h2, i, this.nodes.Length);
+                if (this.nodes[index].Key == key &&
+                    this.nodes[index].Value == value) {
+                    this.nodes[index].Key = RemovedKey;
+                    this.liveCount--;
+                    Debug.Assert(this.liveCount >= 0);
+                    this.deadCount++;
+                    if (this.deadCount > this.PackThreshold) {
+                        ReallocateNodes(this.nodes.Length);
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public void BeginSearch()
+        {
+            this.searchValid = true;
+            this.searchAttempts = 0;
+        }
+
+        public bool Search(int key, out int value)
+            /*^ requires key >= 0 && key <= MaxKeyValue; ^*/
+        {
+            key |= UsedKeyBit;
+
+            /*^ assert this.searchValid; ^*/
+            Debug.Assert(searchValid == true);
+
+            int h1 = GetHash1(key, this.nodes.Length);
+            int h2 = GetHash2(key, this.nodes.Length);
+
+            for (int i = 0; i < this.nodes.Length; i++) {
+                int index = GetHash(h1, h2,
+                                    this.searchAttempts++, this.nodes.Length);
+                if (this.nodes[index].Key == key) {
+                    value = this.nodes[index].Value;
+                    return true;
+                }
+                else if (this.nodes[index].Key == UnusedKey) {
+                    break;
+                }
+            }
+
+            this.searchValid = false;
+            value = 0;
+
+            return false;
+        }
+    }
+}

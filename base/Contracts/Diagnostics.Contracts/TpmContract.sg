@@ -1,0 +1,77 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TpmContract.sg
+//
+
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+
+namespace Microsoft.Singularity.Diagnostics.Contracts
+{
+    public contract TpmContract : ServiceContract
+    {
+        // The name you should use to look up this module using the NameServer.
+        public const string ModuleName = "/dev/tpm";
+
+        // START messages
+        out message Ready();
+
+        // READY messages
+        in  message GetDriverName();
+        out message DriverName(char []! in ExHeap data);
+
+        in  message GetDriverVersion();
+        out message DriverVersion(char[]! in ExHeap data);
+
+        in  message Send(byte[]! in ExHeap data);
+        out message AckStartSend();
+
+        in  message Receive();
+        out message ReceivedData(byte[]! in ExHeap data);
+
+        in  message SendReceive(byte[]! in ExHeap data);
+        out message Response(byte[]! in ExHeap data, bool status);
+
+        // IO_RUNNING messages
+
+        in  message GetTpmStatus();
+        out message TpmStatus(byte[]! in ExHeap status);
+
+
+        in  message Cancel();
+        out message AckCancel();
+
+        out message SendComplete();
+
+        override state Start: one
+        {
+            Ready! -> ReadyState;
+        }
+
+        state ReadyState: one
+        {
+            GetDriverName?              -> DriverName!           -> ReadyState;
+            GetDriverVersion?           -> DriverVersion!        -> ReadyState;
+            Receive?                    -> ReceivedData!         -> ReadyState;
+            GetTpmStatus?               -> TpmStatus!            -> ReadyState;
+            SendReceive?                -> Response!             -> ReadyState;
+            Send?                       -> AckStartSend!         -> IO_RUNNING;
+        }
+
+
+        //
+        // Running state
+        //
+        state IO_RUNNING: one
+        {
+            GetTpmStatus? -> TpmStatus!  -> IO_RUNNING;
+            Cancel?       -> AckCancel! -> ReadyState;
+            SendComplete! -> ReadyState;
+        }
+
+    }
+}

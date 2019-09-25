@@ -1,0 +1,29 @@
+# This script gets run whenever Shell starts.
+# For now, this is a crude approximation of a startup environment.
+# In the short-term, this is mostly useful for automating testing a sequence of commands.
+# Such as:
+
+# ipconfig '/dev/nic0' '192.168.0.80' '255.255.255.0' '192.168.0.1'
+# ipconfig '@dhcp' '/dev/nic0' 'start'
+# cred '@add' '.\test' 'some-password-here'
+# net '@mount' '/distro' '\\192.168.0.12\distro'
+
+echo 'Welcome to Singularity'
+
+# Uncomment these lines to configure and start the SMTP server:
+#
+# echo 'Configure IP to 10.99.99.2'
+# ipconfig '/dev/nic0' '10.99.99.2' '255.255.255.0' '10.99.99.1'
+# echo 'Starting SMTPD'
+# smtpd '/s:10.99.99.2' '/a:/init/accounts'
+#
+
+# Uncomment these lines to configure and start the WebServer with WebHost server:
+#
+# echo 'Configure IP to 10.99.99.2'
+# ipconfig '/dev/nic0' '10.99.99.2' '255.255.255.0' '10.99.99.1'
+# echo start webhost '-app:diagnosticswebapp'
+# start webhost '-app:diagnosticswebapp'
+# echo start cassini '-app:diagnosticswebapp' '-nspath:/service/webapp'
+# start cassini '-app:diagnosticswebapp' '-nspath:/service/webapp' '-load:500'
+

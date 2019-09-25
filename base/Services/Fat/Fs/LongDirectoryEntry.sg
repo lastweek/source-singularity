@@ -1,0 +1,645 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   LongDirectoryEntry.sg
+//
+//  Note:
+//
+//  Based on pages 27-34 of "Microsoft Extensible Firmware
+//  Initiative FAT32 File System Specification", Version 1.03,
+//  December 6, 2000, Microsoft Corporation.
+
+using Microsoft.Singularity.Channels;
+
+using System.Runtime.InteropServices;
+using System;
+
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal pointerfree struct LongDirectoryEntry
+    {
+        internal const uint Length               = 32;
+        internal const int  CharactersPerEntry   = 13;
+        internal const int  MaxLongNameLength    = 255;
+        internal const int  MaxShortNameAttempts = 1000000;
+
+        private  const byte LastLongEntryMask = 0x40;
+        private  const byte AttributeLongName = DirectoryEntry.AttributeLongName;
+
+        // Long name terminator constants
+        private const char TerminateFirst = Char.MinValue;
+        private const char TerminateOther = Char.MaxValue;
+
+        // Short name constants
+        internal const int MaxBaseLength
+            = DirectoryEntry.ShortNameMaxBaseName;
+        internal const int MaxExtensionLength
+            = DirectoryEntry.ShortNameMaxExtension;
+
+        private  byte ordinal;                          // 0
+        private  char name00;                           // 1..2
+        private  char name01;                           // 3..4
+        private  char name02;                           // 5..6
+        private  char name03;                           // 7..8
+        private  char name04;                           // 9..10
+        internal byte Attribute;                        // 11
+        internal byte Type;                             // 12
+        private  byte checksum;                         // 13
+        private  char name05;                           // 14..15
+        private  char name06;                           // 16..17
+        private  char name07;                           // 18..19
+        private  char name08;                           // 20..21
+        private  char name09;                           // 22..23
+        private  char name10;                           // 24..25
+        private  char zero;                             // 26..27
+        private  char name11;                           // 28..29
+        private  char name12;                           // 30..31
+
+        internal bool IsLastEntry
+        {
+            get {
+                assert this.IsValid;
+                return (ordinal & LastLongEntryMask) == LastLongEntryMask;
+            }
+        }
+
+        internal bool IsValid
+        {
+            get { return ((Attribute & DirectoryEntry.AttributeLongNameMask) ==
+                          DirectoryEntry.AttributeLongName); }
+        }
+
+        internal int GetNumberOfLongEntries()
+        {
+            // This is only valid on last entry which has the ordinal bit set.
+            assert ((int)ordinal & (int)LastLongEntryMask) != 0;
+            return (int)ordinal & ~((int)LastLongEntryMask);
+        }
+
+        internal int GetPathLength()
+        {
+            // This is only valid on last entry which has the ordinal bit set.
+            assert ((int)ordinal & (int)LastLongEntryMask) != 0;
+            return (ComponentNumber - 1) * CharactersPerEntry
+                    + GetPathComponentLength();
+        }
+
+        internal int ComponentNumber
+        {
+            get { return (int)ordinal & ~((int)LastLongEntryMask); }
+        }
+
+        internal byte Checksum
+        {
+            get { return checksum; }
+        }
+
+        internal int GetPathComponentLength()
+        {
+            if (name00 == TerminateFirst) return 0;
+            if (name01 == TerminateFirst) return 1;
+            if (name02 == TerminateFirst) return 2;
+            if (name03 == TerminateFirst) return 3;
+            if (name04 == TerminateFirst) return 4;
+            if (name05 == TerminateFirst) return 5;
+            if (name06 == TerminateFirst) return 6;
+            if (name07 == TerminateFirst) return 7;
+            if (name08 == TerminateFirst) return 8;
+            if (name09 == TerminateFirst) return 9;
+            if (name10 == TerminateFirst) return 10;
+            if (name11 == TerminateFirst) return 11;
+            if (name12 == TerminateFirst) return 12;
+            return 13;
+        }
+
+        internal bool NameComponentMatches(char[]! in ExHeap name)
+        {
+            if (this.IsLastEntry) {
+                return MatchNameLast(name);
+            }
+            return MatchName(name);
+        }
+
+        private bool MatchName(char[]! in ExHeap name)
+        {
+            // Component numbers are 1-indexed.
+            int nOffset = (this.ComponentNumber - 1) * CharactersPerEntry;
+            return
+                Char.ToUpper(name00) == Char.ToUpper(name[nOffset +  0]) &&
+                Char.ToUpper(name01) == Char.ToUpper(name[nOffset +  1]) &&
+                Char.ToUpper(name02) == Char.ToUpper(name[nOffset +  2]) &&
+                Char.ToUpper(name03) == Char.ToUpper(name[nOffset +  3]) &&
+                Char.ToUpper(name04) == Char.ToUpper(name[nOffset +  4]) &&
+                Char.ToUpper(name05) == Char.ToUpper(name[nOffset +  5]) &&
+                Char.ToUpper(name06) == Char.ToUpper(name[nOffset +  6]) &&
+                Char.ToUpper(name07) == Char.ToUpper(name[nOffset +  7]) &&
+                Char.ToUpper(name08) == Char.ToUpper(name[nOffset +  8]) &&
+                Char.ToUpper(name09) == Char.ToUpper(name[nOffset +  9]) &&
+                Char.ToUpper(name10) == Char.ToUpper(name[nOffset + 10]) &&
+                Char.ToUpper(name11) == Char.ToUpper(name[nOffset + 11]) &&
+                Char.ToUpper(name12) == Char.ToUpper(name[nOffset + 12]);
+        }
+
+        private bool MatchNameLast(char[]! in ExHeap name)
+        {
+            int nOffset = (this.ComponentNumber - 1) * CharactersPerEntry;
+            int todo    = GetPathComponentLength();
+            assert name.Length == nOffset + todo;
+            switch (todo) {
+                case 13:
+                    if (Char.ToUpper(name12) !=
+                        Char.ToUpper(name[nOffset + 12])) {
+                        return false;
+                    }
+                    goto case 12;
+                case 12:
+                    if (Char.ToUpper(name11) !=
+                        Char.ToUpper(name[nOffset + 11])) {
+                        return false;
+                    }
+                    goto case 11;
+                case 11:
+                    if (Char.ToUpper(name10) !=
+                        Char.ToUpper(name[nOffset + 10])) {
+                        return false;
+                    }
+                    goto case 10;
+                case 10:
+                    if (Char.ToUpper(name09) !=
+                        Char.ToUpper(name[nOffset +  9])) {
+                        return false;
+                    }
+                    goto case 9;
+                case  9:
+                    if (Char.ToUpper(name08) !=
+                        Char.ToUpper(name[nOffset +  8])) {
+                        return false;
+                    }
+                    goto case 8;
+                case  8:
+                    if (Char.ToUpper(name07) !=
+                        Char.ToUpper(name[nOffset +  7])) {
+                        return false;
+                    }
+                    goto case 7;
+                case 7:
+                    if (Char.ToUpper(name06) !=
+                        Char.ToUpper(name[nOffset +  6])) {
+                        return false;
+                    }
+                    goto case 6;
+                case  6:
+                    if (Char.ToUpper(name05) !=
+                        Char.ToUpper(name[nOffset +  5])) {
+                        return false;
+                    }
+                    goto case 5;
+                case  5:
+                    if (Char.ToUpper(name04) !=
+                        Char.ToUpper(name[nOffset +  4])) {
+                        return false;
+                    }
+                    goto case 4;
+                case  4:
+                    if (Char.ToUpper(name03) !=
+                        Char.ToUpper(name[nOffset +  3])) {
+                        return false;
+                    }
+                    goto case 3;
+                case  3:
+                    if (Char.ToUpper(name02) !=
+                        Char.ToUpper(name[nOffset +  2])) {
+                        return false;
+                    }
+                    goto case 2;
+                case  2:
+                    if (Char.ToUpper(name01) !=
+                        Char.ToUpper(name[nOffset +  1])) {
+                        return false;
+                    }
+                    goto case 1;
+                case  1:
+                    if (Char.ToUpper(name00) !=
+                        Char.ToUpper(name[nOffset +  0])) {
+                        return false;
+                    }
+                    break;
+            }
+            return true;
+        }
+
+        /// <summary> Copies characters from LongDirectoryEntry
+        /// into character array at specified offset. </summary>
+        internal void GetPathComponent(char[]! in ExHeap longName,
+                                       int offset)
+        {
+            switch (GetPathComponentLength()) {
+                case 13: longName[offset + 12] = name12;  goto case 12;
+                case 12: longName[offset + 11] = name11;  goto case 11;
+                case 11: longName[offset + 10] = name10;  goto case 10;
+                case 10: longName[offset +  9] = name09;  goto case  9;
+                case 9:  longName[offset +  8] = name08;  goto case  8;
+                case 8:  longName[offset +  7] = name07;  goto case  7;
+                case 7:  longName[offset +  6] = name06;  goto case  6;
+                case 6:  longName[offset +  5] = name05;  goto case  5;
+                case 5:  longName[offset +  4] = name04;  goto case  4;
+                case 4:  longName[offset +  3] = name03;  goto case  3;
+                case 3:  longName[offset +  2] = name02;  goto case  2;
+                case 2:  longName[offset +  1] = name01;  goto case  1;
+                case 1:  longName[offset +  0] = name00;  break;
+                case 0:  break;
+            }
+        }
+
+        internal void GetPathComponent(char[]! in ExHeap longName)
+        {
+            int offset = (ComponentNumber - 1) * CharactersPerEntry;
+            GetPathComponent(longName, offset);
+        }
+
+        private void SetCharacters(char[]! in ExHeap longName,
+                                   int               offset,
+                                   int               length)
+            requires length > 0 && length <= CharactersPerEntry;
+        {
+            switch (length) {
+                case 13:  name12 = longName[offset + 12];  goto case 12;
+                case 12:  name11 = longName[offset + 11];  goto case 11;
+                case 11:  name10 = longName[offset + 10];  goto case 10;
+                case 10:  name09 = longName[offset +  9];  goto case  9;
+                case  9:  name08 = longName[offset +  8];  goto case  8;
+                case  8:  name07 = longName[offset +  7];  goto case  7;
+                case  7:  name06 = longName[offset +  6];  goto case  6;
+                case  6:  name05 = longName[offset +  5];  goto case  5;
+                case  5:  name04 = longName[offset +  4];  goto case  4;
+                case  4:  name03 = longName[offset +  3];  goto case  3;
+                case  3:  name02 = longName[offset +  2];  goto case  2;
+                case  2:  name01 = longName[offset +  1];  goto case  1;
+                case  1:  name00 = longName[offset +  0];  break;
+            }
+        }
+
+        private void PadCharacters(int length)
+            requires length > 0 && length < CharactersPerEntry;
+        {
+            char v = TerminateFirst;
+            switch (length) {
+                // case 13: unlucky for some and not allowed for padding.
+                case 12:  name01 = v;  v = TerminateOther;  goto case 11;
+                case 11:  name02 = v;  v = TerminateOther;  goto case 10;
+                case 10:  name03 = v;  v = TerminateOther;  goto case  9;
+                case  9:  name04 = v;  v = TerminateOther;  goto case  8;
+                case  8:  name05 = v;  v = TerminateOther;  goto case  7;
+                case  7:  name06 = v;  v = TerminateOther;  goto case  6;
+                case  6:  name07 = v;  v = TerminateOther;  goto case  5;
+                case  5:  name08 = v;  v = TerminateOther;  goto case  4;
+                case  4:  name09 = v;  v = TerminateOther;  goto case  3;
+                case  3:  name10 = v;  v = TerminateOther;  goto case  2;
+                case  2:  name11 = v;  v = TerminateOther;  goto case  1;
+                case  1:  name12 = v;  v = TerminateOther;  break;
+            }
+        }
+
+        internal void SetNameComponent(int               ordinal,
+                                       int               maxOrdinal,
+                                       char[]! in ExHeap longName,
+                                       byte              shortNameChecksum)
+            requires ordinal >= 1 && ordinal <= maxOrdinal;
+            requires maxOrdinal >= 1;
+        {
+            this.Attribute = DirectoryEntry.AttributeLongName;
+            this.Type      = 0;
+            this.checksum  = shortNameChecksum;
+            this.zero      = Char.MinValue;
+
+            int offset = (ordinal - 1) * CharactersPerEntry;
+            int length = longName.Length - offset;
+
+            if (ordinal == maxOrdinal) {
+                ordinal |= (int)LastLongEntryMask;
+            }
+            this.ordinal = (byte)ordinal;
+
+            if (length >= CharactersPerEntry) {
+                SetCharacters(longName, offset, CharactersPerEntry);
+            }
+            else {
+                assert length > 0;
+                SetCharacters(longName, offset, length);
+                PadCharacters(CharactersPerEntry - length);
+            }
+        }
+
+        internal static byte ComputeChecksum(char[]! in ExHeap shortName)
+            requires shortName.Length == MaxBaseLength + MaxExtensionLength;
+        {
+            byte sum = 0;
+            for (int i = 0; i < MaxBaseLength + MaxExtensionLength; i++) {
+                int tmp = ((((int)sum) & 1) << 7) + (((int)sum) >> 1);
+                tmp += (int)shortName[i];
+                sum = unchecked((byte)tmp);
+            }
+            return sum;
+        }
+
+        private static void GetLongNameBounds(char[]! in ExHeap longName,
+                                              out int           start,
+                                              out int           length)
+        {
+            // Leading spaces are ignored.
+            start = 0;
+            while (start < longName.Length) {
+                if (longName[start] != ' ') {
+                    break;
+                }
+                start++;
+            }
+
+            // Trailing spaces and periods are ignored.
+            int end = longName.Length - 1;
+            while (end >= 0) {
+                if (longName[end] != ' ' && longName[end] != '.') {
+                    break;
+                }
+                end--;
+            }
+            length = end - start + 1;
+        }
+
+        private static int GetExtensionStart(char[]! in ExHeap name,
+                                             int start,
+                                             int length)
+        {
+            int extension = length - 1;
+            while (extension >= start) {
+                if (name[extension] == '.') {
+                    return extension + 1;
+                }
+                extension--;
+            }
+            return -1;
+        }
+
+        internal static bool ValidLongNameCharacter(char c)
+        {
+            return (c == '.' || c == '+' || c == ',' || c == ';' ||
+                    c == '=' || c == '[' || c == ']' ||
+                    DirectoryEntry.ValidShortNameCharacter(c));
+        }
+
+        [ Microsoft.Contracts.Pure ]
+        internal static bool ValidName(char[]! in ExHeap longName)
+        {
+            int start, length;
+            GetLongNameBounds(longName, out start, out length);
+            if (length <= 0 || length > MaxLongNameLength) {
+                return false;
+            }
+            for (int i = 0; i < longName.Length; i++) {
+                if (!ValidLongNameCharacter(longName[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        static bool MapLongToShort(char input, out char output)
+        {
+            char c = Char.ToUpper(input);
+
+            if (DirectoryEntry.ValidShortNameCharacter(c)) {
+                output = c;
+                return false;
+            }
+            else {
+                output = '_';
+                return true;
+            }
+        }
+
+        static int GetAbsoluteOffsetOfFinalPeriod(char[]! in ExHeap longName,
+                                                  int start,
+                                                  int length)
+        {
+            int offset = start + length - 2;
+            while (offset > start) {
+                if (longName[offset] == '.') {
+                    return offset;
+                }
+                offset--;
+            }
+            return Int32.MaxValue;
+        }
+
+        static bool CopyLongToShort(char[]! in ExHeap src,
+                                    int               srcStart,
+                                    int               srcLength,
+                                    char[]! in ExHeap dst,
+                                    int               dstStart,
+                                    int               dstLength,
+                                    out int           dstUsed)
+        {
+            assert (srcStart >= 0 &&
+                      srcStart <= src.Length);
+            assert (srcLength >= 0 &&
+                      srcStart + srcLength <= src.Length);
+            assert (dstStart >= 0 &&
+                      dstStart < dst.Length);
+            assert (dstLength >= 0 &&
+                      dstStart + dstLength <= dst.Length);
+
+            bool lossy = false;
+
+            // Skip leading spaces and periods
+            while ((src[srcStart] == '.' || src[srcStart] == ' ') &&
+                   srcLength != 0) {
+                srcStart++;
+                srcLength--;
+            }
+
+            dstUsed = 0;
+
+            for (int i = 0; i < srcLength && dstUsed < dstLength; i++) {
+                if (src[srcStart + i] == ' ') {
+                    continue;                     // Skip embedded spaces
+                }
+                lossy |= MapLongToShort(src[srcStart + i],
+                                        out dst[dstStart + dstUsed]);
+                dstUsed++;
+            }
+            return lossy;
+        }
+
+        static void WriteNumericTail(char[]! in ExHeap shortName,
+                                     int               baseNameLength,
+                                     int               attempt)
+        {
+            int tailWidth = (int)Math.Log10((double)attempt) + 2; // "~NNNN"
+
+            int index = Math.Min(baseNameLength + tailWidth,
+                                 DirectoryEntry.ShortNameMaxBaseName) - 1;
+
+            while (attempt > 0) {
+                shortName[index] = (char)('0' + (attempt % 10));
+                attempt /= 10;
+                index --;
+            }
+            shortName[index] = '~';
+        }
+
+        static internal void
+        WriteShortNameEntry(char[]! in ExHeap longName,
+                            int               attempt,
+                            char[]! in ExHeap shortName)
+            requires longName.Length > 0;
+            requires shortName.Length == DirectoryEntry.ShortNameEntryLength;
+            requires attempt >= 1 && attempt < MaxShortNameAttempts;
+        {
+            assert (ValidName(longName));
+
+            for (int i = 0; i < shortName.Length; i++) {
+                shortName[i] = ' ';
+            }
+
+            int longNameStart;
+            int longNameLength;
+            GetLongNameBounds(longName,
+                              out longNameStart,
+                              out longNameLength);
+
+            int extensionStart = GetExtensionStart(longName,
+                                                   longNameStart,
+                                                   longNameLength);
+
+            int baseUsed = 0;
+            bool lossy;
+
+            if (extensionStart > longNameStart) {
+                lossy = CopyLongToShort(
+                    longName,
+                    longNameStart,
+                    extensionStart - longNameStart - 1,
+                    shortName,
+                    0,
+                    DirectoryEntry.ShortNameMaxBaseName,
+                    out baseUsed
+                    );
+
+                int extUsed;
+                lossy |= CopyLongToShort(
+                    longName,
+                    extensionStart,
+                    longNameStart + longNameLength - extensionStart,
+                    shortName,
+                    DirectoryEntry.ShortNameMaxBaseName,
+                    DirectoryEntry.ShortNameMaxExtension,
+                    out extUsed
+                    );
+            }
+            else {
+                lossy = CopyLongToShort(
+                    longName,
+                    longNameStart,
+                    longNameLength,
+                    shortName,
+                    0,
+                    DirectoryEntry.ShortNameMaxBaseName,
+                    out baseUsed
+                    );
+            }
+
+            WriteNumericTail(shortName, baseUsed, attempt);
+        }
+
+        private const int HiBitMask = 1 << (DHashtable.MaxKeyBits - 1);
+
+        private static int HOP(int v)
+        {
+            // left rotation of DHashtable.MaxKeyBits wide unsigned integer
+            return (v << 1) | ((v & HiBitMask) >> (DHashtable.MaxKeyBits - 1));
+        }
+
+        internal int GetDirHashCode(int sum, int length)
+            requires length > 0;
+            requires length <= LongDirectoryEntry.CharactersPerEntry;
+        {
+            switch (length) {
+                case 13:
+                    sum = HOP(sum) + Char.ToUpper(name12);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case 12;
+                case 12:
+                    sum = HOP(sum) + Char.ToUpper(name11);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case 11;
+                case 11:
+                    sum = HOP(sum) + Char.ToUpper(name10);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case 10;
+                case 10:
+                    sum = HOP(sum) + Char.ToUpper(name09);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  9;
+                case  9:
+                    sum = HOP(sum) + Char.ToUpper(name08);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  8;
+                case  8:
+                    sum = HOP(sum) + Char.ToUpper(name07);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  7;
+                case  7:
+                    sum = HOP(sum) + Char.ToUpper(name06);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  6;
+                case  6:
+                    sum = HOP(sum) + Char.ToUpper(name05);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  5;
+                case  5:
+                    sum = HOP(sum) + Char.ToUpper(name04);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  4;
+                case  4:
+                    sum = HOP(sum) + Char.ToUpper(name03);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  3;
+                case  3:
+                    sum = HOP(sum) + Char.ToUpper(name02);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  2;
+                case  2:
+                    sum = HOP(sum) + Char.ToUpper(name01);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  1;
+                case  1:
+                    sum = HOP(sum) + Char.ToUpper(name00);
+                    sum &= DHashtable.MaxKeyValue;
+                    goto case  0;
+                case 0:
+                    break;
+            }
+            return sum;
+        }
+
+        internal static int GetDirHashCode(char []! in ExHeap longName)
+        {
+            int start;
+            int length;
+            GetLongNameBounds(longName, out start, out length);
+
+            int sum = 0;
+            for (int i = start + length - 1; i >= start; i--) {
+                sum = HOP(sum) + Char.ToUpper(longName[i]);
+                sum &= DHashtable.MaxKeyValue;
+            }
+            return sum;
+        }
+    }
+}

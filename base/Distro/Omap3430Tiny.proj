@@ -1,0 +1,30 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+
+  <ItemGroup>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Shell\Shell.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tty\tty.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\VolumeManager\VolumeManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\ServiceManager\ServiceManager.csproj"/>
+
+    <!-- Drivers -->
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Omap3430Keyboard\Omap3430Keyboard.csproj" />
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Omap3430Video\Omap3430Video.csproj" />
+
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.Tiny.proj"/>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

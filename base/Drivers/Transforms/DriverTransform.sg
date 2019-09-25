@@ -1,0 +1,158 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DriverResourceTransform.sg
+//
+//  Creates startup boilerplate code from Resource descriptions.
+//
+using Microsoft.Contracts;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using System;
+
+namespace Microsoft.Singularity.Drivers
+{
+
+    transform DriverResourceTransform
+            where $IoRangeType : IoRange
+            where $IoFixedRangeType : IoRange
+            where $IoRangeAttribute : IoRangeAttribute
+            where $IoFixedRangeAttribute : IoFixedRangeAttribute
+            where $EndpointType : unmanaged struct, Endpoint, ITracked
+    {
+        internal class $$DriverResources : DriverCategoryDeclaration
+        {
+            [$IoRangeAttribute($index, *)]
+            internal $IoRangeType $$ioranges;
+
+            [$IoFixedRangeAttribute(*)]
+            internal $IoFixedRangeType $$iofixedranges;
+
+            [ExtensionEndpoint(*)]
+            internal TRef<ExtensionContract.Exp:Start> $$extensions;
+
+            [ServiceEndpoint(*)]
+            internal TRef<ServiceProviderContract.Exp:Start> $$providers;
+
+            [Endpoint(*)]
+            TRef<$EndpointType,$State> $$endpoints;
+
+            internal int DriverMain(string instance);
+
+            // TODO: Move initialization
+            // into a common routine rather than duplicating it
+            // in all driver resource classes.
+            generate public $$DriverResources(string! instance, string! binary, IoConfig! config)
+            {
+                Tracing.Log(Tracing.Debug, "Config: {0}", config.ToPrint());
+
+                int index = 0;
+                forall (; $e in $$extensions;) {
+                    ExtensionContract.Exp:Start ep = Process.GetStartupEndpoint(index)
+                        as ExtensionContract.Exp;
+                    if (ep == null) {
+                        throw new ArgumentException(String.Format("missing startup endpoint {0}", index));
+                    }
+                    $e = new TRef<ExtensionContract.Exp:Start> (ep);
+                    ++index;
+                }
+
+                forall (; $sp in $$providers ;) {
+                    ServiceProviderContract.Exp:Start ep = Process.GetStartupEndpoint(index)
+                        as ServiceProviderContract.Exp;
+                    if (ep == null) {
+                        throw new ArgumentException(String.Format("missing startup endpoint {0}", index));
+                    }
+                    $sp = new TRef<ServiceProviderContract.Exp:Start> (ep);
+                    ++index;
+                }
+
+                forall (; $e in $$endpoints;) {
+                    $e.$EndpointType* in ExHeap opt($e.$State) ep = Process.GetStartupEndpoint(index)
+                        as $e.$EndpointType* in ExHeap opt($e.$State);
+                    if (ep == null) {
+                        throw new ArgumentException(String.Format("missing startup endpoint {0}", index));
+                    }
+                    $e = new TRef<$e.$EndpointType, $e.$State> (ep);
+                    DebugStub.WriteLine("getting endpoint at {0}",__arglist(index));
+                    ++index;
+                }
+
+                assume config.DynamicRanges != null;
+                forall ($cindex = 0; $f in $$ioranges; $cindex++) {
+                    $f = ($f.$IoRangeType) config.DynamicRanges[(int)(object!)$f.$index];
+                }
+
+                assume config.FixedRanges != null;
+                forall ($cindex = 0; $f in $$iofixedranges; $cindex++) {
+                    $f = ($f.$IoFixedRangeType) config.FixedRanges[$cindex];
+                }
+            }
+        }
+
+        generate internal class DriverEntry
+        {
+            static int Main(string [] args)
+            {
+                if (args == null) {
+                    DebugStub.WriteLine("DriverTransform: args are null?!");
+                    DebugStub.Break();
+                    return -1;
+                }
+
+                if (args.Length < 7) {
+                    DebugStub.WriteLine("DriverTransform: too few arguments!");
+                    DebugStub.Break();
+                    return -1;
+                }
+
+                IoConfig! config  = (!)IoConfig.GetConfig();
+                string! binary = (!)args[0];
+                DebugStub.Assert((!)args[1] == "-instance");
+                string! instance = (!)args[2];
+                DebugStub.Assert((!)args[3] == "-signature");
+                string! signature = (!)args[4];
+                DebugStub.Assert((!)args[5] == "-class");
+                string! mclass = (!)args[6];
+
+#if false
+                DebugStub.WriteLine("DriverTransform: instance ={0}", __arglist(instance));
+                DebugStub.WriteLine("DriverTransform: signature={0}", __arglist(signature));
+                DebugStub.WriteLine("DriverTransform: class    ={0}", __arglist(mclass));
+                forall( ; $DriverResource in $$DriverResources; ) {
+                    DebugStub.WriteLine("DriverTransform:   {0}", __arglist(typeof($DriverResource).FullName));
+                }
+#endif
+
+                forall (; $DriverResource in $$DriverResources;) {
+                    if (String.Compare(typeof($DriverResource).FullName, mclass, true) == 0) {
+#if false
+                        DebugStub.WriteLine("DriverTransform: match to {0}", __arglist(typeof($DriverResource).FullName));
+#endif
+                        $DriverResource d = new $DriverResource(instance, binary, config);
+                        return d.DriverMain(instance);
+                    }
+                }
+
+                DebugStub.WriteLine("DriverTransform: ERROR! No matching class name..");
+                DebugStub.WriteLine("DriverTransform:   signature={0}", __arglist(signature));
+                DebugStub.WriteLine("DriverTransform:   class    ={0}", __arglist(mclass));
+                DebugStub.WriteLine("DriverTransform: Supported classes:");
+                forall (; $DriverResource in $$DriverResources;) {
+                    DebugStub.WriteLine("DriverTransform:   {0}", __arglist(typeof($DriverResource).FullName));
+                }
+                DebugStub.Break();
+
+                return -1;
+            }
+        }
+    }
+}

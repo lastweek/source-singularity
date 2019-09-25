@@ -1,0 +1,178 @@
+; -------------------------------------------------------------------------
+; Boogie universal background predicate
+; Copyright (c) 2004-2005, Microsoft Corp.
+
+(DEFTYPE $#__int__ :BUILTIN Int)
+(DEFTYPE $#__bool__ :BUILTIN bool)
+(DEFOP <: $#__int__ $#__int__ $#__bool__)
+
+(BG_PUSH (AND
+
+  ; select/store axioms, 1 index argument
+
+  (FORALL (A i v)
+    (QID bg:sel-stor-eq)
+    (EQ (select1 (store1 A i v) i) v))
+
+  (FORALL (A i j v)
+    (QID bg:sel-stor-neq)
+    (IMPLIES (NEQ i j)
+      (EQ
+        (select1 (store1 A i v) j)
+        (select1 A j))))
+
+  ; select/store axioms, 2 index arguments
+
+  (FORALL (A o f v)
+    (QID bg:sel2-stor2-eq)
+    (EQ (select2 (store2 A o f v) o f) v))
+
+  (FORALL (A o f p g v)
+    (QID bg:sel2-stor2-neq1)
+    (IMPLIES (NEQ o p)
+      (EQ
+        (select2 (store2 A o f v) p g)
+        (select2 A p g))))
+
+  (FORALL (A o f p g v)
+    (QID bg:sel2-stor2-neq2)
+    (IMPLIES (NEQ f g)
+      (EQ
+        (select2 (store2 A o f v) p g)
+        (select2 A p g))))
+
+  ; false is not true
+
+  (DISTINCT |@false| |@true|)
+
+  ; <: is a partial order:  it is reflexive, transitive, and anti-symmetric
+
+  (FORALL (t)
+    (QID bg:subtype-refl)
+    (PATS (<: t t))
+    (<: t t))
+
+  (FORALL (t u v)
+    (QID bg:subtype-trans)
+    (PATS (MPAT (<: t u) (<: u v)))
+    (IMPLIES
+      (AND (<: t u ) (<: u v))
+      (<: t v)))
+
+  (FORALL (t u)
+    (QID bg:subtype-antisymm)
+    (PATS (MPAT (<: t u) (<: u t)))
+    (IMPLIES
+      (AND (<: t u) (<: u t))
+      (EQ t u)))
+      
+  ; we assume type correctness of the operations here
+  ; a-l>=0 ==> (v ++ w:l)[a:b] = v[a-l:b-l]
+  (FORALL (v lv w lw lvw a b)
+    (QID bv:e:c1)
+    (PATS ($bv_extract ($bv_concat v lv w lw) lvw a b))
+    (IMPLIES
+      (>= (- a lw) 0)
+      (EQ ($bv_extract ($bv_concat v lv w lw) lvw a b) ($bv_extract v lv (- a lw) (- b lw)))))
+
+  ; b<=l ==> (v ++ w:l)[a:b] = w[a:b]
+  (FORALL (v lv w lw lvw a b)
+    (QID bv:e:c2)
+    (PATS ($bv_extract ($bv_concat v lv w lw) lvw a b))
+    (IMPLIES
+      (<= b lw)
+      (EQ ($bv_extract ($bv_concat v lv w lw) lvw a b) ($bv_extract w lw a b))))
+
+  ; v:l
+  ; a>=x || b<=y ==> (v[x:l] ++ w ++ v[0:y])[a:b] = v[a:b]
+  (FORALL (v lv x lxv w lw lwy y a b)
+    (QID bv:e:c3)
+    (PATS 
+      ($bv_extract 
+        ($bv_concat 
+          ($bv_extract v lv x lv) lxv
+	  ($bv_concat 
+	    w lw
+            ($bv_extract v lv 0 y) y) lwy) lv a b))
+    (IMPLIES
+      (AND
+        (EQ lw (- x y))
+        (EQ lxv (- lv x))
+        (EQ lwy (+ w y))
+        (OR (>= a x) (<= b y)))
+      (EQ
+        ($bv_extract 
+          ($bv_concat 
+            ($bv_extract v lv x lv) lxv
+	    ($bv_concat 
+	      w lw
+              ($bv_extract v lv 0 y) y) lwy) lv a b)
+	($bv_extract v lv a b))))
+
+  ; a>=x ==> (v[x:l] ++ w)[a:b] = v[a:b]
+  (FORALL (v lv x lxv w a b)
+    (QID bv:e:c4)
+    (PATS 
+      ($bv_extract 
+        ($bv_concat 
+          ($bv_extract v lv x lv) lxv 
+	  w x) 
+	lv a b))
+    (IMPLIES
+      (AND
+        (EQ lxv (- lv x))
+        (>= a x))
+      (EQ
+        ($bv_extract 
+          ($bv_concat 
+            ($bv_extract v lv x lv) lxv 
+	    w x) 
+	  lv a b)
+	($bv_extract v lv a b))))
+
+  (FORALL (v l)
+    (QID bv:e:0)
+    (PATS ($bv_extract v l 0 l))
+      (EQ ($bv_extract v l 0 l) v))
+
+  (FORALL (n)
+    (QID bv:pow)
+    (PATS ($pow2 n))
+      (IMPLIES (> n 0) (EQ ($pow2 n) (* 2 ($pow2 (- n 1))))))
+
+  (EQ ($pow2 0) 1)
+
+  ; 0 <= v < 2^Y ==> 0bvX ++ v[0:Y] == v
+  (FORALL (v l a b)
+    (QID bv:e:pow)
+    (PATS ($bv_concat 0 b ($bv_extract v l 0 a) a))
+    (IMPLIES
+      (AND
+        (<= 0 v)
+        (< v ($pow2 a))
+        (EQ l (+ a b)))
+      (EQ ($bv_concat 0 b ($bv_extract v l 0 a) a) v)))
+  
+  ; X > 0 ==> 0bvX ++ v >= 0
+  (FORALL (v a b)
+    (QID bv:e:pos)
+    (PATS ($bv_concat 0 b v a))
+    (IMPLIES
+      (> b 0)
+      (>= ($bv_concat 0 b v a) 0)))
+
+  ;; unsound?
+;  (FORALL (lv w lw)
+;    (QID bv:c:0)
+;    (PATS ($bv_concat 0 lv w lw))
+;    (EQ ($bv_concat 0 lv w lw) w))
+  ;; matching loop
+;  (FORALL (v l1 a b l2 c d)
+;    (QID bv:e:e)
+;    (PATS ($bv_extract ($bv_extract v l1 a b) l2 c d))
+;    (EQ ($bv_extract ($bv_extract v l1 a b) l2 c d) ($bv_extract v l1 (+ c a) (+ d a))))
+  
+
+))  ;; AND, BG_PUSH
+; End Boogie universal background predicate
+; -------------------------------------------------------------------------

@@ -1,0 +1,26 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/ClientManager/TraceSwitches.sg
+//
+//  Note:
+//
+
+using System;
+
+namespace Smb.ClientManager
+{
+    internal /* static */ sealed class TraceSwitches
+    {
+        private TraceSwitches() {}
+        
+        public static bool ShowManagerMessages = false;
+        
+        public static bool ShowProcessActivity = false;
+        
+        public static bool ShowStatusChanges = false;
+    }
+}

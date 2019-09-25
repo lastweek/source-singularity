@@ -1,0 +1,421 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RamDisk/ClientManager/RamDiskClientManager.sg
+//
+//  Note:
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.ServiceManager;
+using Microsoft.Singularity.Services.RamDisk.Contracts;
+
+using System;
+using System.Collections;
+using System.Collections.Specialized;
+using System.IO;
+using System.Text;
+using FileSystem.Utils;
+
+using DirectoryErrorCode = Microsoft.Singularity.Directory.ErrorCode;
+
+[assembly: Microsoft.Singularity.Security.ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: Microsoft.Singularity.Security.AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.Services.RamDisk.ClientManager
+{
+    [Category("Service")]
+    internal class ServiceParameters
+    {
+        [CustomEndpoint]
+        public readonly TRef<ServiceProcessContract.Exp:Starting> ControlEndpointRef;
+        
+        [CustomEndpoint]
+        public readonly TRef<ServiceEventContract.Imp:Ready> EventEndpointRef;
+        
+        reflective private ServiceParameters();
+    }
+
+    public class ClientManager
+    {
+        private static SortedList! clientsByDiskName = new SortedList();
+
+        private class RamDiskErrorException : Exception
+        {
+            private RamDiskContractErrorCode errorCode;
+
+            internal RamDiskErrorException(RamDiskContractErrorCode errorCode) {
+                this.errorCode = errorCode;
+            }
+
+            internal RamDiskContractErrorCode ErrorCode {
+                get {
+                    return errorCode;
+                }
+            }
+        }
+
+        internal class Client
+        {
+            TRef<RamDiskClientContract.Imp:Running> tref;
+            string! diskName;
+            ulong sizeBytes;
+
+            internal Client(
+                [Claims] RamDiskClientContract.Imp! imp,
+                string! diskName,
+                ulong   sizeBytes
+                )
+            {
+                this.tref = new TRef<RamDiskClientContract.Imp:Running>(imp);
+                this.diskName = diskName;
+                this.sizeBytes = sizeBytes;
+            }
+
+            internal RamDiskClientContract.Imp! Acquire()
+            {
+                return tref.Acquire();
+            }
+
+            internal void Release([Claims] RamDiskClientContract.Imp! imp)
+            {
+                tref.Release(imp);
+            }
+
+            internal string! DiskName  { get { return this.diskName;  } }
+            internal ulong   SizeBytes { get { return this.sizeBytes; } }
+        }
+
+        internal static void
+        AddClient(Client! newClient)
+        {
+            clientsByDiskName.Add(newClient.DiskName, newClient);
+        }
+
+        internal static Client GetClientByDiskName(string! diskName)
+        {
+            if (clientsByDiskName.Contains(diskName)) {
+                return (Client)clientsByDiskName[diskName];
+            }
+            else {
+                return null;
+            }
+        }
+
+        internal static void DeleteClient(Client! closedClient)
+        {
+            clientsByDiskName.Remove(closedClient.DiskName);
+        }
+
+        internal static bool ClientIsClosed(Client! client)
+        {
+            RamDiskClientContract.Imp:Running! clientImp = client.Acquire();
+            bool closed = false;
+
+            switch receive {
+                case clientImp.ChannelClosed():
+                    closed = true;
+                    break;
+                case timeout:
+                    break;
+            }
+
+            client.Release(clientImp);
+            return closed;
+        }
+
+        private static RamDiskContractErrorCode DoCreate(ulong sizeBytes, out string! outDiskName)
+        {
+            outDiskName = "";
+            
+            string! diskName;
+            ServiceProviderContract.Exp! serviceExp;
+            try {
+                GetNextDiskPath(out diskName, out serviceExp);
+            }
+            catch (RamDiskErrorException ex) {
+                Dbg("FAILED to get next disk path.");
+                return ex.ErrorCode;
+            }
+            
+            RamDiskClientContract.Imp! clientImp;
+            RamDiskClientContract.Exp! clientExp;
+            RamDiskClientContract.NewChannel(out clientImp, out clientExp);
+
+            string[] args = { "RamDisk" };
+            Process process;
+            try {
+                process = new Process(args);
+            }
+            catch (Exception ex) {
+                Dbg("FAILED to create worker process: " + ex.Message);
+                return RamDiskContractErrorCode.InternalError;
+            }
+            try {
+                process.SetStartupEndpoint(0, serviceExp);
+                process.SetStartupEndpoint(1, clientExp);
+                process.Start();
+            }
+            catch (Exception ex) {
+                Dbg("FAILED to start worker process: " + ex.Message);
+                process.Dispose(true);
+                return RamDiskContractErrorCode.InternalError;
+            }
+
+            clientImp.SendCreate(Bitter.FromString2(diskName), sizeBytes);
+            switch receive {
+                case clientImp.Success():
+                    AddClient(new Client(clientImp, diskName, sizeBytes));
+                    outDiskName = diskName;
+                    return RamDiskContractErrorCode.NoError;
+
+                case clientImp.ChannelClosed():
+                    Dbg("FAILED to create ramdisk.  Worker process closed channel.");
+                    delete clientImp;
+                    return RamDiskContractErrorCode.InternalError;
+
+                case clientImp.Fail(RamDiskContractErrorCode reason):
+                    Dbg("FAILED to create ramdisk.  Worker process sent 'Fail' message, error = " + reason);
+                    delete clientImp;
+                    return reason;
+            }
+        }
+
+        private static void
+        DoDestroy(
+            RamDiskControlContract.Exp:Ready! controller,
+            [Claims] char[]! in ExHeap    diskNameHeap,
+            bool force
+            )
+        {
+            string! diskName = PathUtils.ToPath(Bitter.ToString2(diskNameHeap));
+            delete diskNameHeap;
+
+            Client client = GetClientByDiskName(diskName);
+            if (client == null) {
+                controller.SendFail(RamDiskContractErrorCode.DoesNotExist);
+                return;
+            }
+            else if (ClientIsClosed(client)) {
+                controller.SendSuccess();
+                return;
+            }
+
+            RamDiskClientContract.Imp! clientImp = client.Acquire();
+            clientImp.SendDestroy(force);
+            switch receive {
+                case clientImp.Success():
+                    client.Release(clientImp);
+                    DeleteClient(client);
+                   
+                    try {
+                        DeregisterDevice(diskName);
+                    }
+                    catch (RamDiskErrorException ex) {
+                        controller.SendFail(ex.ErrorCode);    
+                        return;
+                    }
+
+                    controller.SendSuccess();
+                    break;
+                    
+                case clientImp.Fail(reason):
+                    controller.SendFail(reason);
+                    client.Release(clientImp);
+                    break;
+                    
+                case clientImp.ChannelClosed():
+                    controller.SendFail(RamDiskContractErrorCode.InternalError);
+                    client.Release(clientImp);
+                    DeleteClient(client);
+                    break;
+            }
+        }
+
+        private static void ServiceClients(ServiceProcessContract.Exp! svcontrol)
+        {
+            ESet<RamDiskControlContract.Exp:Ready> controllers =
+                new ESet<RamDiskControlContract.Exp:Ready>();
+                
+            svcontrol.SendStartSucceeded();
+
+            bool run = true;
+            while (run) {
+                switch receive {
+                    case svcontrol.Connect(expath, candidate):
+                        if (expath != null) {
+                            // This service does not use subpaths.  Reject request.
+                            delete expath;
+                            delete candidate;
+                            svcontrol.SendNakConnect(ErrorCode.NotFound, null);
+                            break;
+                        }
+                        
+                    
+                        RamDiskControlContract.Exp controller =
+                            candidate as RamDiskControlContract.Exp;
+                        if (controller != null) {
+                            controller.SendSuccess();
+                            controllers.Add(controller);
+                            svcontrol.SendAckConnect();
+                        }
+                        else {
+                            delete candidate;
+                            svcontrol.SendNakConnect(ErrorCode.ContractNotSupported, null);
+                        }
+                        break;
+                        
+                    case svcontrol.Knock():
+                        svcontrol.SendAlive();
+                        break;
+                        
+                    case svcontrol.Stop():
+                        // -XXX- Need to deal with this.  Either send AckStop and exit, or send Busy
+                        // -XXX- because you can't cleanly stop right now.
+                        DebugStub.WriteLine("RamDiskService: Clean shutdown is not supported -- bailing!");
+                        run = false;
+                        svcontrol.SendAckStop();
+                        break;
+
+                    case svcontrol.ChannelClosed():
+                        run = false;
+                        break;
+
+                    case controller.Create(diskSizeBytes) in controllers:
+                    {
+                        string! diskName;
+                        RamDiskContractErrorCode result = DoCreate(diskSizeBytes, out diskName);
+                        if (result == RamDiskContractErrorCode.NoError) {
+                            char[]! in ExHeap exdiskName = Bitter.FromString2(diskName);
+                            controller.SendCreateSuccess(exdiskName);
+                        }
+                        else {
+                            controller.SendFail(result);
+                        }
+                        controllers.Add(controller);
+                        break;
+                    }
+
+                    case controller.Destroy(diskName, force) in controllers:
+                        DoDestroy(controller, diskName, force);
+                        controllers.Add(controller);
+                        break;
+
+                    case controller.ChannelClosed() in controllers:
+                        delete controller;
+                        break;
+                }
+            }
+            controllers.Dispose();
+        }
+
+        internal static int AppMain(ServiceParameters! parameters)
+        {
+            if (parameters.ControlEndpointRef == null)
+                throw new Exception("The parent process did not provide a ServiceProcessContract channel.");
+                
+            ServiceProcessContract.Exp! svcontrol = parameters.ControlEndpointRef.Acquire();
+            try {
+                ServiceClients(svcontrol);            
+                return 0;
+            }
+            finally {
+                delete svcontrol;
+            }
+        }
+
+        static int nextDiskNumber = 0;
+        static string ramDiskPathPrefix = "/dev/ramdisk";
+
+        private static void GetNextDiskPath(out string! diskName, out ServiceProviderContract.Exp! expService)
+        {
+            // Create a new directory entry for the disk
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            try {
+                while (true) {
+                    ServiceProviderContract.Imp! imp;
+                    ServiceProviderContract.Exp! exp;
+                    ServiceProviderContract.NewChannel(out imp, out exp);
+
+                    diskName = ramDiskPathPrefix + nextDiskNumber.ToString();
+                    ns.SendRegister(Bitter.FromString2(diskName), imp);
+                    switch receive {
+                        case ns.AckRegister():
+                            nextDiskNumber++;
+                            expService = exp;
+                            return;
+                        case ns.NakRegister(nakImp, error):
+                            // If the error is AlreadyExists, recover by trying next disk number, else fail
+                            if (error == Microsoft.Singularity.Directory.ErrorCode.AlreadyExists) {
+                                nextDiskNumber++;
+                            }
+                            else {
+                                throw new RamDiskErrorException(DirectoryErrorToRamDiskError(error));
+                            }
+                            delete exp;
+                            delete nakImp;
+                            break;
+                        //case unsatisfiable:
+                        //    resources.service.Release(exp);
+                        //    throw new Exception("unsatisfiable registering RAM disk");
+                    }
+                }
+            }
+            finally {
+                delete ns;
+            }
+        }
+
+        private static void DeregisterDevice(string! diskName)
+        {
+            // Deregister the directory entry
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+            ns.SendDeregister(Bitter.FromString2(diskName));
+            try {
+                switch receive {
+                    case ns.AckDeregister(serviceImp):
+                        delete serviceImp;
+                        break;
+                    case ns.NakDeregister(error):
+                        throw new RamDiskErrorException(DirectoryErrorToRamDiskError(error));
+                    case unsatisfiable:
+                        throw new Exception("unsatisfiable deregistering RAM disk");
+                }
+            }
+            finally {
+                delete ns;
+            }
+        }
+
+        private static RamDiskContractErrorCode DirectoryErrorToRamDiskError(DirectoryErrorCode error) {
+            switch (error) {
+                case DirectoryErrorCode.NoError:               return RamDiskContractErrorCode.NoError;
+                case DirectoryErrorCode.AccessDenied:          return RamDiskContractErrorCode.AccessDenied;
+                case DirectoryErrorCode.CapacityReached:       return RamDiskContractErrorCode.CapacityReached;
+                case DirectoryErrorCode.InsufficientResources: return RamDiskContractErrorCode.InsufficientResources;
+                case DirectoryErrorCode.DirectoryFull:         return RamDiskContractErrorCode.DirectoryFull;
+                case DirectoryErrorCode.IsOpen:                return RamDiskContractErrorCode.IsOpen;
+                default:                                       return RamDiskContractErrorCode.InternalError;
+            }
+        }
+        
+        const string dbgprefix = "RamDiskService: ";
+        
+        static void Dbg(string! line)
+        {
+            DebugStub.WriteLine(dbgprefix + line);
+        }
+        
+        static void Dbg(string! format, params object[]! args)
+        {
+            Dbg(String.Format(format, args));
+        }
+    }
+}

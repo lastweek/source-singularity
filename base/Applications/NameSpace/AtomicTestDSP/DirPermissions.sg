@@ -1,0 +1,40 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using Microsoft.Singularity.Security;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+namespace Microsoft.Application.DSP
+#endif
+
+{
+    public class DirPermissions
+    {
+        public static readonly AccessMode AccessModeTraverse;        // can pass through
+        public static readonly AccessMode AccessModeRead;            // can read/enumerate
+        public static readonly AccessMode AccessModeWrite;           // can create/write an object
+        public static readonly AccessMode AccessModeSetAcl;          // can modify access control
+        public static readonly AccessMode AccessModeRegister;        // can register
+        public static readonly AccessMode AccessModeDeregister;      // can deregister
+        public static readonly AccessMode AccessModeNotify;          // can receive notifications
+
+        static DirPermissions() {
+            AccessModeTraverse = new AccessMode("traverse");
+            AccessModeRead = new AccessMode("read");
+            AccessModeWrite = new AccessMode("write");
+            AccessModeSetAcl = new AccessMode("setacl");
+            AccessModeRegister = new AccessMode("register");
+            AccessModeDeregister = new AccessMode("deregister");
+            AccessModeNotify = new AccessMode("notify");
+        }
+    }
+}
+
+

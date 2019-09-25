@@ -1,0 +1,44 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NicDeviceEventContract.sg
+//
+
+namespace Microsoft.Singularity.Io.Net
+{
+    using System;
+    using System.Runtime.InteropServices;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Io;
+
+    public enum NicEventType : uint
+    {
+        NoEvent       = 0,
+        ReceiveEvent  = 1u << 0,
+        TransmitEvent = 1u << 1,
+        LinkEvent     = 1u << 2,
+    }
+
+    public contract NicDeviceEventContract
+    {
+        out message Success();
+
+        out message NicDeviceEvent(NicEventType eventType);
+        in  message AckNicDeviceEvent();
+
+        state READY : one
+        {
+            Success! -> RUNNING;
+        }
+
+        state RUNNING : one
+        {
+            NicDeviceEvent! -> AckNicDeviceEvent? -> RUNNING;
+        }
+    }
+}

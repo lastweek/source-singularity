@@ -1,0 +1,135 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity test program.
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+
+using Keyboard = Microsoft.Singularity.Io.Keyboard;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class Keys
+    {
+        //[ShellCommand("keys", "Test keyboard")]
+        public static int Main(String[] args)
+        {
+            Console.WriteLine("Press a mouse button to exit.");
+
+            KeyboardDeviceContract.Imp keyboard = OpenKeyboard("/dev/keyboard");
+            if (keyboard == null) return -1;
+
+            for (;;) {
+                int x;
+                int y;
+                uint key = 0;
+                keyboard.SendGetKey();
+                switch receive {
+                    case keyboard.AckKey(ikey):
+                        key = ikey;
+                        break;
+                    case keyboard.NakKey():
+                        break;
+                    case keyboard.ChannelClosed():
+                        throw new Exception("Didn't get reply from Keyboard");
+                }
+
+                if (key == 0) {
+                    Tracing.Log(Tracing.Warning, "GetKey failed.");
+                    break;
+                }
+                if ((key & (uint)Keyboard.Qualifiers.KEY_DOWN) == 0) {
+                    continue;
+                }
+
+                if ((key & (uint)Keyboard.Qualifiers.KEY_MOUSE) != 0) {
+                    if ((key & (uint)Keyboard.Qualifiers.MOUSE_BUTTON_ALL) != 0) {
+                        break;
+                    }
+                }
+
+#if DO_MOUSE
+                mouse.GetPosition(out x, out y);
+                Console.WriteLine("{0,8:x8}:{1,4},{2,4}", key, x, y);
+#endif
+                Console.Write(key);
+            }
+
+            delete keyboard;
+
+            return 0;
+        }
+
+        private static KeyboardDeviceContract.Imp:Ready
+        OpenKeyboardInternal(DirectoryServiceContract.Imp!        nsImp,
+                             [Claims] char[]! in ExHeap           devName)
+        {
+            KeyboardDeviceContract.Exp! keyExp;
+            KeyboardDeviceContract.Imp! keyImp;
+            KeyboardDeviceContract.NewChannel(out keyImp, out keyExp);
+
+            nsImp.SendBind(devName, keyExp);
+            switch receive {
+                case nsImp.AckBind():
+                    return keyImp;
+                    break;
+                case nsImp.NakBind(rejected, error):
+                    delete rejected;
+                    delete keyImp;
+                    break;
+                case nsImp.ChannelClosed():
+                    throw new Exception("Didn't Keyboard.RecvAckConnect");
+                    delete keyImp;
+                    break;
+                case nsImp.NakBindReparse(path, rest, linkFound, backExp):
+                    assert linkFound == true;
+                    assert rest      == null;
+
+                    delete backExp;
+                    delete keyImp;
+
+                    return OpenKeyboardInternal(nsImp, path);
+                    break;
+            }
+            return null;
+        }
+
+        public static KeyboardDeviceContract.Imp:Ready
+        OpenKeyboard(string! devName)
+        {
+            // get NS endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+
+            KeyboardDeviceContract.Imp imp =
+                OpenKeyboardInternal(ns, Bitter.FromString2(devName));
+            delete ns;
+
+            if (imp == null) {
+                DebugStub.Print("OpenKeyboard lookup of {0} failed.\n", __arglist(devName));
+                return null;
+            }
+
+            switch receive {
+                case imp.Success():
+                    break;
+                case imp.ContractNotSupported():
+                    throw new Exception("Didn't imp.RecvAckConnect: ContractNotSupported");
+                    break;
+                case imp.ChannelClosed():
+                    throw new Exception("Channel closed unexpectedly");
+                    break;
+            }
+            return imp;
+        }
+    }
+}

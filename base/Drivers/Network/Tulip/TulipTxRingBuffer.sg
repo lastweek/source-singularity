@@ -1,0 +1,387 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TulipTxRingBuffer.cs
+//
+//  Notes:
+//
+
+using Microsoft.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.V1.Services;
+using System;
+
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    internal class TulipTxRingBuffer
+    {
+        internal const int MaxFragmentBytes       = 2047;
+        internal const int BytesPerDescriptor     = 16;
+        internal const int DescriptorAlignment    = 4;
+        internal const int FragmentsPerDescriptor = 2;
+
+        private ExRef<PacketFifo>! txPackets;
+        private IoMemory!          region;
+        private IoMemory!          setupFrame;
+
+        // Descriptor ring buffer values
+        private readonly int capacity;
+        private int head;
+        private int count;
+
+        internal TulipTxRingBuffer(int packetCount, int fragmentCount)
+            requires packetCount > 0 && IsPowerOf2(packetCount);
+            requires fragmentCount > 0 && IsPowerOf2(fragmentCount);
+            requires fragmentCount >= packetCount;
+        {
+            this.txPackets =
+                new ExRef<PacketFifo>(new [ExHeap] PacketFifo(packetCount),
+                                      true);
+
+            int descriptorCount = fragmentCount / FragmentsPerDescriptor;
+            this.region =
+                (!)IoMemory.AllocatePhysical(
+                    new UIntPtr((uint)(descriptorCount * BytesPerDescriptor)),
+                    DescriptorAlignment
+                    );
+
+            this.setupFrame =
+                (!)IoMemory.AllocatePhysical(Tulip.SetupFrameBytes, 0);
+
+            this.capacity   = descriptorCount;
+            this.head       = 0;
+            this.count      = 0;
+        }
+
+        internal void Reset()
+            requires this.Count == 0;
+        {
+            this.head = 0;
+            for (int i = 0; i < this.region.Length; i += BytesPerDescriptor) {
+                this.region.Write32(i, 0);
+            }
+        }
+
+        [Pure]
+        internal int FreePacketSlots
+        {
+            get {
+                PacketFifo*! in ExHeap txFifo = this.txPackets.Acquire();
+                try {
+                    return txFifo->Capacity - txFifo->Count;
+                }
+                finally {
+                    this.txPackets.Release(txFifo);
+                }
+            }
+        }
+
+        internal void Push(PacketFifo*! in ExHeap incoming)
+            requires incoming->Count <= FreePacketSlots;
+            ensures FreePacketSlots == old(FreePacketSlots) - old(incoming->Count);
+        {
+            PacketFifo*! in ExHeap txFifo = this.txPackets.Acquire();
+            try {
+                while (incoming->Count > 0) {
+                    Packet*! in ExHeap packet = incoming->Pop();
+                    PushPacket(packet);
+                    txFifo->Push(packet);
+                }
+            }
+            finally {
+                this.txPackets.Release(txFifo);
+            }
+        }
+
+        [Pure]
+        internal int DescriptorsRequired(Packet*! in ExHeap packet)
+        {
+            return (packet->FragmentCount + FragmentsPerDescriptor - 1) / FragmentsPerDescriptor;
+        }
+
+        private static void
+        GetFragmentPhysicalAddressAndLength(Packet*! in ExHeap packet,
+                                            int         fragment,
+                                            out uint    phyAddr,
+                                            out uint    length)
+            requires fragment <= packet->FragmentCount;
+        {
+            if (fragment < packet->FragmentCount) {
+                UIntPtr vAddr;
+                int     vLength;
+                packet->GetFragmentRange(fragment, out vAddr, out vLength);
+                phyAddr = GetPhysicalAddress(vAddr).ToUInt32();
+                length  = (uint)vLength;
+            }
+            else {
+                phyAddr = 0;
+                length  = 0;
+            }
+        }
+
+        private void PushPacket(Packet*! in ExHeap packet)
+            requires packet->GetLength() <= Tulip.MtuBytes;
+            requires DescriptorsRequired(packet) + this.Count <= this.Capacity;
+            ensures this.Count == old(this.Count) + DescriptorsRequired(packet);            ensures this.Head == (old(this.Head) + DescriptorsRequired(packet)) % this.Capacity;
+        {
+            int descriptorsRequired = DescriptorsRequired(packet);
+            int startHead           = this.head;
+            int descriptorsDone     = 0;
+
+            while (descriptorsDone < descriptorsRequired) {
+                int fragment = descriptorsDone * FragmentsPerDescriptor;
+                uint tdes2;
+                uint len2;
+
+                GetFragmentPhysicalAddressAndLength(packet, fragment,
+                                                    out tdes2, out len2);
+                uint tdes3;
+                uint len3;
+                GetFragmentPhysicalAddressAndLength(packet, fragment + 1,
+                                                    out tdes3, out len3);
+
+                uint tdes1 = (len2 & TDES1.TBS_MASK);
+                tdes1 |= (len3 & TDES1.TBS_MASK) << TDES1.TBS2_ROLL;
+
+                uint tdes0;
+                if (descriptorsDone == 0) {
+                    tdes0 = 0;
+                    tdes1 |= TDES1.FS;
+                }
+                else {
+                    tdes0 = TDES0.OWN;
+                }
+
+                if (descriptorsDone + 1 == descriptorsRequired) {
+                    tdes1 |= TDES1.LS | TDES1.IC;
+                }
+
+                if (this.head == (this.Capacity - 1)) {
+                    tdes1 |= TDES1.TER;
+                }
+
+                int tdes0Base = this.head * BytesPerDescriptor;
+                this.region.Write32(tdes0Base,      tdes0);
+                this.region.Write32(tdes0Base + 4,  tdes1);
+                this.region.Write32(tdes0Base + 8,  tdes2);
+                this.region.Write32(tdes0Base + 12, tdes3);
+
+                this.head = (this.head + 1) & (this.Capacity - 1);
+                this.count++;
+                descriptorsDone++;
+            }
+
+            // Update ownership of first descriptor last to
+            // avoid race setting up the buffers.  Getting
+            // context switched would be painful otherwise.
+            this.region.Write32(startHead * BytesPerDescriptor, TDES0.OWN);
+        }
+
+        public void Pop(PacketFifo*! in ExHeap outgoing)
+            ensures this.Count >= 0 && this.Count <= old(this.Count);
+        {
+            PacketFifo*! in ExHeap txFifo = this.txPackets.Acquire();
+            try {
+                while (txFifo->Count > 0) {
+                    uint tdes0 = this.region.Read32(this.Tail * BytesPerDescriptor);
+                    if ((tdes0 & TDES0.OWN) == TDES0.OWN) {
+                        break;
+                    }
+                    else if ((tdes0 & TDES0.ES) == TDES0.ES) {
+                        // Found an error, clear error for
+                        // retry.
+                        this.region.Write32(this.Tail * BytesPerDescriptor,
+                                            TDES0.OWN);
+                        break;
+                    }
+
+                    Packet*! in ExHeap packet = txFifo->Pop();
+                    packet->FromDeviceFlags = FromDeviceFlags.TransmitSuccess;
+                    this.count -= DescriptorsRequired(packet);
+                    outgoing->Push(packet);
+                }
+            }
+            finally {
+                this.txPackets.Release(txFifo);
+            }
+        }
+
+        internal void ClearTransmitError()
+        {
+            PacketFifo*! in ExHeap txFifo = this.txPackets.Acquire();
+            try {
+                if (txFifo->Count == 0)
+                    return;
+
+                uint tdes0 = this.region.Read32(this.Tail * BytesPerDescriptor);
+                if ((tdes0 & TDES0.ES) == TDES0.ES) {
+                    this.region.Write32(this.Tail * BytesPerDescriptor,
+                                        TDES0.OWN);
+                }
+            }
+            finally {
+                this.txPackets.Release(txFifo);
+            }
+        }
+
+        internal void WriteSetupFrame(byte[]!       setupFrame,
+                                      FilteringType filteringType)
+            requires setupFrame.Length == Tulip.SetupFrameBytes;
+            requires filteringType >= FilteringType.MinValue && filteringType <= FilteringType.MaxValue;
+            requires this.Count == 0;
+            requires this.Head  == 0;
+        {
+            this.setupFrame.Write8(0, setupFrame);
+
+            uint tdes1 = TDES1.SET | (uint)setupFrame.Length;
+            switch (filteringType) {
+                case FilteringType.Perfect:
+                    tdes1 |= TDES1.FT_PERFECT;
+                    break;
+                case FilteringType.Hash:
+                    tdes1 |= TDES1.FT_HASH;
+                    break;
+                case FilteringType.Inverse:
+                    tdes1 |= TDES1.FT_INVERSE;
+                    break;
+                case FilteringType.HashOnly:
+                    tdes1 |= TDES1.FT_HASH_ONLY;
+                    break;
+                default:
+                    DebugStub.Break();
+                    break;
+            }
+
+            this.region.Write32(12, 0);
+            this.region.Write32(8, (uint)this.setupFrame.PhysicalAddress.Value);
+            this.region.Write32(4, tdes1);
+            this.region.Write32(0, TDES0.OWN);
+
+            this.head  = 1;
+            this.count = 1;
+        }
+
+        internal bool PollSetupFrameCompleted()
+            requires this.Count == 1;
+            requires this.Head  == 1;
+        {
+            // NB spec has no timeout, it appears setup frame always completes
+            uint tdes0 = this.region.Read32(0);
+            if (tdes0 == TDES0.SETUP_DONE) {
+                this.count--;
+                return true;
+            }
+            return false;
+        }
+
+        private static UIntPtr GetPhysicalAddress(UIntPtr va)
+        {
+            UIntPtr pa;         // Physical address
+            UIntPtr paLeft;     // Bytes remaining on physical page
+            if (!DeviceService.GetDmaPhysicalAddress(va, out pa, out paLeft) ||
+                pa == UIntPtr.Zero ) {
+                //XXX commenting this out for new netstack.
+                //paLeft < Tulip.MtuBytes) {
+                DebugStub.Break();
+                throw new ApplicationException("Bad DMA pointer");
+            }
+            return pa;
+        }
+
+        internal UIntPtr BaseAddress
+        {
+            get { return this.region.PhysicalAddress.Value; }
+        }
+
+        [Pure]
+        internal int Capacity { get { return this.capacity; } }
+
+        [Pure]
+        internal int Count { get { return this.count; } }
+
+        [Pure]
+        internal int Free { get { return this.capacity - this.count; } }
+
+        [Pure]
+        internal int Head { get { return this.head; } }
+
+        [Pure]
+        internal int Tail
+        {
+            get {
+                return ((this.capacity + this.head - this.count) %
+                        this.capacity);
+            }
+        }
+
+        [Pure]
+        private static bool IsPowerOf2(int n)
+        {
+            return (n > 0) && ((n & (n - 1)) == 0);
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG_TULIP") ]
+        private static void DumpOwnership(int start, int end, bool owned)
+        {
+            TulipDebug.Print(
+                "{0:4}-{1:4} {2}\n",
+                __arglist(start, end, owned ? "OWNED" : "UNOWNED")
+                );
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG_TULIP") ]
+        internal void DumpOwnership(string title)
+        {
+            TulipDebug.Print("{0}\n", __arglist(title));
+            PacketFifo*! in ExHeap fifo = this.txPackets.Acquire();
+            try {
+                assert fifo->Count == this.Count;
+                TulipDebug.Print("Head = {0} Tail = {1} PacketCount = {2}\n",
+                                 __arglist(this.Head, this.Tail,
+                                           fifo->Count));
+
+                bool errorsFound = false;
+
+                uint lastTdes0 = this.region.Read32(0) & TDES0.OWN;
+                int lastStart = 0;
+                for (int i = 1; i < this.Capacity; i++) {
+                    uint tdes0 = this.region.Read32(i * BytesPerDescriptor);
+                    errorsFound = ((tdes0 & TDES0.ES) != 0);
+
+                    if ((tdes0 & TDES0.OWN) != lastTdes0) {
+                        DumpOwnership(lastStart, i - 1,
+                                      lastTdes0 == TDES0.OWN);
+                        lastStart = i;
+                        lastTdes0 = tdes0 & TDES0.OWN;
+                    }
+                }
+                DumpOwnership(lastStart, this.Capacity - 1,
+                              (lastTdes0 & TDES0.OWN) == TDES0.OWN);
+
+                if (errorsFound) {
+                    for (int i = 0; i < this.Capacity; i++) {
+                        uint tdes0, tdes1, tdes2, tdes3;
+                        tdes0 = this.region.Read32(i * BytesPerDescriptor);
+                        tdes1 = this.region.Read32(i * BytesPerDescriptor + 4);
+                        tdes2 = this.region.Read32(i * BytesPerDescriptor + 8);
+                        tdes3 = this.region.Read32(i * BytesPerDescriptor + 12);
+                        TulipDebug.Print(
+                            "{0:x4} {1}{2} TDES [0]={3:x8} [1]={4:x8} [2]={5:x8} [3]={6:x8}\n",
+                            __arglist(i,
+                                      (tdes0 & TDES0.OWN) != 0 ? "O" : "U",
+                                      (tdes0 & TDES0.ES)  != 0 ? "E" : "0",
+                                      tdes0, tdes1, tdes2, tdes3));
+                    }
+                }
+            }
+            finally {
+                this.txPackets.Release(fifo);
+            }
+        }
+    }
+}

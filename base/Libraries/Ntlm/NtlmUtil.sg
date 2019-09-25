@@ -1,0 +1,157 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NtlmUtil.sg
+//
+//  Note:
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Diagnostics;
+using System.Text;
+using Microsoft.Singularity;
+using Util = Utils.Util;
+
+namespace System.Security.Protocols.Ntlm
+{
+    public class NtlmUtil
+    {
+        public static ushort GetUInt16(byte[]! message, int pos)
+        {
+            return (ushort)(message[pos] + (message[pos + 1] << 8));
+        }
+
+        public static byte[]! GetCountedBytesAt(byte[]! message, int pos)
+			requires pos >= 0;
+			requires pos < message.Length;
+        {
+            int length = GetUInt16(message, pos + 0);
+            //int maxlength = GetUInt16(message, pos + 2);
+            int offset = GetUInt16(message, pos + 4);
+
+            if (offset >= message.Length)
+                throw new Exception("String has invalid offset");
+
+            if (offset + length > message.Length)
+                throw new Exception("String has invalid offset / length");
+
+            return NtlmUtil.GetSubArray(message, offset, length);
+        }
+        
+		public static byte[]! GetSubArray(byte[]! arr, int index, int length)
+			requires index >= 0;
+			requires index + length <= arr.Length;
+			ensures result.Length == length;
+		{
+			byte[] result = new byte[length];
+			Array.Copy(arr, index, result, 0, length);
+			return result;
+		}
+
+        public static string GetCountedStringAt(byte[]! message, int pos)
+			requires pos >= 0;
+			requires pos + sizeof(BufferRegion) <= message.Length;
+        {
+			ref BufferRegion region = ref message[pos];
+			
+            int length = ByteOrder.UInt16LeToHost(region.Length);
+            // int maxlength = GetUInt16(message, pos + 2);
+            int offset = ByteOrder.UInt16LeToHost(region.Offset);
+
+            if (offset >= message.Length)
+                throw new Exception("String has invalid offset");
+
+            if (offset + length > message.Length)
+                throw new Exception("String has invalid offset / length");
+
+            string result = Encoding.Unicode.GetString(message, offset, length);
+            return result;
+        }
+        
+#if NOISY
+
+        public static void DumpMessage(byte[]! message)
+        {
+            DumpMessage(message, message.Length);
+        }
+
+        public static void DumpMessage(byte[]! message, int length)
+        {
+            DebugLine("");
+            DebugLine("NTLM message:");
+            Util.DumpBuffer(message, 0, length);
+
+            if (length < NtlmConstants.HeaderLength) {
+                DebugLine("    Message is invalid; too short");
+                return;
+            }
+
+            for (int i = 0; i < NtlmConstants.MessageSignature.Length; i++) {
+                if (message[i] != NtlmConstants.MessageSignature[i]) {
+                    DebugLine("    Message is invalid; signature does not match");
+                    return;
+                }
+            }
+
+            NtlmMessageType type = (NtlmMessageType)message[8];
+
+            switch (type) {
+                case NtlmMessageType.Negotiate:
+                    {
+                        DebugLine("    Type: Negotiate");
+                        NtlmNegotiateFlags flags = (NtlmNegotiateFlags)GetUInt16(message, 12);
+                        DebugLine(String.Format("    Flags: 0x{0:x8}  {1}", (UInt32)flags, flags.ToString()));
+                        string domain = GetCountedStringAt(message, 0x10);
+                        DebugLine("    Domain: " + domain);
+                    }
+
+                    break;
+
+                case NtlmMessageType.Challenge:
+                    {
+                        DebugLine("    Type: Challenge");
+                        string TargetName = GetCountedStringAt(message, 0x0c);
+                        byte[] Challenge = Util.GetSubArray(message, 0x14, NtlmConstants.ChallengeLength);
+                        DebugLine("    TargetName:     " + TargetName);
+                        DebugLine("    Challenge:      " + Util.ByteArrayToStringHex(Challenge));
+
+                    }
+                    break;
+
+                case NtlmMessageType.Response:
+                    {
+                        DebugLine("    Type: Response");
+                        byte[] LmChallengeResponse = GetCountedbytesAt(message, 0x0c);
+                        byte[] NtChallengeResponse = GetCountedbytesAt(message, 0x14);
+                        string DomainName = GetCountedStringAt(message, 28);
+                        string UserName = GetCountedStringAt(message, 36);
+                        string Workstation = GetCountedStringAt(message, 42);
+
+                        DebugLine("    LmChallengeResponse:  " + Util.ByteArrayToStringHex(LmChallengeResponse));
+                        DebugLine("    NtChallengeResponse:  " + Util.ByteArrayToStringHex(NtChallengeResponse));
+
+                        DebugLine("    DomainName:   " + DomainName);
+                        DebugLine("    UserName:     " + UserName);
+                        DebugLine("    Workstation:  " + Workstation);
+                    }
+                    break;
+
+                default:
+                    DebugLine("    Message is invalid; message type byte is not recognized");
+                    return;
+            }
+
+            DebugLine("");
+
+        }
+    
+		static void DebugLine(string msg)
+		{
+			DebugStub.WriteLine("NTLM: " + msg);
+		}
+#endif
+    }
+}

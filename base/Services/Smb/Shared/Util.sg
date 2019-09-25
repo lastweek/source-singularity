@@ -1,0 +1,418 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using System.Text;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+
+#if ENABLE_GENERICS
+using System.Collections.Generic;
+#endif
+
+namespace Smb.Shared
+{
+	/*static*/ sealed class Util
+	{
+		private Util() {}
+
+		public static void ShowExceptionDebug(Exception! ex, string! msg)
+		{
+			DebugStub.WriteLine(msg);
+			ShowExceptionDebug(ex);
+		}
+		
+		public static void ShowExceptionDebug(Exception! ex)
+		{
+			for (Exception current = ex; current != null; current = current.InnerException) {
+				Type! exType = current.GetType();
+				DebugStub.WriteLine(String.Format("{0}: {1}", exType.FullName, ex.Message));
+			}
+		}
+
+		public static string! ToStringDelete([Claims]char[]! in ExHeap exstring)
+		{
+			string! str = Bitter.ToString2(exstring);
+			delete exstring;
+			return str;
+		}
+
+	#if ENABLE_GENERICS
+		public static T[]! GetSubArray<T>(T[]! arr, int index, int length)
+		{
+			T[] result = new T[length];
+			Array.Copy(arr, index, result, 0, length);
+			return result;
+		}
+	#else
+		public static byte[]! GetSubArray(byte[]! arr, int index, int length)
+			requires index >= 0;
+			requires index + length <= arr.Length;
+			ensures result.Length == length;
+		{
+			byte[] result = new byte[length];
+			Array.Copy(arr, index, result, 0, length);
+			return result;
+		}
+	
+	#endif
+
+		public const string HexDigits = "0123456789abcdef";
+
+		public static byte[]! HexStringToByteArray(string! str)
+		{
+			if ((str.Length % 2) != 0)
+				throw new Exception("Input string cannot be odd in length.");
+
+			byte[]! result = new byte[str.Length / 2];
+			for (int i = 0; i < result.Length; i++)
+			{
+				byte high = CharToHex(str[i * 2]);
+				byte low = CharToHex(str[i * 2 + 1]);
+				result[i] = (byte)((high << 4) | low);
+			}
+
+			return result;
+		}
+
+		//
+		// Stupid C#!
+		// 
+	#if ENABLE_GENERICS && false
+		static int CompareArraySpans<T>(T[] array1, int offset1, T[] array2, int offset2, int length)
+		{
+			for (int i = 0; i < length; i++)
+			{
+				T element1 = array1[i];
+				T element2 = array2[i];
+				if (element1 < element2)
+					return -1;
+				if (element1 > element2)
+					return 1;
+			}
+
+			return 0;
+		}
+	#endif
+		public static int CompareArraySpans(byte[]! array1, int offset1, byte[]! array2, int offset2, int length)
+		{
+			for (int i = 0; i < length; i++)
+			{
+				byte element1 = array1[i];
+				byte element2 = array2[i];
+				if (element1 < element2)
+					return -1;
+				if (element1 > element2)
+					return 1;
+			}
+
+			return 0;
+		}
+
+		public static void DumpBuffer(byte[]! buffer)
+		{
+			DumpBuffer(buffer, 0, buffer.Length);
+		}
+
+	#if ENABLE_GENERICS
+		public static void DumpBuffer(ArraySpan<byte> span)
+		{
+			DumpBuffer(span.ContainingArray, span.Offset, span.Length);
+		}
+	#else
+		public static void DumpBuffer(ArraySpan_byte span)
+		{
+			DumpBuffer(span.ContainingArray, span.Offset, span.Length);
+		}
+	#endif
+
+		public static void DumpBuffer(byte[]! buffer, int index, int length)
+		{
+			StringBuilder line = new StringBuilder();
+
+			for (int i = 0; i < length; i += 0x10)
+			{
+				line.Length = 0;
+				line.AppendFormat("{0:x04}: ", i);
+
+				for (int j = 0; j < 0x10; j++)
+				{
+
+					if (i + j < length)
+					{
+						line.Append(" ");
+						byte b = buffer[index + i + j];
+						line.Append((Char)HexDigits[b >> 4]);
+						line.Append((Char)HexDigits[b & 0xf]);
+					}
+					else {
+						line.Append("   ");
+					}
+				}
+
+				line.Append(" : ");
+				for (int j = 0; j < 0x10; j++)
+				{
+
+					if (i + j < length)
+					{
+						byte b = buffer[index + i + j];
+						if (b >= 32 && b <= 127)
+						{
+							line.Append((Char)b);
+						}
+						else {
+							line.Append(".");
+						}
+					}
+					else {
+						break;
+					}
+				}
+
+				DebugStub.WriteLine(line.ToString());
+			}
+		}
+
+		public static void DumpBuffer(byte[]! in ExHeap buffer)
+		{
+			DumpBuffer(buffer, 0, buffer.Length);
+		}
+
+		public static void DumpBuffer(byte[]! in ExHeap buffer, int index, int length)
+		{
+			StringBuilder line = new StringBuilder();
+
+			for (int i = 0; i < length; i += 0x10)
+			{
+				line.Length = 0;
+				line.AppendFormat("{0:x04}: ", i);
+
+				for (int j = 0; j < 0x10; j++)
+				{
+
+					if (i + j < length)
+					{
+						line.Append(" ");
+						byte b = buffer[index + i + j];
+						line.Append((Char)HexDigits[b >> 4]);
+						line.Append((Char)HexDigits[b & 0xf]);
+					}
+					else {
+						line.Append("   ");
+					}
+				}
+
+				line.Append(" : ");
+				for (int j = 0; j < 0x10; j++)
+				{
+
+					if (i + j < length)
+					{
+						byte b = buffer[index + i + j];
+						if (b >= 32 && b <= 127)
+						{
+							line.Append((Char)b);
+						}
+						else {
+							line.Append(".");
+						}
+					}
+					else {
+						break;
+					}
+				}
+
+				DebugStub.WriteLine(line.ToString());
+			}
+		}
+
+	#if ENABLE_GENERICS
+		public static void CheckArraySpan<T>(T[] arr, int offset, int length)
+		{
+			if (arr == null)
+				throw new Exception("Array cannot be null.");
+			if (offset < 0)
+				throw new Exception("Array offset cannot be negative.");
+			if (length < 0)
+				throw new Exception("Array span length cannot be negative.");
+			if (offset + length > arr.Length)
+				throw new Exception("Array span exceeds size of array");
+		}
+	#endif
+
+
+		static void DumpHashtable(Hashtable! table)
+		{
+			try {
+				DebugStub.WriteLine("Hashtable:");
+
+				DebugStub.WriteLine("Keys:");
+				foreach (Object key in table.Keys)
+				{
+					if (key == null)
+						DebugStub.WriteLine("    null");
+					else {
+						Type keyType = key.GetType();
+						string keyTypeName = keyType.FullName;
+						string keyText = key.ToString();
+						DebugStub.WriteLine(String.Format("    ({0}) {1}", keyTypeName, keyText));
+					}
+				}
+
+				try {
+					DebugStub.WriteLine("Keys: (from array)");
+					object[]! keys = new object[table.Keys.Count];
+					table.Keys.CopyTo(keys, 0);
+					foreach (Object key2 in keys) {
+						if (key2 == null)
+							DebugStub.WriteLine("    null");
+						else {
+							Type keyType2 = key2.GetType();
+							string keyTypeName2 = keyType2.FullName;
+							string keyText2 = key2.ToString();
+							DebugStub.WriteLine(String.Format("    ({0}) {1}", keyTypeName2, keyText2));
+						}
+					}
+				}
+				catch (Exception ex) {
+					DebugStub.WriteLine("Fault occurred while reading keys from array.");
+					Util.ShowExceptionDebug(ex);
+				}
+
+				DebugStub.WriteLine("Values:");
+				foreach (Object value in table.Values)
+				{
+					if (value == null)
+						DebugStub.WriteLine("    null");
+					else {
+						Type valueType = value.GetType();
+						string valueTypeName = valueType.FullName;
+						string valueText = value.ToString();
+						DebugStub.WriteLine(String.Format("    ({0}) {1}", valueTypeName, valueText));
+					}
+				}
+			}
+			catch (Exception ex) {
+				Util.ShowExceptionDebug(ex);
+			}
+		}
+	
+	
+        public static string! ByteArrayToString(byte[]! buffer, int index, int length)
+        {
+            StringBuilder sb = new StringBuilder(length * 2);
+            for (int i = 0; i < length; i++) {
+                byte b = buffer[index + i];
+                sb.Append(HexDigits[b >> 4]);
+                sb.Append(HexDigits[b & 0xf]);
+            }
+            return sb.ToString();
+        }
+
+        public static string! ByteArrayToStringHex(byte[]! buffer)
+        {
+            return ByteArrayToString(buffer, 0, buffer.Length);
+        }
+
+        public static string! ByteArrayToStringBitsBe(byte[]! buffer)
+        {
+            return ByteArrayToStringBitsBe(buffer, 0, buffer.Length);
+        }
+
+        public static string! ByteArrayToStringBitsBe(byte[]! buffer, int index, int length)
+        {
+            StringBuilder sb = new StringBuilder(length * 2);
+            sb.Append("be ");
+            for (int i = 0; i < length; i++) {
+                if (i > 0)
+                    sb.Append('.');
+
+                byte b = buffer[index + i];
+
+                for (int bit = 7; bit >= 0; bit--) {
+                    byte value = (byte)(b & (1 << bit));
+                    sb.Append(value != 0 ? '1' : '0');
+                }
+            }
+            return sb.ToString();
+        }
+
+        public static string! ByteArrayToStringBitsLe(byte[]! buffer)
+        {
+            return ByteArrayToStringBitsLe(buffer, 0, buffer.Length);
+        }
+
+        public static string! ByteArrayToStringBitsLe(byte[]! buffer, int index, int length)
+        {
+            StringBuilder sb = new StringBuilder(length * 2);
+            sb.Append("le ");
+            for (int i = 0; i < length; i++) {
+                if (i > 0)
+                    sb.Append('.');
+
+                byte b = buffer[index + i];
+
+                for (int bit = 0; bit < 8; bit++) {
+                    byte value = (byte)(b & (1 << bit));
+                    sb.Append(value != 0 ? '1' : '0');
+                }
+            }
+            return sb.ToString();
+        }
+
+        static byte CharToHex(char c)
+        {
+            if (c >= '0' && c <= '9')
+                return (byte)(c - '0');
+            if (c >= 'a' && c <= 'f')
+                return (byte)(c - 'a' + 10);
+            if (c >= 'A' && c <= 'F')
+                return (byte)(c - 'A' + 10);
+            throw new ArgumentException("Invalid hex char");
+        }
+
+	
+		public static int Align4(int value)
+		{
+			return (value + 3) & ~3;
+		}
+		
+		public static int Align2(int value)
+		{
+			return (value + 1) & ~1;
+		}
+		
+		public static string! YesNoString(bool value)
+		{
+			return value ? "Yes" : "No";
+		}
+	}
+    
+	class NotImplementedException : Exception
+	{
+		public NotImplementedException()
+			: base("Not Implemented")
+		{}
+	}
+	
+	class UnsatisfiableReceiveException : Exception
+	{
+		public UnsatisfiableReceiveException()
+			: base("A 'switch receive' statement could not be satisfied.")
+		{}
+		
+		public UnsatisfiableReceiveException(string! msg)
+			: base(msg)
+		{}
+		
+	}
+
+}

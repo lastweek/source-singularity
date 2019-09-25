@@ -1,0 +1,25 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   Note:
+#
+##############################################################################
+
+If the 'DefineCSharpCompileItems' property is set to true, then this target will define
+'Compile' items for the C# source code.
+
+-->
+<Project DefaultTarget="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="3.5">
+
+  <ItemGroup Condition="'$(DefineCSharpCompileItems)'=='true'">
+    <Compile Include"$(BartokSrcDir)\library\shared\System\Runtime\CompilerServices\Attributes.cs" />
+    <Compile Include"$(BartokSrcDir)\library\singularity\System\Runtime\CompilerServices\Attributes.cs" />
+    <Compile Include"$(BartokSrcDir)\library\shared\RuntimeType.cs" />
+    <Compile Include"$(BartokSrcDir)\library\singularity\RuntimeType.cs" />
+  </ItemGroup>
+
+</Project>

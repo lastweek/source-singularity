@@ -1,0 +1,1389 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/Client/DirectoryClient.sg
+//
+//  Note:
+//
+//      This file contains the implementation of DirectoryServiceContract.
+//      The DirectoryClient class holds DirectoryServiceContract.Exp, on which
+//      it receives directory service requests, and SmbTransactor.Imp, which
+//      it uses to execute SMB transactions.
+//
+//      Each instance of DirectoryServiceContract runs in its own thread.
+//      Access to the single TCP connection to the SMB server is multiplexed
+//      by the TransportMux class, which is accessed using the SmbTransactor
+//      channel.
+//
+//      The general pattern is that the DirectoryClient thread loops in a
+//      switch-receive loop, and when it receives a directory request, it
+//      translates the request into SMB requests.  It formats those requests,
+//      submits them to the SMB transport mux, then waits for the response,
+//      and translates the SMB protocol response into DirectoryServiceContract
+//      response messages.
+//
+//      The top-level loop listens for DirectoryServiceContract messages,
+//      and listens for ChannelClosed on the SmbTransactor channel.  If
+//      either channel closes, the thread terminates.  While the thread
+//      is waiting for responses on its SmbTransactor channel, it also
+//      listens for ChannelClosed on the DirectoryServiceContract channel.
+//      This prevents the thread from blocking for a long time, if either
+//      channel closes.
+//
+//      In addition to providing general directory-related requests, the
+//      directory service contract allows its importers to bind to other
+//      directories, and to bind to files.  When DirectoryClient receives
+//      a request to bind to another directory or file, it will create
+//      another transactor, and another thread, to process those requests.
+//
+//  TODO:
+//
+//      *   We don't actually verify that a path exists before allowing
+//          a bind to a subdirectory to succeed.  Easy to do, just not
+//          done yet.
+//
+//      *   Exception handling is poor.
+//
+//      *   Because SMB_TRANSACTION2 is not properly supported, some
+//          transactions that return a large amount of data don't
+//          actually work correctly, such as enumerating directory
+//          contents.
+//
+
+using System;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Smb.PublicChannels;
+using Smb.PrivateChannels;
+using Smb.Protocol;
+using Smb.Shared;
+
+namespace Smb.Client
+{
+    class DirectoryClient : ITrackedThreadContext, ITracked
+    {
+        public static void StartServiceThread(
+            [Claims]SmbTransactor.Imp:Ready! transactor,
+            [Claims]DirectoryServiceContract.Exp:Start! dir,
+            string! path)
+        {
+            DirectoryClient dir_client = new DirectoryClient(transactor, dir, path);
+            TrackedThreadStarter.StartTrackedThreadContext(dir_client);
+        }
+
+        private DirectoryClient(
+            [Claims]SmbTransactor.Imp:Ready! transactor,
+            [Claims]DirectoryServiceContract.Exp:Start! dir,
+            string! path)
+        {
+            _dir = dir;
+            _transactor = transactor;
+            _path = path;
+            _debugprefix = "DIR[" + path + "]: ";
+            _smbpath = path.Replace(SingularityPathSeparatorString, NtPathSeparatorString);
+        }
+
+        readonly DirectoryServiceContract.Exp! _dir;
+        readonly SmbTransactor.Imp! _transactor;
+
+        readonly string! _path;
+        readonly string! _smbpath;
+        readonly string! _debugprefix;
+
+        void ITrackedThreadContext.ThreadRoutine()
+        {
+            Thread.CurrentThread.DebugName = "dirclient";
+            expose (this)
+            {
+            try {
+                if (TraceSwitches.ShowDirectoryMessages) {
+                    DebugLine("Sending Success");
+                }
+                _dir.SendSuccess();
+
+                for (;;) {
+                    switch receive {
+                        case _dir.CreateDirectory(char[]! in ExHeap exdirName):
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received CreateDirectory: name: " + Bitter.ToString2(exdirName));
+                            }
+
+                            CreateDirectory(_dir, _transactor, Util.ToStringDelete(exdirName));
+                            break;
+
+                        case _dir.DeleteDirectory(char[]! in ExHeap exdirName):
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received DeleteDirectory: name: " + Bitter.ToString2(exdirName));
+                            }
+
+                            DeleteDirectory(_dir, _transactor, Util.ToStringDelete(exdirName));
+                            break;
+
+                        case _dir.DeleteFile(char[]! in ExHeap exfileName):
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received DeleteFile: name: " + Bitter.ToString2(exfileName));
+                            }
+
+                            DeleteFile(_dir, _transactor, Util.ToStringDelete(exfileName));
+                            break;
+
+                        case _dir.Bind(char[]! in ExHeap expath, ServiceContract.Exp:Start! exp):
+                        {
+                            string! path = Util.ToStringDelete(expath);
+                            string! absolutePath = ToAbsolutePath(path);
+
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received Bind: path: " + path);
+                            }
+
+                            DirectoryServiceContract.Exp new_dir;
+                            FileContract.Exp new_file;
+
+                            if ((new_dir = exp as DirectoryServiceContract.Exp) != null) {
+                                // The client wants to bind to a directory.  If binding to the root directory,
+                                // then we create a new directory service thread immediately, and ack the request.
+                                // (The root directory always exists.)  If it's not the root directory, then we
+                                // need to verify that the path identifies a valid directory.  (But for now, we
+                                // elide that check.)
+
+                                if (absolutePath != "/") {
+                                    // -XXX- check directory?
+                                    try {
+                                        bool dir_exists = CheckDirectoryExists(absolutePath);
+                                        if (!dir_exists) {
+                                            DebugLine("Path '{0}' does not exist.  Rejecting bind request.", path);
+                                            _dir.SendNakBind(new_dir, ErrorCode.NotFound);
+                                            return;
+                                        }
+
+                                        // DebugLine("Path exists.");
+
+                                    }
+                                    catch (Exception ex) {
+                                        DebugLine("FAILED to check if directory exists!");
+                                        Util.ShowExceptionDebug(ex, "failed to check if directory exists");
+                                        _dir.SendNakBind(new_dir, ErrorCode.Unknown);
+                                    }
+                                }
+
+                                //
+                                // Create a new _transactor for the child directory.
+                                //
+
+                                ErrorCode errorCode;
+                                SmbTransactor.Imp new_transactor = AddTransactor(out errorCode);
+
+                                if (new_transactor == null) {
+                                    DebugLine("Failed to bind directory client; could not create _transactor.");
+                                    _dir.SendNakBind(exp, errorCode);
+                                    break;
+                                }
+
+                                DirectoryClient.StartServiceThread(new_transactor, new_dir, absolutePath);
+                                DebugLine("Successfully bound new directory client.");
+                                _dir.SendAckBind();
+
+                            }
+                            else if ((new_file = exp as FileContract.Exp) != null) {
+
+                                ErrorCode errorCode;
+                                SmbTransactor.Imp new_transactor = AddTransactor(out errorCode);
+
+                                if (new_transactor == null) {
+                                    DebugLine("Failed to bind file client; could not create _transactor.");
+                                    _dir.SendNakBind(exp, errorCode);
+                                    break;
+                                }
+
+                                ushort fileId;
+                                if (CreateFile(_transactor, absolutePath, SmbCreateDisposition.Open, out fileId, out errorCode)) {
+                                    FileExp.CreateServiceThread(new_file, absolutePath, fileId, new_transactor);
+                                    DebugLine("Bind: Successful, sending Ack");
+                                    _dir.SendAckBind();
+                                 }
+                                 else {
+                                    DebugLine("Bind: Failed to open file, error code = ", errorCode);
+                                    _dir.SendNakBind(exp, errorCode);
+                                    delete new_transactor;
+                                 }
+
+                            }
+                            else {
+                                DebugLine("Received bind request for an unknown contract!  Rejecting.");
+                                _dir.SendNakBind(exp, ErrorCode.BadArguments);
+                            }
+                            break;
+                        }
+
+                        case _dir.BeginEnumeration():
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received BeginEnumeration");
+                            }
+
+                            EnumerateDirectory(_transactor, _dir);
+                            break;
+
+                        case _dir.CreateFile(char[]! in ExHeap expath):
+                        {
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received CreateFile: path: " + Bitter.ToString2(expath));
+                            }
+
+                            string! path = Util.ToStringDelete(expath);
+                            string! absolutePath = ToAbsolutePath(path);
+
+                            // This is a request to create a file, and then to immediately close the file handle.
+                            ErrorCode errorCode;
+                            ushort fileId;
+                            if (CreateFile(_transactor, absolutePath, SmbCreateDisposition.Create, out fileId, out errorCode)) {
+                                DebugLine("File created, now closing.");
+                                CloseFileId(_transactor, fileId);
+                                DebugLine("File closed.");
+                                _dir.SendAckCreateFile();
+                            }
+                            else {
+                                _dir.SendNakCreateFile(errorCode);
+                            }
+                            break;
+                        }
+
+                        case _dir.CreateAndBindFile(char[]! in ExHeap exfileName, FileContract.Exp:Start! exp):
+                        {
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received CreateAndBindFile: path: " + Bitter.ToString2(exfileName));
+                            }
+                            string! path = Util.ToStringDelete(exfileName);
+                            DebugLine("CreateAndFindFile: filename: " + path);
+
+                            string! absolutePath = ToAbsolutePath(path);
+
+                            ushort fileId;
+                            ErrorCode errorCode;
+                            SmbTransactor.Imp new_transactor = AddTransactor(out errorCode);
+                            if (new_transactor == null) {
+                                _dir.SendNakCreateAndBindFile(exp, ErrorCode.Unknown);
+                                break;
+                            }
+
+                            if (CreateFile(_transactor, absolutePath, SmbCreateDisposition.Create, out fileId, out errorCode)) {
+                                FileExp.CreateServiceThread(exp, absolutePath, fileId, new_transactor);
+                                DebugLine("CreateAndBindFile: Successful, sending Ack");
+                                _dir.SendAckCreateAndBindFile();
+                            }
+                            else {
+                                delete new_transactor;
+                                DebugLine("CreateAndBindFile: Sending Nak, error code = " + errorCode);
+                                _dir.SendNakCreateAndBindFile(exp, ErrorCode.NotSupported);
+                            }
+                            break;
+                         }
+
+                        case _dir.GetAttributes(char[]! in ExHeap expath):
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received GetAttributes: " + Bitter.ToString2(expath));
+                            }
+
+                            string path = Util.ToStringDelete(expath);
+                            GetAttributes(_transactor, _dir, path);
+                            break;
+
+#region Requests that are not yet implemented
+
+                        case _dir.CreateLink(char[]! in ExHeap exlinkPath, char[]! in ExHeap exlinkValue):
+                        {
+                            string linkpath = Util.ToStringDelete(exlinkPath);
+                            string linkvalue = Util.ToStringDelete(exlinkValue);
+                            DebugLine("CreateLink: linkpath=" + linkpath + " linkvalue=" + linkvalue);
+                            DebugLine("CreateLink: Not implemented, refusing request");
+                            _dir.SendNakCreateLink(ErrorCode.NotSupported);
+                            break;
+                        }
+
+                        case _dir.DeleteLink(char[]! in ExHeap exlinkPath):
+                        {
+                            string linkpath = Util.ToStringDelete(exlinkPath);
+                            _dir.SendNakDeleteLink(ErrorCode.NotSupported);
+                            DebugLine("DeleteLink: linkpath=" + linkpath);
+                            DebugLine("DeleteLink: Not implemented, refusing request");
+                            break;
+                        }
+
+                        case _dir.GetLinkValue(char[]! in ExHeap exlinkpath):
+                        {
+                            string linkpath = Util.ToStringDelete(exlinkpath);
+                            DebugLine("GetLinkValue: linkpath=" + linkpath);
+                            _dir.SendNakGetLinkValue(ErrorCode.NotSupported);
+                            DebugLine("GetLinkLink: Not implemented, refusing request");
+                            break;
+                        }
+
+#endregion
+
+#region Requests that cannot be supported
+
+                        //
+                        // Channel registration doesn't really make sense for SMB.
+                        // The Singularity root directory service implements this.
+                        // There's nothing in SMB to map this to, aside from duplicating
+                        // the work of the Singularity root directory service.
+                        //
+
+                        case _dir.Register(char[]! in ExHeap expath, ServiceProviderContract.Imp:Start! imp):
+                        {
+                            string path = Util.ToStringDelete(expath);
+                            DebugLine("Register: path=" + path);
+                            _dir.SendNakRegister(imp, ErrorCode.NotSupported);
+                            break;
+                        }
+
+                        case _dir.Deregister(char[]! in ExHeap path):
+                            DebugLine("Deregister: path=" + Util.ToStringDelete(path));
+                            _dir.SendNakDeregister(ErrorCode.NotSupported);
+                            break;
+
+                        case _dir.Notify(
+                            char[]! in ExHeap path,
+                            char[]! in ExHeap pattern,
+                            bool sendExisting,
+                            NotifyContract.Imp:Start! imp):
+                            delete path;
+                            delete pattern;
+                            _dir.SendNakNotify(imp, ErrorCode.NotSupported);
+                            break;
+
+                        //
+                        // Singularity ACLs are completely different from NT ACLs.  They are not even
+                        // remotely similar, so there is no point in implementing StoreACL and QueryACL.
+                        //
+
+                        case _dir.QueryACL(char[]! in ExHeap path, bool effective):
+                            delete path;
+                            _dir.SendNakQueryACL(ErrorCode.NotSupported);
+                            break;
+
+                        case _dir.StoreACL(char[]! in ExHeap path, char[] in ExHeap acl1,
+                                                                        char[] in ExHeap acl2):
+                            delete path;
+                            delete acl1;
+                            delete acl2;
+                            _dir.SendNakStoreACL(ErrorCode.NotSupported);
+                            break;
+#endregion
+
+                        case _dir.ChannelClosed():
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Client channel has closed");
+                            }
+                            goto quit;
+                    }
+                }
+
+            quit:
+                if (TraceSwitches.ShowDirectoryMessages)
+                    DebugLine("Disconnecting...");
+
+            }
+            catch (Exception ex) {
+                DebugLine("DIRECTORY SERVICE ROUTINE THREW EXCEPTION!");
+                Util.ShowExceptionDebug(ex);
+            }
+            finally {
+                // delete _dir;
+                // delete _transactor;
+            }
+            }
+        }
+
+        public void Dispose()
+        {
+            delete _dir;
+            delete _transactor;
+        }
+
+        SmbTransactor.Imp AddTransactor(out ErrorCode errorCode)
+        {
+            expose (this)
+            {
+                _transactor.SendAddTransactor();
+
+                switch receive {
+                    case _transactor.AckAddTransactor(new_transactor):
+                        errorCode = ErrorCode.NoError;
+                        return new_transactor;
+
+                    case _transactor.NakAddTransactor():
+                        DebugLine("Mux refused to add a new transactor.");
+                        errorCode = ErrorCode.Unknown;
+                        return null;
+
+                    case _transactor.ChannelClosed():
+                        DebugLine("Failed to create transactor for child directory -- transactor closed channel!");
+                        errorCode = ErrorCode.Unknown;
+                        return null;
+                }
+            }
+        }
+
+        string! ToAbsolutePath(string! path)
+        {
+            if (path.StartsWith("/")) {
+                return path;
+            }
+            else {
+                if (_smbpath.EndsWith("/"))
+                    return _smbpath + path;
+                else
+                    return _smbpath + "/" + path;
+            }
+        }
+
+        bool CreateFile(
+            SmbTransactor.Imp! transactor,
+            string! smbpath,
+            SmbCreateDisposition disposition,
+            out ushort fileId,
+            out ErrorCode errorCode)
+        {
+            return CreateFile(
+                transactor,
+                smbpath,
+                AccessMask.MaximumAllowed,
+                0,
+                SmbFileAttributes.Normal,
+                SmbFileShareAccess.Read | SmbFileShareAccess.Write,
+                disposition,
+                SmbFileCreateOptions.None,
+                out fileId,
+                out errorCode);
+        }
+
+        bool CreateFile(
+            SmbTransactor.Imp! transactor,
+            string! smbpath,
+            AccessMask DesiredAccess,
+            long AllocationSize,
+            SmbFileAttributes FileAttributes,
+            SmbFileShareAccess ShareAccess,
+            SmbCreateDisposition CreateDisposition,
+            SmbFileCreateOptions CreateOptions,
+            out ushort fileId,
+            out ErrorCode errorCode)
+        {
+            if (smbpath.IndexOf('/') != -1)
+                smbpath = smbpath.Replace('/', '\\');
+
+            ByteWriter data = new ByteWriter();
+            data.WriteStringUnicode(smbpath, false);
+
+            int requestLength = sizeof(SmbNtCreateAndXRequest) + data.Length;
+
+            byte[]! in ExHeap requestEncoded = new[ExHeap] byte[requestLength];
+            ref SmbNtCreateAndXRequest request = ref requestEncoded[0];
+
+            request.Header.Prepare(SmbCommand.NtCreateAndX, 24);
+
+            request.AndXCommand = 0xff; // no andx request
+            request.AndXReserved = 0;
+            request.AndXOffset = 0;
+            request.Reserved = 0;
+            request.NameLength = (ushort)data.Length;
+            request.Flags = 0x10; // 0x10 = request extended errors
+            request.RootDirectoryFid = 0;
+            request.DesiredAccess = (uint)DesiredAccess;
+            request.AllocationSize = (ulong)AllocationSize;
+            request.ExtFileAttributes = (uint)FileAttributes;
+            request.ShareAccess = (uint)ShareAccess;
+            request.CreateDisposition = (uint)CreateDisposition;
+            request.CreateOptions = (uint)CreateOptions | 0x40; // 0x40 == must be a file
+            request.ImpersonationLevel = (uint)SmbImpersonationLevel.Impersonation;
+            request.SecurityFlags = 3; // 1 = dynamic security tracking, 2 = only enable aspects avail to server
+            request.ByteCount = (ushort)data.Length;
+
+            data.CopyTo(requestEncoded, sizeof(SmbNtCreateAndXRequest));
+
+            transactor.SendRequest(requestEncoded);
+
+            switch receive {
+                case transactor.Response(responseEncoded):
+                    try {
+                        ref SmbHeader responseHeader = ref responseEncoded[0];
+                        if (responseHeader.IsError) {
+                            DebugLine("Server returned error code for CreateAndX request: " + responseHeader.GetErrorText());
+                            errorCode = GetDsErrorFromSmb(ref responseHeader);
+                            fileId = 0;
+                            return false;
+                        }
+
+                        ref SmbNtCreateAndXResponse response = ref responseEncoded[0];
+                        if (TraceSwitches.ShowIncrediblyNoisyDetail) {
+                            DebugLine("NtCreateFile response:");
+                            DebugLine("    Fid:                  " + response.Fid);
+                            DebugLine("    CreateAction:         " + response.CreateAction);
+                            DebugLine("    CreationTime:         " + response.CreationTime);
+                            DebugLine("    LastAccessTime:       " + response.LastAccessTime);
+                            DebugLine("    LastWriteTime:        " + response.LastWriteTime);
+                            DebugLine("    ChangeTime:           " + response.ChangeTime);
+                            DebugLine("    ExtFileAttributes:    {0:x8}", response.ExtFileAttributes);
+                            DebugLine("    AllocationSize:       " + response.AllocationSize);
+                            DebugLine("    EndOfFile:            " + response.EndOfFile);
+                            DebugLine("    FileType:             " + response.FileType);
+                            DebugLine("    DeviceState:          " + response.DeviceState);
+                            DebugLine("    Directory:            " + response.Directory);
+                            DebugLine("    ByteCount:            " + response.ByteCount);
+                        }
+
+                        fileId = response.Fid;
+                        errorCode = ErrorCode.NoError;
+                    }
+                    finally {
+                        delete responseEncoded;
+                    }
+                    return true;
+
+                case transactor.RequestFailed(transactionError):
+                    fileId = 0;
+                    errorCode = ErrorCode.Unknown;
+                    return false;
+
+                case transactor.ChannelClosed():
+                    fileId = 0;
+                    errorCode = ErrorCode.Unknown;
+                    return false;
+            }
+        }
+
+        bool CheckDirectoryExists(string! absolutePath)
+        {
+        //
+        //  ByteWriter! data = new ByteWriter();
+        //  data.WriteStringUnicode(absolutePath, true);
+//
+        //  int messageLength = sizeof(SmbCheckDirectoryRequest) + data.Length;
+        //  byte[] in ExHeap request_encoded = new[ExHeap] byte[messageLength];
+        //  ref SmbCheckDirectoryRequest request = ref request_encoded[0];
+//
+        //  request.TransactionHeader.Header.Prepare(SmbCommand.CheckDirectory, 0);
+        //  request.TransactionHeader.TotalParameterCount = 0;
+        //  request.TransactionHeader.TotalDataCount = (ushort)data.Length;
+        //  request.TransactionHeader.MaxParameterCount = 50;
+//
+        //  request.TransactionHeader.BufferFormat = 4;
+        //  data.CopyTo(request_encoded, sizeof(SmbCheckDirectoryRequest));
+//
+        //  transactor.SendRequest(request_encoded, messageLength);
+//
+        //  byte[]! in ExHeap response_encoded = WaitResponse(dir, transactor);
+//
+        //  delete response_encoded;
+        //    
+            DebugLine("CheckDirectoryExists - not yet implemented, returning true");
+            return true;
+        }
+
+        //
+        //This method implements directory enumeration.  It uses the SMB request
+        //TRANS2_FIND_FIRST2 to search a directory.
+        //
+        void EnumerateDirectory(SmbTransactor.Imp! transactor, DirectoryServiceContract.Exp:Enumerate! dir)
+        {
+            byte[]! in ExHeap request = EncodeFindFirst2Request(_path);
+            transactor.SendRequest(request);
+
+            ushort searchId = 0;
+            uint resumeKey = 0;
+            bool first = true;
+
+            bool moreRecords;
+
+            for (;;) {
+                // At this point, we are waiting for a response from either a FIND FIRST or a
+                // FIND NEXT request.  Since most of the processing is the same, we combine it here.
+
+                byte[]! in ExHeap response = WaitResponse(dir, transactor, first ? "FIND FIRST" : "FIND CLOSE");
+                try {
+
+                    ref SmbHeader header = ref response[0];
+
+                    if (header.IsError) {
+                        NtStatus status = header.GetNtStatus();
+
+                        if (status == NtStatus.NoSuchFile) {
+                            DebugLine("Received STATUS_NO_SUCH_FILE from server.");
+                            dir.SendEnumerationTerminated(ErrorCode.NoError);
+                        }
+                        else {
+                            DebugLine("FIND_FIRST2 request failed.  Received error from server.");
+                            dir.SendEnumerationTerminated(GetDsErrorFromSmb(ref header));
+                        }
+                        return;
+                    }
+
+                    // DebugLine("Received successful response to FIND FIRST request.");
+
+                    // Next, scan through the response, enumerate all entries, and convert to
+                    // EnumerationRecords[], and dir.SendEnumerationRecords.  Then wait for
+                    // the next message from dir, then decide what to do next.
+
+                    ushort responseSearchId;
+                    EnumerationRecords[] in ExHeap records = ExtractDirectoryEntries(response, out moreRecords, out responseSearchId);
+                    if (records == null) {
+                        // DebugLine("No enumeration records returned.");
+                        dir.SendEnumerationTerminated(ErrorCode.NoError);
+                        return;
+                    }
+
+                    if (first)
+                        searchId = responseSearchId;
+
+                    // DebugLine("Sending enumeration records to client, count = " + records.Length.ToString());
+                    dir.SendEnumerationEntries(records, moreRecords);
+                    // Now 'dir' is in the EnumerateAck state.
+                    // Valid in messages are: ReadEnumeration, EndEnumeration.
+                }
+                finally {
+                    delete response;
+                }
+
+                switch receive {
+                    case dir.ChannelClosed():
+                        if (TraceSwitches.ShowDirectoryMessages) {
+                            DebugLine("Directory client has closed channel.");
+                        }
+                        if (moreRecords) {
+                            FindClose(transactor, searchId);
+                        }
+                        return;
+
+                    case transactor.ChannelClosed():
+                        DebugLine("SMB transactor has closed channel.");
+                        throw new Exception("SMB transactor has closed channel.");
+
+                    case dir.ReadEnumeration():
+                        if (moreRecords) {
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received ReadEnumeration.");
+                            }
+                        }
+                        else {
+                            if (TraceSwitches.ShowDirectoryMessages) {
+                                DebugLine("Received ReadEnumeration, but we already told the client there aren't any more!");
+                                DebugLine("Silly client.  Sending EnumerationEntries with more = false again.");
+                            }
+                            for (;;) {
+                                dir.SendEnumerationEntries(new[ExHeap] EnumerationRecords[0], false);
+                                switch receive {
+                                case dir.EndEnumeration():
+                                    if (TraceSwitches.ShowDirectoryMessages) {
+                                        DebugLine("Received EndEnumeration");
+                                    }
+                                    return;
+
+
+                                case dir.ChannelClosed():
+                                    if (TraceSwitches.ShowDirectoryMessages) {
+                                        DebugLine("Directory channel has closed");
+                                    }
+                                    return;
+
+                                case dir.ReadEnumeration():
+                                    if (TraceSwitches.ShowDirectoryMessages) {
+                                        DebugLine("Received ReadEnumeration");
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+
+                    case dir.EndEnumeration():
+                        if (TraceSwitches.ShowDirectoryMessages) {
+                            DebugLine("Received EndEnumeration.");
+                        }
+                        if (moreRecords) {
+                            DebugLine("Local client ended directory enumeration before the end of the records.  Sending FIND CLOSE.");
+                            FindClose(transactor, searchId);
+                        }
+                        return;
+                }
+
+
+                // At this point, we know that the server still has more enumeration records for us.
+                // So we need to loop, sending FIND NEXT requests to the server, and supplying the
+                // search handle that we received from the FIND FIRST response.
+
+
+                // DebugLine("Sending FIND NEXT request, search id = " + searchId);
+                byte[]! in ExHeap find_next_request = EncodeFindNextRequest(searchId, resumeKey);
+                transactor.SendRequest(find_next_request);
+            }
+        }
+
+        void FindClose(SmbTransactor.Imp! transactor, ushort searchId)
+        {
+            DebugLine("FindClose: not yet implemented");
+            //
+            //byte[]! in ExHeap request = EncodeFindCloseRequest(searchId);
+            //transactor.SendRequest(request);
+            //byte[]! in ExHeap response = WaitResponse(transactor, "FIND CLOSE");
+            //delete response;
+            //
+        }
+
+        EnumerationRecords[] in ExHeap ExtractDirectoryEntries(byte[]! in ExHeap smbresponse, out bool moreRecords, out ushort searchId)
+        {
+            ref SmbTransaction2Response response = ref smbresponse[0];
+
+            int parameterOffset = response.Transaction.ParameterOffset;
+            int parameterCount = response.Transaction.TotalParameterCount;
+            assert parameterCount >= 0;
+            assert parameterOffset >= 0;
+
+            if (parameterCount == 0) {
+                DebugLine("No directory entries.");
+                moreRecords = false;
+                searchId = 0;
+                return null;
+            }
+
+            if (parameterOffset + SmbHeader.FramingHeaderLength + parameterCount > smbresponse.Length) {
+                DebugLine("Message is invalid.  The combination of ParameterCount and ParameterOffset cannot lie within the SMB message.");
+                moreRecords = false;
+                searchId = 0;
+                return null;
+            }
+
+            ref SmbFindFirstResponseParametersParameters parameters = ref smbresponse[parameterOffset + SmbHeader.FramingHeaderLength];
+            if (TraceSwitches.ShowIncrediblyNoisyDetail) {
+                DebugLine("FindFirst / FindNext Response Parameters:");
+                DebugLine("    SearchId:            " + parameters.SearchId);
+                DebugLine("    SearchCount:         " + parameters.SearchCount);
+                DebugLine("    EndOfSearch:         " + parameters.EndOfSearch);
+                DebugLine("    EaErrorOffset:       " + parameters.EaErrorOffset);
+                DebugLine("    LastNameOffset:      " + parameters.LastNameOffset);
+            }
+
+            int offset = response.Transaction.DataOffset + SmbHeader.FramingHeaderLength;
+            int limit = offset + response.Transaction.TotalDataCount;
+
+            if (limit > smbresponse.Length) {
+                DebugLine("Message (Find First / Next Response) is invalid.  The combination of DataOffset and DataCount exceeds the length of the message.");
+                moreRecords = false;
+                searchId = 0;
+                return null;
+            }
+
+            ArrayList list = new ArrayList();
+
+            if (TraceSwitches.ShowIncrediblyNoisyDetail) {
+                DebugLine("Enumeration entries (hopefully): offset 0x{0:x} limit 0x{1:x}", offset, limit);
+                Util.DumpBuffer(smbresponse, offset, limit - offset);
+            }
+
+            while (offset < limit) {
+                if (offset + sizeof(SmbFindFileDirectoryInfo) > limit) {
+                    DebugLine("Invalid data near the end of the directory enumeration data.");
+                    DebugLine("Too few bytes to be a real SmbFindFileDirectoryInfo.");
+                    break;
+                }
+
+                ref SmbFindFileDirectoryInfo entry = ref smbresponse[offset];
+
+                if (TraceSwitches.ShowIncrediblyNoisyDetail) {
+                    DebugLine("    Directory Entry:");
+                    DebugLine("        NextEntryOffset:     " + entry.NextEntryOffset);
+                    DebugLine("        FileIndex:           " + entry.FileIndex);
+                    DebugLine("        CreationTime:        " + entry.CreationTime);
+                    DebugLine("        LastAccessTime:      " + entry.LastAccessTime);
+                    DebugLine("        LastWriteTime:       " + entry.LastWriteTime);
+                    DebugLine("        ChangeTime:          " + entry.ChangeTime);
+                    DebugLine("        EndOfFile:           " + entry.EndOfFile);
+                    DebugLine("        AllocationSize:      " + entry.AllocationSize);
+                    DebugLine("        ExtFileAttributes:   {0:x8}", entry.ExtFileAttributes);
+                    DebugLine("        FileNameLength:      " + entry.FileNameLength);
+                }
+
+                byte[]! raw_name = new byte[entry.FileNameLength];
+                int nameOffset = offset + SmbFindFileDirectoryInfo.SizeOf;
+                Bitter.ToByteArray(smbresponse, nameOffset, (int)entry.FileNameLength, raw_name, 0);
+                string! name = System.Text.Encoding.Unicode.GetString(raw_name);
+
+                if (TraceSwitches.ShowIncrediblyNoisyDetail) {
+                    DebugLine("        Name raw bytes:      ");
+                    Util.DumpBuffer(raw_name);
+                    DebugLine("        Name:                " + name);
+                }
+
+                bool is_dir = (entry.ExtFileAttributes & 0x10) != 0;
+
+                DirEntry dentry = new DirEntry(name, is_dir ? NodeType.Directory : NodeType.File);
+                list.Add(dentry);
+
+                // DebugStub.Break();
+
+                if (entry.NextEntryOffset == 0)
+                    break;
+
+                if (entry.NextEntryOffset < SmbFindFileDirectoryInfo.SizeOf + entry.FileNameLength) {
+                    DebugLine("WARNING: Directory enumeration entry contains illegal NextEntryOffset; the value is too small.  No more enumeration entries will be parsed.");
+                    DebugLine("This is occurring due to a known bug/limitation -- we don't properly support TRANSACTION2 bodies that span multiple SMB messages.");
+                    DebugStub.Break();
+                    break;
+                }
+
+                offset += (int)entry.NextEntryOffset;
+            }
+
+            int recordCount = list.Count;
+            EnumerationRecords[] in ExHeap records = new[ExHeap] EnumerationRecords[recordCount];
+            for (int i = 0; i < recordCount; i++) {
+                DirEntry! direntry = (!)(DirEntry)list[i];
+
+                expose(records[i])
+                {
+                    char[]! in ExHeap previousPath = records[i].Path;
+                    if (previousPath != null)
+                        delete previousPath;
+
+                    records[i].Path = Bitter.FromString2(direntry.Name);
+                    records[i].Type = direntry.Type;
+                }
+            }
+
+            moreRecords = (parameters.EndOfSearch == 0);
+            searchId = parameters.SearchId;
+
+            return records;
+        }
+
+        class DirEntry
+        {
+            public string! Name;
+            public NodeType Type;
+
+            public DirEntry(string! name, NodeType type)
+            {
+                this.Name = name;
+                this.Type = type;
+            }
+        }
+
+        const char SingularityPathSeparator = '/';
+        const char NtPathSeparator = '\\';
+        const string SingularityPathSeparatorString = "/";
+        const string NtPathSeparatorString = "\\";
+
+        static byte[]! in ExHeap EncodeFindFirst2Request(string! path)
+        {
+            string! pattern = path.Replace(SingularityPathSeparator, NtPathSeparator);
+            if (!pattern.StartsWith(NtPathSeparatorString))
+                pattern = NtPathSeparatorString + pattern;
+
+            if (pattern.EndsWith(NtPathSeparatorString))
+                pattern += "*";
+            else
+                pattern += "\\*";
+
+            // 'data' contains the following:
+            //      STRING Name[];                   must be empty
+            //      byte Pad[];                      pad to alignment
+            //      byte Parameters[];               not sure
+            //      byte Pad1[];                     pad to alignment
+            //
+
+            ByteWriter parameters = new ByteWriter();
+            // USHORT SearchAttributes;
+            parameters.WriteUInt16Le((ushort)(
+                SmbSearchAttributes.Hidden
+                | SmbSearchAttributes.System
+                | SmbSearchAttributes.Directory));
+            // SearchCount
+            parameters.WriteUInt16Le((ushort)1000); // max number of entries to return
+            // USHORT Flags
+            parameters.WriteUInt16Le((ushort)(
+                SmbSearchFlags.CloseIfLastResponse
+                | SmbSearchFlags.ReturnResumeKeysForEachEntry));
+            // USHORT InformationLevel
+            parameters.WriteUInt16Le((ushort)SmbSearchInformationLevel.FileFullDirectoryInfo);
+            // ULONG SearchStorageType
+            parameters.WriteUInt32Le((uint)0);
+            // parameters.WriteZero(1); // alignment padding
+            parameters.WriteStringUnicode(pattern, true);
+
+            //ByteWriter data = new ByteWriter();
+            // data.Write(parameters);
+
+            int trantailOffset = sizeof(SmbHeader) + sizeof(SmbTransaction2RequestHeader);
+
+            ByteWriter trantail = new ByteWriter();
+            trantail.WriteUInt16Le(0); // ByteCount
+            trantail.WriteZero(2); // STRING[] name; always empty
+            int parametersOffset = trantailOffset + trantail.Position;
+            trantail.Write(parameters);
+
+            int requestLength = trantailOffset + trantail.Length;
+            byte[] in ExHeap request_encoded = new[ExHeap] byte[requestLength];
+
+            ref SmbHeader header = ref request_encoded[0];
+            header.Prepare(SmbCommand.Transaction2, 15);
+
+            ref SmbTransaction2RequestHeader transaction = ref request_encoded[sizeof(SmbHeader)];
+            transaction.TotalDataCount = 0; // total size of extended attr list
+            transaction.SetupCount = 1;
+            transaction.TotalParameterCount = (ushort)parameters.Length;
+            transaction.MaxParameterCount = 10;
+            transaction.MaxDataCount = 0x4000;
+            transaction.MaxSetupCount = 0;
+            transaction.Reserved = 0;
+            transaction.Flags = 0;
+            transaction.Timeout = 0;
+            transaction.Reserved2 = 0;
+            transaction.ParameterCount = (ushort)parameters.Length;
+            transaction.ParameterOffset = (ushort)(parametersOffset - 4); // -4 compensates for SMB framing header
+            transaction.DataCount = 0;
+            transaction.DataOffset = 0;
+            transaction.SetupCount = 1;
+            transaction.Setup0 = (ushort)SmbTransaction2Code.FindFirst;
+
+            request_encoded[parametersOffset] = (byte)(parameters.Length & 0xff);
+            request_encoded[parametersOffset] = (byte)(parameters.Length >> 8);
+            trantail.CopyTo(request_encoded, trantailOffset);
+
+            return request_encoded;
+        }
+
+        static byte[]! in ExHeap EncodeFindNextRequest(ushort searchId, uint resumeKey)
+        {
+            // 'data' contains the following:
+            //      STRING Name[];                   must be empty
+            //      byte Pad[];                      pad to alignment
+            //      byte Parameters[];               not sure
+            //      byte Pad1[];                     pad to alignment
+            //
+
+            ByteWriter parameters = new ByteWriter();
+            // USHORT Sid; // search ID
+            parameters.WriteUInt16Le(searchId);
+            // SearchCount
+            parameters.WriteUInt16Le((ushort)1000); // max number of entries to return
+            // USHORT InformationLevel
+            parameters.WriteUInt16Le((ushort)SmbSearchInformationLevel.FileFullDirectoryInfo);
+            parameters.WriteUInt32Le(resumeKey);
+            // USHORT Flags
+            parameters.WriteUInt16Le((ushort)(
+                SmbSearchFlags.CloseIfLastResponse
+                | SmbSearchFlags.ReturnResumeKeysForEachEntry));
+            // STRING FileName;
+            parameters.WriteStringUnicode("", true);
+
+            //ByteWriter data = new ByteWriter();
+            // data.Write(parameters);
+
+            int trantailOffset = sizeof(SmbHeader) + sizeof(SmbTransaction2RequestHeader);
+
+            ByteWriter trantail = new ByteWriter();
+            trantail.WriteUInt16Le(0); // ByteCount
+            trantail.WriteZero(2); // STRING[] name; always empty
+            int parametersOffset = trantailOffset + trantail.Position;
+            trantail.Write(parameters);
+
+            int requestLength = trantailOffset + trantail.Length;
+            byte[] in ExHeap request_encoded = new[ExHeap] byte[requestLength];
+
+            ref SmbHeader header = ref request_encoded[0];
+            header.Prepare(SmbCommand.Transaction2, 15);
+
+            ref SmbTransaction2RequestHeader transaction = ref request_encoded[sizeof(SmbHeader)];
+            transaction.TotalDataCount = 0; // total size of extended attr list
+            transaction.SetupCount = 1;
+            transaction.TotalParameterCount = (ushort)parameters.Length;
+            transaction.MaxParameterCount = 10;
+            transaction.MaxDataCount = 0x4000;
+            transaction.MaxSetupCount = 0;
+            transaction.Reserved = 0;
+            transaction.Flags = 0;
+            transaction.Timeout = 0;
+            transaction.Reserved2 = 0;
+            transaction.ParameterCount = (ushort)parameters.Length;
+            transaction.ParameterOffset = (ushort)(parametersOffset - 4); // -4 compensates for SMB framing header
+            transaction.DataCount = 0;
+            transaction.DataOffset = 0;
+            transaction.SetupCount = 1;
+            transaction.Setup0 = (ushort)SmbTransaction2Code.FindNext;
+
+            request_encoded[parametersOffset] = (byte)(parameters.Length & 0xff);
+            request_encoded[parametersOffset] = (byte)(parameters.Length >> 8);
+            trantail.CopyTo(request_encoded, trantailOffset);
+
+            return request_encoded;
+        }
+
+        byte[]! in ExHeap WaitResponse(DirectoryServiceContract.Exp! dir, SmbTransactor.Imp! transactor, string! annotation)
+        {
+            switch receive {
+                case dir.ChannelClosed():
+                    throw new Exception("The directory service client has closed its channel.");
+
+                case transactor.Response(byte[]! in ExHeap response_encoded):
+                    return response_encoded;
+
+                case transactor.ChannelClosed():
+                    throw new Exception("An internal error has occurred.  The SMB multiplexer closed the SmbTransactor channel before replying.");
+
+                case transactor.RequestFailed(SmbTransactionError error):
+                    throw new Exception("The SMB transaction failed.  Error code: " + error.ToString());
+            }
+        }
+
+        byte[]! in ExHeap WaitResponse(SmbTransactor.Imp! transactor, string! annotation)
+        {
+            switch receive {
+                case transactor.Response(byte[]! in ExHeap response_encoded):
+                    return response_encoded;
+
+                case transactor.ChannelClosed():
+                    throw new Exception("An internal error has occurred.  The SMB multiplexer closed the SmbTransactor channel before replying.");
+
+                case transactor.RequestFailed(error):
+                    throw new Exception("The SMB transaction failed.  Error code: " + error.ToString());
+            }
+        }
+
+        void CreateDirectory(DirectoryServiceContract.Exp! dir, SmbTransactor.Imp! transactor, string! singpath)
+        {
+            if (ContainsSpecialChars(singpath)) {
+                dir.SendNakCreateDirectory(ErrorCode.BadArguments);
+                return;
+            }
+
+            string! smbpath = ToAbsoluteSmbPath(singpath);
+
+            ByteWriter parameters = new ByteWriter();
+            parameters.WriteUInt32Le(0); // reserved
+            parameters.WriteStringUnicode(smbpath, true);
+
+            int parameterOffset = Util.Align4(sizeof(SmbCreateDirectoryRequest));
+            int requestLength = parameterOffset + parameters.Length;
+            byte[] in ExHeap requestEncoded = new[ExHeap] byte[requestLength];
+
+            ref SmbCreateDirectoryRequest request = ref requestEncoded[0];
+            request.Header.Prepare(SmbCommand.Transaction2, 15);
+            request.Transaction.MaxSetupCount = 0;
+            request.Transaction.SetupCount = 1;
+            request.Transaction.TotalParameterCount = (ushort)parameters.Length;
+            request.Transaction.ParameterCount = (ushort)parameters.Length;
+            request.Transaction.ParameterOffset = (ushort)(parameterOffset - SmbHeader.FramingHeaderLength);
+            request.Transaction.MaxParameterCount = (ushort)100;
+            request.Transaction.Setup0 = (ushort)SmbTransaction2Code.CreateDirectory;
+
+            parameters.CopyTo(requestEncoded, sizeof(SmbCreateDirectoryRequest));
+
+            transactor.SendRequest(requestEncoded);
+
+            switch receive {
+                case transactor.Response(responseEncoded):
+                    ref SmbHeader response = ref responseEncoded[0];
+                    if (response.IsError) {
+                        DebugLine("FAILED to create directory: " + response.GetErrorText());
+                        ErrorCode errorCode = GetDsErrorFromSmb(ref response);
+                        dir.SendNakCreateDirectory(errorCode);
+                    }
+                    else {
+                        DebugLine("Successfully created directory: " + singpath);
+                        dir.SendAckCreateDirectory();
+                    }
+                    delete responseEncoded;
+                    break;
+
+                case transactor.RequestFailed(error):
+                    dir.SendNakCreateDirectory(ErrorCode.Unknown);
+                    break;
+
+                case transactor.ChannelClosed():
+                    dir.SendNakCreateDirectory(ErrorCode.Unknown);
+                    break;
+            }
+        }
+
+        string! ToAbsoluteSmbPath(string! path)
+        {
+            string! path_as_smb = path.Replace(SingularityPathSeparator, NtPathSeparator);
+
+            if (path_as_smb.StartsWith(NtPathSeparatorString)) {
+                // The path is already in absolute form.
+                return path_as_smb;
+            }
+            else {
+                // The path is a relative path.  Qualify it using the path of the current directory.
+                if (_smbpath.EndsWith(NtPathSeparatorString))
+                    return _smbpath + path_as_smb;
+                else
+                    return _smbpath + NtPathSeparatorString + path_as_smb;
+            }
+        }
+
+        static bool ContainsSpecialChars(string! path)
+        {
+            return path.IndexOfAny(_specialChars) != -1;
+        }
+
+        static readonly char[]! _specialChars = { '<', '>', '*', '?', '"' };
+
+        void DeleteFile(DirectoryServiceContract.Exp! dir, SmbTransactor.Imp! transactor, string! singpath)
+        {
+            // The SMB protocol actually allows for wildcards in the DELETE FILE request.
+            // However, I don't want to support this until DirectoryServiceContract explicitly
+            // provides for wildcards.
+            if (ContainsSpecialChars(singpath)) {
+                dir.SendNakDeleteFile(ErrorCode.BadArguments);
+                return;
+            }
+
+            string! smbpath = ToAbsoluteSmbPath(singpath);
+
+            ByteWriter data = new ByteWriter();
+            data.WriteStringUnicode(smbpath, true);
+
+            int requestLength = sizeof(SmbDeleteFileRequest) + data.Length;
+            byte[]! in ExHeap requestEncoded = new[ExHeap] byte[requestLength];
+
+            ref SmbDeleteFileRequest request = ref requestEncoded[0];
+            request.Header.Prepare(SmbCommand.DeleteFile, SmbDeleteFileRequest.ParameterCount);
+            request.SearchAttributes = 0;
+            request.ByteCount = (ushort)data.Length;
+            request.BufferFormat = 4;
+
+            data.CopyTo(requestEncoded, sizeof(SmbDeleteFileRequest));
+
+            transactor.SendRequest(requestEncoded);
+
+            switch receive {
+                case transactor.Response(byte[]! in ExHeap responseEncoded):
+                    ref SmbHeader response = ref responseEncoded[0];
+                    if (response.IsError) {
+                        // DebugLine("Server failed DELETE FILE request: " + response.GetErrorText());
+                        ErrorCode errorCode = GetDsErrorFromSmb(ref response);
+                        dir.SendNakDeleteFile(errorCode);
+                    }
+                    else {
+                        // DebugLine("File successfully deleted.");
+                        dir.SendAckDeleteFile();
+                    }
+                    delete responseEncoded;
+                    break;
+
+                case transactor.RequestFailed(SmbTransactionError error):
+                    dir.SendNakDeleteFile(ErrorCode.Unknown);
+                    break;
+
+                case transactor.ChannelClosed():
+                    DebugLine("Transactor closed while waiting for response.");
+                    dir.SendNakDeleteFile(ErrorCode.Unknown);
+                    break;
+            }
+        }
+
+        void DeleteDirectory(DirectoryServiceContract.Exp! dir, SmbTransactor.Imp! transactor, string! singpath)
+        {
+            if (ContainsSpecialChars(singpath)) {
+                dir.SendNakDeleteDirectory(ErrorCode.BadArguments);
+                return;
+            }
+
+            string! smbpath = ToAbsoluteSmbPath(singpath);
+
+            ByteWriter data = new ByteWriter();
+            data.WriteStringUnicode(smbpath, true);
+
+            int requestLength = sizeof(SmbDeleteDirectoryRequest) + data.Length;
+            byte[]! in ExHeap requestEncoded = new[ExHeap] byte[requestLength];
+
+            ref SmbDeleteFileRequest request = ref requestEncoded[0];
+            request.Header.Prepare(SmbCommand.DeleteDirectory, SmbDeleteDirectoryRequest.ParameterCount);
+            request.ByteCount = (ushort)data.Length;
+            request.BufferFormat = 4;
+
+            data.CopyTo(requestEncoded, sizeof(SmbDeleteDirectoryRequest));
+            transactor.SendRequest(requestEncoded);
+
+            switch receive {
+                case transactor.Response(byte[]! in ExHeap responseEncoded):
+                    ref SmbHeader response = ref responseEncoded[0];
+                    if (response.IsError) {
+                        DebugLine("Server failed DELETE FILE request: " + response.GetErrorText());
+                        ErrorCode errorCode = GetDsErrorFromSmb(ref response);
+                        dir.SendNakDeleteFile(errorCode);
+                    }
+                    else {
+                        DebugLine("File successfully deleted.");
+                        dir.SendAckDeleteFile();
+                    }
+                    delete responseEncoded;
+                    break;
+
+                case transactor.RequestFailed(SmbTransactionError error):
+                    dir.SendNakDeleteFile(ErrorCode.Unknown);
+                    break;
+
+                case transactor.ChannelClosed():
+                    DebugLine("Transactor closed while waiting for response.");
+                    dir.SendNakDeleteFile(ErrorCode.Unknown);
+                    break;
+            }
+        }
+
+        void CloseFileId(SmbTransactor.Imp! transactor, ushort fileId)
+        {
+            int requestLength = sizeof(SmbCloseFileRequest);
+            byte[]! in ExHeap request_encoded = new[ExHeap] byte[requestLength];
+            ref SmbCloseFileRequest request = ref request_encoded[0];
+            request.Header.Prepare(SmbCommand.CloseFile, 3);
+            request.Fid = fileId;
+            request.ByteCount = 0;
+
+            transactor.SendRequest(request_encoded);
+
+            switch receive {
+                case transactor.Response(responseEncoded):
+                    delete responseEncoded;
+                    break;
+
+                case transactor.RequestFailed(error):
+                    DebugLine("The CLOSE FILE request has failed.  The server returned an error code: " + error);
+                    break;
+
+                case transactor.ChannelClosed():
+                    DebugLine("Failed to execute CLOSE FILE request.  The transactor channel has closed.");
+                    break;
+            }
+        }
+
+
+        static ErrorCode GetDsErrorFromSmb(ref SmbHeader header)
+        {
+            if (!header.IsError)
+                return ErrorCode.NoError;
+
+            // -XXX- This is a placeholder for some more sophisticated mapping
+            // -XXX- from SMB error codes to Singularity error codes.
+
+            NtStatus status = header.GetNtStatus();
+            switch (status) {
+                case NtStatus.ObjectNameNotFound: return ErrorCode.NotFound;
+                case NtStatus.ObjectPathNotFound: return ErrorCode.NotFound;
+
+                default:
+                    return ErrorCode.Unknown;
+            }
+
+        }
+
+        void GetAttributes(SmbTransactor.Imp! transactor, DirectoryServiceContract.Exp! dir, string! path)
+        {
+            string! smbpath = ToAbsoluteSmbPath(path);
+
+            ushort informationLevel = 0x102;
+
+            ByteWriter parameters = new ByteWriter();
+            parameters.WriteUInt16Le(informationLevel);
+            parameters.WriteUInt32Le(0); // reserved
+            parameters.WriteStringUnicode(smbpath, true);
+
+            int requestLength = Util.Align4(sizeof(SmbTransaction2Request) + sizeof(ushort));
+            int parameterOffset = requestLength;
+            requestLength += parameters.Length;
+
+            byte[] in ExHeap requestEncoded = new[ExHeap] byte[requestLength];
+            ref SmbTransaction2Request request = ref requestEncoded[0];
+
+            request.Header.Prepare(SmbCommand.Transaction2, 15);
+            request.Transaction.TotalParameterCount = (ushort)parameters.Length;
+            request.Transaction.ParameterCount = (ushort)parameters.Length;
+            request.Transaction.ParameterOffset = (ushort)(parameterOffset - SmbHeader.FramingHeaderLength);
+            request.Transaction.MaxParameterCount = 1000;
+            request.Transaction.MaxDataCount = 1000;
+            request.Transaction.SetupCount = 1;
+            request.Transaction.Setup0 = (ushort)SmbTransaction2Code.QueryPathInformation;
+            ref ushort ByteCount = ref requestEncoded[sizeof(SmbTransaction2Request)];
+            ByteCount = 0;
+
+            parameters.CopyTo(requestEncoded, parameterOffset);
+
+            transactor.SendRequest(requestEncoded);
+
+            switch receive {
+                case transactor.Response(responseEncoded):
+                    try {
+                        ref SmbHeader header = ref responseEncoded[0];
+                        if (header.IsError) {
+                            DebugLine("GetAttributes: received error response: " + header.GetErrorText());
+                            dir.SendNakGetAttributes(GetDsErrorFromSmb(ref header));
+                            return;
+                        }
+
+                        if (responseEncoded.Length < sizeof(SmbTransaction2Response)) {
+                            DebugLine("GetAttributes: Response is too small to be a valid response!");
+                            dir.SendNakGetAttributes(ErrorCode.Unknown);
+                            return;
+                        }
+
+                        ref SmbTransaction2Response response = ref responseEncoded[0];
+                        if (response.Transaction.DataOffset < sizeof(SmbTransaction2Response)
+                            || (response.Transaction.DataOffset + response.Transaction.TotalDataCount + SmbHeader.FramingHeaderLength > responseEncoded.Length)
+                            || (response.Transaction.TotalDataCount < sizeof(SmbQueryFileStandardInfo))) {
+                            DebugLine("Response has invalid fields (DataOffset and/or DataCount)");
+                            dir.SendNakGetAttributes(ErrorCode.Unknown);
+                            return;
+                        }
+
+                        ref SmbQueryFileStandardInfo info = ref responseEncoded[SmbHeader.FramingHeaderLength + response.Transaction.DataOffset];
+
+                        if (TraceSwitches.ShowIncrediblyNoisyDetail) {
+                            DebugLine("GetAttributes response:");
+                            DebugLine("    AllocationSize:         " + info.AllocationSize);
+                            DebugLine("    EndOfFile:              " + info.EndOfFile);
+                            DebugLine("    NumberOfLinks:          " + info.NumberOfLinks);
+                            DebugLine("    DeletePending:          " + (info.DeletePending != 0));
+                            DebugLine("    Directory:              " + (info.Directory != 0));
+                        }
+
+                        NodeType nodeType = (info.Directory != 0) ? NodeType.Directory : NodeType.File;
+
+                        FileAttributesRecord fileAttributes = 
+                            new FileAttributesRecord();
+                        fileAttributes.Type = nodeType;
+                        fileAttributes.FileSize = info.EndOfFile;
+                        // TODO: FIXFIX what about timestamp info
+                        
+                        dir.SendAckGetAttributes(fileAttributes);
+                    }
+                    finally {
+                        delete responseEncoded;
+                    }
+                    return;
+            }
+        }
+
+        void DebugLine(string msg)
+        {
+            SmbDebug.WriteLine(_debugprefix + msg);
+        }
+
+        void DebugLine(string format, params object[] args)
+        {
+            SmbDebug.WriteLine(_debugprefix + String.Format(format, args));
+        }
+
+
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+    }
+}

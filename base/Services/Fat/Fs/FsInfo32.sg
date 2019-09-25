@@ -1,0 +1,101 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FsInfo32.sg
+//
+//  Note:
+//
+//  Based on:
+//  "Microsoft Extensible Firmware Initiative FAT32 File System Specification",
+//  Version 1.03, December 6, 2000, Microsoft Corporation.
+//
+
+using System.Runtime.InteropServices;
+
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <remarks>
+    /// FAT32 FsInfo sector structure.  The FsInfo structure
+    /// occupies a whole sector and contains information on the
+    /// number of free blocks and the location of the first free
+    /// block.
+    /// </remarks>
+    [StructLayout(LayoutKind.Explicit, Pack = 1, Size = 512)]
+    internal pointerfree struct FsInfo32
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Constants
+
+        internal const int  Length = 512;
+
+        internal const uint ExpectedLeadingSignature   = 0x41615252;
+        internal const uint ExpectedStructureSignature = 0x61417272;
+        internal const uint ExpectedTrailingSignature  = 0xaa550000;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Members
+
+        [FieldOffset(000)] private uint leadingSignature;      // 0
+        // Reserved1                                           // 4..483
+        [FieldOffset(484)] private uint structureSignature;    // 484..487
+        [FieldOffset(488)] private uint freeCount;             // 488..491
+        [FieldOffset(492)] private uint nextFree;              // 492..495
+        // Reserved2                                           // 496..507
+        [FieldOffset(508)] private uint trailingSignature;     // 508..511
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        internal void Initialize(uint theFreeCount, uint theNextFree)
+        {
+            LeadingSignature   = ExpectedLeadingSignature;
+            StructureSignature = ExpectedStructureSignature;
+            TrailingSignature  = ExpectedTrailingSignature;
+            FreeCount          = theFreeCount;
+            NextFree           = theNextFree;
+        }
+
+        private uint LeadingSignature
+        {
+            get { return ByteOrder.LittleEndianToHost(leadingSignature); }
+            set { leadingSignature = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        private uint StructureSignature
+        {
+            get { return ByteOrder.LittleEndianToHost(structureSignature); }
+            set { structureSignature = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal uint FreeCount
+        {
+            get { return ByteOrder.LittleEndianToHost(freeCount); }
+            set { freeCount = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        internal uint NextFree
+        {
+            get { return ByteOrder.LittleEndianToHost(nextFree); }
+            set { nextFree = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        private uint TrailingSignature
+        {
+            get { return ByteOrder.LittleEndianToHost(trailingSignature); }
+            set { trailingSignature = ByteOrder.HostToLittleEndian(value); }
+        }
+
+        [Microsoft.Contracts.Pure]
+        internal bool ValidSignatures()
+        {
+            return (this.LeadingSignature   == ExpectedLeadingSignature     &&
+                    this.StructureSignature == ExpectedStructureSignature   &&
+                    this.TrailingSignature  == ExpectedTrailingSignature);
+        }
+    }
+}

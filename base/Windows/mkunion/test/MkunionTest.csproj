@@ -1,0 +1,31 @@
+﻿<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>mkuniontest</AssemblyName>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="MkunionTest.cs" />
+
+    <CsUnionFile Include="Tree.csunion">
+      <Namespace>Microsoft.Singularity.Applications</Namespace>
+    </CsUnionFile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Windows.targets" />
+</Project>

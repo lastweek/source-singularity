@@ -1,0 +1,412 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Implements a selectable abstraction that looks ahead on a pipe channels
+//          for control-C and exports separate logical receivable messages for
+//          non-control-C characters and control-C, effectively allowing one to
+//          consume Ctrl-C's out of order.
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.V1.Threads;
+using Tty = Microsoft.Singularity.Io.Tty;
+
+namespace Microsoft.Singularity.Io
+{
+
+    public sealed class PipeLookAhead : ITracked, ISelectable {
+
+        private struct CircularBuffer : ITracked {
+
+            private char[]! in ExHeap buffer; // circular buffer
+            private int nextReadIndex;
+            private int nextWriteIndex;
+            private int controlC_Count; // ctrl-c's in buffer
+            private int controlC_Consumed; // ctrl-c's consumed in buffer
+            private int controlZ_Count; // ctrl-z's in buffer
+            private int controlZ_Consumed; // ctrl-z's consumed in buffer
+
+            public bool HasControlC {
+                get { return controlC_Count > 0; }
+            }
+
+            public bool HasControlZ {
+                get { return controlZ_Count > 0; }
+            }
+
+            private int CharsInBuffer {
+                get {
+                    if (nextWriteIndex >= nextReadIndex) {
+                        return nextWriteIndex - nextReadIndex;
+                    }
+                    else {
+                        expose (this) {
+                            return buffer.Length - nextReadIndex + nextWriteIndex;
+                        }
+                    }
+                }
+            }
+
+            public int CharsAvailable {
+                get {
+                    int available = CharsInBuffer - controlC_Consumed - controlZ_Consumed;
+                    return available;
+                }
+            }
+
+
+            public CircularBuffer(int lookAhead) {
+                this.buffer = new[ExHeap] char[lookAhead+256];
+                this.nextReadIndex = 0;
+                this.nextWriteIndex = 0;
+                this.controlC_Count = 0;
+                this.controlC_Consumed = 0;
+                this.controlZ_Count = 0;
+                this.controlZ_Consumed = 0;
+            }
+
+            private int FreeSpace {
+                get {
+                    // Careful, circular buffer can't be filled completely.
+                    // Need 1 extra space to distinguish full from empty buffer.
+                    expose (this) {
+                        return this.buffer.Length - this.CharsInBuffer - 1;
+                    }
+                }
+            }
+            public void Add(char[]! in ExHeap buffer, int index, int count) {
+                EnsureCapacity(count);
+                for (int i = 0; i < count; i++) {
+                    Add(buffer[index++]);
+                }
+            }
+
+            private void Add(char c) {
+                expose (this) {
+                    this.buffer[this.nextWriteIndex++] = c;
+                    if (this.nextWriteIndex == this.buffer.Length) {
+                        this.nextWriteIndex = 0; // wrap around
+                    }
+                    if (c == (int)Tty.ControlCodes.CTRL_C) {
+                        this.controlC_Count++;
+                    }
+                    if (c == (int)Tty.ControlCodes.CTRL_Z) {
+                        this.controlZ_Count++;
+                    }
+                    //
+                    //DebugStub.WriteLine("Add {0} writeIndex={1} readIndex={2}",
+                    //                  __arglist(c, this.nextWriteIndex,
+                    //                            this.nextReadIndex));
+                    //
+                }
+            }
+
+            private void EnsureCapacity(int count) {
+                int freeSpace = this.FreeSpace;
+                int charsBuffered = this.CharsInBuffer;
+
+                if (freeSpace < count) {
+                    expose (this) {
+                        int newSize =  this.buffer.Length + count;
+                        char[] in ExHeap newBuffer = new[ExHeap] char[newSize];
+                        char[] in ExHeap oldBuffer = this.buffer;
+                        if (this.nextWriteIndex >= this.nextReadIndex) {
+                            // copy area between indices
+                            Bitter.Copy(newBuffer, 0, charsBuffered,
+                                        oldBuffer, this.nextReadIndex);
+                        }
+                        else {
+                            // copy areas from read to end and from start to write.
+                            int suffix = this.buffer.Length - this.nextReadIndex;
+                            Bitter.Copy(newBuffer, 0, suffix,
+                                        oldBuffer, this.nextReadIndex);
+                            Bitter.Copy(newBuffer, suffix, this.nextWriteIndex,
+                                        oldBuffer, 0);
+                        }
+                        delete this.buffer;
+                        this.buffer = newBuffer;
+                        this.nextReadIndex = 0;
+                        this.nextWriteIndex = charsBuffered;
+                    }
+                }
+            }
+
+            public void Dispose()
+            {
+                delete this.buffer;
+            }
+
+            void ITracked.Acquire() {}
+            void ITracked.Release() {}
+            void ITracked.Expose() {}
+            void ITracked.UnExpose() {}
+
+            public void GetChar(out char ch) {
+                expose (this) {
+                tryAgain:
+                    assert CharsAvailable > 0;
+                    ch = this.buffer[this.nextReadIndex++];
+                    if (this.nextReadIndex == this.buffer.Length) {
+                        this.nextReadIndex = 0; // wrap around
+                    }
+                    if (ch == (int)Tty.ControlCodes.CTRL_C) {
+                        if (this.controlC_Consumed > 0) {
+                            // filter. already consumed via Ctrl_C
+                            this.controlC_Consumed--;
+                            goto tryAgain;
+                        }
+                        else {
+                            this.controlC_Count--;
+                        }
+                    }
+                    if (ch == (int)Tty.ControlCodes.CTRL_Z) {
+                        if (this.controlZ_Consumed > 0) {
+                            // filter. already consumed via Ctrl_Z
+                            this.controlZ_Consumed--;
+                            goto tryAgain;
+                        }
+                        else {
+                            this.controlZ_Count--;
+                        }
+                    }
+                    //
+                    //char c = ch;
+                    //DebugStub.WriteLine("GetChar {0} writeIndex={1} readIndex={2} CtrlC={3} CtrlZ={4} C-Used={5} Z-Used={6}",
+                    //                  __arglist(c, this.nextWriteIndex,
+                    //                            this.nextReadIndex,
+                    //                            this.controlC_Count,
+                    //                            this.controlZ_Count,
+                    //                            this.controlC_Consumed,
+                    //                            this.controlZ_Consumed
+                    //                            ));
+                    //
+
+                }
+            }
+
+            public void ConsumeControlC() {
+                assert this.controlC_Count > 0;
+                this.controlC_Count--;
+                this.controlC_Consumed++;
+            }
+
+            public void ConsumeControlZ() {
+                assert this.controlZ_Count > 0;
+                this.controlZ_Count--;
+                this.controlZ_Consumed++;
+            }
+        }
+
+        private UnicodePipeContract.Exp pipe; // null when pipe is closed
+
+        private int lookAhead;
+        private CircularBuffer buffer;
+        AutoResetEventHandle evHandle;
+
+        public PipeLookAhead([Claims] UnicodePipeContract.Exp pipe, int lookAhead)
+        {
+            this.pipe = pipe;
+            this.lookAhead = lookAhead;
+            this.buffer = new CircularBuffer(lookAhead);
+
+            // We allocate an autoreset event handle for the case
+            // when the underlying pipe is closed.
+            AutoResetEventHandle handleOnStack;
+            if (!AutoResetEventHandle.Create(false, out handleOnStack)) {
+                throw new System.Threading.HandleCreateException();
+            }
+            this.evHandle = handleOnStack;
+        }
+
+        public void Dispose()
+        {
+            this.buffer.Dispose();
+            delete this.pipe;
+            if (this.evHandle.id != UIntPtr.Zero) {
+                AutoResetEventHandle.Dispose(this.evHandle);
+                this.evHandle = new AutoResetEventHandle();
+            }
+        }
+
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+
+
+        SyncHandle ISelectable.GetWaitHandle() {
+            expose (this) {
+                // non-null checker was right in pointing out issue if pipe is null.
+                // Design problem: what handle do we return in this case?
+                if (this.pipe != null) {
+                    return this.pipe.GetWaitHandle();
+                }
+                else {
+                    return this.evHandle;
+                }
+            }
+        }
+
+        void ISelectable.ResetWaitSignal() {
+            // dummy
+        }
+
+        private void FillToLookAheadWithoutBlock()
+        {
+            expose (this) {
+                UnicodePipeContract.Exp pipe = this.pipe;
+                if (pipe == null) return;
+                while (this.buffer.CharsAvailable < this.lookAhead) {
+                    switch receive {
+                    case pipe.Write(buffer,index,count):
+                        this.buffer.Add(buffer, index, count);
+                        pipe.SendAckWrite(buffer);
+                        break;
+
+                    case pipe.ChannelClosed():
+                        delete pipe;
+                        this.pipe = null;
+                        return;
+
+                    case timeout:
+                        return;
+                    }
+                }
+            } //expose
+        }
+
+        public bool IsClosed {
+            get {
+                expose(this) {
+                    return (this.pipe == null && this.buffer.CharsAvailable==0);
+                }
+            }
+        }
+
+        private bool HasCharacter {
+            get {
+                expose(this) {
+                    return this.buffer.CharsAvailable > 0;
+                }
+            }
+        }
+
+        private int CharsAvailable {
+            get {
+                expose(this) {
+                    return this.buffer.CharsAvailable;
+                }
+            }
+        }
+
+        private bool HasControlC {
+            get {
+                expose(this) {
+                    return this.buffer.HasControlC;
+                }
+            }
+        }
+
+        private bool HasControlZ {
+            get {
+                expose(this) {
+                    return this.buffer.HasControlZ;
+                }
+            }
+        }
+
+        enum SelectTag {
+            ChannelClosed = -1,
+            Any = 1,
+            Char = 2,
+            ControlC = 3,
+            ControlZ = 4,
+        }
+
+        /// <summary>
+        /// blocks until a character is available
+        /// </summary>
+        public int ReadChar() {
+            PipeLookAhead pipe = this;
+            switch receive {
+                case pipe.Char(ch):
+                    return ch;
+                case pipe.ChannelClosed():
+                    return -1;
+            }
+        }
+
+        public bool HeadMatches(int tag, ref bool possible, ref object setMatch) {
+
+            this.FillToLookAheadWithoutBlock();
+
+            switch ((SelectTag)tag) {
+            case SelectTag.ChannelClosed:
+                if (this.IsClosed) {
+                    return true;
+                }
+                if (this.HasCharacter) {
+                    possible = false;
+                }
+                return false;
+
+            case SelectTag.Char:
+                if (this.HasCharacter) {
+                    return true;
+                }
+                if (this.IsClosed) {
+                    possible = false;
+                }
+                return false;
+
+            case SelectTag.ControlC:
+                if (this.HasControlC) {
+                    return true;
+                }
+                if (this.IsClosed) {
+                    possible = false;
+                }
+                return false;
+
+            case SelectTag.ControlZ:
+                if (this.HasControlZ) {
+                    return true;
+                }
+                if (this.IsClosed) {
+                    possible = false;
+                }
+                return false;
+
+            }
+            return false;
+        }
+
+        [Selectable((int)SelectTag.Char)]
+        public void RecvChar(out char ch) {
+            expose(this) {
+                this.buffer.GetChar(out ch);
+            }
+        }
+
+        [Selectable((int)SelectTag.ControlC)]
+        public void RecvControlC() {
+            expose(this) {
+                this.buffer.ConsumeControlC();
+            }
+        }
+
+        [Selectable((int)SelectTag.ControlZ)]
+        public void RecvControlZ() {
+            expose(this) {
+                this.buffer.ConsumeControlZ();
+            }
+        }
+
+    }
+}

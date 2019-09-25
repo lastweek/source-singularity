@@ -1,0 +1,214 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Applications\YourApp\YourApp.csproj
+
+Note:   This project file demonstrates some of the more advanced options
+        and items that you can declare.  Most or all of these options can
+        be used with any project that is based on SingSharp.targets,
+        which includes the console app, kernel library, app library,
+        and service app.  Notably, interface assemblies do not use
+        SingSharp.targets, and so have a much more constrained set of options.
+        
+        This project is NOT intended to be buildable; it is only for
+        demonstration.
+
+##############################################################################
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!--
+  Provide the relative walk-up path to $(SINGULARITY_ROOT)\Paths.targets.
+  This is annoying, but is necessary in order to get VS builds to work,
+  without requiring that you set environment variables for VS.
+
+  This is only applicable for people who launch VS from a "clean"
+  environment (e.g., not a shell which has run setenv.cmd).
+  -->
+  <Import Project="..\..\Paths.targets"/>
+  
+  <PropertyGroup>
+    <!-- Required properties. -->
+    
+    <!-- Do not specify .exe / .dll extension -->
+    <AssemblyName>YourAssemblyNameHere</AssemblyName> 
+    <!-- Can be Exe or Library -->
+    <OutputType>Exe</OutputType> 
+    
+    <!-- Optional properties -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+
+    <!--
+    Required if you directly import SingSharp.targets, but since most
+    of the "environment" targets files set this for you, it is not required.
+    If you set this property in your project, it will override the per-environment
+    default.
+    -->
+    <OutputPath>...</OutputPath>
+
+    <!--
+    Specify this to prevent the default libraries from being passed to the IL compiler.
+    Note that this does NOT map directly to the /nostdlib compiler argument.
+    Instead, each "environment" targets file sets up its notion of what the standard
+    library is, and then SingSharp.targets handles adding references to them.
+    SingSharp.targets will not add references if this property is set to "true".
+    So this property means "do not use the standard library provided by the 
+    current environment", not "do not use the CLR's mscorlib.dll".
+    -->
+    <NoStdLib>true</NoStdLib>
+
+    <!--
+    Specifies define constants.  Make sure you do NOT have any spaces in this field,
+    or any repeated semi-colons (e.g. "FOO;;BAR").  Spaces will cause the build to
+    fail; repeated semi-colons will simply prevent the compiler from defining any
+    of the names that follow the repeated semi-colons.
+    -->
+    <DefineConstants>HAVE_FEATURE_FOO;DISABLE_BLAH</DefineConstants>
+
+    <!-- Specifies warning level, 1 through 4. -->
+    <WarningLevel>4</WarningLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Options for Sing# compiler -->
+    <DisableNullParameterValidation>true</DisableNullParameterValidation>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+
+    <!-- Specifies the CLI platform version for the Sing# compiler.  This becomes part of the /platform: argument. -->
+    <CompilerPlatformVersion>cli1</CompilerPlatformVersion>
+    
+    <!--
+    Specifies the path to the platform / runtime directory for the Sing# compiler. 
+    The compiler looks for Microsoft.SingSharp.Runtime.dll & friends in this dir.
+    -->
+    <CompilerPlatformDir>...</CompilerPlatformDir>
+
+    <!--
+    Specifies the compiler language to use.  Valid values are "Sing#" or "C#".
+    "Sing#" is the default, and uses sgc.exe.  "C#" uses csc.exe.
+    Note that some properties apply only to the Sing# compiler, such as CompilerPlatformVersion.
+    -->
+    <Language>C#</Language>
+    
+  </PropertyGroup>
+
+  <ItemGroup>
+    
+    <!-- Items in the "Compile" item set declare source files. -->
+    <Compile Include="Foo.sg"/>
+    <Compile Include="Bar.sg"/>
+    
+    <!--
+    ProjectReference items declare references to other projects (e.g. Crypto.csproj),
+    NOT to assemblies (Crypto.dll).  When possible, you should use ProjectReference
+    instead of Reference.  ProjectReference allows the build system to handle dependency
+    tracking for you automatically.  
+    -->
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj"/>
+    
+    <!--
+    In some circumstances, you may need control over how ProjectReference items are processed.
+    Since each executable goes through two compilers (source -> IL, IL -> machine code),
+    you can control which compilers the referenced assembly is passed to.  By default, the 
+    referenced assembly is passed to both compilers, but you can use metadata tags to exclude
+    the referenced assembly from either compiler.  Setting the metadata tag
+    'ExcludeFromILReferences' to 'true' prevents the referenced assembly from being passed to
+    the IL compiler (SGC/CSC).  Setting the metadata tag 'ExcludeFromNativeReferences' to 'true' 
+    prevents the referenced assembly from being passed to the machine code compiler (Bartok).
+    This is useful for using interface assemblies, and some other situations.
+    -->
+    
+    <ProjectReference Include="...\SomeNativeOnlyProject.csproj">
+      <ExcludeFromILReferences>true</ExcludeFromILReferences>
+    </ProjectReference>
+    
+    <ProjectReference Include="...\SomeILOnlyProject.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+    
+    
+    <!--
+    "Reference" items declare untracked references to MSIL assemblies.
+    You can use these when you can guarantee that the referenced assembly is always
+    built before the current assembly.  Typically, this is used for assemblies that
+    are the output of aggregate projects (such as AppRuntime.proj), for assemblies
+    that are checked into the source tree, or when you handle building your own
+    dependent assemblies using custom targets.
+    
+    Avoid using these items, if possible.
+    -->
+    <Reference Include="...\Foo.dll"/>
+    
+    <!-- 
+    "BinaryResource" items declare files that are included in their entirety,
+    without being interpreted or modified.  SingSharp.targets handles converting
+    these resource files into C# source code, by invoking mkasm, and then
+    compiling the resources into intermediate assemblies, and adding those 
+    intermediate assemblies as references to the current assembly.
+    
+    The FieldName, ClassName, and Namespace metadata tags are required.
+    -->
+    <BinaryResource Include="foo.bmp">
+      <FieldName>SomeFieldName</FieldName>
+      <ClassName>SomeClassName</ClassName>
+      <Namespace>Microsoft.Singularity.YourNamespaceHere</Namespace>
+    </BinaryResource>
+
+    <!--
+    "LanguageFile" items declare combined lexer / YACC-like grammar files.
+    (Currently, Shell is the only known user of these grammars.)  SingSharp.targets
+    will run SPG over the language file, which generates an intermediate source file.
+    (The source file is emitted to the object directory, not the source directory.)
+    This source file is then added to the "Compile" item set, which causes it to be
+    compiled into the current assembly.
+    
+    The Namespace metadata tag is required.  It specifies the namespace of the
+    generated class.  Likewise, the ClassName metadata tag is required, and does
+    the obvious.
+    -->
+    <LanguageFile Include="script.lang">
+      <Namespace>Microsoft.Singularity.Applications</Namespace>
+      <ClassName>ScriptParser</ClassName>
+    </LanguageFile>
+  </ItemGroup>
+
+  <!--
+  The last part of any project should be an <Import> directive that imports the
+  right targets file for the particular environment you need.  You can import
+  whatever suits your needs (or nothing at all, if your project is self-contained),
+  but the most common imports will be one of the following:
+  
+      $(SINGULARITY_ROOT)\Targets\App.targets - For most app/process code
+      
+      $(SINGULARITY_ROOT)\Targets\KernelLibrary.targets - Kernel-mode libraries, such
+          as IoSystem.dll
+          
+      $(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets - For console apps;
+          implicitly adds a reference to the console transform library.
+          
+      $(SINGULARITY_ROOT)\Targets\ServiceCategory.targets - For service apps;
+          implicitly adds a reference to the service transform library.
+          
+      $(SINGULARITY_ROOT)\Targets\DriverCategory.targets - For process drivers;
+          implicitly adds a reference to the driver transform library.
+      
+      $(SINGULARITY_ROOT)\Targets\SingSharp.targets - Contains build logic for
+          invoking the Sing# / C# compiler, but does not have any settings for
+          a particular environment.  Most projects do not directly import this file;
+          most of the above .targets files set some properties and items for a
+          particular environment, and then import this file.
+          
+      $(SINGULARITY_ROOT)\Targets\InterfaceAssembly.targets - For assemblies that
+          contain only MSIL metadata, and no method implementations, declared in
+          .csi files.  This targets file does not use SingSharp.targets, and so
+          does not support many of the options described in this file.
+  
+  -->
+  <Import Project="$(SINGULARITY_ROOT)\Targets\SomeTargetsFile.targets"/>
+</Project>

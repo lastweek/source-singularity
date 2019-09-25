@@ -1,0 +1,73 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Drivers</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PcCompile Include="IdeBus.cs" />
+    <PcCompile Include="NvPciLpc.cs" />
+    <PcCompile Include="PciBus.cs" />
+    <PcCompile Include="PseudoBus.cs" />
+    <PcCompile Include="AcpiBus.cs" />
+    <PcCompile Include="PnpBios.cs" />
+    <PcCompile Include="RegisterPC.cs" />
+    <PcCompile Include="ScsiDevice.cs" />
+    <PcCompile Include="EnlightenedDrivers.cs"/>
+  </ItemGroup>
+
+  <Choose>
+    <When Condition="'$(Platform)'=='LegacyPC'">
+      <ItemGroup>
+        <Compile Include="@(PcCompile)" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Platform)'=='ApicPC'">
+      <ItemGroup>
+        <Compile Include="@(PcCompile)" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Platform)'=='ApicMP'">
+      <ItemGroup>
+        <Compile Include="@(PcCompile)" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Platform)'=='Apic64'">
+      <ItemGroup>
+        <Compile Include="@(PcCompile)" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(Platform)'=='Omap3430'">
+      <ItemGroup>
+        <Compile Include="RegisterOmap3430.cs" />
+      </ItemGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <ERROR>Unsupported Platform: $(Platform)</ERROR>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.Kernel.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Hal\Hal.csproj"/>
+    <ProjectReference Include="..\Singularity.Directory\Directory.csproj" />
+    <ProjectReference Include="..\Singularity.Io\IoSystem.csproj" />
+  </ItemGroup>
+  
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+
+</Project>

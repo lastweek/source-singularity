@@ -1,0 +1,455 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SymLinkNode.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.SDS;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+    // There are no access checks on symbolic links.
+    // In order to read a link, traverse access to the parent is sufficient.
+    // Although one might think that read access to the parent would be more
+    // appropriate here, the nature of the DirectoryService protocol allows anyone
+    // traversing a link to find the link value, hence there is no benefit to
+    // making "reading" of a link more strict.
+
+    public class SymLinkNode : Node
+    {
+        private string symbolicLink;
+        private DateTime creationTime;
+        public SymLinkNode(string value, string! name, Node! parent)
+        {
+            symbolicLink = value;
+            creationTime = DateTime.UtcNow;
+            base(NodeType.SymLink, name, parent);
+        }
+
+        /// <returns>
+        /// null on success, the service argument if it failed.
+        /// </returns>
+        public override ServiceContract.Exp Bind(StringBuilder! p,
+                                                 string! fullPath,
+                                                 Principal pr,
+                                                 int curpos,
+                                                 out int position,
+                                                 out bool success,
+                                                 out bool linkFound,
+                                                 out ErrorCode error,
+                                                 out bool reparse,
+                                                 out string link,
+                                                 out string linkPrefix,
+                                                 [Claims]
+                                                 ServiceContract.Exp! service)
+        {
+            Kernel.Waypoint(3500);
+            reparse = true;
+            success = true;
+            linkFound = true;
+            position = curpos;
+            error = ErrorCode.NoError;
+            string rest;
+            StringBuilder x;
+            StringBuilder y;
+
+            if (!(p.Length == 0)) {
+                rest = SbUtils.PathString(p);
+                assert rest != null;
+                link = symbolicLink + rest;
+                int prefixIndex = fullPath.IndexOf(rest);
+                if (-1 == prefixIndex) {
+                    DebugStub.WriteLine("Error processing a link");
+                    DebugStub.Break();
+                    linkPrefix = null;
+                }
+                else {
+                    x = new StringBuilder(fullPath.Substring(0,prefixIndex));
+                    y = x;
+                    y = SbUtils.StripLast(y);
+                    DebugStub.WriteLine(" symlink node: full={0}, partial={1}, stripped={2}", __arglist(fullPath, x.ToString(), y.ToString()));
+                    linkPrefix = y.ToString();
+                }
+            }
+            else {
+                link = symbolicLink;
+
+#if old
+                int pos = SbUtils.LastIndexOf(sb,'/',0);
+                if  (pos == -1) pos = 0;
+                linkPrefix = fullPath.Substring(0,pos);
+                DebugStub.WriteLine(" symlink node: full={0}, stripped={1}", __arglist(fullPath, linkPrefix));
+#else
+                x = new StringBuilder(fullPath);
+                y = SbUtils.StripLast(x);
+                DebugStub.WriteLine(" symlink node: full={0}, stripped={1}", __arglist(fullPath, y.ToString()));
+                linkPrefix = y.ToString();
+#endif
+            }
+            Kernel.Waypoint(3501);
+            return service;
+        }
+
+        /// <returns>
+        /// null on success, the sp argument if it failed.
+        /// </returns>
+        public override ServiceProviderContract.Imp Register(StringBuilder! p,
+                                      Principal pr,
+                                      [Claims]ServiceProviderContract.Imp! sp,
+                                      int curpos,
+                                      out int position,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            // cannot register over an existing name
+            reparse = false;
+            linkFound = false;
+            link = null;
+            error = ErrorCode.AlreadyExists;
+            position = curpos;
+            return sp;
+        }
+
+        /// <returns>
+        /// The endpoint on success, null, if it fails.
+        /// </returns>
+        public override ServiceProviderContract.Imp:Start  Deregister(StringBuilder! path,
+                                                               Principal pr,
+                                                               DirectoryServiceContract.Exp! ep,
+                                                               int curpos,
+                                                               out int position,
+                                                               out bool linkFound,
+                                                               out ErrorCode error,
+                                                               out bool reparse,
+                                                               out string link
+                                                               )
+
+        {
+            error = ErrorCode.NotSupported;
+            link  = null;
+            linkFound = false;
+            reparse = false;
+            position = curpos;
+            if (!(path.Length == 0)) {
+                return null;
+            }
+
+            // cannot be removed
+            return null;
+        }
+
+        /// <returns>
+        /// if true returns length and node type, otherwise error
+        /// </returns>
+        public override bool GetAttributes(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link,
+                                        ref FileAttributesRecord fileAttributes
+                                        )
+        {
+            Kernel.Waypoint(3700);
+            reparse = true;
+            linkFound = true;
+            fileAttributes.Type =NodeType.SymLink;
+            fileAttributes.FileSize = 0;
+            fileAttributes.CreationTime = creationTime.Ticks;
+            fileAttributes.LastWriteTime = creationTime.Ticks;
+            fileAttributes.LastAccessTime = creationTime.Date.Ticks;
+            position = curpos;
+            error = ErrorCode.NoError;
+
+            // this is a traverse operation. There is more left on the path
+            if (!(p.Length == 0)) {
+                link = symbolicLink + SbUtils.PathString(p);
+                return false;
+            }
+
+            // stop here
+            reparse = false;
+            link = symbolicLink;
+            Kernel.Waypoint(3701);
+            return true;
+        }
+
+        /// <returns>
+        /// true on success, false, if it fails.
+        /// </returns>
+        public override NotifyContract.Imp Notify(StringBuilder! pathSpec,
+                                                  Principal pr,
+                                                  string! pattern,
+                                                  bool sendExisting,
+                                                  int curpos,
+                                                  out int position,
+                                                  out bool linkFound,
+                                                  out ErrorCode error,
+                                                  out bool reparse,
+                                                  out string link,
+                                                  [Claims] NotifyContract.Imp! notifyImp)
+        {
+            // this method should never be called
+            error = ErrorCode.NotSupported;
+            reparse = false;
+            link = symbolicLink;
+            linkFound = true;
+            position = curpos;
+            return notifyImp;
+        }
+
+        public override FileContract.Imp CreateAndBindFile(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+            position = curpos;
+            return null;
+        }
+
+        public override bool CreateDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            position = curpos;
+            //DebugStub.Break();
+            reparse = true;
+            linkFound = true;
+            link = null;
+            error = ErrorCode.NoError;
+
+            if (!(p.Length == 0))
+                link = symbolicLink + SbUtils.PathString(p);
+            else
+                link = symbolicLink ;
+
+            return false;
+     }
+        public override bool CreateFile(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            linkFound = false;
+            error = ErrorCode.NotImplemented;
+            reparse = false;
+            link = null;
+            position = curpos;
+            return false;
+        }
+
+        public override bool CreateLink(StringBuilder! p,
+                                        Principal pr,
+                                        string! value,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            position = curpos;
+
+            if (!(p.Length == 0))
+                link = symbolicLink + SbUtils.PathString(p);
+            else
+                link = symbolicLink ;
+            return false;
+        }
+
+        public override bool DeleteDirectory(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            position = curpos;
+
+            if (!(p.Length == 0)) {
+                link = symbolicLink + SbUtils.PathString(p);
+                return false;
+            }
+
+            link = symbolicLink ;
+            error = ErrorCode.NotDirectory;
+            reparse = false;
+            return false;
+        }
+
+        public override bool DeleteFile(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            position = curpos;
+
+            if (!(p.Length == 0))
+                link = symbolicLink + SbUtils.PathString(p);
+            else
+                link = symbolicLink ;
+            return false;
+        }
+
+        public override bool DeleteLink(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            position = curpos;
+
+            if (!(p.Length == 0))
+                link = symbolicLink + SbUtils.PathString(p);
+            else
+                link = symbolicLink ;
+            return false;
+        }
+
+        public override bool GetLinkValue(StringBuilder! p,
+                                        Principal pr,
+                                        int curpos,
+                                        out int position,
+                                        out bool linkFound,
+                                        out ErrorCode error,
+                                        out bool reparse,
+                                        out string link
+                                        )
+
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            position = curpos;
+
+            // this is a traverse operation
+            if (!(p.Length == 0)) {
+                link = symbolicLink + SbUtils.PathString(p);
+                return false;
+            }
+            link = symbolicLink;
+            return true;
+        }
+
+        public override bool QueryACL(StringBuilder! p,
+                                      bool effective,
+                                      Principal pr,
+                                      int curpos,
+                                      out int position,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link,
+                                      out Acl acl
+                                      )
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            reparse = true;
+            acl = new Acl();
+            position = curpos;
+
+            if (!(p.Length == 0))
+                link = symbolicLink + SbUtils.PathString(p);
+            else
+                link = symbolicLink;
+            return false;
+        }
+
+        public override bool StoreACL(StringBuilder! p,
+                                      Principal pr,
+                                      Acl acl,
+                                      int curpos,
+                                      out int position,
+                                      out bool linkFound,
+                                      out ErrorCode error,
+                                      out bool reparse,
+                                      out string link
+                                      )
+        {
+            reparse = true;
+            linkFound = true;
+            error = ErrorCode.NoError;
+            position = curpos;
+
+            if (!(p.Length == 0))
+                link = symbolicLink + SbUtils.PathString(p);
+            else
+                link = symbolicLink;
+            return false;
+        }
+
+    }
+}

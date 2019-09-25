@@ -1,0 +1,256 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract definition for TCP channels
+//
+
+using Microsoft.Singularity.Channels;
+using System;
+
+namespace NetStack.Contracts
+{
+    public enum TcpError
+    {
+        Unknown = 1,
+        AlreadyConnected,       // this connection is already in use
+        Refused,                // the receiving host actively refused the connection
+        Reset,                  // the connection was reset
+        Timeout,                // no response was received
+        ProtocolViolation,      // we received a TCP segment that is not acceptable in the current state
+        ResourcesExhausted,     // out of memory, etc.
+        Closed,                 // remote peer has closed socket
+    }
+
+    public contract TcpConnectionContract
+    {
+        // Requests
+        in message Connect(uint dstIP, ushort dstPort);
+        in message BindLocalEndPoint(uint dstIP, ushort dstPort);
+
+        //
+        // Initial state; there is a gratuitous Ready message to
+        // ensure the Exp side has been connected before it accepts
+        // any messages.
+        //
+        out message Ready();
+
+        state Start : Ready! -> ReadyState;
+
+        state ReadyState : one
+        {
+            Connect? -> ConnectResult; // Can connect without binding first
+            BindLocalEndPoint? -> BindResult; // Can't listen without binding first
+            Close? -> Closed;
+        }
+
+        //
+        // Binding to a local endpoint
+        //
+        state BindResult : one
+        {
+            OK! -> Bound;
+            InvalidEndPoint! -> ReadyState;
+        }
+
+        in message Listen(int backlog);
+
+        state Bound : one
+        {
+            Listen? -> ListenResult;
+            Connect? -> ConnectResult;
+            Close? -> Closed;
+        }
+
+        //
+        // Attempts to connect to a remote host
+        //
+        out message OK();
+        out message CouldNotConnect(TcpError error);
+
+        state ConnectResult : one
+        {
+            CouldNotConnect! -> ReadyState;
+            OK! -> Connected;
+        }
+
+        //
+        // Attempts to listen for inbound connections
+        //
+        out message CouldNotListen();
+
+        state ListenResult : one
+        {
+            CouldNotListen! -> ReadyState;
+            OK! -> Listening;
+        }
+
+        out message InvalidEndPoint();
+
+        in message GetLocalAddress();
+        in message GetLocalPort();
+        in message Accept(TcpConnectionContract.Exp:PreConnected! newConnection);
+        in message IsSessionAvailable(); // Is there a new session waiting to be serviced?
+
+        out message IPAddress(uint ip);
+        out message Port(ushort port);
+        out message SessionIsAvailable(bool isAvailable);
+
+        state Listening : one
+        {
+            GetLocalAddress? -> IPAddress! -> Listening;
+            GetLocalPort? -> Port! -> Listening;
+            IsSessionAvailable? -> SessionIsAvailable! -> Listening;
+            Accept? -> OK! -> Listening; // Blocks until a connection is received
+
+            Close? -> Closed;
+        }
+
+        //
+        // The pre-connected state exists so we can confirm that the endpoint
+        // has been wired to the NetStack before accepting messages on it
+        //
+        state PreConnected : Ready! -> Connected;
+
+        //
+        // Operations on an established connection
+        //
+
+        // Requests
+        in message Read(); // Read as much data as possible without blocking
+        in message PollRead(int timeout); // Wait up to timeout ms for data
+        in message IsDataAvailable(); // Is there queued data that can be read immediately?
+        in message Write(byte[]! in ExHeap data);
+        in message Close(); // Performs a non-blocking but graceful shutdown
+        in message Abort(); // Performs an immediate, hard close (unsent data is discarded)
+        in message GetRemoteAddress();
+        in message GetRemotePort();
+        in message DoneSending();
+        in message DoneReceiving();
+
+        // Response messages
+        out message ConnectionClosed(); // Connection has been shut down
+        out message NoData(); // There was nothing to read
+        out message NoMoreData(); // Will never be more data
+        out message CantSend(); // Remote side refuses more data
+        out message Data(byte[]! in ExHeap data);
+        out message DataIsAvailable(bool isAvailable);
+
+        state Connected : one
+        {
+            Read? -> ReadResult;
+            PollRead? -> PollReadResult;
+            Write? -> WriteResult;
+
+            IsDataAvailable? -> (DataIsAvailable!) -> Connected;
+            GetLocalAddress? -> IPAddress! -> Connected;
+            GetLocalPort? -> Port! -> Connected;
+            GetRemoteAddress? -> IPAddress! -> Connected;
+            GetRemotePort? -> Port! -> Connected;
+
+            DoneSending? -> ReceiveOnly;
+            DoneReceiving? -> SendOnly;
+            Close? -> Closed;
+            Abort? -> Closed;
+        }
+
+        state ReadResult : one
+        {
+            Data! -> Connected;
+            // This indicates that there will never be any more
+            // data, but that sending is still allowed
+            NoMoreData! -> SendOnly;
+            // This indicates that sending has been closed by the
+            // remote side
+            ConnectionClosed! -> Zombie;
+        }
+
+        state PollReadResult : one
+        {
+            Data! -> Connected;
+            // No data available within the poll window; try again
+            NoData! -> Connected;
+            NoMoreData! -> SendOnly;
+            ConnectionClosed! -> Zombie;
+        }
+
+        state WriteResult : one
+        {
+            OK! -> Connected;
+            // This indicates that writing has been closed by the
+            // remote side, but reading is still allowed.
+            CantSend! -> ReceiveOnly;
+        }
+
+        //
+        // Operations on a receive-only connection (send side has been closed)
+        //
+        state ReceiveOnly : one
+        {
+            Read? -> ROReadResult;
+            PollRead? -> ROPollReadResult;
+
+            IsDataAvailable? -> (DataIsAvailable!) -> ReceiveOnly;
+            GetLocalAddress? -> IPAddress! -> ReceiveOnly;
+            GetLocalPort? -> Port! -> ReceiveOnly;
+            GetRemoteAddress? -> IPAddress! -> ReceiveOnly;
+            GetRemotePort? -> Port! -> ReceiveOnly;
+
+            DoneReceiving? -> Zombie;
+            Close? -> Closed;
+            Abort? -> Closed;
+        }
+
+        state ROReadResult : one
+        {
+            Data! -> ReceiveOnly;
+            // If there is no more data, there's nothing more to do.
+            NoMoreData! -> Zombie;
+        }
+
+        state ROPollReadResult : one
+        {
+            Data! -> ReceiveOnly;
+            NoData! -> ReceiveOnly;
+            NoMoreData! -> Zombie;
+        }
+
+        //
+        // Operations on a send-only connection (receive side has been closed)
+        //
+        state SendOnly : one
+        {
+            Write? -> SOWriteResult;
+
+            GetLocalAddress? -> IPAddress! -> SendOnly;
+            GetLocalPort? -> Port! -> SendOnly;
+            GetRemoteAddress? -> IPAddress! -> SendOnly;
+            GetRemotePort? -> Port! -> SendOnly;
+
+            DoneSending? -> Zombie;
+            Close? -> Closed;
+            Abort? -> Closed;
+        }
+
+        state SOWriteResult : one
+        {
+            OK! -> SendOnly;
+            // Remote side refuses further data
+            CantSend! -> Zombie;
+        }
+
+        //
+        // Zombied connection (nothing left to do but user hasn't explicitly
+        // closed yet)
+        //
+        state Zombie : one
+        {
+            Close? -> Closed; // Wrap up gracefully
+            Abort? -> Closed; // Drop any unsent data
+        }
+
+        state Closed : {} // Nothing is acceptable here
+    }
+}

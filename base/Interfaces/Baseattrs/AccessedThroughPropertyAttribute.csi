@@ -1,0 +1,20 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//------------------------------------------------------------------------------
+
+using System;
+
+namespace System.Runtime.CompilerServices
+{
+    //| <include file='doc\AccessedThroughPropertyAttribute.uex' path='docs/doc[@for="AccessedThroughPropertyAttribute"]/*' />
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class AccessedThroughPropertyAttribute : Attribute
+    {
+        //| <include file='doc\AccessedThroughPropertyAttribute.uex' path='docs/doc[@for="AccessedThroughPropertyAttribute.AccessedThroughPropertyAttribute"]/*' />
+        public AccessedThroughPropertyAttribute(string propertyName);
+    }
+}
+

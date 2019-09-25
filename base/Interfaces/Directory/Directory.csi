@@ -1,0 +1,54 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Directory.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.Security;
+using Allocation = Microsoft.Singularity.Memory.SharedHeap.Allocation;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Directory
+{
+    public class DirNode
+    {
+    }
+
+    public class DirectoryService
+    {
+        // Return parameter is really: DirectoryService.Imp opt(ExHeap) *
+        public static unsafe SharedHeap.Allocation * NewClientEndpointEx();
+
+        //
+        // Kernel only interfaces.
+        //
+        public static void StartUserSpaceDirectoryService();
+        public static bool UserSpaceDirectoryServiceStarted();
+        public static void InitializeRemoteDirectoryService(uint type);
+        public static void NewRemoteDirectoryEndpoint(out Allocation* imp, out Allocation* exp);
+        public static void ExportArmNamespace();
+        public static void StartRemoteDirectoryEndpoint(Allocation* exp);
+        public static bool CreateDirectory(DirNode dirNode, string path);
+        public static bool CreateSymbolicLink(DirNode dirNode, string path, string link);
+        public static DirNode FindDirectory(string dirName, bool createIfNull);
+
+        public static void Initialize(XmlNode config);
+        public static void StartNotificationThread();
+
+        public static bool RegisterIoMemory(DirNode node, string name, IoMemory ioMem);
+    }
+} // namespace Microsoft.Singularity.Naming

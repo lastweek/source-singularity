@@ -1,0 +1,244 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   NotifcationManager.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+#if !SINGULARITY_PROCESS
+namespace Microsoft.Singularity.Directory
+#else
+using Microsoft.Singularity;
+using Microsoft.Singularity.V1.Services;
+namespace Microsoft.Application.DSP
+#endif
+{
+    public static class NotificationManager
+    {
+        private static object!   monitor;
+        private static Queue!    requests; 
+        private static TRef<NotificationQueueContract.Exp:RUNNING>! notificationExpTRef;
+        private static TRef<NotificationQueueContract.Imp:RUNNING>! notificationImpTRef;
+        private static StringBuilder! sb;
+        private static bool notificationThreadStarted; 
+        
+        internal contract NotificationQueueContract
+        {
+            in message  WaitForData();
+            out message AckWaitForData();
+
+            state RUNNING : one
+            {
+                WaitForData? -> AckWaitForData! -> RUNNING;
+            }
+        }
+
+        internal class RequestEntry{
+            internal DirNode! dir;
+            internal string!  name;
+            internal NotifyType type; 
+            internal DictionaryEntry trefLoc; 
+                      
+            public RequestEntry(DirNode! n, string! name, NotifyType type)
+            {
+                this.dir = n; 
+                this.name = name;
+                this.type = type;
+            }
+        }
+        
+        public static void Initialize()
+        {
+            requests = new Queue();
+            monitor =  new object();
+            sb = new StringBuilder(512);
+            notificationThreadStarted = false;
+               
+            // Create an internal contract to communicate with worker thread.
+            // We use a message rather than a monitor so that the worker may
+            // create a set to wait on all its acks and for potential new work. 
+            // This is needed because we cannot wait on both events and messages.  
+               
+            NotificationQueueContract.Imp! notificationImp;
+            NotificationQueueContract.Exp! notificationExp;
+            NotificationQueueContract.NewChannel(out notificationImp,
+                                                    out notificationExp);
+            notificationImpTRef =
+                new TRef<NotificationQueueContract.Imp:RUNNING(notificationImp);
+            notificationExpTRef =
+                new TRef<NotificationQueueContract.Exp:RUNNING(notificationExp);
+
+        }
+        
+        
+        // must be called after scheduler is started
+        public static void StartNotificationThread()
+        {
+            notificationThreadStarted = true; 
+             // start worker thread to dequeue items
+#if !SINGULARITY_PROCESS
+            Thread.CreateThread(Thread.CurrentProcess, new ThreadStart(NotificationWorkerMain)).Start();
+#else
+            (new Thread (new ThreadStart(NotificationWorkerMain))).Start();
+#endif
+
+        }
+        
+        public static bool EnqueueNotification(DirNode! n, string! name, NotifyType type)
+        {
+            RequestEntry r = new RequestEntry(n,name,type);
+            lock (monitor) {
+                requests.Enqueue(r);
+            }
+            // cannot perform a wait operation until the scheduler has been started
+            if (notificationThreadStarted) {
+                NotificationQueueContract.Imp f = notificationImpTRef.Acquire();
+                f.SendWaitForData();
+                f.RecvAckWaitForData();
+                notificationImpTRef.Release(f);
+            }
+            return true;    
+        }
+        
+        internal static bool isMatch(string! name, string! pattern)
+        {
+            bool match = false;
+            bool continueMatch = true;
+            string prefix = null;
+            string postfix = null;
+
+            int starPos = pattern.IndexOf("*");
+
+            if (starPos != -1) {
+                if (starPos == 0) {
+                    prefix = null;
+                    postfix = pattern.Substring(1);
+                }
+                else if (starPos == pattern.Length - 1) {
+                    prefix = pattern.Substring(0, pattern.Length-1);
+                    postfix = null;
+                }
+                else {
+                    prefix = pattern.Substring(0, starPos);
+                    postfix = pattern.Substring(starPos+1);
+                }
+
+                if (prefix != null) {
+                    if (!name.StartsWith(prefix)) {
+                        continueMatch = false;
+                    }
+                }
+                if (continueMatch && postfix != null) {
+                    if (!name.EndsWith(postfix)) {
+                        continueMatch = false;
+                    }
+                }
+                match = continueMatch;
+            }
+            else if (pattern == name) {
+                match = true;
+            }
+
+            //DebugStub.WriteLine("name={0} pre={1} post={2} match={3}",
+            //                    __arglist(name, prefix, postfix, match));
+            return match;
+        }
+
+        private static void ReturnTRef ([Claims] NotifyContract.Imp! ep, 
+                                        RequestEntry! request)
+        {
+            
+            if (request.trefLoc.Value == null) {
+                DebugStub.Break();
+                delete ep;
+            }
+            
+            else {
+                TRef <NotifyContract.Imp:Notify>! x = 
+                    (TRef <NotifyContract.Imp:Notify>) request.trefLoc.Value;
+                x.Release(ep);   
+            }
+        }
+        
+        private static void Notify(RequestEntry! request,    
+                                   EMap<NotifyContract.Imp:NotifyAck, RequestEntry!>! notifyEpMap)
+        {
+            if (request.dir.notificationList == null) {
+                return;
+            }
+
+            foreach (DictionaryEntry n in request.dir.notificationList) {
+                string pattern = (string!) n.Key;
+                bool match = isMatch(request.name,pattern);
+
+                if (match) {
+                    NotifyContract.Imp! notifyEP =
+                        ((TRef <NotifyContract.Imp:Notify>!) n.Value).Acquire();
+                    assert notifyEP.InState(NotifyContract.Notify.Value);
+                    notifyEP.SendChangeNotification(Bitter.FromString2(request.name),request.type);
+                    // add ep,request to map 
+                    request.trefLoc = n; 
+                    notifyEpMap.Add(notifyEP,request); 
+                    Tracing.Log(Tracing.Debug,"notifying: pattern="+pattern+" path="+request.name+" type="+request.type);
+                }
+            } //foreach
+        }
+        
+        private static void DequeueWork(EMap<NotifyContract.Imp:NotifyAck, RequestEntry!>! notifyEpMap)
+        {
+            lock (monitor) {
+                int count = requests.Count;
+                for (int i = 0; i < count; i++) {
+                   object o = requests.Dequeue();
+                   Notify( (RequestEntry!) o, notifyEpMap);
+                }
+            }
+        }
+        
+        private static void NotificationWorkerMain()
+        {
+            
+            //  map to hold <NotifyEp,RequestEntry> tuples
+            EMap<NotifyContract.Imp:NotifyAck, RequestEntry!> notifyEpMap = 
+                new EMap<NotifyContract.Imp:NotifyAck,RequestEntry!>();
+            
+            bool shutdown = false; 
+                
+            NotificationQueueContract.Exp internalChannel; 
+            internalChannel = notificationExpTRef.Acquire();
+            
+            // handle initial requests. Entries were added before the
+            // scheduler was started. As a result it was not possible to 
+            // send a message.
+            // DequeueWork((!)notifyEpMap);
+
+            while (shutdown == false) {
+                switch receive {
+                    case internalChannel.WaitForData():
+                        DequeueWork(notifyEpMap);
+                        internalChannel.SendAckWaitForData();
+                        break;
+                    case ep.AckChangeNotification() in notifyEpMap ~> request:
+                        // return the tref
+                        ReturnTRef(ep, request); 
+                        break;
+                }
+            }
+            delete internalChannel;
+            notifyEpMap.Dispose();
+        }
+    }
+}

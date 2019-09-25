@@ -1,0 +1,28 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Paths.targets" />
+
+  <ItemGroup Condition="'$(Machine)'=='x86' Or '$(Machine)'=='x64'">
+    <ProjectReference Include="BootSectors\BootSectors.proj" />
+    <ProjectReference Include="SingLdrPc\bootpc.proj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='arm' and '$(Platform)'=='Omap3430'">
+    <ProjectReference Include="SingLdrArm\Omap3430\Omap3430.proj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Machine)'=='arm' and '$(Platform)'=='Smdk2410'">
+    <ProjectReference Include="SingLdrArm\Smdk2410\Smdk2410.proj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Dirs.targets" />
+
+</Project>
+

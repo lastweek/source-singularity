@@ -1,0 +1,17 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [RequiredByBartok]
+    public class OverflowException : ArithmeticException {
+        public OverflowException();
+        public OverflowException(String message);
+        public OverflowException(String message, Exception innerException);
+    }
+}

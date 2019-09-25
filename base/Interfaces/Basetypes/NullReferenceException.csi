@@ -1,0 +1,17 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [RequiredByBartok]
+    public class NullReferenceException : SystemException {
+        public NullReferenceException();
+        public NullReferenceException(String message);
+        public NullReferenceException(String message, Exception innerException);
+    }
+}

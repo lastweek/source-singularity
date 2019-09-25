@@ -1,0 +1,350 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FsObjectCache.sg
+//
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal class FsObjectCache
+    {
+        private class FsoNode
+        {
+            private const int ColorBit   = 0x40000000;
+            private const int InvalidBit = 0x20000000;
+            private const int MaskBits   = ColorBit | InvalidBit;
+
+            internal FsoNode hashPrev; // Used in hash chain, null in free list
+            internal FsoNode hashNext; // Used in hash chain, null in free list
+            internal FsoNode lruPrev;  // Used in LRU list and free list
+            internal FsoNode lruNext;  // Used in LRU list and free list
+
+            private int      firstCluster;
+            private FsObject fsObject;
+
+            internal FsoNode()
+            {
+                this.fsObject     = null;
+                this.firstCluster = InvalidBit;
+
+                this.hashPrev = this;
+                this.hashNext = this;
+                this.lruPrev  = this;
+                this.lruNext  = this;
+            }
+
+            internal void Assign(int firstCluster, FsObject! fsObject)
+            {
+                this.firstCluster = firstCluster & ~MaskBits;
+                this.fsObject     = fsObject;
+            }
+
+            internal void Invalidate()
+            {
+                this.firstCluster |= InvalidBit;
+                this.fsObject     = null;
+            }
+
+            internal int FirstCluster
+            {
+                get { return (this.firstCluster & ~MaskBits); }
+            }
+
+            internal FsObject FsObject
+            {
+                get { return this.fsObject; }
+            }
+
+            internal bool Color
+            {
+                get { return (this.firstCluster & ColorBit) != 0; }
+                set {
+                    if (value) {
+                        this.firstCluster |= ColorBit;
+                    }
+                    else {
+                        this.firstCluster &= ~ColorBit;
+                    }
+                }
+            }
+        }
+
+        // --------------------------------------------------------------------
+
+        FsoNode! freeSentinel;
+        FsoNode! lruSentinel;
+        FsoNode [] hashSentinels;
+
+        uint  capacity;
+        uint  hashChainCount;
+
+        [ Microsoft.Contracts.NotDelayed ]
+        internal FsObjectCache(uint capacity)
+            requires capacity >= 0;
+        {
+            this.capacity = capacity;
+
+            this.freeSentinel  = new FsoNode();
+            this.lruSentinel   = new FsoNode();
+
+            uint hashChainCount  = ComputeHashChainCount(capacity);
+            this.hashChainCount = hashChainCount;
+
+            FsoNode [] hashSentinels = new FsoNode [hashChainCount];
+            for (uint i = 0; i < hashChainCount; i++) {
+                hashSentinels[i] = new FsoNode();
+            }
+            this.hashSentinels  = hashSentinels;
+
+            // Can not call this.AddFsoNodeToFreeList here
+            FsoNode! freeSentinel = new FsoNode();
+            for (uint i = 0; i < capacity; i++) {
+                FsoNode! tmp         = new FsoNode();
+                FsoNode! lruNext     = freeSentinel.lruNext;
+                tmp.lruPrev          = freeSentinel;
+                tmp.lruNext          = lruNext;
+                freeSentinel.lruNext = tmp;
+                lruNext.lruPrev      = tmp;
+            }
+            this.freeSentinel = freeSentinel;
+
+            base();
+
+            lock (this) {
+                this.LockedAssertConsistent();
+            }
+        }
+
+        private static uint ComputeHashChainCount(uint capacity)
+        {
+            const int Log2TypicalChainLength = 4;
+            uint n = 1u << Log2TypicalChainLength;
+            while (n < capacity) {
+                n <<= 1;
+            }
+            return n >> Log2TypicalChainLength;
+        }
+
+        private int GetHashChain(int firstCluster)
+        {
+            return firstCluster % (int)this.hashChainCount;
+        }
+
+        private void HashTableInsert(FsoNode! hashSentinel,
+                                     FsoNode! node)
+        {
+            // Insert at head of hash chain
+            FsoNode! hashNext     = hashSentinel.hashNext;
+            node.hashNext         = hashNext;
+            node.hashPrev         = hashSentinel;
+            hashSentinel.hashNext = node;
+            hashNext.hashPrev     = node;
+
+            // Insert at head of lru list
+            FsoNode! lruNext    = lruSentinel.lruNext;
+            node.lruNext        = lruNext;
+            node.lruPrev        = lruSentinel;
+            lruSentinel.lruNext = node;
+            lruNext.lruPrev     = node;
+        }
+
+        private void HashTableRemove(FsoNode! node)
+        {
+            FsoNode! hashNext = node.hashNext;
+            FsoNode! hashPrev = node.hashPrev;
+            hashPrev.hashNext = hashNext;
+            hashNext.hashPrev = hashPrev;
+
+            node.hashNext = null;
+            node.hashPrev = null;
+
+            FsoNode! lruNext = node.lruNext;
+            FsoNode! lruPrev = node.lruPrev;
+            lruNext.lruPrev  = lruPrev;
+            lruPrev.lruNext  = lruNext;
+            node.lruNext     = node;
+            node.lruPrev     = node;
+        }
+
+        private void AddFsoNodeToFreeList(FsoNode! node)
+        {
+            FsoNode! lruNext     = freeSentinel.lruNext;
+            node.lruNext         = lruNext;
+            node.lruPrev         = freeSentinel;
+            freeSentinel.lruNext = node;
+            lruNext.lruPrev      = node;
+        }
+
+        private FsoNode! GetFsoNodeFromFreeList()
+        {
+            FsoNode n       = freeSentinel.lruNext;
+            FsoNode lruNext = n.lruNext;
+            FsoNode lruPrev = n.lruPrev;
+            lruNext.lruPrev = lruPrev;
+            lruPrev.lruNext = lruNext;
+            return n;
+        }
+
+        private void MoveLruToFreeList()
+        {
+            // FsoNode remove is at lru list tail
+            FsoNode! lru = lruSentinel.lruPrev;
+
+            // Remove from hash chain
+            FsoNode! hashNext = lru.hashNext;
+            FsoNode! hashPrev = lru.hashPrev;
+            hashNext.hashPrev = hashPrev;
+            hashPrev.hashNext = hashNext;
+            lru.hashNext      = null;
+            lru.hashPrev      = null;
+
+            // Remove from lru list
+            FsoNode! lruNext = lru.lruNext;
+            FsoNode! lruPrev = lru.lruPrev;
+            lruPrev.lruNext  = lruNext;
+            lruNext.lruPrev  = lruPrev;
+
+            // Insert into free list
+            lru.Invalidate();
+            AddFsoNodeToFreeList(lru);
+        }
+
+        internal void Add(int firstCluster, FsObject !fsObject)
+        {
+            if (this.capacity == 0) {
+                return;
+            }
+
+            lock (this) {
+                LockedAssertConsistent();
+                LockedAssertExpectPresent(firstCluster, false);
+
+                int  chain = GetHashChain(firstCluster);
+                FsoNode! sentinel = (!)this.hashSentinels[chain];
+
+                if (FreeListIsEmpty) {
+                    MoveLruToFreeList();
+                }
+
+                FsoNode! current = GetFsoNodeFromFreeList();
+                current.Assign(firstCluster, fsObject);
+                HashTableInsert(sentinel, current);
+
+                LockedAssertConsistent();
+                LockedAssertExpectPresent(firstCluster, true);
+            }
+        }
+
+        private bool FreeListIsEmpty
+        {
+            get { return freeSentinel.lruNext == freeSentinel; }
+        }
+
+        internal FsObject Get(int firstCluster)
+        {
+            if (this.capacity == 0) {
+                return null;
+            }
+
+            FsObject found = null;
+            lock (this) {
+                LockedAssertConsistent();
+
+                int chain = GetHashChain(firstCluster);
+
+                FsoNode! sentinel = (!)this.hashSentinels[chain];
+                FsoNode! current  = sentinel.hashNext;
+                while (current != sentinel) {
+                    if (current.FirstCluster == firstCluster) {
+                        found = current.FsObject;
+                        HashTableRemove(current);
+                        AddFsoNodeToFreeList(current);
+                        LockedCheckNotFound(firstCluster);
+                        break;
+                    }
+                    current = current.hashNext;
+                }
+                LockedAssertConsistent();
+                LockedAssertExpectPresent(firstCluster, false);
+            }
+
+            return found;
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG") ]
+        private void LockedCheckNotFound(int firstCluster)
+        {
+            int chain = GetHashChain(firstCluster);
+            FsoNode! sentinel = (!)this.hashSentinels[chain];
+            FsoNode! current  = sentinel.lruNext;
+            while (current != sentinel) {
+                if (current.FirstCluster == firstCluster) {
+                    DebugStub.Break();
+                }
+                current = current.lruNext;
+            }
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG") ]
+        private void LockedAssertChainConsistent(FsoNode! sentinel)
+        {
+            FsoNode current = sentinel.hashNext;
+            while (current != sentinel) {
+                DebugStub.Assert(current.Color == false);
+                current.Color = true;
+                current = current.hashNext;
+            }
+
+            current = current.hashPrev;
+            while (current != sentinel) {
+                DebugStub.Assert(current.Color == true);
+                current.Color = false;
+                current = current.hashPrev;
+            }
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG") ]
+        private void LockedAssertListConsistent(FsoNode! sentinel)
+        {
+            FsoNode current = sentinel.lruNext;
+            while (current != sentinel) {
+                DebugStub.Assert(current.Color == false);
+                current.Color = true;
+                current = current.lruNext;
+            }
+
+            current = current.lruPrev;
+            while (current != sentinel) {
+                DebugStub.Assert(current.Color == true);
+                current.Color = false;
+                current = current.lruPrev;
+            }
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG") ]
+        private void LockedAssertConsistent()
+        {
+            for (int i = 0; i < hashChainCount; i++) {
+                LockedAssertChainConsistent((!)hashSentinels[i]);
+            }
+            LockedAssertListConsistent(freeSentinel);
+            LockedAssertListConsistent(lruSentinel);
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG") ]
+        private void LockedAssertExpectPresent(int firstCluster,
+                                               bool isPresent)
+        {
+            FsoNode! current = lruSentinel.lruNext;
+            bool found = false;
+            while (current != lruSentinel && !found) {
+                found = (firstCluster == current.FirstCluster);
+                current = current.lruNext;
+            }
+            DebugStub.Assert(found == isPresent);
+        }
+    }
+}

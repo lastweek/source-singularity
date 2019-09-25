@@ -1,0 +1,21 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+    public struct ArgIterator
+    {
+#if !DONT_DO_BARTOK
+        private IntPtr * NextArg;
+        private int RemainingArgs;
+#endif
+
+        public ArgIterator(RuntimeArgumentHandle arglist);
+        public int GetRemainingCount();
+        public TypedReference GetNextArg();
+        public RuntimeTypeHandle GetNextArgType();
+    }
+}

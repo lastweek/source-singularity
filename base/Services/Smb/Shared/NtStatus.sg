@@ -1,0 +1,29 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   
+//
+//  Note:
+//
+
+using System;
+
+namespace Smb.Shared
+{
+	public enum NtStatus : uint
+	{
+		Success = 0,
+		
+		NoSuchFile = 0xc000000fu,
+		
+		ObjectNameNotFound = 0xc0000034u,
+		ObjectPathNotFound = 0xc000003au,
+		
+		
+		// Not a real error code
+		CodeNotMapped = 0xc0ff0000u,
+	}
+}

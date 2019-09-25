@@ -1,0 +1,35 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//   Microsoft Research Singularity
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//   File:   Contracts\Directory.Contract\DummyInstantiations.sg
+//
+//   Note:   This file forces instantiation and thus definition of some
+//           commonly used TRefs in order for them to be defined in a canonical
+//           place. Otherwise, it is possible for separate compilation to 
+//	    cause multiple definitions of these instances to appear.
+//
+//////////////////////////////////////////////////////////////////////////////
+
+namespace Dummy
+{
+
+    using Microsoft.Singularity.Directory;
+    using Microsoft.Singularity.Extending;
+    using Microsoft.Singularity.Channels;
+
+    class DummyInstances
+    {
+        public TRef<DirectoryServiceContract.Imp:Start> dummy1;  
+        public TRef<DirectoryServiceContract.Exp:Start> dummy2;  
+        public TRef<DirectoryServiceContract.Imp:Ready> dummy3;  
+        public TRef<DirectoryServiceContract.Exp:Ready> dummy4;  
+
+        public TRef<ServiceProviderContract.Imp:Start> dummy5;  
+        public TRef<ServiceProviderContract.Exp:Start> dummy6;  
+        public TRef<ExtensionContract.Imp:Start> dummy7;  
+        public TRef<ExtensionContract.Exp:Start> dummy8;  
+    }
+}

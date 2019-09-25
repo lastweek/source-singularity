@@ -1,0 +1,93 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note: WebFileCache holds copies of files served from disk
+//        This is used for asymmetric computing environments where
+//        going to the disk service might be expensive.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using Microsoft.Singularity;
+using System.Io;
+using System.Text;
+using System.Threading;
+using System.Web;
+using Microsoft.Singularity.V1.Services;
+
+namespace Microsoft.Singularity.WebApps
+{
+    public class CachedWebFile
+    {
+        public VContainer<byte> fileBytes;
+
+        public CachedWebFile([Claims] byte[]! in ExHeap bytes)
+        {
+            this.fileBytes = new VContainer<byte> (bytes);
+        }
+    }
+
+    public class WebFileCache
+    {
+        private Hashtable fileCacheHashTable;
+        public static int CachedFileMaxSize = 1024 * 1024; //1 MB
+
+
+        public WebFileCache ()
+        {
+            Hashtable fileCacheHashTableTemp = new Hashtable();
+            fileCacheHashTable = Hashtable.Synchronized(fileCacheHashTableTemp);
+        }
+
+        public bool AddFileToWebCache(string! filename, [Claims] byte[]! in ExHeap fileBytes)
+        {
+
+            if (fileCacheHashTable.ContainsKey(filename) == true) {
+                DebugStub.WriteLine("Got filename {0} we're aleady tracking.  ignoring\n",
+                                    __arglist(filename));
+            }
+
+            DebugStub.Print("Adding file {0} to web cache\n", __arglist(filename));
+            CachedWebFile cachedFile = new CachedWebFile(fileBytes);
+            fileCacheHashTable.Add(filename, cachedFile);
+
+            return true;
+        }
+
+        public bool GetFromFileCache(string! filename, out byte[] in ExHeap fileBytes)
+        {
+            CachedWebFile cachedFile = (CachedWebFile) fileCacheHashTable[filename];
+            if(cachedFile == null) {
+                fileBytes = null;
+                DebugStub.Print("Failed to find file {0} in web cache\n", __arglist(filename));
+                return false;
+            }
+
+            byte [] in ExHeap! cachedFileBytes = cachedFile.fileBytes.Acquire();
+            fileBytes = new[ExHeap]  byte[cachedFileBytes.Length];
+            Bitter.Copy(fileBytes, 0, cachedFileBytes.Length, cachedFileBytes, 0);
+            cachedFile.fileBytes.Release(cachedFileBytes);
+            DebugStub.Print("Returning file {0} from web cache\n", __arglist(filename));
+            return true;
+        }
+
+        //XXX memory leak?
+        public bool RemoveFileFromWebCache(string! filename)
+        {
+            DebugStub.Print("Removing file {0} from web cache\n", __arglist(filename));
+            fileCacheHashTable.Remove(filename);
+
+            return true;
+        }
+
+    }
+}

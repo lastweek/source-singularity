@@ -1,0 +1,72 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ThreadHandle.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity.V1.Channels;
+
+namespace Microsoft.Singularity.V1.Threads
+{
+    //| <include path='docs/doc[@for="ThreadHandle"]/*' />
+    public struct ThreadHandle
+    {
+        public readonly UIntPtr id;
+
+        [NoHeapAllocation]
+        public static bool Create(int threadIndex,
+                                  ContainerHandle container,
+                                  out ThreadHandle thread,
+                                  out UIntPtr threadContext);
+        [NoHeapAllocation]
+        public static void Dispose(ThreadHandle thread);
+
+        [NoHeapAllocation]
+        public static void Start(ThreadHandle thread);
+        [NoHeapAllocation]
+        public static ThreadState GetThreadState(ThreadHandle thread);
+        [NoHeapAllocation]
+        public static TimeSpan GetExecutionTime(ThreadHandle thread);
+
+        [NoHeapAllocation]
+        public static int GetAffinity(ThreadHandle thread);
+        [NoHeapAllocation]
+        public static void SetAffinity(ThreadHandle thread, int val);
+
+        [NoHeapAllocation]
+        public static bool Join(ThreadHandle thread);
+        [NoHeapAllocation]
+        public static bool Join(ThreadHandle thread, TimeSpan timeout);
+        [NoHeapAllocation]
+        public static bool Join(ThreadHandle thread, SchedulerTime stop);
+
+        [NoHeapAllocation]
+        public static ThreadHandle CurrentThread();
+
+        [NoHeapAllocation]
+        public static UIntPtr GetThreadLocalValue();
+        [NoHeapAllocation]
+        public static void SetThreadLocalValue(UIntPtr value);
+
+        [NoHeapAllocation]
+        public static void Sleep(TimeSpan timeout);
+        [NoHeapAllocation]
+        public static void Sleep(SchedulerTime stop);
+        [NoHeapAllocation]
+        public static void Yield();
+
+        [NoHeapAllocation]
+        public static void SpinWait(int iterations);
+
+        //public static uint GetPrincipal(/*[out]*/ char *outprincipal, uint maxout);
+
+        // public static uint GetPrincipal(ThreadHandle handle, /*[out]*/ char *outprincipal, uint maxout);
+    }
+}

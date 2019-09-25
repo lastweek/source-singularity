@@ -1,0 +1,41 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.Security.AccessControl
+{
+    using System;
+
+    /// <summary>
+    /// Base class for reading bytes from a stream/string.
+    /// </summary>
+    internal abstract class DataReader
+    {
+        // closes the reader
+        public void Close()
+        {
+            Dispose(true);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+        }
+
+        // Returns the next available character without actually reading it from
+        // the underlying medium. The returned value is -1 if no further
+        // characters are available.
+        public abstract int Peek();
+
+        // Reads the next character from the underlying medium. The returned value
+        // is -1 if no further characters are available.
+        public abstract int Read();
+
+        // Reads a block of characters. This method will read up to count
+        // characters from the reader into the buffer character
+        // array starting at position index. Returns the actual number of
+        // characters read, or zero if the end of the medium is reached.
+        public abstract int Read(char[] buffer, int index, int count);
+    }
+}

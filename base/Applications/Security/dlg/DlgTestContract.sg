@@ -1,0 +1,38 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Contract for a ChildPing process
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Applications.Contracts
+{
+    public contract DlgTestContract : ServiceContract
+    {
+        in message HereIsCapabilityEndpoint(DirectoryServiceContract.Imp:Ready! imp);
+        out message HereIsCapabilityEndpointAck(char[]! in ExHeap msg);
+
+        in message HereIsMediationEndpoint(DirectoryServiceContract.Imp:Ready! imp);
+
+        out message HereIsMediationEndpointAck(DlgTestContract.Exp:Start! exp);
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one
+        {
+            HereIsCapabilityEndpoint? -> (HereIsCapabilityEndpointAck!) -> Ready;
+            HereIsMediationEndpoint? -> (HereIsMediationEndpointAck!) -> Ready;
+        }
+    }
+}

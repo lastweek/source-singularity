@@ -1,0 +1,272 @@
+
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.UnitTest;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Test.Contracts;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Eventing;
+using Microsoft.Singularity.TestEvent;
+
+namespace Microsoft.Singularity
+{
+
+    [TestClass]
+    public class EvStress : TestClass
+    {
+
+        internal class StressLauncher
+        {
+            static EvStress1 Log;
+            static uint Loops;
+            static int Threads;
+            static AutoResetEvent WaitEvent;
+
+            public StressLauncher( string testName,
+                                    uint storageSize,
+                                    uint storageOptions,
+                                    uint sourceOptions,
+                                    uint iterations)
+            {
+                Console.WriteLine("Launching stress {0}: StorageSize={1} bytes, StorageOptions={2:x}, SourceOptions={3:x}",
+                                  testName,
+                                  storageSize,
+                                  storageOptions,
+                                  sourceOptions);
+
+                Loops = iterations;
+
+                WaitEvent = new AutoResetEvent(false);
+
+                Log = EvStress1.Create(testName, storageSize, storageOptions, sourceOptions);
+            }
+
+            public static void ChildThread()
+            {
+                if (WaitEvent == null || Log == null) {
+
+                    return;
+                }
+
+                for (int i = 0; i < Loops; i++) {
+
+                    Log.Log(100);
+                }
+
+                if (Interlocked.Decrement(ref Threads) == 0) {
+
+                    WaitEvent.Set();
+                }
+            }
+
+            public static void StartStress(int threads)
+            {
+                if (WaitEvent == null || Log == null) {
+
+                    Console.WriteLine("Failed to allocate resources");
+                    return;
+                }
+
+                Threads = threads;
+                Console.WriteLine("Stress started with {0} threads", Threads);
+
+                DateTime startTime = DateTime.Now;
+                for (uint i = 0; i < threads; i++) {
+
+                    Thread peer = new Thread(new ThreadStart(ChildThread));
+
+                    if (peer!= null) {
+
+                        peer.Start();
+                    } else {
+
+                        WaitEvent.Set();
+                        break;
+                    }
+                }
+
+                WaitEvent.WaitOne();
+
+                DateTime endTime = DateTime.Now;
+                TimeSpan t = endTime-startTime;
+                Console.WriteLine("Test completed in {0} msec", t.TotalMilliseconds);
+            }
+
+        }
+
+
+
+        [ClassInitialize]
+        public void Init()
+        {
+        }
+
+        [TestMethod]
+        public void StressNoStacks4k()
+        {
+            StressLauncher stress1 = new StressLauncher("StressNoStacks4k",
+                                                        4096,
+                                                        QualityOfService.RecyclableEvents,
+                                                        EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressNoStacks1M()
+        {
+            StressLauncher stress1 = new StressLauncher("StressNoStacks1M",
+                                                        1024*1024,
+                                                        QualityOfService.RecyclableEvents,
+                                                        EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressStacks4k()
+        {
+            StressLauncher stress1 = new StressLauncher("StressStacks4k",
+                                                        4096,
+                                                        QualityOfService.RecyclableEvents,
+                                                        EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressStacks1M()
+        {
+            StressLauncher stress1 = new StressLauncher("StressStacks1M",
+                                                        1024*1024,
+                                                        QualityOfService.RecyclableEvents,
+                                                        EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressPermNoStacks4k()
+        {
+            StressLauncher stress1 = new StressLauncher("StressPermNoStacks4k",
+                                                        4096,
+                                                        QualityOfService.PermanentEvents,
+                                                        EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressPermNoStacks1M()
+        {
+            StressLauncher stress1 = new StressLauncher("StressPermNoStacks1M",
+                                                        1024*1024,
+                                                        QualityOfService.PermanentEvents,
+                                                        EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressPermStacks4k()
+        {
+            StressLauncher stress1 = new StressLauncher("StressPermStacks4k",
+                                                        4096,
+                                                        QualityOfService.PermanentEvents,
+                                                        EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void StressPermStacks1M()
+        {
+            StressLauncher stress1 = new StressLauncher("StressPermStacks1M",
+                                                        1024*1024,
+                                                        QualityOfService.PermanentEvents,
+                                                        EventSource.CAPTURE_STACK_TRACE | EventSource.ENABLE_ALL_MASK,
+                                                        1000000);
+            if (stress1 != null) {
+
+                for (int i = 1; i <= 16; i <<= 1) {
+
+                    StressLauncher.StartStress(i);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void TestAll()
+        {
+            StressNoStacks4k();
+            StressNoStacks1M();
+            StressStacks4k();
+            StressStacks1M();
+
+            StressPermNoStacks4k();
+            StressPermNoStacks1M();
+            StressPermStacks4k();
+            StressPermStacks1M();
+        }
+    }
+}
+
+

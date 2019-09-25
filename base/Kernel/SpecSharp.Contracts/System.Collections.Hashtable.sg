@@ -1,0 +1,116 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using Microsoft.Contracts;
+
+
+namespace System.Collections
+{
+
+    public class Hashtable
+    {
+
+        public object this [object! key]
+        {
+          [Pure]
+          get
+            requires key != null otherwise ArgumentNullException;
+          set;
+        }
+
+        public int Count
+        {
+          [Pure]
+          get;
+        }
+
+        public object SyncRoot
+        {
+          get;
+        }
+
+        public ICollection! Keys
+        {
+          [Pure]
+          get;
+        }
+
+        public bool IsSynchronized
+        {
+          get;
+        }
+
+        public bool IsFixedSize
+        {
+          [Pure]
+          get;
+        }
+
+        public ICollection! Values
+        {
+          [Pure]
+          get;
+        }
+
+        public bool IsReadOnly
+        {
+          [Pure]
+          get;
+        }
+
+        public void OnDeserialization (object sender);
+
+        public static Hashtable Synchronized (Hashtable! table)
+            requires table != null otherwise ArgumentNullException;
+
+        public void Remove (object! key)
+            requires key != null otherwise ArgumentNullException;
+
+        public IDictionaryEnumerator GetEnumerator ();
+
+        public void CopyTo (Array! array, int arrayIndex)
+            requires array != null otherwise ArgumentNullException;
+            requires arrayIndex >= 0 otherwise ArgumentOutOfRangeException;
+
+        public bool ContainsValue (object value);
+
+        public bool ContainsKey (object! key)
+            requires key != null otherwise ArgumentNullException;
+
+        public bool Contains (object key);
+
+        public object Clone ();
+
+        public void Clear ();
+
+        public void Add (object! key, object value);
+
+        public Hashtable (IDictionary! d, Single loadFactor, IHashCodeProvider hcp, IComparer comparer)
+            requires d != null otherwise ArgumentNullException;
+
+        public Hashtable (IDictionary d, IHashCodeProvider hcp, IComparer comparer);
+
+        public Hashtable (IDictionary d, Single loadFactor);
+
+        public Hashtable (IDictionary d);
+
+        public Hashtable (int capacity, IHashCodeProvider hcp, IComparer comparer);
+
+        public Hashtable (IHashCodeProvider hcp, IComparer comparer);
+
+        public Hashtable (int capacity, Single loadFactor, IHashCodeProvider hcp, IComparer comparer)
+            requires capacity >= 0 otherwise ArgumentOutOfRangeException;
+            requires loadFactor >= 0 otherwise ArgumentOutOfRangeException;
+            requires loadFactor <= 0 otherwise ArgumentOutOfRangeException;
+
+        public Hashtable (int capacity, Single loadFactor);
+
+        public Hashtable (int capacity);
+
+        public Hashtable ();
+    }
+}

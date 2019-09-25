@@ -1,0 +1,20 @@
+#kill smtp
+kill 'smtpagent'
+
+#kill mailstore
+kill 'mailstore'
+
+#unmount fs
+fatcontrol '@unmount' '/fs'
+
+#reformat with 20 GB partiton
+fatcontrol '@format' '-m=41943040' '/dev/disk0'
+
+#mount
+fatcontrol '@mount' 'dev/disk0' '/fs'
+
+#restart mailstore'
+mailstore &
+
+
+

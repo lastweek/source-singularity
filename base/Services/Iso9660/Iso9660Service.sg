@@ -1,0 +1,338 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.IO;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.ServiceManager;
+using Iso9660;
+
+[assembly: ApplicationPublisherAttribute("singularity.microsoft.com")]
+[assembly: AssertPrivilegeAttribute("$register-privilege.localhost")]
+
+namespace Microsoft.Singularity.FileSystem
+{
+    [Category("Service")]
+    internal class ServiceParameters
+    {
+        [CustomEndpoint]
+        public readonly TRef<ServiceProcessContract.Exp:Starting> ControlEndpointRef;
+        
+        [CustomEndpoint]
+        public readonly TRef<ServiceEventContract.Imp:Ready> EventEndpointRef;
+        
+        reflective internal ServiceParameters();
+    }
+    
+    public class Iso9660Service : ITracked
+    {    
+        internal static int AppMain(ServiceParameters! parameters) {
+        
+            ServiceProcessContract.Exp! svcontrol = ((!)parameters.ControlEndpointRef).Acquire();
+            ServiceEventContract.Imp! svevent = ((!)parameters.EventEndpointRef).Acquire();
+
+            Iso9660Service service = new Iso9660Service(svcontrol, svevent);
+            try {
+                service.Run();
+            }
+            finally {
+                service.Dispose();
+            }
+            return 0;
+        }
+        
+        
+        #region Data Fields
+        
+        private string mountPath;
+        
+        private bool mounted;
+        
+        readonly string dbgprefix;
+
+        readonly ServiceProcessContract.Exp! svcontrol;
+        readonly ServiceEventContract.Imp! svevent;
+            
+        readonly ESet<FileSystemControllerContract.Exp:Ready>! controllers =
+            new ESet<FileSystemControllerContract.Exp:Ready>();
+
+
+        readonly ArrayList/*<Iso9660Fs>*/ filesystems = new ArrayList();
+            
+        #endregion
+        
+        Iso9660Service(
+            [Claims]ServiceProcessContract.Exp! svcontrol,
+            [Claims]ServiceEventContract.Imp! svevent)
+        {
+            this.svcontrol = svcontrol;
+            this.svevent = svevent;
+            this.dbgprefix = "ISO9660Service: ";
+            this.mounted = false;
+            this.mountPath = null;
+        }
+        
+        public void Dispose()
+        {
+            delete controllers;
+            delete svcontrol;
+            delete svevent;
+        }
+        
+        void Dbg(string! line)
+        {
+            DebugStub.WriteLine(dbgprefix + line);
+        }
+        
+        void Dbg(string! format, params object[]! args)
+        {
+            Dbg(String.Format(format, args));
+        }
+
+        internal void Run()
+        {
+            expose (this) {
+            
+            svcontrol.SendStartSucceeded();
+
+            for (;;) {
+                switch receive {
+                    case svcontrol.Connect(char[] in ExHeap expath, ServiceContract.Exp:Start! candidate):
+                    {
+                        if (expath != null) {
+                            string! path = Bitter.ToString2(expath);
+                            delete expath;
+                            Dbg("Received 'Connect' with subpath '{0}'.  This service does not support subpaths; rejecting.", path);
+                            svcontrol.SendNakConnect(ErrorCode.NotFound, candidate);
+                            break;
+                        }
+                        
+                        FileSystemControllerContract.Exp client = candidate as FileSystemControllerContract.Exp;
+                        if (client != null) {
+                            Dbg("Received 'Connect' with contract FileSystemControllerContract.");
+                            svcontrol.SendAckConnect();
+                            client.SendSuccess();
+                            controllers.Add(client);
+                        }
+                        else {
+                            Dbg("Received 'Connect', but the client did not provide a supported contract.");
+                            svcontrol.SendNakConnect(ErrorCode.ContractNotSupported, candidate);
+                        }
+                        break;
+                    }
+                    
+                    case svcontrol.Knock():
+                        svcontrol.SendAlive();
+                        break;
+                    
+                    case svcontrol.Stop():
+                        Dbg("Service Manager has requested that this service stop.");
+                        return;
+                        
+                    case svcontrol.ChannelClosed():
+                        Dbg("Service control channel has closed!  Not good!");
+                        return;
+
+                    case controller.Mount(char[]! in ExHeap exdevice, char[]! in ExHeap expath) in controllers:
+                    {
+                        string! device = Bitter.ToString2(exdevice);
+                        string! path = Bitter.ToString2(expath);
+                        delete exdevice;
+                        delete expath;
+                        Dbg("Received mount request, device '{0}' mount path '{1}'.", device, path);
+                        ErrorCode error = ProcessMountRequest(device, path);
+                        if (error == ErrorCode.NoError) {
+                            Dbg("Successfully mounted filesystem.");
+                            controller.SendOk();
+                        }
+                        else {
+                            Dbg("Failed to mount filesystem.");
+                            controller.SendRequestFailed(error);
+                        }
+                        controllers.Add(controller);
+                        break;
+                    }
+                    
+                    case controller.Unmount(char[]! in ExHeap expath) in controllers:
+                    {
+                        string! path = Bitter.ToString2(expath);
+                        delete expath;
+                        
+                        ErrorCode error = Unmount(path);
+                        if (error == ErrorCode.NoError) {
+                            controller.SendOk();
+                        }
+                        else {
+                            controller.SendRequestFailed(error);
+                        }
+                        Dbg("Received request to unmount '{0}'.");
+                        
+                        controllers.Add(controller);
+                        break;
+                    }
+                        
+                    case controller.ChannelClosed() in controllers:
+                        Dbg("A controller client has disconnected.");
+                        delete controller;
+                        break;
+                    }
+            }
+            }
+        }
+
+        Iso9660Fs FindFileSystemByMountPath(string! mountPath)
+        {
+            foreach (Iso9660Fs! fs in filesystems) {
+                if (fs.MountPath == mountPath) {
+                    return fs;
+                }
+            }
+            
+            return null;
+        }
+
+        ErrorCode Unmount(string! mountPath)
+        {
+            Iso9660Fs fs = FindFileSystemByMountPath(mountPath);
+            if (fs == null) {
+                Dbg("Cannot unmount filesystem at '{0}'; no such filesystem.", mountPath);
+                return ErrorCode.NotFound;
+            }
+                
+            
+            if (path != mountPath) {
+                Dbg("We are not mounted at that location.  Rejecting request.");
+                controller.SendRequestFailed(ErrorCode.NotFound);
+                controllers.Add(controller);
+                break;
+            }
+
+            Shutdown();
+            Dbg("Filesystem dismounted.");
+            mounted = false;
+            controller.SendOk();
+        }
+
+        ErrorCode ProcessMountRequest(string! device, string! location)
+        {
+            expose(this)
+            {
+                if (mounted) {
+                    Dbg("This service cannot yet handle more than one volume concurrently.");
+                    return ErrorCode.NotSupported;
+                }
+
+                long unit = Iso9660.Stdio.RawDevice.LoadDisk(device);
+                if (unit < 0) {
+                    Dbg("LoadDisk failed with unit = " + unit);
+                    return ErrorCode.Unknown;
+                }
+                
+                Dbg("Successfully loaded disk '{0}'.", device);
+                Dbg("Reading root...");
+                
+                byte[] superBlock = new byte[2048];
+                Iso9660.Stdio.RawDevice.ReadBlock(superBlock,16);
+                // 0x01 + "CD001"
+                if (superBlock[0] != (byte)0x01 ||
+                    superBlock[1] != (byte)0x43 ||
+                    superBlock[2] != (byte)0x44 ||
+                    superBlock[3] != (byte)0x30 ||
+                    superBlock[4] != (byte)0x30 ||
+                    superBlock[5] != (byte)0x31)
+                {
+                    Dbg("The filesystem does not contain a valid ISO9660 signature of 'CD001'.  Rejecting mount request.");
+                    return ErrorCode.Unknown;
+                }
+                
+                //
+                //  1. check media & show label
+                //
+                
+                ushort set = ByteArray.ToUshort(superBlock, SuperBlock.SET_SIZE);
+                ushort seq = ByteArray.ToUshort(superBlock, SuperBlock.SEQ_NO);
+                ushort blk = ByteArray.ToUshort(superBlock, SuperBlock.BLK_SIZE);
+
+                if (set != 1 || seq != 1 || blk != 2048) {
+                    Dbg("The disk does not contain a valid ISO9660 superblock.");
+                    if (set != 1)
+                        Dbg("    The set size is {0}; expected 1.", set);
+                    if (seq != 1)
+                        Dbg("    The seq size is {0}; expected 1.", seq);
+                    if (blk != 1)
+                        Dbg("    The block size is {0}; expected 2048.", blk);
+                    return ErrorCode.Unknown;
+                }
+                string label = ByteArray.ToString(superBlock, SuperBlock.LABEL, 32);
+
+                //
+                //  2. "unmarshall" & init root
+                //
+                
+                Iso9660DirectoryInfo root = new Iso9660DirectoryInfo();
+                root.InitializeMe(superBlock, SuperBlock.ROOT_DIR);
+                root.myPrefix = "";
+                Dbg("Superblock looks ok.");
+                Dbg("Label: '{0}'.", label);
+                SuperBlock.root = root;
+                
+
+                mountPath = location;
+                
+                Dbg("Starting file instance worker...");
+                FSFileInstanceWorker.Start();
+
+                Dbg("Starting directory instance worker...");
+                bool result = FSDirectoryInstanceWorker.Start(location);
+                
+                if (!result) {
+                    Dbg("The directory instance worker failed to initialize.");
+                    Shutdown();
+                    return ErrorCode.Unknown;
+                }
+                
+                Dbg("done.");
+                
+                mounted = true;
+                return ErrorCode.NoError;
+            }
+        }
+        
+        void Shutdown()
+        {
+            Dbg("Terminating directory instance worker...");
+            FSDirectoryInstanceWorker.Terminate();
+            Dbg("done.");
+
+            Dbg("Terminating file instance worker...");
+            FSFileInstanceWorker.Terminate();
+            Dbg("done.");
+        }
+        
+        void ITracked.Expose() {}
+        void ITracked.UnExpose() {}
+        void ITracked.Acquire() {}
+        void ITracked.Release() {}
+    }
+    
+    class Iso9660Fs
+    {
+        public string! MountPath;
+        public string! DevicePath;
+        public Process! Process;
+        
+        public bool IsControlEndpointReady;
+        
+        public TRef<FileSystemControlContract.Imp> ControlEndpointRef;
+    }
+}
+ 

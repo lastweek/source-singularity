@@ -1,0 +1,27 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace System.GCs
+{
+    [RequiredByBartok]
+    public class CallStack
+    {
+        [RequiredByBartok]
+        private static int callSiteTableCount;
+        [AccessedByRuntime("referenced from halexn.cpp")]
+        private static UIntPtr *codeBaseStartTable;
+        [RequiredByBartok]
+        private static UIntPtr **returnAddressToCallSiteSetNumbers;
+        [RequiredByBartok]
+        private static int **callSiteSetCount;
+        [RequiredByBartok]
+        private static ushort **callSetSiteNumberToIndex;
+        [RequiredByBartok]
+        private static uint **activationDescriptorTable;
+    }
+}

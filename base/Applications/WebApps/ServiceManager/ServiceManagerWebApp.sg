@@ -1,0 +1,790 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using System.Collections.Specialized;
+using System.Text;
+using System.Web;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using Microsoft.Singularity.PingPong.Contracts;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.ServiceManager;
+
+[assembly: Microsoft.SingSharp.Reflection.Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.WebApps
+{
+    [Category("WebApp")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<WebAppContract.Exp:Start> webAppRef;
+
+
+        reflective private Parameters();
+    }
+
+    class ServiceManagerWebApp : IWebApp, IDisposable
+    {
+        const string dbgprefix = "ServiceManagerWebApp: ";
+
+        readonly TRef<DirectoryServiceContract.Imp:Ready>! rootdsRef;
+        readonly TRef<ServiceManagerContract.Imp:Ready>! svmanagerRef;
+        readonly Hashtable/*<String,UrlHandler>*/! urlHandlers = new Hashtable();
+        readonly Hashtable/*<String,FileEntry>*/! fileHandlers = new Hashtable();
+
+
+        readonly Encoding! encoding;
+        readonly byte[]! newlineBytes;
+
+        [Microsoft.Contracts.NotDelayed]
+        ServiceManagerWebApp()
+        {
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+
+            // First, connect to SCM.
+
+            ServiceManagerContract.Imp! svmanager = ConnectServiceManager(rootds);
+
+            this.rootdsRef = new TRef<DirectoryServiceContract.Imp:Ready>(rootds);
+            this.svmanagerRef = new TRef<ServiceManagerContract.Imp:Ready>(svmanager);
+
+            Encoding encoding = Encoding.UTF8;
+            this.encoding = encoding;
+            this.newlineBytes = encoding.GetBytes("\r\n");
+
+            base();
+
+            this.urlHandlers["/"] = new UrlHandler(this.RootPageHandler);
+            this.fileHandlers["/style.css"] = new FileEntry("/init/sv_style.css", "text/css");
+        }
+
+
+        void Run(Parameters! config)
+        {
+            Dbg("Calling Driver.ServiceChannel");
+            WebAppContract.Exp! webappChannel = config.webAppRef.Acquire();
+            webappChannel.SendWebAppReady();
+            Driver.ServiceChannel(this, webappChannel);
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            Dbg("Starting");
+
+            using (ServiceManagerWebApp app = new ServiceManagerWebApp()) {
+                app.Run(config);
+            }
+
+            return 0;
+        }
+
+        public void Dispose()
+        {
+
+        }
+
+        static ServiceManagerContract.Imp! ConnectServiceManager(DirectoryServiceContract.Imp! rootds)
+        {
+            ServiceManagerContract.Imp! svmanager_imp;
+            ServiceManagerContract.Exp! svmanager_exp;
+            ServiceManagerContract.NewChannel(out svmanager_imp, out svmanager_exp);
+
+            ErrorCode error;
+            if (!SdsUtils.Bind("/service/services", rootds, svmanager_exp, out error)) {
+                delete svmanager_imp;
+                throw new Exception("Failed to connect to Service Manager.");
+            }
+
+            svmanager_imp.RecvSuccess();
+
+            return svmanager_imp;
+        }
+
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            try {
+                string! path = request.GetUriPath();
+                string verb = request.GetVerb();
+
+                if (verb == null)
+                    throw new InvalidRequestException("Invalid verb");
+
+                UrlHandler handler = (UrlHandler)urlHandlers[path];
+                if (handler != null) {
+                    Dbg("Received ProcessRequest - " + path);
+                    handler(request);
+                    return;
+                }
+
+                FileEntry file_entry = (FileEntry)fileHandlers[path];
+                if (file_entry != null) {
+                    Dbg("Received ProcessRequest - " + path + " --> file " + file_entry.LocalPath);
+
+                    if (verb != "GET") {
+                        throw new InvalidRequestException("Invalid verb");
+                    }
+                    SendFile(request, file_entry.LocalPath, file_entry.ContentType);
+                    return;
+                }
+
+                Dbg("No handler for path '{0}'.", path);
+                request.SendStatus(404, "Not Found");
+
+            }
+            catch (InvalidRequestException ex) {
+                Dbg("Invalid request: " + ex.Message);
+                request.SendStatus(500, ex.Message);
+            }
+            catch (Exception ex) {
+                Dbg("Exception: " + ex.GetType().FullName + ": " + ex.Message);
+                DebugStub.Break();
+            }
+            finally {
+                request.Done();
+            }
+        }
+
+        ServiceManagerContract.Imp! AcquireServiceManager()
+        {
+            return this.svmanagerRef.Acquire();
+        }
+
+        void ReleaseServiceManager([Claims]ServiceManagerContract.Imp! svmanager)
+        {
+            this.svmanagerRef.Release(svmanager);
+        }
+
+        class RequestFormData
+        {
+            public readonly StringDictionary Values = new StringDictionary();
+
+            public string! this[string! name]
+            {
+                get {
+                    string value = this.Values[name];
+                    if (value == null)
+                        return "";
+                    else
+                        return value;
+                }
+            }
+
+            public bool IsSet(string! name)
+            {
+                string value = this.Values[name];
+                return value != null && value.Length != 0;
+            }
+        }
+
+        const string ContentTypeHeaderName = "Content-Type";
+        const string UrlEncodedContentType = "application/x-www-form-urlencoded";
+
+        RequestFormData! GetFormData(IHttpRequest! request)
+        {
+            Dbg("Parsing form data...");
+
+            RequestFormData data = new RequestFormData();
+
+            string contentType = request.GetHeader(ContentTypeHeaderName);
+            if (contentType == null) {
+                Dbg("No content type.  Assuming form data is not present.");
+                return data;
+            }
+
+            if (String.Compare(contentType, UrlEncodedContentType, true) != 0) {
+                Dbg("Content type is not '{0}'; it's '{1}', which is not recognized.", UrlEncodedContentType, contentType);
+                return data;
+            }
+
+            Dbg("Content type is correct.");
+
+            byte[]! body_data = request.GetBodyData();
+
+            string! urlEncodedText = Encoding.UTF8.GetString(body_data);
+            Dbg("Decoding: " + urlEncodedText);
+
+            string[]! fields = urlEncodedText.Split('&');
+            foreach (string field in fields) {
+                if (field == null)
+                    continue;
+                int equals_index = field.IndexOf('=');
+                if (equals_index == -1) {
+                    Dbg("field is invalid: " + field);
+                    continue;
+                }
+
+                string! name_encoded = field.Substring(0, equals_index);
+                string! value_encoded = field.Substring(equals_index + 1);
+                string! name_decoded = (!)HttpUtility.UrlDecode(name_encoded);
+                string! value_decoded = (!)HttpUtility.UrlDecode(value_encoded);
+                data.Values[name_decoded] = value_decoded;
+                Dbg("found field '{0}' value '{1}'", name_decoded, value_decoded);
+            }
+
+            return data;
+        }
+
+        bool SelectService(ServiceManagerContract.Imp! svmanager, string! serviceName)
+        {
+            svmanager.SendSelectService(Bitter.FromString2(serviceName));
+
+            switch receive {
+                case svmanager.Ok():
+                    return true;
+
+                case svmanager.RequestFailed(error):
+                    Dbg("Failed to select service '{0}': {1}", serviceName, ServiceEnums.ToString(error));
+                    return false;
+
+                case svmanager.ChannelClosed():
+                    Dbg("Service Manager closed channel!");
+                    return false;
+            }
+        }
+
+        void StartService(string! serviceName)
+        {
+            Dbg("Starting service '{0}'...", serviceName);
+
+            ServiceManagerContract.Imp! svmanager = AcquireServiceManager();
+
+            if (!SelectService(svmanager, serviceName))
+                return;
+
+            svmanager.SendStartServiceNoWait();
+            switch receive {
+                case svmanager.ServiceStarting():
+                    break;
+
+                case svmanager.RequestFailed(error):
+                    break;
+            }
+
+            svmanager.SendUnselectService();
+
+            ReleaseServiceManager(svmanager);
+        }
+
+        void StopService(string! serviceName)
+        {
+            Dbg("Stopping service '{0}'...", serviceName);
+
+            ServiceManagerContract.Imp! svmanager = AcquireServiceManager();
+
+            if (!SelectService(svmanager, serviceName))
+                return;
+
+            svmanager.SendStopServiceNoWait();
+            switch receive {
+                case svmanager.ServiceStopping():
+                    break;
+
+                case svmanager.RequestFailed(error):
+                    break;
+            }
+
+            svmanager.SendUnselectService();
+
+            ReleaseServiceManager(svmanager);
+        }
+
+        void EnableService(string! serviceName, bool enabled)
+        {
+            Dbg("Setting service enabled to {0} for service '{1}'...", enabled, serviceName);
+
+            ServiceManagerContract.Imp! svmanager = AcquireServiceManager();
+
+            if (!SelectService(svmanager, serviceName))
+                return;
+
+            svmanager.SendEnableService(enabled);
+            switch receive {
+                case svmanager.Ok():
+                    Dbg("Service Manager accepted request to enable/disable service.");
+                    break;
+
+                case svmanager.RequestFailed(error):
+                    Dbg("Service Manager FAILED request to enable/disable service: " + ServiceEnums.ToString(error));
+                    break;
+            }
+
+            svmanager.SendUnselectService();
+
+            ReleaseServiceManager(svmanager);
+        }
+
+        void RootPageHandler(IHttpRequest! request)
+        {
+            Dbg("RootPageHandler running");
+
+            //
+            // If the user clicked one of the state-control buttons, then check to see which one.
+            // Perform the requested action, then redirect to this page.  This prevents the
+            // browser from interpreting "refresh" as "post the data again".
+            //
+            string! verb = request.GetVerb();
+            if (verb == "POST") {
+                // User clicked one of our buttons.
+                Dbg("Verb is POST, user probably clicked a control button");
+                RequestFormData! data = GetFormData(request);
+
+                string! serviceName = data["ServiceName"];
+                Dbg("Service name from form: " + serviceName);
+
+                if (serviceName == "") {
+                    Dbg("Service name is empty!");
+                }
+
+                if (data.IsSet("StartService")) {
+                    StartService(serviceName);
+                }
+                else if (data.IsSet("StopService")) {
+                    StopService(serviceName);
+                }
+                else if (data.IsSet("DisableService")) {
+                    EnableService(serviceName, false);
+                }
+                else if (data.IsSet("EnableService")) {
+                    EnableService(serviceName, false);
+                }
+                else {
+                    Dbg("Request did not contain a recognized control action.");
+                }
+
+                Dbg("Redirecting client");
+                request.SendStatus(303, "See Other");
+                request.SendHeader(HttpHeader.RedirectLocation, "/");
+                return;
+            }
+
+            request.SendStatus(200, "OK");
+            request.SendHeader(HttpHeader.Refresh, "5"); // refresh every N seconds
+
+
+            ResponseWrite(request,
+@"<html>
+<head>
+<title>Singularity Service Manager</title>
+<link rel=""stylesheet"" href=""style.css""/>
+</head>
+<body>
+");
+
+            ResponseWrite(request, "<h2>Services</h2>\r\n");
+
+            ServiceManagerContract.Imp! svmanager = AcquireServiceManager();
+
+            try {
+
+                ServiceInfo[]! in ExHeap first_infos = new[ExHeap] ServiceInfo[40];
+
+                svmanager.SendEnumerateServices(first_infos);
+
+                string![]! columns = {
+                    "Service Name",         // 0
+                //    "Display Name",         //
+                //    "Executable",           //
+                    "Activation Mode",      // 1
+                    "State",                // 2
+                    "Process ID",           // 3
+                    "Actions"               // 4
+                };
+
+                string[] cells = new string[columns.Length];
+
+                ResponseWriteLine(request, "<table>\r\n<tr><th>");
+                for (int i = 0; i < columns.Length; i++) {
+                    string! column = columns[i];
+                    ResponseWrite(request, column);
+                    if (i + 1 < columns.Length)
+                        ResponseWrite(request, "</th><th>");
+                }
+                ResponseWriteLine(request, "</th></tr>");
+
+                for (;;) {
+
+                    ServiceInfo[]! in ExHeap infos;
+                    bool more;
+                    int count;
+
+                    switch receive {
+                        case svmanager.NextServiceInfo(returned_infos, c):
+                            infos = returned_infos;
+                            count = c;
+                            more = true;
+                            break;
+
+                        case svmanager.EnumerationTerminated(returned_infos, c):
+                            infos = returned_infos;
+                            more = false;
+                            count = c;
+                            break;
+
+                        case timeout(TimeSpan.FromSeconds(30)):
+                            ResponseWriteLine(request, "<p>Error: Timeout occurred while waiting to receive data from Service Manager.</p>");
+                            goto done;
+                    }
+
+                    if (count > 0) {
+
+                        for (int i = 0; i < count; i++) {
+                            expose(infos[i]) {
+                                string! serviceName = Bitter.ToString2(infos[i].Config.ServiceName);
+                                //string! displayName = Bitter.ToString2(infos[i].Config.DisplayName);
+                                //string! executableName = Bitter.ToString2(infos[i].Config.ExecutableName);
+                                string! activationMode = ServiceEnums.ToString(infos[i].Config.ActivationMode);
+
+                                int c = 0;
+                                cells[c++] = serviceName;
+                                // cells[c++] = displayName;
+                                // cells[c++] = executableName;
+                                cells[c++] = activationMode;
+                                cells[c++] = ServiceEnums.ToString(infos[i].Status.State);
+                                cells[c++] = infos[i].Status.ProcessId.ToString();
+
+                                StringBuilder! actions = new StringBuilder();
+
+                                bool start_stop_applies =
+                                    infos[i].Config.ActivationMode == ServiceActivationMode.Manual
+                                    || infos[i].Config.ActivationMode == ServiceActivationMode.Demand;
+                                ServiceState svstate = infos[i].Status.State;
+
+                                bool disabled = infos[i].Config.IsAdministrativelyDisabled;
+                                bool can_start = start_stop_applies && svstate == ServiceState.Stopped && !disabled;
+                                bool can_stop = start_stop_applies && (svstate == ServiceState.Running || svstate == ServiceState.Starting) && !disabled;
+
+                                actions.Append("<form action=\"/\" method=\"POST\">\r\n");
+                                actions.AppendFormat("<input type=\"hidden\" name=\"ServiceName\" value=\"{0}\">\r\n", serviceName);
+                                actions.Append(MakeServiceControlButton("StartService", "Start", can_start));
+                                actions.Append(MakeServiceControlButton("StopService", "Stop", can_stop));
+                                actions.Append(MakeServiceControlButton("DisableService", "Disable", !disabled));
+                                actions.Append(MakeServiceControlButton("EnableService", "Enable", disabled));
+                                actions.Append("</form>\r\n");
+
+                                cells[c++] = actions.ToString();
+                            }
+
+                            ResponseWrite(request, "<tr><td>");
+                            for (int j = 0; j < cells.Length; j++) {
+                                string cell = cells[j];
+                                if (cell == null)
+                                    cell = "";
+                                ResponseWrite(request, cell);
+
+                                if (j + 1 < cells.Length)
+                                    ResponseWrite(request, "</td><td>");
+                            }
+
+                            ResponseWriteLine(request, "</td><tr>");
+                        }
+                    }
+
+                    if (more) {
+                        svmanager.SendEnumerateServices(infos);
+                    }
+                    else {
+                        delete infos;
+                        break;
+                    }
+                }
+
+            done:
+                ResponseWriteLine(request, "</table></body></html>");
+
+            }
+            finally {
+                ReleaseServiceManager(svmanager);
+            }
+        }
+
+        static string! MakeServiceControlButton(string! action, string! label, bool enabled)
+        {
+            return String.Format("<input type=\"submit\" name=\"{0}\" value=\"{1}\"{2}>\r\n", action, label,
+                enabled ? "" : " disabled");
+
+        }
+
+        DirectoryServiceContract.Imp! AcquireDirectory()
+        {
+            return rootdsRef.Acquire();
+        }
+
+        void ReleaseDirectory([Claims]DirectoryServiceContract.Imp! rootds)
+        {
+            rootdsRef.Release(rootds);
+        }
+
+        void SendFile(IHttpRequest! request, string! path, string! contentType)
+        {
+            FileContract.Imp! file;
+            FileContract.Exp! file_exp;
+            FileContract.NewChannel(out file, out file_exp);
+
+            DirectoryServiceContract.Imp! rootds = AcquireDirectory();
+            ErrorCode error;
+            if (!SdsUtils.Bind(path, rootds, file_exp, out error)) {
+                delete file;
+
+                ReleaseDirectory(rootds);
+
+                string! errorText = SdsUtils.ErrorCodeToString(error);
+                request.SendStatus(400, errorText);
+                request.SendHeader(HttpHeader.ContentType, ContentType.TextHtmlUtf8);
+
+                StringBuilder! html = new StringBuilder();
+                html.Append("<html><title>Error - ");
+                html.Append(errorText);
+                html.Append("</title></head><body><h2>Error</h2>");
+                html.AppendFormat("<p>The file '{0}' could not be opened.</p>", path);
+                html.Append("<p>Error: ");
+                html.Append(errorText);
+                html.Append("</p>");
+                html.Append("</body></html>");
+                return;
+            }
+
+            file.RecvSuccess();
+
+            ReleaseDirectory(rootds);
+
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-Type", contentType);
+
+            const int buffer_length = 4096;
+            byte[]! in ExHeap exbuf = new[ExHeap] byte[buffer_length];
+            byte[]! localbuf = new byte[buffer_length];
+            long file_offset = 0;
+            file.SendRead(exbuf, 0, file_offset, exbuf.Length);
+
+            bool done = false;
+
+            while (!done) {
+
+                switch receive {
+                    case file.AckRead(returned_exbuf, bytes_read, read_error):
+                        if (error != 0) {
+                            Dbg("A request to read on file '{0}' failed, error = {1}", path, read_error);
+                            delete returned_exbuf;
+                            done = true;
+                            break;
+                        }
+
+                        if (bytes_read < 0 || bytes_read > buffer_length) {
+                            Dbg("Filesystem returned a ridiculous number of bytes transferred.");
+                            delete returned_exbuf;
+                            done = true;
+                            break;
+                        }
+
+                        if (returned_exbuf.Length != buffer_length) {
+                            Dbg("Filesystem returned a buffer with different length?!");
+                            delete returned_exbuf;
+                            done = true;
+                            break;
+                        }
+
+                        if (bytes_read == 0) {
+                            Dbg("Received EOF from filesystem");
+                            delete returned_exbuf;
+                            done = true;
+                            break;
+                        }
+
+                        // We know this will not overflow; we just checked it against buffer_length.
+                        int bytes_read32 = (int)bytes_read;
+
+                        Dbg("Received {0} bytes from filesystem", bytes_read);
+
+                        // Grrrrrr.  IHttpRequest needs to be improved.  It does not take
+                        // a length within a buffer; it just blats out an entire byte[] buffer.
+                        if (bytes_read < buffer_length) {
+                            byte[]! partial_buffer = new byte[bytes_read32];
+                            Bitter.ToByteArray(returned_exbuf, 0, bytes_read32, partial_buffer, 0);
+                            request.SendBodyData(partial_buffer);
+                            done = true;
+                        }
+                        else {
+                            Bitter.ToByteArray(returned_exbuf, 0, bytes_read32, localbuf, 0);
+                            request.SendBodyData(localbuf);
+                        }
+
+                        file_offset += bytes_read;
+                        file.SendRead(returned_exbuf, 0, file_offset, exbuf.Length);
+                        break;
+
+                    case file.ChannelClosed():
+                        Dbg("Filesystem closed channel!");
+                        done = true;
+                        break;
+                }
+            }
+
+            Dbg("Done sending file.");
+            delete file;
+        }
+
+        void SendOkHtmlHeader(IHttpRequest! request)
+        {
+            request.SendStatus(200, "OK");
+            request.SendHeader("Content-Type", "text/html;charset=utf-8");
+        }
+
+        void ResponseWriteLine(IHttpRequest! request, string! format, params object[]! args)
+        {
+            ResponseWriteLine(request, String.Format(format, args));
+        }
+
+        void ResponseWriteLine(IHttpRequest! request, string! line)
+        {
+            if (line.Length != 0) {
+                byte[]! bytes = encoding.GetBytes(line);
+                request.SendBodyData(bytes);
+            }
+            request.SendBodyData(newlineBytes);
+        }
+
+        void ResponseWrite(IHttpRequest! request, string! text)
+        {
+            if (text.Length != 0) {
+                byte[]! bytes = encoding.GetBytes(text);
+                request.SendBodyData(bytes);
+            }
+        }
+
+        internal static void Dbg(string! line)
+        {
+            DebugStub.WriteLine(dbgprefix + line);
+        }
+
+        internal static void Dbg(string! format, params object[]! args)
+        {
+            Dbg(String.Format(format, args));
+        }
+    }
+
+    delegate void UrlHandler(IHttpRequest! request);
+
+    class FileEntry
+    {
+        public FileEntry(string! localPath, string! contentType)
+        {
+            this.LocalPath = localPath;
+            this.ContentType = contentType;
+        }
+
+        public string! LocalPath;
+        public string! ContentType;
+    }
+
+    class InvalidRequestException : Exception
+    {
+        public InvalidRequestException(string! msg)
+            : base(msg)
+        {
+        }
+
+        public InvalidRequestException()
+            : base("The HTTP request is invalid; details are not available.")
+        {
+        }
+    }
+
+    static class ContentType
+    {
+        public const string TextHtml = "text/html";
+        public const string TextHtmlUtf8 = "text/html;charset=utf-8";
+    }
+
+    static class HttpHeader
+    {
+        public const string ContentType = "Content-Type";
+        public const string RedirectLocation = "Location";
+        public const string Refresh = "Refresh";
+    }
+
+#if false
+    static class HttpUtility
+    {
+        public static string! UrlDecode(string! text)
+        {
+            int pos = 0;
+            while (true) {
+                if (pos == text.Length) {
+                    // no escapes found, just return same string
+                    return text;
+                }
+
+                if (pos == '+' || pos == '%') {
+                    // found an escape; must break this loop and process for real
+                    break;
+                }
+
+                // keep looking
+                pos++;
+            }
+
+            StringBuilder! result = new StringBuilder();
+            result.Append(text, 0, pos);
+
+            while (pos < text.Length) {
+                char c = text[pos];
+                pos++;
+
+                if (c == '+') {
+                    result.Append(' ');
+                }
+                else if (c == '%') {
+                    if (pos + 2 <= text.Length) {
+                        int high = GetHexValue(text[pos]);
+                        int low = GetHexValue(text[pos + 1]);
+
+                        if (high != -1 && low != -1) {
+                            pos += 2;
+                            char hexc = (char)(high << 4 | low);
+                            result.Append(hexc);
+                        }
+                        else {
+                            // bogus escape sequence!
+                            result.Append('%');
+                        }
+                    }
+                    else {
+                        // too short for proper escape sequence!
+                        result.Append('%');
+                        continue;
+                    }
+                }
+                else {
+                    result.Append(c);
+                }
+            }
+        }
+
+        int GetHexValue(char c)
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            return -1;
+        }
+    }
+#endif
+
+}

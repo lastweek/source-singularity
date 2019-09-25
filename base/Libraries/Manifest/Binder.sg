@@ -1,0 +1,508 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Binder.cs
+//
+//  Note:
+///////////////////////////////////////////////////////////////////////////////
+
+using System;
+using System.Text;
+using System.GCs;
+using System.Collections;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Xml;
+using Microsoft.Singularity.V1.Types;
+using EndpointImplementation = Microsoft.Singularity.Channels.Endpoint;
+
+namespace Microsoft.Singularity.Applications
+{
+    [CLSCompliant(false)]
+    public class Binder
+    {
+        // duplicate of Directory Service consts
+#if ISA_ARM
+        public const string ExecutableExtension = ".arm";
+        public const string ManifestExtension   = ".arm.manifest";
+#elif ISA_IX64
+        public const string ExecutableExtension = ".x64";
+        public const string ManifestExtension   = ".x64.manifest";
+#elif ISA_IX86
+        public const string ExecutableExtension = ".x86";
+        public const string ManifestExtension   = ".x86.manifest";
+#endif
+        public const int ExecutableExtensionLength = 4; // Should be (ExecutableExtension.Length);
+
+        public const string ExecutablesNamespace = "init";
+
+        const string NameXmlTag = "name";
+        const string StartStatedIdXmlAttribute = "startStateId";
+        const string EndpointClassName = "Microsoft.Singularity.Channels.Endpoint";
+
+        public static void Initialize()
+        {
+        }
+
+        public static Manifest LoadManifest(DirectoryServiceContract.Imp:Ready! ds, String application)
+        {
+            if (application == null) return null;
+
+            application = (!)application.ToLower();
+            string folderName = application;
+            string appName = application;
+
+            // Open the directory containing the manifest and the ExecutableExtension
+            // remove the ExecutableExtension (e.g. ".x86") extension if present
+            if (application.EndsWith(ExecutableExtension)) {
+                folderName =(!)application.Substring(0, application.Length - ExecutableExtensionLength);
+                appName = folderName;
+            }
+
+            if (folderName.Length == 0) {
+                // invalid application name
+                return null;
+            }
+
+            // if the first character of the folder name is not "/",
+            // then we will redirect to the init namespace.
+            if (folderName[0] != '/') {
+                appName = folderName;
+                folderName = "/" + ExecutablesNamespace + "/" + appName;
+            }
+            else {
+                // need to strip off all but last part.
+                appName = folderName.Substring(folderName.LastIndexOf('/')+1);
+            }
+#if DEBUG2
+            DebugStub.WriteLine("Binder.LoadManifest: application={0},folder={1},appName={2}",
+                                __arglist (application,folderName,appName));
+#endif
+
+            DirectoryServiceContract.Imp:Ready dirEP = openDir(ds, folderName);
+
+            if (dirEP == null) {
+                Tracing.Log(Tracing.Debug, "Unable to open folder {0}",
+                            folderName);
+                return null;
+            }
+
+            Manifest man = GetManifest(appName + ManifestExtension, dirEP);
+            delete dirEP;
+            return man;
+        }
+
+
+        /// <summary>
+        /// Wrap up all the details of creating a process in one rountine.
+        /// deals with old and new style processes. Performs manifest parsing
+        /// argument parsing and setting and manages stdin/out
+        /// </summary>
+
+        public static Process CreateProcess(DirectoryServiceContract.Imp! ds,
+                                      string[] args,
+                                      PipeMultiplexer! outputMux)
+        {
+            Manifest manifest;
+            return CreateProcess(ds,args,outputMux, out manifest);
+        }
+
+        public static Process CreateProcess(DirectoryServiceContract.Imp! ds,
+                                      string[] args,
+                                      PipeMultiplexer! outputMux,
+                                      out Manifest outManifest)
+        {
+            outManifest = null;
+            if (args == null || args.Length == 0) return null;
+
+            UnicodePipeContract.Imp! childStdInImp;
+            UnicodePipeContract.Exp! childStdInExp;
+            UnicodePipeContract.NewChannel(out childStdInImp, out childStdInExp);
+
+            // Splice a new output pipe into our output MUX.
+            UnicodePipeContract.Imp childStdOutImp = outputMux.FreshClient();
+            if (childStdOutImp == null) {
+                delete childStdInImp;
+                delete childStdInExp;
+                return null;
+            }
+
+            Process p  = CreateProcess(ds,args,childStdInExp,childStdOutImp, out outManifest);
+            delete childStdInImp;
+            return p;
+        }
+
+        public static Process CreateProcess(DirectoryServiceContract.Imp! ds,
+                                string[] args,
+                                [Claims] UnicodePipeContract.Exp:READY? childStdInExp,
+                                [Claims] UnicodePipeContract.Imp:READY! childStdOutImp)
+        {
+            Manifest manifest;
+            return CreateProcess(ds,args,childStdInExp, childStdOutImp, out manifest);
+        }
+
+        public static Process CreateProcess(DirectoryServiceContract.Imp! ds,
+                                string[] args,
+                                [Claims] UnicodePipeContract.Exp:READY? childStdInExp,
+                                [Claims] UnicodePipeContract.Imp:READY! childStdOutImp,
+                                out Manifest outManifest)
+        {
+            return CreateProcess(null, ds, args, childStdInExp, childStdOutImp, out outManifest);
+        }
+
+
+        public static Process CreateProcess( string category,
+                                DirectoryServiceContract.Imp! ds,
+                                string[] args,
+                                out Manifest outManifest)
+        {
+            string action;
+            return CreateProcess(category, ds, args, out outManifest, out action);
+        }
+
+        public static Process CreateProcess( string category,
+                                DirectoryServiceContract.Imp! ds,
+                                string[] args,
+                                [Claims] UnicodePipeContract.Exp:READY? childStdInExp,
+                                [Claims] UnicodePipeContract.Imp:READY! childStdOutImp,
+                                out Manifest outManifest)
+        {
+            string action;
+            Process p = CreateProcess(category, ds, args, out outManifest, out action);
+            if (p == null) {
+                delete childStdInExp;
+                delete childStdOutImp;
+                return null;
+            }
+            bool ok = ProcessIo(p, outManifest, action, childStdInExp,childStdOutImp);
+            if (!ok) {
+                DebugStub.Break();
+                return null;
+            }
+            return p;
+        }
+
+        ///<summary>
+        /// Create a new process and set parameters using the manifest
+        ///</summary>
+        ///<return>
+        /// The process created. If there are errors return null.
+        ///</return>
+        public static Process CreateProcess(string category,
+                                DirectoryServiceContract.Imp! ds,
+                                string[] args,
+                                out Manifest manifest,
+                                out string action)
+        {
+            manifest = null;
+            action = null;
+            if (args == null || args.Length == 0) {
+                DebugStub.Break();
+                return null;
+            }
+
+            // Figure out if this process needs any special endpoints.
+            manifest = Binder.LoadManifest(ds, args[0]);
+            if (manifest == null) {
+                Console.WriteLine("'{0}' is not a command or has no manifest", args[0]);
+                DebugStub.Break();
+                return null;
+            }
+
+            if (manifest.HasParameters()) {
+                Process child;
+                XmlNode categoryNode = null;
+                if (category != null ) {
+                    // the caller expects the category name passed in
+                    // to match the one found in the manifest. If it does
+                    // not throw exception
+                    categoryNode = manifest.GetCategoryNodeByName(category);
+                    if (categoryNode == null) {
+                        DebugStub.WriteLine("Category node not present " +
+                                            "in manifest for {0}", __arglist(args[0]));
+                        throw new Exception("no category found in manifest");
+                    }
+                }
+
+                if ((category != null) && (category != "console")) {
+                    child = new Process((!)args[0], null, null);
+                }
+                else {
+                    ParameterProcessor! parameters = new ParameterProcessor();
+                    bool ok = parameters.ProcessParameters(args, manifest,
+                        out child, out action);
+
+                    if(ok && child != null) {
+                        categoryNode = manifest.GetCategoryNode(action);
+                        if (categoryNode != null) {
+                        }
+                    }
+                    else {
+                        return null;
+                    }
+                }
+
+                assert child != null;
+                int result = manifest.SetEndpoints(child, action, false);
+                if (result < 0) {
+                    Console.WriteLine("Unable to set all endpoints for this process.");
+                    DebugStub.Break();
+                    return null;
+                }
+
+                return child;
+            }
+            else {
+                Console.WriteLine("  old style");
+                // Old-style app.
+                return new Process(args, null, 2);
+            }
+        }
+
+        ///<summary>
+        /// Try to parse an integer, return true if successful.
+        ///</summary>
+        private static bool TryParseInt(string input, out int value)
+        {
+            try {
+                value = int.Parse(input);
+                return true;
+            }
+            catch(FormatException) {
+                value = 0;
+                return false;
+            }
+            catch(OverflowException) {
+                value = 0;
+                return false;
+            }
+        }
+
+        private static bool  ProcessIo( Process! child,
+                                Manifest manifest,
+                                string action,
+                                [Claims] UnicodePipeContract.Exp:READY? childStdInExp,
+                                [Claims] UnicodePipeContract.Imp:READY! childStdOutImp
+                                )
+        {
+            try {
+                if (manifest != null && manifest.HasParameters()) {
+                    int stdinIndex = manifest.GetInputPipeIndex(action, "data");
+                    if (stdinIndex == -1) {
+                        Console.WriteLine(" no stdin data pipe specified in manifest");
+                        delete childStdInExp;
+                    }
+                    else child.SetStartupEndpoint(stdinIndex, (Endpoint * in ExHeap) childStdInExp);
+
+                    int stdoutIndex = manifest.GetOutputPipeIndex(action, "data");
+                    if (stdoutIndex == -1) {
+                        Console.WriteLine(" no stdout data pipe specified in manifest");
+                        delete childStdOutImp;
+                    }
+                    else child.SetStartupEndpoint(stdoutIndex, (Endpoint * in ExHeap) childStdOutImp);
+                }
+                else {
+                    child.SetStartupEndpoint(0, (Endpoint * in ExHeap) childStdInExp);
+                    child.SetStartupEndpoint(1, (Endpoint * in ExHeap) childStdOutImp);
+                }
+
+            }
+            catch (Exception ex) {
+                    Console.WriteLine("Exception: " + ex.Message);
+            }
+
+            return true;
+        }
+
+        public static byte [] FindAndReadManifest(string! file,
+                                             DirectoryServiceContract.Imp:Ready! dirClient)
+        {
+            ErrorCode errorOut;
+
+            long readSize = 0x1000;
+
+            FileAttributesRecord fileAttributes;
+            bool ok = SdsUtils.GetAttributes(file,
+                                    dirClient,
+                                    out fileAttributes,
+                                    out errorOut );
+            if (!ok) return null;
+
+
+            // bind to file
+
+            FileContract.Imp! fileClient;
+            FileContract.Exp! fileServer;
+            FileContract.NewChannel(out fileClient, out fileServer);
+
+            ok = SdsUtils.Bind(file,dirClient,fileServer, out errorOut);
+            if (!ok) {
+                delete fileClient;
+                return null;
+            }
+            fileClient.RecvSuccess();
+
+            //  Now read file
+
+            if (fileClient != null) {
+                // allocate memory and read file
+                byte [] region = new byte[fileAttributes.FileSize];
+                if (region == null) {
+                    delete fileClient;
+                    return null;
+                }
+
+                byte[] in ExHeap buf = new[ExHeap] byte[readSize];
+                long readOffset = 0;
+
+                while (true) {
+                    // invariant: we own the non-null buffer buf at the
+                    //            loop head
+                    //       and  we don't own the buffer at the loop exit.
+                    //
+                    Tracing.Log(Tracing.Debug,"FindImage pre SendRead");
+                    fileClient.SendRead(buf, 0, readOffset, readSize);
+
+                    switch receive {
+                        case fileClient.AckRead(localbuf, bytesRead, error) :
+                            Tracing.Log(Tracing.Debug,"FindImage Post SendRead");
+                            Bitter.ToByteArray(localbuf, 0, (int)bytesRead,
+                                              region, (int)readOffset);
+                            if (bytesRead == readSize) {
+                                // see if there is more
+                                readOffset += bytesRead;
+                                buf = localbuf;
+                                continue;
+                            }
+                            delete localbuf;
+                            break;
+
+                        case fileClient.ChannelClosed() :
+                            break;
+                        case unsatisfiable :
+                            break;
+                    }
+                    // Get out of loop
+                    break;
+                }
+                delete fileClient;
+                return region;
+            }
+            return null;
+        }
+
+        private static DirectoryServiceContract.Imp:Ready openDir(DirectoryServiceContract.Imp:Ready! ds, string! filePath)
+        {
+            assert ds != null;
+
+            DirectoryServiceContract.Imp! dirClient;
+            DirectoryServiceContract.Exp! dirServer;
+            DirectoryServiceContract.NewChannel(
+                out dirClient, out dirServer);
+
+            ErrorCode errorCode;
+            bool ok = SdsUtils.Bind(filePath, ds, dirServer, out errorCode);
+            if (!ok) {
+                delete dirClient;
+                return null;
+            }
+
+            dirClient.RecvSuccess();
+            return dirClient;
+        }
+
+        public static Manifest GetManifest(string! name,
+                                           DirectoryServiceContract.Imp:Ready! dirEP)
+        {
+            Manifest manifest = null;
+
+            Tracing.Log(Tracing.Debug, "Binder.GetManifest: path={0}", name);
+            try {
+                byte [] manifestMemory = FindAndReadManifest(name,dirEP);
+                if (manifestMemory != null) {
+                    manifest = new Manifest(manifestMemory);
+                    Tracing.Log(Tracing.Debug, "Success: {0}", name);
+                }
+                else {
+                    Tracing.Log(Tracing.Debug, "Failed: no manifest {0}", name);
+                }
+            }
+            catch (Exception e) {
+                Tracing.Log(Tracing.Debug, "Exception in GetManifest: {0}", e.Message);
+            }
+            return manifest;
+        }
+
+        // utility function for getting SystemTypes from strings in the manifest
+        private static SystemType GetEndpointType(XmlNode! metadata)
+        {
+
+            // everything must derive from Endpoint
+            SystemType epSystemType = typeof(Channels.Endpoint).GetSystemType();
+
+            // now traverse the metadata to the types, in order:
+            foreach (XmlNode! child in metadata.Children) {
+                string! name = (!)child.GetAttribute(NameXmlTag, "");
+
+                long lower, upper;
+                // TODO: the encoding of types will change, and when
+                // it does, this will need to change.  Right now, we create the
+                // type name of foo.imp as foo+foo.imp (same for exp)
+                // XXX now types are in line with CLR -- foo+exp
+                if (name.EndsWith(".Exp")) {
+                    name = name.Remove(name.Length - 4, 4) + "+Exp";
+                }
+                else if (name.EndsWith(".Imp")) {
+                    name = name.Remove(name.Length - 4, 4) + "+Imp";
+                }
+
+                // get the hash for this type:
+                System.RuntimeTypeHash.ComputeHash(name, out lower, out upper);
+
+                // If this isn't the base of our derivation, get the type
+                if (name != EndpointClassName) {
+                    epSystemType = EndpointImplementation.RegisterSystemType(name,lower, upper, epSystemType);
+                }
+            }
+            return epSystemType;
+        }
+
+        /// <summary>
+        /// Given information in the application manifest attempt to create and bind a channel to
+        /// a service conforming to the contract specified.  This routine parses the manifest
+        /// metadata then makes an ABI call to generate the endpoints, connect them, add the
+        /// imp endpoint to the process StartupEndpoint array at "index", and attempt to bind
+        /// the exp endpoint to a service provider using system policy.
+        /// </summary>
+         public static  bool BindServiceUser(Process! process,
+                                                  int index,
+                                                  string! contract,
+                                                  XmlNode! metadata)
+        {
+            // get the metadata for both sides of the channel
+            XmlNode! impNode = (!)metadata.GetChild("imp");
+            XmlNode! expNode = (!)metadata.GetChild("exp");
+
+            // get the initial state as an integer
+            int initialState = metadata.GetAttribute(StartStatedIdXmlAttribute, 0);
+
+            // now get the SystemType of each endpoint's type (we don't actually
+            // know the type in the kernel, but we can discern it using the
+            // fullname from the metadata)
+            SystemType impType = GetEndpointType(impNode);
+            SystemType expType = GetEndpointType(expNode);
+
+            bool ok = process.BindToService(impType, expType, contract, initialState, index);
+            return ok;
+        }
+    }
+}

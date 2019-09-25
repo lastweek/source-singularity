@@ -1,0 +1,22 @@
+body
+{
+    font-family: "Verdana";
+}
+
+table
+{
+    border-collapse: collapse;
+}
+
+th
+{
+    border: solid 1px black;
+    background-color: #c0e0e0;
+    padding: 3px;
+    margin: 0px;
+}
+
+td
+{
+    border: solid 1px black ;
+}

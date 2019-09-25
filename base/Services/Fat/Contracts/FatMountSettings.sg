@@ -1,0 +1,86 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FatMountSettings.sg
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Contracts
+{
+    public rep struct FatMountSettings : ITracked
+    {
+        public const uint MaxCacheMB            = 1024;
+        public const uint MaxDirectoryCacheSize = 4096;
+        public const uint MaxFileCacheSize      = 4096;
+        public const uint MaxWriteQueueSize     = 1024;
+
+        private char[]! in ExHeap diskPath;
+        private char[]! in ExHeap mountPath;
+        private bool readOnly;
+        private uint cacheMB;
+        private uint directoryCacheSize;
+        private uint fileCacheSize;
+        private uint writeQueueSize;
+
+        public FatMountSettings(string! diskPath,
+                                string! mountPath,
+                                bool    readOnly,
+                                uint    cacheMB,
+                                uint    directoryCacheSize,
+                                uint    fileCacheSize,
+                                uint    writeQueueSize)
+        {
+            this.diskPath           = Bitter.FromString2(diskPath);
+            this.mountPath          = Bitter.FromString2(mountPath);
+            this.readOnly           = readOnly;
+            this.cacheMB            = cacheMB;
+            this.directoryCacheSize = directoryCacheSize;
+            this.fileCacheSize      = fileCacheSize;
+            this.writeQueueSize     = writeQueueSize;
+        }
+
+        public string! DiskPath
+        {
+            get { expose(this) { return Bitter.ToString2(this.diskPath); } }
+        }
+
+        public string! MountPath
+        {
+            get { expose(this) { return Bitter.ToString2(this.mountPath); } }
+        }
+
+        public bool ReadOnly
+        {
+            get { expose(this) { return this.readOnly; } }
+        }
+
+        public uint CacheMB
+        {
+            get { expose(this) { return this.cacheMB; } }
+        }
+
+        public uint DirectoryCacheSize
+        {
+            get { expose(this) { return this.directoryCacheSize; } }
+        }
+
+        public uint FileCacheSize
+        {
+            get { expose(this) { return this.fileCacheSize; } }
+        }
+
+        public uint WriteQueueSize
+        {
+            get { expose(this) { return this.writeQueueSize; } }
+        }
+    }
+}

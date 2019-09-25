@@ -1,0 +1,38 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+using Bartok.Runtime;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+namespace System
+{
+    // The GC has only static members and doesn't require the serializable
+    // keyword.
+
+    [CCtorIsRunDuringStartup]
+    [RequiredByBartok]
+    public sealed class GC
+    {
+        public static void Collect();
+        public static void Verify();
+        public static void Collect(int generation);
+        public static int GetGeneration(Object obj);
+        public static int MaxGeneration { get; }
+        public static void KeepAlive(Object obj);
+        public static void WaitForPendingFinalizers();
+        public static long GetTotalMemory(bool forceFullCollection);
+        public static void SuppressFinalize(Object obj);
+        public static void ReRegisterForFinalize(Object obj);
+
+        [RequiredByBartok]
+        internal static Object AllocateObject(VTable vtable);
+        [RequiredByBartok]
+        internal static Array AllocateVector(VTable vtable, int numElements);
+        [RequiredByBartok]
+        internal static Array AllocateArray(VTable vtable, int rank, int totalElements);
+        [RequiredByBartok]
+        internal static String AllocateString(int stringLength);
+    }
+}

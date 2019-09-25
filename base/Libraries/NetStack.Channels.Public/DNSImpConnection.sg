@@ -1,0 +1,105 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Client-side helper for the IP Channel Contract
+//
+
+using System;
+using System.Threading;
+using System.Net.IP;
+using Drivers.Net;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using NetStack.Contracts;
+using NetStack.Runtime;
+
+namespace NetStack.Channels.Public
+{
+    public class DNSImpConnection
+    {
+        // Converts the results of GerNameServers to IPv4 structures
+        public static IPv4[]! GetNameServers(DNSContract.Imp:ReadyState! ep)
+        {
+            uint[] in ExHeap addrList;
+            ep.SendGetNameServers();
+            ep.RecvAddressList(out addrList);
+
+            try {
+                IPv4[] retval;
+                if (addrList == null) {
+                    retval = new IPv4[0];
+                }
+                else {
+                    retval = new IPv4[addrList.Length];
+                    for (int i = 0; i < addrList.Length; ++i) {
+                        retval[i] = new IPv4(addrList[i]); 
+                    }
+                }
+
+                return retval;
+            }
+            finally {
+                delete addrList;
+            }
+        }
+
+        // Converts the retrieved address(es) to IPv4 structures.
+        // Returns true iff the named host was found successfully.
+        public static bool Resolve(DNSContract.Imp! ep, string name,
+                                   out string[] aliases, out IPv4[] addrs)
+        {
+            aliases = null;
+            addrs = null;
+
+            ep.SendResolve(Bitter.FromString(name));
+
+            switch receive {
+                case ep.RecvDNSResults(uint[] in ExHeap addrList,
+                                       char[][] in ExHeap aliasesResult) :
+                {
+                    try {
+                        if (aliasesResult != null) {
+                            aliases = new string[aliasesResult.Length];
+
+                            for (int i = 0; i < aliasesResult.Length; ++i) {
+                                expose (aliasesResult[i]) {
+                                    aliases[i] = Bitter.ToString(aliasesResult[i]);
+                                }
+                            }
+                        }
+                        else {
+                            aliases = new string[0];
+                        }
+                        if (addrList != null) {
+                            addrs = new IPv4[addrList.Length];
+
+                            for (int i = 0; i < addrList.Length; ++i) {
+                                addrs[i] = new IPv4(addrList[i]);
+                            }
+                        }
+                        else {
+                            addrs = new IPv4[0];
+                        }
+                        return true; // success;
+                    }
+                    finally {
+                        delete aliasesResult; // does deep freeing
+                        delete addrList;
+                    }
+                }
+                break;
+
+                case ep.RecvNotFound() :
+                    return false; // failure
+                    break;
+            }
+
+            return false;
+        }
+    }
+}

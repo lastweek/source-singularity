@@ -1,0 +1,44 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+<!--
+##############################################################################
+# We need to compile the security code in two phases, due to the circular    #
+# dependency between the security service and the name service.              #
+##############################################################################
+-->
+  
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Security</AssemblyName>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="AccessMode.sg" />
+    <Compile Include="AclCore.sg" />
+    <Compile Include="AccessControl\Cache.sg" />
+    <Compile Include="AccessControl\AclConverter.sg" />
+    <Compile Include="AccessControl\AclParser.sg" />
+    <Compile Include="AccessControl\AclToken.sg" />
+    <Compile Include="AccessControl\AclTokenType.sg" />
+    <Compile Include="AccessControl\DataReader.sg" />
+    <Compile Include="AccessControl\StringReader.sg" />
+    <Compile Include="SDS\SdsAcl.sg"/>
+    <Compile Include="SDS\SdsAclImpl.sg"/>
+    <Compile Include="SDS\SdsAclPerms.sg"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Security\Security.csproj" />
+    <ProjectReference Include="..\SpecSharp.Contracts\Kernel.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\KernelLibrary.targets" />
+</Project>

@@ -1,0 +1,15 @@
+codeplex
+obj/
+obj-*/
+bin-*/
+bin/
+bin_tools/
+obj_tools/
+src/Clients/*/bin/
+*-disabled
+nucache/
+nuobj/
+nubuild.config
+nubuild.cloud-credentials
+Experiments/
+*.csproj.user

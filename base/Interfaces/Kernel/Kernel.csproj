@@ -1,0 +1,43 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\Kernel\Kernel.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>Kernel</AssemblyName>
+    <OutputType>Library</OutputType>
+    <OutputPath>$(KERNEL_IL_DIR)</OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoStdlib>true</NoStdlib>
+  </PropertyGroup>
+
+  <Import Project="..\Basetypes\Basetypes.Kernel.csproj"/>
+  <Import Project="..\BaseAttrs\BaseAttrs.Kernel.csproj"/>
+  <Import Project="..\Collections\Collections.csproj"/>
+  <Import Project="..\IoSystem\IoConfig.csproj"/>
+  <Import Project="..\Memory\Memory.csproj"/>
+  <Import Project="..\Hal\Processor.csproj"/>
+  <Import Project="..\Singularity.V1\Singularity.V1.Kernel.csproj"/>
+  <Import Project="..\Xml\Xml.csproj"/>
+
+  <ItemGroup>
+    <Compile Include="IoMemory.csi" />
+    <Compile Include="Kernel.csi" />
+    <Compile Include="Process.csi" />
+    <Compile Include="PerfCounters.csi" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\InterfaceAssembly.targets" />
+</Project>

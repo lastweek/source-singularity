@@ -1,0 +1,162 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   MountCommand.sg
+//
+//  Note:
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.Fat.Contracts;
+
+namespace Microsoft.Singularity.Services.Fat.FatControl
+{
+    [ConsoleCategory(Action = "mount",
+                     DefaultAction = false,
+                     HelpMessage = "Mount a FAT filesystem.")]
+    internal class MountCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [LongParameter(
+            "c", Mandatory = false, Default = 32,
+            HelpMessage = "Cache size in MB")
+         ]
+        long CacheMB;
+
+        [LongParameter(
+            "d", Mandatory = false, Default = 256,
+            HelpMessage = "Maximum number of directories in directory cache.")]
+        long DirectoryCacheSize;
+
+        [LongParameter(
+            "f", Mandatory = false, Default = 64,
+            HelpMessage = "Maximum number of files in file cache.")]
+        long FileCacheSize;
+
+        [BoolParameter("r", Mandatory = false, Default = false,
+                       HelpMessage = "Mount read only.")]
+        bool ReadOnly;
+
+        [LongParameter(
+            "w", Mandatory = false, Default = 64,
+            HelpMessage = "Maximum write request queue length (0 == no queuing).")]
+        long WriteQueueSize;
+
+        [StringParameter("diskpath", Position = 0, Mandatory = true,
+                         Default = null, HelpMessage = "Path to disk.")]
+        string DiskPath;
+
+        [StringParameter("mountpath", Position = 1, Mandatory = true,
+                         Default = null,
+                         HelpMessage = "Location to mount filesystem.")]
+        string MountPath;
+
+        reflective internal MountCommand();
+
+        internal int AppMain()
+        {
+            int status = -1;
+            FatControlContract.Imp imp = Utilities.ConnectToManager();
+
+            if (imp != null) {
+                try {
+                    status = Mount(imp);
+                }
+                finally {
+                    delete imp;
+                }
+            }
+
+            return status;
+        }
+
+        private static bool GetUIntParameter(string   name,
+                                             long     rawValue,
+                                             uint     maxValue,
+                                             out uint value)
+        {
+            value = unchecked((uint)rawValue);
+            if (rawValue < 0 || rawValue > UInt32.MaxValue ||
+                value > maxValue) {
+                Console.WriteLine(
+                    "The {0} value is outsize valid range (0--{1}).",
+                    name, maxValue);
+                return false;
+            }
+            return true;
+        }
+
+        private int Mount(FatControlContract.Imp! imp)
+        {
+            int status = -1;
+
+            uint cacheMB;
+            uint directoryCacheSize;
+            uint fileCacheSize;
+            uint writeQueueSize;
+            if (!GetUIntParameter("cache size",
+                                 this.CacheMB,
+                                 FatMountSettings.MaxCacheMB,
+                                 out cacheMB) ||
+                !GetUIntParameter("directory cache size",
+                                 this.DirectoryCacheSize,
+                                 FatMountSettings.MaxDirectoryCacheSize,
+                                 out directoryCacheSize) ||
+                !GetUIntParameter("file cache size",
+                                 this.FileCacheSize,
+                                 FatMountSettings.MaxFileCacheSize,
+                                 out fileCacheSize) ||
+                !GetUIntParameter("write queue size",
+                                 this.WriteQueueSize,
+                                 FatMountSettings.MaxWriteQueueSize,
+                                  out writeQueueSize)) {
+                return -1;
+            }
+
+            FatMountSettings* in ExHeap fms =
+                new [ExHeap] FatMountSettings(
+                    (!)this.DiskPath,
+                    (!)this.MountPath,
+                    this.ReadOnly,
+                    cacheMB,
+                    directoryCacheSize,
+                    fileCacheSize,
+                    writeQueueSize
+                    );
+
+            imp.SendMount(fms);
+            switch receive {
+                case imp.Success():
+                    status = 0;
+                    break;
+
+                case imp.Fail(error):
+                    Utilities.DisplayError(error);
+                    break;
+
+                case imp.ChannelClosed():
+                    Utilities.DisplayChannelClosedError();
+                    break;
+            }
+            return status;
+        }
+    }
+}

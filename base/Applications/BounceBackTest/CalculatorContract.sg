@@ -1,0 +1,26 @@
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Applications
+{
+    public contract CalculatorContract : ServiceContract {
+        out  message Success();
+
+        in   message AddInteger(int first, int second);
+        out  message IntegerResult(int answer);
+
+        in   message SubtractInteger(int first, int second);
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one {
+            AddInteger? -> IntegerResult! -> Ready;
+
+            SubtractInteger? -> IntegerResult! -> Ready;
+        }
+    }
+}

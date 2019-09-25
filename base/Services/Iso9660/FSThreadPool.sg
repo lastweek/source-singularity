@@ -1,0 +1,72 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using System.Threading;
+
+using Microsoft.Contracts;
+
+namespace Microsoft.Singularity.FileSystem
+{
+    public class FSThreadPool {
+        private int numThreads;
+        private readonly Queue workQueue = new Queue();
+        private readonly FSThreadPoolCallback workCallback;
+        private bool keepGoing = true;
+
+        [NotDelayed]
+        public FSThreadPool(int threads, FSThreadPoolCallback callback) {
+            numThreads = threads;
+            workCallback = callback;
+            
+            while (threads > 0) {
+                Thread t = new Thread(new ThreadStart(DoWork));
+                t.Start();
+                threads--;
+            }
+        }
+        
+        public void KillPool() {
+            Monitor.Enter(workQueue);
+            keepGoing = false;
+            Monitor.PulseAll(workQueue);
+            while (numThreads > 0) {
+                Monitor.Wait(workQueue);
+            }
+            Monitor.Exit(workQueue);
+        }
+        
+        public void EnqueueItem(FSRequestInfo request) {
+            Monitor.Enter(workQueue);
+            workQueue.Enqueue(request);
+            Monitor.Pulse(workQueue);
+            Monitor.Exit(workQueue);
+        }
+        
+        private void DoWork() {
+            while (true) {
+                Monitor.Enter(workQueue);
+                while (workQueue.Count == 0 && keepGoing) {
+                    Monitor.Wait(workQueue);
+                }
+                
+                if (!keepGoing && workQueue.Count == 0) {
+                    numThreads--;
+                    Monitor.PulseAll(workQueue);
+                    Monitor.Exit(workQueue);
+                    break;
+                }
+                
+                FSRequestInfo request = (FSRequestInfo)workQueue.Dequeue();
+                
+                Monitor.Exit(workQueue);
+                
+                workCallback(request);
+            }
+        }
+    }
+}

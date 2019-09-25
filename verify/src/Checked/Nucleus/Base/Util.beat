@@ -1,0 +1,56 @@
+// Write hex digit (ecx & 15) to screen offset edx
+implementation writeHexDigit()
+{
+  ecx := eax;
+  call ecx := And(ecx, 15);
+  if (ecx < 10) { ecx := ecx + 0x0c30; }
+  else { call ecx := AddChecked(ecx, 0x0c37); }
+  call VgaDebugStore16(edx + 0xb8000, ecx);
+}
+
+// Write value eax to screen offset edx
+implementation writeHex()
+{
+  edx := edx + 14;
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+  edx := edx - 2;
+  call eax := Shr(eax, 4);
+  call writeHexDigit();
+}
+
+implementation debugBreak()
+{
+  edx := 2;
+  call writeHex();
+
+  edx := 0xb8000;
+  eax := 0;
+  loop:
+    call eax := LeaUnchecked(eax + 1);
+    call VgaDebugStore16(edx, eax);
+    goto loop;
+}
+
+implementation DebugBreak()
+{
+  call debugBreak();
+  call Ret(old($RET)); return;
+}

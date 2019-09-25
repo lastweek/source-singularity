@@ -1,0 +1,142 @@
+
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.UnitTest;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Test.Contracts;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Eventing;
+
+namespace Microsoft.Singularity
+{
+
+    [CLSCompliant(false)]
+    public class TestActiveCounter : ActiveSource
+    {
+
+        //[ActiveCounter=InterruptCounter, ArraySize=256]
+        public struct ActiveCounter
+        {
+
+            public int Hits;
+            public int Count;
+        }
+
+        // ???? CODEGEN from here
+
+        public static TestActiveCounter Create(string sourceName, int size)
+        {
+            TestActiveCounter Logger = new TestActiveCounter(sourceName, size, ENABLE_ALL_MASK);
+
+            if (Logger != null) {
+                Logger.Register();
+            }
+
+            return Logger;
+        }
+
+        internal ActiveCounter[] Buffer;
+
+        public override bool Register()
+        {
+            Buffer = new ActiveCounter[Count];
+
+            if (Buffer == null) {
+                return false;
+            }
+
+            assert HostController != null;
+
+            if (HostController.RegisterEvent("ActiveCounter",
+                                             "ActiveCounter: Hits={0}, Count={1}",
+                                             ref EventTypeHandle)) {
+
+                HostController.RegisterEventField(EventTypeHandle, "Hits", 0, DataType.__int);
+                HostController.RegisterEventField(EventTypeHandle, "Count", 0, DataType.__int);
+
+            } else {
+
+                // The event might have been registered already
+                // Check whether we foundit already in the table or not
+
+                if (EventTypeHandle == 0) {
+                    return false;
+                }
+            }
+
+            unsafe {
+
+                fixed (void * ptr = &Buffer[0]) {
+
+                    DebugBufferAddress = (UIntPtr)ptr;
+                }
+            }
+
+            // After all internal fields are setup, we can go ahead and register with the controller
+
+            if (!base.Register()) {
+
+                return false;
+            }
+
+            return true;
+        }
+
+        TestActiveCounter(string sourceName, int size, uint controlFlags)
+            :base(sourceName, size, controlFlags)
+        {
+            unsafe {
+                EntrySize = (ushort)sizeof(ActiveCounter);
+            }
+        }
+    }
+
+    [TestClass]
+    public class EventActive : TestClass
+    {
+
+        [ClassInitialize]
+        public void Init()
+        {
+        }
+
+        [TestMethod]
+        public void SimpleActiveCounterTest()
+        {
+            TestActiveCounter activeCounter = TestActiveCounter.Create("TestActiveCounter1", 256);
+
+            if (activeCounter != null) {
+                assert activeCounter.Buffer != null;
+                for (int i = 0; i < 256; i++) {
+                    activeCounter.Buffer[i].Hits += 1;
+                    activeCounter.Buffer[i].Count = i;
+                }
+            }
+        }
+
+        [TestMethod]
+        public void TestAll()
+        {
+            SimpleActiveCounterTest();
+        }
+    }
+}
+
+

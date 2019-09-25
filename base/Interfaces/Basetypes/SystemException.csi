@@ -1,0 +1,16 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+namespace System
+{
+
+    public class SystemException : Exception
+    {
+        public SystemException();
+        public SystemException(String message);
+        public SystemException(String message, Exception innerException);
+    }
+}

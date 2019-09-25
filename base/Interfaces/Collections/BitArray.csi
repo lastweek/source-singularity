@@ -1,0 +1,48 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+using System.Diagnostics;
+
+namespace System.Collections
+{
+    // A vector of bits.  Use this to store bits efficiently, without having to do bit
+    // shifting yourself.
+    public sealed class BitArray : ICollection, ICloneable {
+        public BitArray(int length);
+        public BitArray(int length, bool defaultValue);
+        public BitArray(byte[] bytes);
+        public BitArray(bool[] values);
+        public BitArray(int[] values);
+        public BitArray(BitArray bits);
+
+        public bool this[int index] { get; set; }
+
+        public bool Get(int index);
+        public void Set(int index, bool value);
+        public void SetAll(bool value);
+        public BitArray And(BitArray value);
+        public BitArray Or(BitArray value);
+        public BitArray Xor(BitArray value);
+        public BitArray Not();
+
+        public int Length { get; set; }
+
+        public void CopyTo(Array array, int index);
+
+        public int Count { get; }
+
+        public Object Clone();
+
+        public Object SyncRoot { get; }
+
+        public bool IsReadOnly { get; }
+
+        public bool IsSynchronized { get; }
+
+        public IEnumerator GetEnumerator();
+    }
+}

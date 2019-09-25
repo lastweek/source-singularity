@@ -1,0 +1,98 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RamDisk\Control\Utilities.sg
+//
+//  Note:
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.RamDisk.Contracts;
+
+namespace Microsoft.Singularity.Services.RamDisk.RamDiskControl
+{
+    internal class Utilities
+    {
+        internal static RamDiskControlContract.Imp ConnectToManager()
+        {
+            DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+
+            try {
+                RamDiskControlContract.Imp! service_imp;
+                RamDiskControlContract.Exp! service_exp;
+                RamDiskControlContract.NewChannel(out service_imp, out service_exp);
+                
+                ErrorCode error;
+                if (!SdsUtils.Bind(RamDiskControlContract.ManagerControlPath, rootds, service_exp, out error)) {
+                    Console.WriteLine("Failed to connect to service path '{0}'.  Error: {1}",
+                        RamDiskControlContract.ManagerControlPath,
+                        SdsUtils.ErrorCodeToString(error));
+                    delete service_imp;
+                    return null;
+                }
+                
+                service_imp.RecvSuccess();
+                return service_imp;
+            }
+            finally {
+                delete rootds;
+            }
+        }
+
+        internal static void DisplayError(RamDiskContractErrorCode e)
+        {
+            string message = "unknown";
+            switch (e) {
+                case RamDiskContractErrorCode.NoError:
+                    message = "no error";
+                    break;
+                case RamDiskContractErrorCode.AccessDenied:
+                    message = "directory access denied";
+                    break;
+                case RamDiskContractErrorCode.CapacityReached:
+                    message = "capacity of directory resources reached";
+                    break;
+                case RamDiskContractErrorCode.InsufficientResources:
+                    message = "insufficient resources";
+                    break;
+                case RamDiskContractErrorCode.DirectoryFull:
+                case RamDiskContractErrorCode.IsOpen:
+                    message = "disk in use";
+                    break;
+                case RamDiskContractErrorCode.DoesNotExist:
+                    message = "device does not exist";
+                    break;
+                case RamDiskContractErrorCode.OutOfMemory:
+                    message = "out of memory";
+                    break;
+                case RamDiskContractErrorCode.IsInUse:
+                    message = "disk is still in use - use -f to force destroy";
+                    break;
+                case RamDiskContractErrorCode.InternalError:
+                    message = "internal error";
+                    break;
+            }
+            Console.WriteLine("Failed: {0}.", message);
+        }
+
+        internal static void DisplayChannelClosedError()
+        {
+            Console.WriteLine(
+                "Failed: Channel to RAM disk client manager closed unexpectedly."
+                );
+        }
+    }
+}

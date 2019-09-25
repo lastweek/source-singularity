@@ -1,0 +1,9 @@
+fatcontrol '@format' '/dev/vol0.0'
+fatcontrol '@mount' '/dev/vol0.0' '/fs'
+mkdir '/fs/specweb'
+wafgen99 '-c=2000' '/fs/specweb'
+ipconfig '@dhcp' '/dev/nic0' start
+ipconfig '@show'
+testutil
+cassini '-quitURL' '-app:SPECWeb99WebApp'
+exit 8188

@@ -1,0 +1,191 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+
+The App.targets file is for assemblies that are "user" / process assemblies,
+i.e. they are not part of the kernel.  This is roughly equivalent to Makefile.app.
+
+Projects that import App.targets inherit the following behaviors:
+
+  * If the project has not set a value for the OutputPath property, then this targets
+    file will provide one.  If the project is an executable, then OutputPath is set
+    to $(APPSDIR); if the project is a library (DLL), then OutputPath is set to $(LIBSDIR).
+    This provides the right behavior for most user-mode projects.
+
+  * CompilerPlatformVersion is always set to "cli1".
+
+  * CompilerPlatformDir is always set to $(APPRUNTIMEDIR).
+
+  * Stdlib is always set to $(APPRUNTIMEDIR)\Corlib.dll.
+
+  * If the NoStandardLibraries property is not set to 'true', and if the language is Sing#,
+    then the following references will be added:
+
+        Corlib.Contracts.dll
+        System.Compiler.Runtime.dll
+        Microsoft.SingSharp.Runtime.dll
+        Corlibsg.dll
+        Directory.Contracts.dll
+        Io.Contracts.dll
+
+
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Condition="'$(SingularityPathsIncluded)'==''" Project="..\Paths.targets"/>
+  <Import Condition="'$(RuntimePathsIncluded)'==''" Project="RuntimePaths.target"/>
+
+  <PropertyGroup>
+    <OutputPath Condition="'$(OutputPath)'=='' and '$(OutputType)'=='Exe'">$(APPSDIR)</OutputPath>
+    <OutputPath Condition="'$(OutputPath)'=='' and '$(OutputType)'=='Library'">$(LIBSDIR)</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ExtraCompilerFlags>$(ExtraCompilerFlags) /d:SINGULARITY /d:SINGULARITY_PROCESS</ExtraCompilerFlags>
+    <CompilerPlatformVersion>cli1</CompilerPlatformVersion>
+    <CompilerPlatformDir>$(APPRUNTIMEDIR)</CompilerPlatformDir>
+    <Stdlib>$(APPRUNTIMEDIR)\Corlib.dll</Stdlib>
+    <Language Condition="'$(Language)'==''">Sing#</Language>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefaultNibOptionsFile>$(SINGULARITY_ROOT)\Options\$(Configuration).$(COLLECTOR_APP).$(Machine).options</DefaultNibOptionsFile>
+    <NibOptionsFile Condition="'$(NibOptionsFile)'==''">$(DefaultNibOptionsFile)</NibOptionsFile>
+
+    <!-- Build _NibArgs.  $(NIBOPTS) is intended to allow people to bring in options from command shell environment. -->
+    <_NibArgs>/machine:$(MACHINE) /par $(NIBOPTS)</_NibArgs>
+    <_NibArgs>$(_NibArgs) /cache:&quot;$(SINGULARITY_OBJROOT)&quot;</_NibArgs>
+    <_NibArgs>$(_NibArgs) /native:&quot;$(APPS_NATIVE_IMAGE_DIR)&quot; </_NibArgs>
+    <_NibArgs>$(_NibArgs) /temp:&quot;$(DISTRO_TEMP_DIR)&quot;</_NibArgs>
+    <_NibArgs>$(_NibArgs) /libcache:&quot;$(DISTRO_LIB_DIR)&quot;</_NibArgs>
+    <_NibArgs>$(_NibArgs) /options:&quot;$(NibOptionsFile)&quot;</_NibArgs>
+    <_NibArgs>$(_NibArgs) /bartok:&quot;$(BARTOK)&quot;</_NibArgs>
+    <_NibArgs>$(_NibArgs) /linker:&quot;$(LINK)&quot;</_NibArgs>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(NoStdLib)'!='true'">
+
+    <!--
+    Use a single reference to the app runtime project.
+    This builds Corlib.dll, System.Compiler.Runtime.dll, Microsoft.SingSharp.Runtime.dll, and Corlibsg.dll.
+    -->
+    <DependentProject Include="$(SINGULARITY_ROOT)\Applications\Runtime\$(Runtime)\AppRuntime.proj"/>
+
+    <!-- The C# compiler does not support /stdlib:Corlib.dll, so we pass Corlib.dll as a reference. -->
+    <__il_refs Include="$(APPRUNTIMEDIR)\Corlib.dll" Condition="'$(Languge)'=='C#'"/>
+    <__native_refs Include="$(APPRUNTIMEDIR)\Corlib.dll"/>
+
+    <!--
+    The Sing# compiler will implicitly pick up Microsoft.SingSharp.Runtime.dll,
+    so there is no need to pass it as an IL reference, but we still need to add it to the native refs.
+    If the language is C#, then we don't add this assembly at all.
+    -->
+    <__native_refs Include="$(APPRUNTIMEDIR)\Microsoft.SingSharp.Runtime.dll" Condition="'$(Language)'=='Sing#'"/>
+
+    <__il_refs Include="$(APPRUNTIMEDIR)\Corlib.Contracts.dll" Condition="'$(Language)'=='Sing#'"/>
+
+  </ItemGroup>
+
+
+  <ItemGroup Condition="'$(NoStandardLibraries)'!='true'">
+    <ProjectReference Include="$(AppRuntimeSrcDir)\System.Compiler.Runtime.App.csproj"/>
+
+
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Interfaces\Singularity.V1\Singularity.V1.App.csproj">
+      <!--
+      <ExcludeFromManifestReferences>false</ExcludeFromManifestReferences>
+      -->
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+
+    <ProjectReference Include="$(APPRUNTIMESRCDIR)\Singularity.V1.App.csproj">
+      <ExcludeFromILReferences>true</ExcludeFromILReferences>
+    </ProjectReference>
+
+
+    <ProjectReference Condition="'$(Language)'=='Sing#'" Include="$(APPRUNTIMESRCDIR)\Corlibsg.csproj"/>
+    <!--
+    <ProjectReference Condition="'$(Language)'=='Sing#'" Include="$(APPRUNTIMESRCDIR)\Corlib.Contracts.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+    -->
+
+    <ProjectReference Condition="'$(Language)'=='Sing#'" Include="$(SINGULARITY_ROOT)\Contracts\Io.Contracts\Io.Contracts.csproj"/>
+    <ProjectReference Condition="'$(Language)'=='Sing#'" Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj"/>
+  </ItemGroup>
+
+
+  <Choose>
+    <When Condition="'$(OutputType)'=='Exe' and '$(NoManifest)'!='true'">
+      <PropertyGroup>
+        <BuildDependsOn>$(BuildDependsOn);BuildManifest</BuildDependsOn>
+        <ManifestPath>$(OutputPath)\$(AssemblyName).$(Machine).manifest</ManifestPath>
+      </PropertyGroup>
+
+      <ItemGroup>
+        <FilesToClean Include="$(ManifestPath)"/>
+        <FilesToClean Include="$(NativeImagePath)"/>
+        <FilesToClean Include="$(NativeSymbolPath)"/>
+        <FilesToClean Include="$(NativeObjPath)"/>
+        <FilesToClean Include="$(NativeSuperObjPath)"/>
+        <FilesToClean Include="$(BartokLogPath)"/>
+        <FilesToClean Include="$(LinkLogPath)"/>
+      </ItemGroup>
+    </When>
+  </Choose>
+
+  <!-- This target creates the .manifest file for the executable. -->
+  <Target Name="BuildManifest"
+          DependsOnTargets="BuildAssembly;BuildNativeReferences"
+          Inputs="$(OutputAssemblyPath);$(MSBuildProjectFullPath)"
+          Outputs="$(ManifestPath)"
+          Condition="'$(OutputType)'=='Exe'">
+    <Message Text="Building manifest - $(ManifestPath)"/>
+    <Exec Command="&quot;$(BUILDDIR)\mkmani&quot; /exec /out:&quot;$(ManifestPath)&quot; /app:$(AssemblyName) /cache:&quot;$(SINGULARITY_OBJROOT)&quot; &quot;$(OutputAssemblyPath)&quot;  @(__native_refs->'/r:&quot;%(fullpath)&quot;',' ') @(Reference->'/r:&quot;%(fullpath)&quot;',' ')$(APP_CODEGEN) $(APP_LINKER) /runtime:$(Runtime)"/>
+  </Target>
+
+  <PropertyGroup>
+    <BuildDependsOn Condition="'$(EnableEarlyNib)'=='true' and '$(OutputType)'=='Exe'">$(BuildDependsOn);nib</BuildDependsOn>
+  </PropertyGroup>
+
+  <!--
+  This target allows you to build an executable, and then immediately run it through NIB,
+  to generate a native executable image.  This is useful during development, in order to
+  recompile an app without re-buiding an entire Distro project.
+
+  This target does not use Inputs/Outputs for incremental builds; instead, NIB is always
+  invoked.  This is done for several reasons.  First, NIB may decide to replace libraries
+  with other libraries (e.g. replacing metadata-only interface assemblies with
+  implementation assemblies); the MSBuild environment therefore cannot know which files
+  are part of the input set.  Second, NIB already examines file times, and will only
+  invoke the native code compiler if necessary.
+
+  We still declare the Outputs, though, to be the native image, just in case anyone wants
+  to build and access the native image.
+  -->
+  <Target Name="nib"
+          Condition="'$(OutputType)'=='Exe'"
+          Outputs="$(APPS_NATIVE_IMAGE_DIR)\$(AssemblyName).$(Machine)"
+          DependsOnTargets="BuildManifest;BuildAppRuntimeNative">
+    <MakeDir Directories="$(DISTRO_TEMP_DIR);$(APPS_NATIVE_IMAGE_DIR)"/>
+    <Message Text="Building Native Image - $(NativeImagePath)"/>
+    <Exec Command="$(NIB) $(_NibArgs) &quot;$(ManifestPath)&quot;"/>
+  </Target>
+
+
+  <Target Name="BuildAppRuntimeNative">
+    <MSBuild Projects="$(APPRUNTIMESRCDIR)\Corlib.Native.proj"/>
+  </Target>
+
+
+  <Import Project="SingSharp.targets"/>
+
+</Project>

@@ -1,0 +1,87 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DestroyCommand.sg
+//
+//  Note:   Command to remove and deallocate an existing unused RAM disk device.
+//
+
+using System;
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Reflection;
+
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+
+using Microsoft.Singularity.Services.RamDisk.Contracts;
+using FileSystem.Utils;
+
+namespace Microsoft.Singularity.Services.RamDisk.RamDiskControl
+{
+    [ConsoleCategory(Action = "destroy",
+                     DefaultAction = false,
+                     HelpMessage = "Remove and deallocate an existing unused RAM disk.")]
+    internal class DestroyCommand
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [StringParameter("d", Default = "Automatic", Position=0, Mandatory = true,
+                         HelpMessage = "Disk device path")]
+        string DiskPath;
+
+        [BoolParameter("f", Default = false, Mandatory = false,
+                       HelpMessage = "Force destroy even if in use")]
+        bool Force;
+
+        reflective internal DestroyCommand();
+
+        internal int AppMain()
+        {
+            string diskPath = PathUtils.ToPath(DiskPath);
+
+            RamDiskControlContract.Imp imp = Utilities.ConnectToManager();
+            if (imp != null) {
+                return DoDestroy(imp, diskPath, Force);
+            }
+            return -1;
+        }
+
+        private static
+        int DoDestroy(
+            [Claims] RamDiskControlContract.Imp! controller,
+            string!                              diskPath,
+            bool                                 force
+            )
+        {
+            char[] in ExHeap diskPathExHeap = Bitter.FromString2(diskPath);
+            try {
+                controller.SendDestroy(diskPathExHeap, force);
+
+                switch receive {
+                    case controller.Success():
+                        return 0;
+                    case controller.Fail(error):
+                        Utilities.DisplayError(error);
+                        return -1;
+                    case controller.ChannelClosed():
+                        Utilities.DisplayChannelClosedError();
+                        return -1;
+                }
+            }
+            finally {
+                delete controller;
+            }
+        }
+    }
+}

@@ -1,0 +1,38 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+//////////////////////////////////////////////////////////////////////////////
+// REACHABILITY
+//////////////////////////////////////////////////////////////////////////////
+
+// Extra internal sanity checking for GC: check that any uncollected objects
+// were actually reached during the collection.
+
+type Time;
+var $Time:Time;
+
+// reached(A,T) means that the GC has reached abstract node A at some time
+// after the initial time T.  Initially (at time T), the mutator will
+// say that reached(root, T).  After that, the GC calls the "reach"
+// ghost procedure to generate reached(A, T) for other A.
+function reached(a:int, t:Time) returns (bool);
+
+procedure newTime();
+  modifies $Time;
+
+procedure reachStackRoot($s:int, $frame:int, $j:int, $t:Time);
+  requires $FrameSlices[$s][$FrameAddrs[$s][$frame] + 4 * $j] == $frame;
+  requires frameHasPtr($FrameLayouts[$s][$frame], $j);
+  ensures  reached($FrameAbss[$s][$frame][$j], $t);
+
+procedure reachStaticRoot($s:int, $j:int, $t:Time);
+  requires sectionHasPtr($s, $j);
+  ensures  reached($SectionAbs[$s][$j], $t);
+
+// If we've reached A, and A points to A', then reach A'.
+procedure reach($a:int, $j:int, $t:Time);
+  requires reached($a, $t);
+  requires $AbsMem[$a][$j] != NO_ABS;
+  ensures  reached($AbsMem[$a][$j], $t);
+

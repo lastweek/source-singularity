@@ -1,0 +1,417 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Windows XP-like TaskList program.
+//
+using System;
+using System.Collections;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Tasklist [options]  Displays XP-like task information",
+                     DefaultAction=true)]
+    internal sealed class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<ProcessContract.Imp:Start> processRef;
+
+        [Endpoint]
+        public readonly TRef<MemoryContract.Imp:Start> memoryRef;
+
+        [Endpoint]
+        public readonly TRef<ChannelContract.Imp:Start> channelRef;
+
+        [BoolParameter( "d", Default=false , HelpMessage="Dumps output and PageTable to Debugger.")]
+        internal bool dumpTable;
+
+        [BoolParameter( "c", Default=false , HelpMessage="Displays channels per process.")]
+        internal bool displayChannels;
+
+        [BoolParameter( "t", Default=false , HelpMessage="Displays ThreadIds per process.")]
+        internal bool displayThreads;
+
+        [LongParameter( "r", Default=-1, HelpMessage="Repeat every <n> seconds")]
+        internal long pauseSeconds;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return TaskList.AppMain(this);
+        }
+    }
+
+    internal class TaskList
+    {
+        private class ProcessData
+        {
+            public int id;
+            public string name;
+            public long memBytes;
+            public long peakMemBytes;
+            public long commMemBlocks;
+            public long commMemBytes;
+            public long handlePages;
+            public int[] tids; 
+            public int parentID;
+            
+            public ProcessData() {
+                tids = null; 
+            }
+        }
+
+        private class ChannelData
+        {
+            public int ChannelId;
+            public int ImpProcessId;
+            public int ExpProcessId;
+            public int MessagesDeliveredToImp;
+            public int MessagesDeliveredToExp;
+        }
+        
+        private class TaskListException : Exception
+        {
+            internal TaskListException(string errorMessage)
+                : base(errorMessage)
+            {
+            }
+        }
+
+        private static int []! GetProcessIDs(ProcessContract.Imp:ReadyState! imp)
+        {
+            int [] ids = null;
+            int[]! in ExHeap xids;
+            imp.SendGetProcessIDs();
+            imp.RecvProcessIDs(out xids);
+            // REVIEW: The kernel process is being returned twice so we're
+            // skipping one of the entries if the process ID matches.
+            int startIndex = 0;
+            if (xids[0] == xids[1])
+                startIndex++;
+            ids = new int[xids.Length - startIndex];
+            for (int i = startIndex; i < xids.Length; i++) {
+                ids[i - startIndex] = xids[i];
+            }
+            delete xids;
+            return ids;
+        }
+
+        private static int [] GetProcessThreadIDs(ProcessContract.Imp:ReadyState! imp, int procID)
+        {
+            imp.SendGetProcessThreadIDs(procID);
+            int [] retVal = null; 
+            
+            switch receive {
+                case imp.NotFound() :
+                    break;
+
+                case imp.ProcessThreadIDs(int[]! in ExHeap tids) :
+                    retVal = new int[tids.Length];
+                    for (int i = 0; i < tids.Length; i++) {
+                        retVal[i] = tids[i]; 
+                    } 
+                    delete tids;
+                    break;
+
+                case imp.ChannelClosed() :
+                    throw new TaskListException("GetProcessThreadIDs: imp channel closed");
+            }
+            return retVal; 
+        } 
+
+        private static string []! GetProcessNames(ProcessContract.Imp:ReadyState! imp, int []! ids)
+        {
+            string [] names = new string[ids.Length];
+            for (int i = 0; i < ids.Length; i++) {
+                imp.SendGetProcessName(ids[i]);
+
+                switch receive {
+                    case imp.NotFound() :
+                        break;
+
+                    case imp.ProcessName(char[]! in ExHeap procName) :
+                        names[i] = Bitter.ToString(procName);
+                        delete procName;
+                        break;
+
+                    case imp.ChannelClosed() :
+                        throw new TaskListException("GetProcessNames: imp channel closed");
+                }
+            }
+            return names;
+        }
+
+        private static int []! GetParentIDs(ProcessContract.Imp:ReadyState! imp, int []! ids)
+        {
+            int [] parentIDs = new int[ids.Length];
+            for (int i = 0; i < ids.Length; i++) {
+                imp.SendGetParentID(ids[i]);
+
+                switch receive {
+                    case imp.NotFound() :
+                        parentIDs[i] = -1;
+                        break;
+
+                    case imp.ParentID(int parentID) :
+                        parentIDs[i] = parentID;
+                        break;
+
+                    case imp.ChannelClosed() :
+                        throw new TaskListException("GetParentID: imp channel closed");
+                }
+            }
+            return parentIDs;
+        }
+
+        private static void GetMemoryUsage(MemoryContract.Imp:ReadyState! imp, ProcessData[]! processData)
+        {
+            for (int i = 0; i < processData.Length; i++) {
+                ProcessData! pd = (!)processData[i];
+                imp.SendGetProcessUsedMemory(pd.id);
+                imp.RecvMemory(out pd.memBytes);
+
+                imp.SendGetProcessPeakMemory(pd.id);
+                imp.RecvMemory(out pd.peakMemBytes);
+
+                imp.SendProcessUsedCommunicationHeap(pd.id);
+                imp.RecvBlocksAndTotal(out pd.commMemBlocks, out pd.commMemBytes);
+
+                imp.SendGetProcessHandlePages(pd.id);
+                imp.RecvPages(out pd.handlePages);
+            }
+        }
+
+        private static ProcessData[]! GetProcessData(Parameters! config)
+        {
+            ProcessContract.Imp imp = config.processRef.Acquire(); 
+            if (imp == null) {
+                throw new TaskListException("Error: Unable to bind to " + ProcessContract.ModuleName);
+            }
+            int [] ids = GetProcessIDs(imp);
+            string [] names = GetProcessNames(imp, ids);
+            int [] parentIDs = GetParentIDs(imp, ids);
+            
+
+            ProcessData [] processData= new ProcessData[ids.Length];
+            for (int i = 0; i < ids.Length; i++) {
+                ProcessData! pd = new ProcessData();
+                pd.id = ids[i];
+                pd.name = names[i];
+                pd.parentID = parentIDs[i];
+                pd.tids = GetProcessThreadIDs(imp, ids[i]); 
+                processData[i] = pd;
+            }
+
+            config.processRef.Release(imp);
+
+            MemoryContract.Imp impMem = config.memoryRef.Acquire();
+            if (impMem == null) {
+                throw new TaskListException("Error: Unable to bind to " + MemoryContract.ModuleName);
+            }
+            GetMemoryUsage(impMem, processData);
+
+            config.memoryRef.Release(impMem);
+
+            return processData;
+        }
+
+        private static ChannelData []! GetChannelData(ProcessData [] processData, Parameters! config)
+        {
+            ChannelContract.Imp imp = config.channelRef.Acquire();
+            if (imp == null) {
+                throw new TaskListException("Error: Unable to bind to " + ChannelContract.ModuleName);
+            }
+
+            ChannelInfo[]! in ExHeap channels;
+            imp.SendGetChannels();
+            imp.RecvChannels(out channels);
+
+            ChannelData [] channelData = new ChannelData[channels.Length];
+            for (int i = 0; i < channels.Length; i++) {
+                ChannelData cd = new ChannelData();
+                channelData[i] = cd;
+
+                cd.ChannelId = channels[i].ChannelId;
+                cd.ImpProcessId = channels[i].ImpProcessId;
+                cd.ExpProcessId = channels[i].ExpProcessId;
+                cd.MessagesDeliveredToImp = channels[i].MessagesDeliveredToImp;
+                cd.MessagesDeliveredToExp = channels[i].MessagesDeliveredToExp;
+            }
+            config.channelRef.Release(imp);
+            delete channels;
+
+            return channelData;
+        }
+
+        private static ArrayList! GetImportedChannels(ChannelData[]! channelData, int processId)
+        {
+            ArrayList channelList = new ArrayList();
+            for (int i = 0; i < channelData.Length; i++) {
+                ChannelData cd = channelData[i];
+                if (cd == null) continue;
+                if (cd.ImpProcessId == processId) {
+                    channelList.Add(channelData[i]);
+                }
+            }
+            return channelList;
+        }
+
+        private static ArrayList! GetExportedChannels(ChannelData[]! channelData, int processId)
+        {
+            ArrayList channelList = new ArrayList();
+            for (int i = 0; i < channelData.Length; i++) {
+                ChannelData cd = channelData[i];
+                if (cd == null) continue;
+                if (cd.ExpProcessId == processId) {
+                    channelList.Add(channelData[i]);
+                }
+            }
+            return channelList;
+        }
+
+        /// <summary>
+        /// Use this method to write output to both the screen and the debugger if toDebugger is true.
+        /// </summary>
+        private static void WriteLine(bool toDebugger, string format, params object[] args) {
+            string s = String.Format(format, args);
+            Console.WriteLine(s);
+            if (toDebugger) {
+                DebugStub.WriteLine(s);
+            }
+        } 
+
+        private static void WriteLine(bool toDebugger) {
+            Console.WriteLine();
+            if (toDebugger) {
+                DebugStub.WriteLine();
+            }
+        } 
+
+        internal static int AppMain(Parameters! config)
+        {
+            ProcessData [] processData;
+            ChannelData [] channelData;
+
+            // Set the default options
+            bool displayChannels = config.displayChannels;
+            bool displayThreads = config.displayThreads;
+            bool dumpTable = config.dumpTable; 
+            int pauseSeconds = (int) config.pauseSeconds;
+
+
+            ProcessContract.Imp imp1 = config.processRef.Acquire(); 
+            imp1.RecvReady();
+            config.processRef.Release(imp1); 
+
+            MemoryContract.Imp imp2 = config.memoryRef.Acquire(); 
+            imp2.RecvReady();
+            config.memoryRef.Release(imp2); 
+
+            ChannelContract.Imp imp3 = config.channelRef.Acquire(); 
+            imp3.RecvReady();
+            config.channelRef.Release(imp3); 
+            
+            do
+            {
+                // Retrieve the process and channel data
+                try {
+                    processData = GetProcessData(config);
+                }
+                catch (TaskListException ex) {
+                    Console.WriteLine("Error retrieving process data.");
+                    Console.WriteLine(ex.ToString());
+                    return 1;
+                }
+                try {
+                    channelData = GetChannelData(processData,config);
+                }
+                catch (TaskListException ex) {
+                    Console.WriteLine("Error retrieving channel data.");
+                    Console.WriteLine(ex.ToString());
+                    return 1;
+                }
+
+                // Prep for display
+                Hashtable processName = new Hashtable(processData.Length);
+                for (int i = 0; i < processData.Length; i++) {
+                    ProcessData pd = processData[i];
+                    if (pd == null) continue;
+                    processName.Add(pd.id, pd.name);
+                }
+
+                // Display the results
+                Console.WriteLine();
+                WriteLine(dumpTable, "PID Task Name           Mem Usage Peak Mem Shared Mem Chan Imp Exp HP  Parent");
+                WriteLine(dumpTable, "=== =================== ========= ======== ========== ======== === === ======");
+
+                for (int i = 0; i < processData.Length; i++) {
+                    ProcessData pd = processData[i];
+                    if (pd == null) continue;
+
+                    ArrayList importedChannels = GetImportedChannels(channelData, pd.id);
+                    ArrayList exportedChannels = GetExportedChannels(channelData, pd.id);
+
+                    WriteLine(dumpTable, "{0,3} {1,-19} {2,7} K {3,6} K {4,8} K {5,8} {6,3} {7,3} {8,5}", pd.id,
+                                             pd.name, pd.memBytes / 1024, pd.peakMemBytes / 1024,
+                                             pd.commMemBytes / 1024, importedChannels.Count, exportedChannels.Count,
+                                             pd.handlePages, pd.parentID);
+
+                    if (displayThreads) {
+                        if (pd.tids != null && pd.tids.Length > 0) {
+                            for (int j = 0; j < pd.tids.Length; j++) {
+                                WriteLine(dumpTable, "     tid -> {0}",pd.tids[j]); 
+                            }
+                        }
+                    }
+                    
+                    if (displayChannels) {
+                        // First display the imports
+                        for (int j = 0; j < importedChannels.Count; j++) {
+                            ChannelData data = (ChannelData!) importedChannels[j];
+                            WriteLine(dumpTable, "     -> {0} (cid={1}, msgs={2})",
+                                      processName[data.ExpProcessId], data.ChannelId, data.MessagesDeliveredToImp);
+                        }
+                        // Then display the exports
+                        for (int j = 0; j < exportedChannels.Count; j++) {
+                            ChannelData data = (ChannelData!) exportedChannels[j];
+                            WriteLine(dumpTable, "     <- {0} (cid={1}, msgs={2})",
+                                      processName[data.ImpProcessId], data.ChannelId, data.MessagesDeliveredToExp);
+                        }
+                    }
+                }
+                if (dumpTable) {
+                    AppRuntime.DumpPageTable(); 
+                }
+                if (pauseSeconds > 0) {
+                    Thread.Sleep(1000 * (int)pauseSeconds);
+                }
+            } while (pauseSeconds >= 0);
+
+            return 0;
+        }
+    }
+}

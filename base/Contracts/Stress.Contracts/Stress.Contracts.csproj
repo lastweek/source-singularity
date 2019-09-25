@@ -1,0 +1,34 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Contracts\Stress.Contracts\Stress.Contracts.Kernel.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Stress.Contracts</AssemblyName>
+    <GenerateContractMap>true</GenerateContractMap>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="StressContract.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Directory.Contracts\Directory.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

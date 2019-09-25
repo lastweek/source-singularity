@@ -1,0 +1,26 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   ServiceContract.sg
+//
+
+// This is the base contract to be used, and overridden by, every Service
+// participating in the Directory
+
+namespace Microsoft.Singularity.Directory
+{
+     public contract ServiceContract
+     {
+        out message ContractNotSupported();
+
+        state Start: one
+        {
+            ContractNotSupported! -> DoneState;
+        }
+        state DoneState: one {}
+     }
+
+}

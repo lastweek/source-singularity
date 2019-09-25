@@ -1,0 +1,39 @@
+.assembly '1darray' { }
+.assembly extern 'mscorlib' {
+.ver 1:0:5000:0
+.publickeytoken = ( b7 7a 5c 56 19 34 e0 89 )
+}
+.class public 'test'
+	extends [mscorlib]System.Object
+{
+.field private bool[] 'x'
+.method hidebysig public static void 'Main'() {
+.entrypoint
+.locals init ([0]class 'test' 't0')
+newobj instance void 'test'::.ctor()
+stloc 0 // t
+ldloc 0 // t
+ldfld bool[] 'test'::'x'
+ldc.i4 1
+ldelem.i1
+call  void 'test'::'Emit'(bool)
+ret
+.maxstack 2
+} // end of method test.Main
+.method hidebysig public static void 'Emit'(bool 'flag') {
+ldarg 0 // flag
+call  void [mscorlib]System.Console::'WriteLine'(bool)
+ret
+.maxstack 1
+} // end of method test.Emit
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+ldc.i4 10
+newarr bool
+stfld bool[] 'test'::'x'
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 2
+} // end of constructor test.test
+} // end of class test

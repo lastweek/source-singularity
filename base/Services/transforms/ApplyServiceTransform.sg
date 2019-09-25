@@ -1,0 +1,20 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+//
+//This file is used by ServiceCategory.targets, and is added as a source file to projects that
+//import ServiceCategory.targets automatically.  Projects that import ServiceCategory.targets
+//will automatically have the service transform applied.
+//
+//If a project does not want the service transform automatically applied, then set the property
+//ApplyServiceTransform=false in the project.
+//
+//This file is NOT part of the service transform assembly itself, and should not be added to it.
+//
+//
+
+[assembly: Microsoft.SingSharp.Reflection.Transform(typeof(Microsoft.Singularity.Services.ServiceResourceTransform))] 

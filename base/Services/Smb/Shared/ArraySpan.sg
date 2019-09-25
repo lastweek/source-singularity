@@ -1,0 +1,157 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace Smb.Shared
+{
+#if ENABLE_GENERICS
+    public struct ArraySpan<T>
+    {
+        readonly T[]! _array;
+        readonly int _offset;
+        readonly int _length;
+
+        public ArraySpan(T[]! array, int offset, int length)
+        {
+            if (array == null)
+                throw new ArgumentNullException("array");
+            if (offset < 0)
+                throw new ArgumentException("Offset cannot be negative");
+            if (length < 0)
+                throw new ArgumentException("Length cannot be negative");
+            if (offset + length > array.Length)
+                throw new ArgumentException("Offset and length identify an array span that exceeds the length of the input array.");
+
+            _array = array;
+            _offset = offset;
+            _length = length;
+        }
+
+        public ArraySpan(T[]! array)
+            : this(array, 0, array.Length)
+        {
+        }
+
+
+        public static implicit operator ArraySpan<T>(T[]! array)
+        {
+            return new ArraySpan<T>(array, 0, array.Length);
+        }
+
+
+        public T this[int index]
+        {
+            get
+            {
+                if (index < 0 || index >= _length)
+                    throw new ArgumentOutOfRangeException("index");
+                return _array[_offset + index];
+            }
+
+            set
+            {
+                if (index < 0 || index >= _length)
+                    throw new ArgumentOutOfRangeException("index");
+                _array[_offset + index] = value;
+            }
+        }
+
+        public int Length
+        {
+            get { return _length; }
+        }
+
+        public int Offset
+        {
+            get { return _offset; }
+        }
+
+        public T[]! ContainingArray
+        {
+            get { return _array; }
+        }
+
+        public override string! ToString()
+        {
+            return "[ArraySpan<" + typeof(T).Name + "> offset " + _offset + " length " + _length + "]";
+        }
+    }
+#else
+    public struct ArraySpan_byte
+    {
+        readonly byte[]! _array;
+        readonly int _offset;
+        readonly int _length;
+
+        public ArraySpan_byte(byte[]! array, int offset, int length)
+        {
+            if (array == null)
+                throw new ArgumentNullException("array");
+            if (offset < 0)
+                throw new ArgumentException("Offset cannot be negative");
+            if (length < 0)
+                throw new ArgumentException("Length cannot be negative");
+            if (offset + length > array.Length)
+                throw new ArgumentException("Offset and length identify an array span that exceeds the length of the input array.");
+
+            _array = array;
+            _offset = offset;
+            _length = length;
+        }
+
+        public ArraySpan_byte(byte[]! array)
+            : this(array, 0, array.Length)
+        {
+        }
+
+
+        public static implicit operator ArraySpan_byte(byte[]! array)
+        {
+            return new ArraySpan_byte(array, 0, array.Length);
+        }
+
+
+        public byte this[int index]
+        {
+            get
+            {
+                if (index < 0 || index >= _length)
+                    throw new ArgumentOutOfRangeException("index");
+                return _array[_offset + index];
+            }
+
+            set
+            {
+                if (index < 0 || index >= _length)
+                    throw new ArgumentOutOfRangeException("index");
+                _array[_offset + index] = value;
+            }
+        }
+
+        public int Length
+        {
+            get { return _length; }
+        }
+
+        public int Offset
+        {
+            get { return _offset; }
+        }
+
+        public byte[]! ContainingArray
+        {
+            get { return _array; }
+        }
+
+        public override string! ToString()
+        {
+            return "[ArraySpan<byte> offset " + _offset + " length " + _length + "]";
+        }
+    }
+#endif
+
+}

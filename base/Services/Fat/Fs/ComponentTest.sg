@@ -1,0 +1,494 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Test.sg
+//
+//  Note:
+//
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Security;
+
+using System;
+
+using MSD = Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    public class ComponentTest
+    {
+        private delegate EnumerationRecords[] in ExHeap EnumerateDelegate(uint whence, out uint nextWhence);
+
+        private static string! DirEntryToHuman(char[]! in ExHeap dn)
+        {
+            int ls = 7;
+            while (dn[ls] == ' ' && ls > 0) {
+                ls--;
+            }
+            string! s = Bitter.ToString2(dn, 0, ls + 1);
+
+            ls = 10;
+            while (dn[ls] == ' ' && ls >= 8) {
+                ls--;
+            }
+            if (ls >= 8) {
+                s += "." + Bitter.ToString2(dn, 8, ls - 8 + 1);
+            }
+            return s;
+        }
+
+        private static void TestShortName(string! longName,
+                                          int attempt,
+                                          string! shortName)
+        {
+            char[]! in ExHeap ln = Bitter.FromString2(longName);
+            char[]! in ExHeap sn = new [ExHeap] char [DirectoryEntry.ShortNameEntryLength];
+            LongDirectoryEntry.WriteShortNameEntry(ln, attempt, sn);
+
+            string got = DirEntryToHuman(sn);
+            DebugStub.Print("Longname = \"{0}\" (\"{1}\") => \"{2}\" ({3})",
+                            __arglist(longName, shortName,
+                                      got,
+                                      Bitter.ToString2(sn))
+                            );
+
+            if (got == shortName) {
+                DebugStub.Print("        [ Pass ]\n");
+            }
+            else {
+                DebugStub.Print("        [ FAIL ]\n");
+                DebugStub.Break();
+            }
+            delete ln;
+            delete sn;
+        }
+
+        private static void TestShortName(string! longName, string! shortName)
+        {
+            TestShortName(longName, 1, shortName);
+        }
+
+        private static void TestShortNames()
+        {
+            TestShortName("The cat sat on the mat", "THECAT~1");
+            TestShortName("The cat sat on the mat", "THECAT~1");
+            TestShortName("abcdefghi.xyz", "ABCDEF~1.XYZ");
+            TestShortName("test1.txt", "TEST1~1.TXT");
+            TestShortName("....test1.txt...", "TEST1~1.TXT");
+            TestShortName(" . . ..test1.txt.. . ", "TEST1~1.TXT");
+            TestShortName("The cat sat on the mat.txt", "THECAT~1.TXT");
+            TestShortName("a.b", "A~1.B");
+            TestShortName("a.b", "A~1.B");
+            TestShortName("a.b", 99, "A~99.B");
+            TestShortName("abcdefghi.1234", 700, "ABCD~700.123");
+        }
+
+        private static void TestEnumerate(EnumerateDelegate! enumerateDelegate)
+        {
+            int done = 0;
+            for (uint whence = 0; whence != Directory.FinalWhence;) {
+                uint nextWhence;
+
+                EnumerationRecords[] in ExHeap er = enumerateDelegate(whence, out nextWhence);
+                if (er != null) {
+                    for (int i = 0; i < er.Length; i++) {
+                        expose (er[i]) {
+                            DebugStub.Print(
+                                "{0}{1}\n",
+                                __arglist(
+                                    Bitter.ToString(er[i].Path),
+                                    (er[i].Type == NodeType.Directory) ? "/" : "",
+                                    er[i].Type)
+                                );
+                        }
+                    }
+                    done += er.Length;
+                    delete er;
+                }
+                whence = nextWhence;
+            }
+            DebugStub.Print("Counted {0} entries.", __arglist(done));
+        }
+
+        private static void EnumerateAndFindResults(Directory! d)
+        {
+            int done = 0;
+            for (uint whence = 0; whence != Directory.FinalWhence;) {
+                uint nextWhence;
+
+                EnumerationRecords[] in ExHeap er =
+                    d.Enumerate2(whence, out nextWhence);
+                if (er != null) {
+                    for (int i = 0; i < er.Length; i++) {
+                        expose (er[i]) {
+                            DebugStub.Print(
+                                "Validating find for {0}{1}...",
+                                __arglist(
+                                    Bitter.ToString(er[i].Path),
+                                    (er[i].Type == NodeType.Directory) ? "/" : "",
+                                    er[i].Type)
+                                );
+                            bool exists = d.FileOrDirectoryExists(er[i].Path);
+                            DebugStub.Print("{0}\n",
+                                            __arglist(exists ? "yes" : "no"));
+                        }
+                    }
+                    done += er.Length;
+                    delete er;
+                }
+                whence = nextWhence;
+            }
+            Console.WriteLine("Counted {0} entries.", done);
+        }
+
+        private static void FillInTail(char[]! in ExHeap filename,
+                                       int suffix)
+        {
+            int pos = filename.Length;
+            while (suffix != 0 && pos != 0) {
+                filename[--pos] = (char)((int)'0' + (suffix % 10));
+                suffix /= 10;
+            }
+        }
+
+        private static bool CreateRangeOfSubDirectories(Directory! d,
+                                                        string basename,
+                                                        int rangeBegin,
+                                                        int rangeLength)
+        {
+            int digitCount = (int)Math.Log10(rangeBegin + rangeLength);
+            char []! in ExHeap fullname =
+                Bitter.FromString2(basename + new string(' ', digitCount + 1));
+
+            try {
+                int rangeEnd = rangeBegin + rangeLength;
+                while (rangeBegin != rangeEnd) {
+                    FillInTail(fullname, rangeBegin);
+
+                    MSD.ErrorCode error = d.CreateDirectory(fullname);
+
+                    if (error != MSD.ErrorCode.NoError) {
+                        Console.WriteLine(
+                            "Failed to create directory {0}: {1}",
+                            Bitter.ToString2(fullname),
+                            SdsUtils.ErrorCodeToString(error));
+                        return false;
+                    }
+                    rangeBegin++;
+                }
+            }
+            finally {
+                delete fullname;
+            }
+            return true;
+        }
+
+        private static bool DeleteRangeOfSubDirectories(Directory! d,
+                                                        string basename,
+                                                        int rangeBegin,
+                                                        int rangeLength)
+        {
+            int digitCount = (int)Math.Log10(rangeBegin + rangeLength);
+            char []! in ExHeap fullname =
+                Bitter.FromString2(basename + new string(' ', digitCount + 1));
+
+            try {
+                int rangeEnd = rangeBegin + rangeLength;
+                while (rangeBegin != rangeEnd) {
+                    FillInTail(fullname, rangeBegin);
+
+                    MSD.ErrorCode error = d.DeleteDirectory(fullname);
+
+                    if (error != MSD.ErrorCode.NoError) {
+                        Console.WriteLine(
+                            "Failed to delete directory {0}: {1}",
+                            Bitter.ToString2(fullname),
+                            SdsUtils.ErrorCodeToString(error));
+                        return false;
+                    }
+                    rangeBegin++;
+                }
+            }
+            finally {
+                delete fullname;
+            }
+            return true;
+        }
+
+        private static char[]! in ExHeap GetTreeNodeName(int count, int depth)
+        {
+            return Bitter.FromString2(
+                (!)String.Format("d_{0}_{1}", depth, count)
+                );
+        }
+
+        private static void CreateTree(Directory! treeRoot,
+                                       int        fanout,
+                                       int        depth)
+        {
+            if (depth <= 0) {
+                return;
+            }
+
+            DebugStub.Print("CreateTree(fanout = {0}, depth = {1})",
+                            __arglist(fanout, depth));
+
+            for (int i = 0; i < fanout; i++) {
+                char[]! in ExHeap nodeName = GetTreeNodeName(i, depth);
+                try {
+                    MSD.ErrorCode error = treeRoot.CreateDirectory(nodeName);
+                    if (error != MSD.ErrorCode.NoError) {
+                        DebugStub.Break();
+                    }
+
+                    Directory child;
+                    error = treeRoot.OpenDirectory(nodeName, out child);
+                    if (error != MSD.ErrorCode.NoError) {
+                        DebugStub.Break();
+                    }
+
+                    CreateTree((!)child, fanout, depth - 1);
+                }
+                finally {
+                    delete nodeName;
+                }
+            }
+        }
+
+        private static void DeleteTree(Directory! treeRoot,
+                                       int fanout,
+                                       int depth)
+        {
+            if (depth <= 0) {
+                return;
+            }
+
+            DebugStub.Print("DeleteTree(fanout = {0}, depth = {1})\n",
+                            __arglist(fanout, depth));
+
+            for (int i = 0; i < fanout; i++) {
+                char[]! in ExHeap nodeName = GetTreeNodeName(i, depth);
+                try {
+                    Directory child;
+                    MSD.ErrorCode error =
+                        treeRoot.OpenDirectory(nodeName, out child);
+                    DebugStub.Assert(error == MSD.ErrorCode.NoError);
+
+                    DeleteTree((!)child, fanout, depth - 1);
+                    error = treeRoot.DeleteDirectory(nodeName);
+                    DebugStub.Assert(error == MSD.ErrorCode.NoError);
+                    error = treeRoot.OpenDirectory(nodeName, out child);
+                    DebugStub.Assert(error == MSD.ErrorCode.NotFound);
+                }
+                finally {
+                    delete nodeName;
+                }
+            }
+        }
+
+        private static void CreateAndDestroyTree(Directory! treeRoot,
+                                                 int        fanout,
+                                                 int        depth)
+        {
+            CreateTree(treeRoot, fanout, depth);
+            DeleteTree(treeRoot, fanout, depth);
+        }
+
+        private static void CreateFile(Directory! directory,
+                                       string!    filename)
+        {
+            File file;
+
+            char[]! in ExHeap ename = Bitter.FromString2(filename);
+            MSD.ErrorCode error = directory.CreateAndOpenFile(ename, out file);
+            delete ename;
+            DebugStub.Assert(error == MSD.ErrorCode.NoError);
+            if (file == null) {
+                return;
+            }
+
+            byte[]! in ExHeap buffer = new [ExHeap] byte [32];
+            try {
+                const int sections = 1000;
+                for (int i = 0; i < sections; i++) {
+                    byte b = (byte)('a' + (i % 26));
+                    for (int j = 0; j < buffer.Length; j++) {
+                        buffer[j] = b;
+                    }
+                    buffer[buffer.Length - 2] = (byte)'\r';
+                    buffer[buffer.Length - 1] = (byte)'\n';
+                    int written;
+                    FileError fe = file.Write(buffer,
+                                              0, (uint)(i * buffer.Length),
+                                              buffer.Length, out written);
+                    DebugStub.Assert(written == buffer.Length);
+                    DebugStub.Assert(fe == FileError.NoError);
+                }
+                DebugStub.Print("Wrote {0} bytes to {1}\n",
+                                __arglist(sections * buffer.Length,
+                                          filename));
+                file.Close();
+            }
+            finally {
+                delete buffer;
+            }
+        }
+
+        private static void CreateSparseFile(Directory! directory,
+                                             string!    filename)
+        {
+            File file;
+
+            char[]! in ExHeap ename = Bitter.FromString2(filename);
+            MSD.ErrorCode error = directory.CreateAndOpenFile(ename, out file);
+            delete ename;
+            DebugStub.Assert(error == MSD.ErrorCode.NoError);
+            if (file == null) {
+                return;
+            }
+
+            byte[]! in ExHeap buffer = new [ExHeap] byte [32];
+            try {
+                const int sections = 1000;
+                for (int i = 0; i < sections; i++) {
+                    byte b = (byte)('a' + (i % 26));
+                    for (int j = 0; j < buffer.Length; j++) {
+                        buffer[j] = b;
+                    }
+                    buffer[buffer.Length - 2] = (byte)'\r';
+                    buffer[buffer.Length - 1] = (byte)'\n';
+                    int written;
+                    FileError fe = file.Write(buffer,
+                                              0, (uint)(2 * i * buffer.Length),
+                                              buffer.Length, out written);
+                    DebugStub.Assert(written == buffer.Length);
+                    DebugStub.Assert(fe == FileError.NoError);
+                }
+                DebugStub.Print("Wrote {0} bytes to {1}\n",
+                                __arglist(sections * buffer.Length,
+                                          filename));
+                file.Close();
+            }
+            finally {
+                delete buffer;
+            }
+        }
+
+        public static int MainTest(string []! args)
+        {
+            TestShortNames();
+
+            BPB.ValidateOverlay();
+
+            if (args.Length >= 2) {
+                if (FatVolume.Mount((!)args[1], false) == false) {
+                    return 0;
+                }
+
+                DateTime t0 = DateTime.Now;
+                Directory! d = Directory.OpenRootDirectory();
+                CreateFile(d, "testfile.txt");
+                CreateSparseFile(d, "testfile2.txt");
+
+                DateTime t1 = DateTime.Now;
+                Directory! dummy = Directory.OpenRootDirectory();
+                DateTime t2 = DateTime.Now;
+                assert dummy != null;
+
+                DebugStub.Print("First open took {0} ms.\n",
+                                __arglist((t1 - t0).Milliseconds));
+                DebugStub.Print("Second open took {0} ms.\n",
+                                __arglist((t2 - t1).Milliseconds));
+
+                //#if TEST_OPEN
+                Directory foo;
+                char []! in ExHeap subDirName = Bitter.FromString2("some T~1");
+                d.OpenDirectory(subDirName, out foo);
+                delete subDirName;
+
+                Directory bar;
+                char []! in ExHeap subDirName2 = Bitter.FromString2("foo");
+                d.OpenDirectory(subDirName2, out bar);
+                delete subDirName2;
+
+                // #endif // TEST_OPEN
+
+                EnumerateDelegate! ed1 = new EnumerateDelegate(d.Enumerate);
+                DateTime t3 = DateTime.Now;
+                TestEnumerate(ed1);
+                DateTime t4 = DateTime.Now;
+                TestEnumerate(ed1);
+                DateTime t5 = DateTime.Now;
+
+                EnumerateDelegate! ed2 = new EnumerateDelegate(d.Enumerate2);
+                DateTime t6 = DateTime.Now;
+                TestEnumerate(ed2);
+                DateTime t7 = DateTime.Now;
+
+                DebugStub.Print("Enum0 attempt 0 {0} ms.\n",
+                                __arglist((t4 - t3).Milliseconds));
+                DebugStub.Print("Enum0 attempt 1 {0} ms.\n",
+                                __arglist((t5 - t4).Milliseconds));
+                DebugStub.Print("Enum1 attempt 0 {0} ms.\n",
+                                __arglist((t7 - t6).Milliseconds));
+
+                EnumerateAndFindResults(d);
+
+                const int TestFileCount = 200;
+                const string TestFileBaseName = "some testing directory    ";
+
+                DebugStub.Print("Creating test directories");
+                CreateRangeOfSubDirectories(d, "Some long test dir",
+                                            1, 400);
+
+                TestEnumerate(ed1);
+                TestEnumerate(ed2);
+                EnumerateAndFindResults(d);
+
+                DeleteRangeOfSubDirectories(d, "Some long test dir",
+                                            1, 400);
+
+                TestEnumerate(ed1);
+                TestEnumerate(ed2);
+                EnumerateAndFindResults(d);
+
+                CreateRangeOfSubDirectories(
+                    d, "The cat sat on the mat is long", 1, 3000);
+
+                EnumerateAndFindResults(d);
+
+                DeleteRangeOfSubDirectories(
+                    d, "The cat sat on the mat is long", 1, 3000);
+
+                TestEnumerate(ed1);
+                TestEnumerate(ed2);
+                EnumerateAndFindResults(d);
+
+                CreateRangeOfSubDirectories(
+                    d, "foo", 1, 300);
+
+                EnumerateAndFindResults(d);
+
+                DeleteRangeOfSubDirectories(
+                    d, "foo", 1, 300);
+
+                TestEnumerate(ed1);
+                TestEnumerate(ed2);
+                EnumerateAndFindResults(d);
+
+                DebugStub.Print("Running directory tree create and delete test\n");
+                CreateAndDestroyTree(d, 12, 3);
+                FatVolume.Unmount();
+            }
+
+            return 0;
+        }
+    }
+}

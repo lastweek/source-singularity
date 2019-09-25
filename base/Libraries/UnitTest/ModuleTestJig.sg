@@ -1,0 +1,270 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+using Microsoft.Bartok.Options;
+using Microsoft.Bartok.Runtime;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Test;
+using Microsoft.Singularity.UnitTest;
+
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Applications;
+
+using Microsoft.Singularity.Test.Contracts;
+
+namespace Microsoft.Singularity.UnitTest
+{
+
+    public class TestClass
+    {
+        TestLog/*!*/ m_expect;
+
+        protected TestClass(TestLog/*!*/ log)
+        {
+            m_expect = log;
+        }
+
+        protected TestClass()
+        {
+            m_expect = new TestLog(false);
+        }
+
+        public TestLog/*!*/ Expect
+        {
+            get { return m_expect; }
+        }
+
+        public void SetLog(TestLog/*!*/ log)
+        {
+            m_expect = log;
+        }
+    }
+
+
+    public class TestSkippedException : Exception
+    {
+        internal const string TEST_MISSING = "Test not found: ";
+
+        public TestSkippedException(string reason) : base(reason) {}
+    }
+
+    public class SuiteJig
+    {
+        virtual public void Initialize()
+        {
+        }
+
+        virtual public void DoTest(string/*!*/ test)
+        {
+            throw new TestSkippedException(
+                TestSkippedException.TEST_MISSING + test);
+        }
+
+        virtual public void Cleanup()
+        {
+        }
+    }
+
+    public class ModuleJig
+    {
+        // The generated subclass versions will instantiate the class that has
+        // the [AssemblyInitialize], invoke the operation, and discard it.
+        virtual public void Initialize(TestLog/*!*/ log)
+        {
+        }
+        virtual public SuiteJig GetSuite(string/*!*/ name, TestLog/*!*/ log)
+        {
+            return null;
+        }
+        // The generated subclass versions will instantiate the class that has
+        // the [AssemblyCleanup], invoke the operation, and discard it.
+        virtual public void Cleanup(TestLog/*!*/ log)
+        {
+        }
+    }
+
+    public class ModuleTester
+    {
+
+        // helper for debugging
+        internal static SuiteJig TheSuite;
+
+        private readonly TRef<LogContract.Exp:START>/*!*/ m_log;
+        private ModuleJig/*!*/  m_moduleJig;
+        private TestLog/*!*/    m_expect;
+        private bool        m_logEnabled;
+
+        private ModuleTester([Claims] LogContract.Exp:START/*!*/ log,
+                             bool logSuccess,
+                             ModuleJig/*!*/ jig)
+        {
+            m_moduleJig = jig;
+            m_log = new TRef<LogContract.Exp:START>(log);
+            // TODO fix log success
+            m_expect = new RemoteTestLog((ModuleTester) this, logSuccess);
+            m_logEnabled = true;
+        }
+
+        private void Dispose()
+        {
+            LogContract.Exp log = m_log.Acquire();
+            delete log;
+        }
+
+        static public int RunTests([Claims] ModuleTesterContract.Exp:DO_MODULE/*!*/ tester,
+                                   ModuleJig/*!*/ jig)
+        {
+            DebugStub.WriteLine("Testing started");
+            tester.SendGetLogger();
+            LogContract.Exp:START/*!*/ log;
+            bool logSuccess;
+            tester.RecvLogger(out log, out logSuccess);
+
+            // TODO initialize assembly
+            try {
+                ModuleTester t = new ModuleTester(log, logSuccess, jig);
+                t.DoModule(tester);
+                t.Dispose();
+            }
+            finally {
+                delete tester;
+                DebugStub.WriteLine("Testing complete");
+            }
+            return 0;
+        }
+
+
+        // QUERIES //////////////////////////////////////////////////////////
+
+        // Helper methods for ScheduleGroup to work around
+        // the issue with CycleCount appearing to go backwards because the
+        // thread was moved by MinScheduler.
+        protected static long CycleCount
+        {
+            get {
+#if AFFINITY_SCHEDULER
+                return Processor.CycleCount;
+#else
+                // If we're not using the affinity scheduler, substitute
+                // TickCount for CycleCount.  TickCount will be consistent
+                // across processors.
+                return (long) Environment.TickCount;
+#endif
+            }
+        }
+
+        protected static long Ticks
+        {
+            get { return DateTime.Now.Ticks; }
+        }
+
+        // OPERATIONS /////////////////////////////////////////////////////////
+        internal void DoModule(ModuleTesterContract.Exp/*!*/ tester)
+        {
+            // TODO Module init
+            tester.SendPassed(CycleCount, Ticks);
+            while (true) {
+                try {
+                    switch receive {
+                        case tester.InitSuite(char[]/*!*/ in ExHeap suiteD):
+                            string/*!*/ suiteName = Bitter.ToString2(suiteD);
+                            delete suiteD;
+                            SuiteJig suite = m_moduleJig.GetSuite(suiteName, m_expect);
+                            if (null == suite) {
+                                tester.SendSkipped(Bitter.FromString2("No such suite"));
+                                break;
+                            }
+                            TheSuite = suite;
+                            suite.Initialize();
+                            tester.SendPassed(CycleCount, Ticks);
+                            DoSuite(tester, suite);
+                            break;
+
+                        case tester.CleanupModule():
+                            CleanupModule(tester);
+                            tester.SendPassed(CycleCount, Ticks);
+                            return;
+
+                        case tester.ChannelClosed():
+                            CleanupModule(tester);
+                            return;
+                    }
+                }
+                catch (TestSkippedException ex) {
+                    tester.SendSkipped(Bitter.FromString2((!) ex.ToString()));
+                }
+                catch (Exception ex) {
+                    tester.SendFailed(Bitter.FromString2((!) ex.ToString()),
+                                      CycleCount,
+                                      Ticks);
+                }
+            }
+        }
+
+        internal void CleanupModule(ModuleTesterContract.Exp/*!*/ tester)
+        {
+            m_moduleJig.Cleanup(m_expect);
+        }
+
+        internal void DoSuite(ModuleTesterContract.Exp/*!*/ tester, SuiteJig/*!*/ jig)
+        {
+            while (true) {
+                switch receive {
+                    case tester.RunTest(char[]/*!*/ in ExHeap testD):
+                        string/*!*/ testName = Bitter.ToString2(testD);
+                        delete testD;
+                        try {
+                            jig.DoTest(testName);
+                            tester.SendPassed(CycleCount, Ticks);
+                        }
+                        catch (TestSkippedException ex) {
+                            tester.SendSkipped(Bitter.FromString2((!) ex.ToString()));
+                        }
+                        catch (Exception ex) {
+                            tester.SendFailed((!) Bitter.FromString(ex.ToString()), CycleCount, Ticks);
+                        }
+                        break;
+
+                    case tester.CleanupSuite():
+                        jig.Cleanup();
+                        tester.SendPassed(CycleCount, Ticks);
+                        return;
+
+                    case tester.ChannelClosed():
+                        jig.Cleanup();
+                        return;
+                }
+            }
+        }
+
+        // LOGGING ////////////////////////////////////////////////
+
+        internal void Log(string/*!*/ msg)
+        {
+            LogContract.Exp:START/*!*/ t = m_log.Acquire();
+            t.SendLog(Bitter.FromString2(msg), CycleCount, Ticks);
+            t.RecvOK();
+            m_log.Release(t);
+        }
+        internal void Fail(string/*!*/ msg)
+        {
+            throw new FailedAssertionException(msg);
+        }
+    }
+}

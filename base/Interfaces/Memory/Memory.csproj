@@ -1,0 +1,20 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Interfaces\Memory\Memory.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="..\Memory\Memory.csi" />
+    <Compile Include="..\Memory\SharedHeap.csi" />
+  </ItemGroup>
+</Project>

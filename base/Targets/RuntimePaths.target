@@ -1,0 +1,24 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <!-- This makes sure that targets files don't import this .targets file if it already has been included. -->
+    <RuntimePathsIncluded>true</RuntimePathsIncluded>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Set default runtime -->
+    <Runtime Condition="'$(Runtime)'==''">Full</Runtime>
+
+    <!-- Replace the above with this for debugging -->
+    <!-- <Error Condition="'$(Runtime)'==''">The Runtime to use for this application has not been specified. Add a Runtime property to your project file set to one of the subdirectories under Applications\Runtime.</Error> -->
+
+    <APPRUNTIMESRCDIR>$(SINGULARITY_ROOT)\Applications\Runtime\$(Runtime)</APPRUNTIMESRCDIR>
+    <APPRUNTIMEDIR>$(SINGULARITY_OBJROOT)\AppRuntime\$(Runtime)\$(OBJRELDIR)</APPRUNTIMEDIR>
+    <APPRUNTIMEDIR>$(SINGULARITY_OBJROOT)\AppRuntime\$(Runtime)\$(OBJRELDIR)</APPRUNTIMEDIR>
+    <APPRUNTIMENATIVEDIR>$(SINGULARITY_OBJROOT)\AppRuntimeNative\$(Runtime)\$(OBJRELDIR)</APPRUNTIMENATIVEDIR>
+
+    <!-- Paths for kernel / ABI -->
+    <KernelAbiLibPath>$(APPRUNTIMEDIR)\Singularity.V1.$(Runtime).lib</KernelAbiLibPath>
+  </PropertyGroup>
+
+</Project>

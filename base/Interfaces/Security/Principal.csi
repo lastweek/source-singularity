@@ -1,0 +1,21 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace Microsoft.Singularity.Security
+{
+    public struct Principal
+    {
+        public static Principal Self();
+        public static string ExpandAclIndirection(string name);
+
+        public ulong  Val { get; }
+        public bool   Equal(Principal p);
+        public string GetName();
+    }
+}
+

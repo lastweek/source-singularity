@@ -1,0 +1,33 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <ProjectGuid>{3F9845B1-E3A1-40DD-96E5-AFD900858FA4}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>NtlmUnitTest</AssemblyName>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="NtlmUnitTest.sg" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\NetStack.Channels.Public\NetStack.Channels.Public.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net\System.Net.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.Net.IP\System.Net.IP.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Ntlm\Ntlm.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\CredentialsManager\CredentialsManager.Library.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\CredentialsManager.Contracts\CredentialsManager.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\NetStack.Contracts\NetStack.Contracts.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Crypto\Crypto.csproj"/>
+
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets"/>
+</Project>

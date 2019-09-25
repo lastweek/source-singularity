@@ -1,0 +1,101 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PageTableService.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct PageTableService
+    {
+        public readonly int id;
+
+        [NoHeapAllocation]
+        public static unsafe uint * GetPageTable();
+
+#if UINTPTR_SUPPORT_IN_ABI
+        [NoHeapAllocation]
+        public static UIntPtr GetPageCount();
+
+        [NoHeapAllocation]
+        public static UIntPtr GetBaseAddress();
+#endif
+
+        [NoHeapAllocation]
+        public static uint GetProcessTag();
+
+        [NoHeapAllocation]
+        public static UIntPtr Allocate(UIntPtr numPages);
+
+
+        [NoHeapAllocation]
+        public static UIntPtr AllocateExtend(UIntPtr addr,
+                                             UIntPtr numPages);
+
+        [NoHeapAllocation]
+        public static void Free(UIntPtr addr,
+                                UIntPtr numPages);
+
+        [NoHeapAllocation]
+        public static UIntPtr AllocateIOMemory(UIntPtr limit,
+                                               UIntPtr bytes,
+                                               UIntPtr alignment);
+
+        [NoHeapAllocation]
+        public static void FreeIOMemory(UIntPtr addr,
+                                        UIntPtr bytes);
+
+        [NoHeapAllocation]
+        public static bool Query(UIntPtr queryAddr,
+                                 out UIntPtr regionAddr,
+                                 out UIntPtr regionSize);
+
+        [NoHeapAllocation]
+        public static void GetUsageStatistics(out ulong allocatedCount,
+                                              out ulong allocatedBytes,
+                                              out ulong freedCount,
+                                              out ulong freedBytes);
+
+        //////////////////////////////////////////////////////////////////////
+#if !UINTPTR_SUPPORT_IN_ABI
+        [NoHeapAllocation]
+        public static uint GetPageCount();
+
+        [NoHeapAllocation]
+        public static uint GetBaseAddress();
+
+        [NoHeapAllocation]
+        public static uint Allocate(uint numPages);
+
+        [NoHeapAllocation]
+        public static uint AllocateExtend(uint addr,
+                                          uint numPages);
+
+        [NoHeapAllocation]
+        public static void Free(uint addr,
+                                uint numPages);
+
+        [NoHeapAllocation]
+        public static uint AllocateIOMemory(uint limit,
+                                            uint bytes,
+                                            uint alignment);
+
+        [NoHeapAllocation]
+        public static void FreeIOMemory(uint addr,
+                                        uint bytes);
+
+        [NoHeapAllocation]
+        public static bool Query(uint queryAddr,
+                                 out uint regionAddr,
+                                 out uint regionSize);
+#endif
+    }
+}

@@ -1,0 +1,645 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Services/Smb/ClientManager/SmbClientManager.sg
+//
+//  Note:
+//
+//		This file contains most of the implementation of the SMB Client Manager Service.
+//		This service is a system-wide singleton process, started during system boot by
+//		the Service Manager Service (SMS).  (In the future, it may make sense for one
+//		instance of this service to exist per session.  However, that's for future study.)
+//
+//		This service registers a single control channel, at /dev/smb-client-manager.
+//		Clients, such as the command-line tool net.exe (Services/Smb/Control) open 
+//		this channel and use it to send control requests and queries to this service.
+//		These requests allow the user to mount remote SMB filesystems at local namespaces
+//		(creates a mapping), unmount them, enumerate them, and query their status.
+//
+//		This service is entirely single-threaded.  Some requests received from the control
+//		channel are processed immediately (synchronously); the results are sent back to
+//		the originator of the request without performing any blocking I/O or waiting for
+//		any long period of time.  A few other requests are asynchronous; when the service
+//		receives such a control request, it allocates memory in the local (non-exchange)
+//		heap to track the status of the request, and future channel messages advance the
+//		state of the request.
+//
+
+using System;
+using System.Collections;
+using System.Diagnostics;
+using Microsoft.Contracts;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.ServiceManager;
+using Microsoft.Singularity.Services;
+using Microsoft.Singularity.Configuration;
+using Smb.PublicChannels;
+using Smb.PrivateChannels;
+
+namespace Smb.ClientManager
+{
+    [Category("Service")]
+    internal class ServiceParameters
+    {
+        [CustomEndpoint]
+        public readonly TRef<ServiceProcessContract.Exp:Starting> ControlEndpointRef;
+        
+        [CustomEndpoint]
+        public readonly TRef<ServiceEventContract.Imp:Ready> EventEndpointRef;
+        
+        reflective private ServiceParameters();
+    }
+
+    class Manager : ITracked
+    {
+		internal static int AppMain(ServiceParameters! parameters)
+		{
+		    assert parameters.ControlEndpointRef != null;
+		    assert parameters.EventEndpointRef != null;
+		    
+	        ServiceProcessContract.Exp:Starting! svcontrol = parameters.ControlEndpointRef.Acquire();
+	        ServiceEventContract.Imp:Ready! svevent = parameters.EventEndpointRef.Acquire();
+
+		    Manager! manager = new Manager(svcontrol, svevent);
+		    try {
+		        manager.Run();
+		    }
+		    finally {
+		        manager.Dispose();
+		    }
+		    return 0;
+		}
+
+	    Manager(
+	        [Claims]ServiceProcessContract.Exp:Starting! svcontrol,
+	        [Claims]ServiceEventContract.Imp:Ready! svevent)
+	    {
+	        this.svcontrol = svcontrol;
+	        this.svevent = svevent;
+	    }
+			
+        #region Data Fields		
+    
+		readonly ESet<SmbClientManagerContract.Exp:Ready>! managers = new ESet<SmbClientManagerContract.Exp:Ready>();
+		
+		readonly EMap<SmbClientControllerContract.Imp:Configuring, ClientProcess!>! clientsConfiguring =
+			new EMap<SmbClientControllerContract.Imp:Configuring, ClientProcess!>();
+			
+		readonly EMap<SmbMuxNotifier.Exp:Ready, ClientProcess!>! notifiers =
+			new EMap<SmbMuxNotifier.Exp:Ready, ClientProcess!>();
+			
+	    readonly ServiceProcessContract.Exp! svcontrol;
+	    readonly ServiceEventContract.Imp! svevent;
+	    
+	    #endregion
+	        
+        public void Dispose()
+        {
+		    DebugLine("Service has terminated.");			
+			
+		    foreach (ClientProcess! client in _clients.Values)
+		    {
+			    TerminateClient(client, false);
+		    }
+		    _clients.Clear();
+
+            delete managers;
+            delete clientsConfiguring;
+            delete notifiers;
+            delete svcontrol;
+            delete svevent;
+		    //managers.Dispose();
+		    //notifiers.Dispose();
+		    //clientsConfiguring.Dispose();
+        }
+    
+		void Run()
+		{
+		    expose (this) {
+    		    
+		        svcontrol.SendStartSucceeded();
+    		
+		        for (;;)
+		        {
+			        switch receive
+			        {
+    			        #region Event handlers for service control channel, ServiceProcessContract
+        			    
+			            case svcontrol.Knock():
+				            DebugLine("Received 'Knock' from Service Manager");
+			                svcontrol.SendAlive();
+			                break;
+    				        
+			            case svcontrol.Stop():
+			                DebugLine("Received 'Stop' from Service Manager");
+			                svcontrol.SendAckStop();
+			                return;
+
+				        case svcontrol.Connect(char[] in ExHeap expath, ServiceContract.Exp:Start! exp):
+				        {
+				            if (expath != null) {
+					            string! path = Bitter.ToString2(expath);
+					            delete expath;
+				                DebugLine("A client wants to connect, using subpath '{0}'.  This service does not support subpaths; rejecting client.", path);
+				                delete exp;
+				                svcontrol.SendNakConnect(ErrorCode.Unknown, null);
+				                break;
+				            }
+    				        
+					        SmbClientManagerContract.Exp manager = exp as SmbClientManagerContract.Exp;
+					        if (manager != null) {
+    				            DebugLine("A client has connected using SmbClientManagerContract.");
+						        manager.SendSuccess();
+						        managers.Add(manager);
+						        svcontrol.SendAckConnect();
+					        }
+					        else {
+					            DebugLine("A client wants to connect, but is using an unsupported contract.");
+					            delete exp;
+						        svcontrol.SendNakConnect(ErrorCode.ContractNotSupported, null);
+					        }
+					        break;
+					    }
+    					
+					    case svcontrol.ChannelClosed():
+					        // Uh oh!
+					        DebugLine("Service Manager has closed its control channel!  Not good at all!");
+					        return;
+
+			            #endregion
+    				
+				        case manager.CreateClient(SmbClientConfig exconfig) in managers:
+					        // This is a request to create a new SMB client process and start it.
+					        string! mountPath = Bitter.ToString2(exconfig.MountPath);
+					        if (TraceSwitches.ShowManagerMessages) {
+					            DebugLine("CreateClient: mountpath = '{0}'", mountPath);
+					            DebugLine("    UncPath: " + Bitter.ToString2(exconfig.UncPath));
+					        }
+    						
+					        // DebugStub.Break();
+    						
+					        // Check to see if we already have a client using the same mount point.
+					        // It's much better to detect this now, rather than to spin up a client
+					        // process and have it discover the error.
+					        ClientProcess client = FindClientByMountPath(mountPath);
+					        if (client != null) {
+						        exconfig.Dispose();
+						        manager.SendRequestFailed(SmbErrorCode.MountPathAlreadyExists, null);
+						        managers.Add(manager);
+						        break;
+					        }
+    						
+					        SmbClientControllerContract.Imp! controller;
+					        SmbClientControllerContract.Exp! controller_exp;
+					        SmbClientControllerContract.NewChannel(out controller, out controller_exp);
+    						
+					        SmbMuxNotifier.Imp! notifier_imp;
+					        SmbMuxNotifier.Exp! notifier_exp;
+					        SmbMuxNotifier.NewChannel(out notifier_imp, out notifier_exp);
+
+					        Process process;
+					        try {							
+						        string[] process_args = { "smbclient" };
+						        process = new Process(process_args);
+					        }
+					        catch (Exception ex) {
+						        DebugLine("FAILED to create smbclient process: " + ex.Message);
+						        delete controller;
+						        delete controller_exp;
+						        delete notifier_imp;
+						        delete notifier_exp;
+						        manager.SendRequestFailed(SmbErrorCode.InternalError, Bitter.FromString2("Failed to create process: " + ex.Message));
+						        managers.Add(manager);
+						        break;
+					        }
+    						
+					        process.SetStartupEndpoint(0, controller_exp);
+					        process.SetStartupEndpoint(1, notifier_imp);
+    						
+					        if (TraceSwitches.ShowProcessActivity)
+					            DebugLine("Starting client process...");
+    						    
+					        process.Start();
+    						
+					        if (TraceSwitches.ShowProcessActivity)
+					            DebugLine("Process started.  Sending startup parameters...");
+    						
+					        client = new ClientProcess(mountPath, exconfig, process);
+					        client.State = ClientState.Starting;
+					        client.StartingManagerEndpoint = new TRef<SmbClientManagerContract.Exp:CreatingClient>(manager);
+    						
+					        client.UncPath = Bitter.ToString2(exconfig.UncPath);
+					        client.CredentialsName = Bitter.ToString2(exconfig.CredentialsName);
+					        client.Tag = Bitter.ToString2(exconfig.Tag);
+    						
+					        client.ConnectionStatus = SmbClientConnectionStatus.Disconnected;
+					        client.ReasonDisconnected = SmbReasonDisconnected.Idle;
+					        client.ServerOperatingSystem = null;
+					        client.ServerDomainName = null;
+					        client.ServerMachineName = null;
+
+					        controller.SendConfigure(exconfig);
+    						
+					        // Further progress will be made when we receive AckConnect or NakConnect from the
+					        // client process (or a ChannelClosed).
+    						
+					        notifiers.Add(notifier_exp, client);
+
+					        clientsConfiguring.Add(controller, client);
+					        _clients[mountPath] = client;
+					        break;
+    						
+				        case manager.QueryClientConfig(char[]! in ExHeap exclientId) in managers:
+				        {
+					        string! clientId = Bitter.ToString2(exclientId);
+					        delete exclientId;
+					        if (TraceSwitches.ShowManagerMessages)
+					            DebugLine("Received QueryClientConfig - id = " + clientId);
+    						
+					        ClientProcess client = FindClientByMountPath(clientId);
+					        if (client != null) {
+						        SmbClientConfig config = new SmbClientConfig();							
+						        config.MountPath = Bitter.FromString2(client.MountPath);
+						        config.UncPath = Bitter.FromString2(client.UncPath);
+						        config.CredentialsName = Bitter.FromString2(client.CredentialsName);
+						        config.Tag = Bitter.FromString2(client.Tag);							
+    							
+						        if (TraceSwitches.ShowManagerMessages)
+						            DebugLine("    Sending config report.");
+    							    
+						        manager.SendClientConfigReport(config);						
+					        }
+					        else {
+						        if (TraceSwitches.ShowManagerMessages)
+						            DebugLine("    No such client.");
+    							    
+						        manager.SendRequestFailed(SmbErrorCode.MountPathNotFound, null);
+					        }
+    						
+					        managers.Add(manager);
+					        break;
+				        }
+    					
+				        case manager.QueryClientStatus(char[]! in ExHeap exclientId) in managers:
+				        {
+					        string! clientId = Bitter.ToString2(exclientId);
+					        delete exclientId;
+    						
+					        if (TraceSwitches.ShowManagerMessages)
+					            DebugLine("Received QueryClientStatus - id = " + clientId);
+    						
+					        ClientProcess client = FindClientByMountPath(clientId);
+					        if (client != null) {
+						        SmbClientStatus status = new SmbClientStatus();
+    							
+						        status.ConnectionStatus = client.ConnectionStatus;
+						        status.ReasonDisconnected = client.ReasonDisconnected;
+						        status.ServerOperatingSystem = Bitter.FromString(client.ServerOperatingSystem);
+						        status.ServerDomainName = Bitter.FromString(client.ServerDomainName);
+						        status.ServerMachineName = Bitter.FromString(client.ServerMachineName);
+						        status.ActiveCredentialsName = Bitter.FromString(client.ActiveCredentialsName);
+    							
+						        if (TraceSwitches.ShowManagerMessages)
+						            DebugLine("    Sending status report.");
+    							    
+						        manager.SendClientStatusReport(status);
+					        }
+					        else {
+						        if (TraceSwitches.ShowManagerMessages)
+						            DebugLine("    No such client.");
+    							
+						        manager.SendRequestFailed(SmbErrorCode.MountPathNotFound, null);
+					        }
+					        managers.Add(manager);
+					        break;
+				        }
+    						
+				        case controller.Ok() in clientsConfiguring ~> client:
+					        if (TraceSwitches.ShowManagerMessages)
+					            DebugLine(client, "Received AckConfigure from client process");
+    						    
+					        assert client.StartingManagerEndpoint != null;
+    						
+					        SmbClientManagerContract.Exp! manager = client.StartingManagerEndpoint.Acquire();
+    						
+					        client.StartingManagerEndpoint = null;
+					        client.State = ClientState.Running;
+					        client.Controller = new TRef<SmbClientControllerContract.Imp:Running>(controller);
+    						
+					        if (TraceSwitches.ShowManagerMessages)
+					            DebugLine("Sending Ok (for CreateClient) to manager.");
+    						    
+					        manager.SendOk();
+					        managers.Add(manager);
+					        break;
+    						
+				        case controller.RequestFailed(error, errortext) in clientsConfiguring ~> client:
+					        // One of the client processes that we started has indicated that it
+					        // did not start successfully.  Tear down the client process and send an
+					        // error message to the manager that requested that the process to be created.
+    						
+					        if (TraceSwitches.ShowManagerMessages || true)
+					            DebugLine(client, "Received NakConfigure from client process: {0} {1}",
+							        error.ToString(),
+    						        Bitter.ToString(errortext));
+    							
+					        delete controller;
+    						
+					        assert client.StartingManagerEndpoint != null;
+					        SmbClientManagerContract.Exp! manager = client.StartingManagerEndpoint.Acquire();
+					        client.StartingManagerEndpoint = null;
+					        client.State = ClientState.Running;
+    						
+					        client.Process.Stop();
+					        client.Process.Join();
+					        client.Process.Dispose(false);
+    						
+					        manager.SendRequestFailed(error, errortext);
+					        managers.Add(manager);
+					        break;
+    						
+				        case controller.ChannelClosed() in clientsConfiguring ~> client:
+					        // A client process terminated before responding to the NakConnect message.
+					        // Treat this like NakConnect without an error code.
+					        if (TraceSwitches.ShowManagerMessages || true)
+					            DebugLine(client, "Client process has closed its controller channel.");
+    							
+					        assert client.StartingManagerEndpoint != null;
+					        SmbClientManagerContract.Exp! manager = client.StartingManagerEndpoint.Acquire();
+					        client.StartingManagerEndpoint = null;
+					        client.State = ClientState.Running;
+    						
+					        client.Process.Stop();
+					        client.Process.Join();
+					        client.Process.Dispose(false);
+    						
+					        manager.SendRequestFailed(SmbErrorCode.InternalError,
+						        Bitter.FromString2("The SMB client process failed to initialize."));
+					        managers.Add(manager);						
+					        delete controller;
+					        break;
+
+				        case manager.StopClient(char[]! in ExHeap exmountPath) in managers:
+					        string! mountPath = Util.ToStringDelete(exmountPath);
+    						
+					        if (TraceSwitches.ShowManagerMessages)
+					            DebugLine("StopClient - mount path = " + mountPath);
+    						
+					        ClientProcess client = FindClientByMountPath(mountPath);
+					        if (client != null)
+					        {
+						        switch (client.State)
+						        {
+						        case ClientState.Starting:
+							        // This is extremely rude, of course.
+							        DebugLine("    Client is Starting - will simply terminate the process.");
+							        break;
+    								
+						        case ClientState.Running:
+							        SmbClientControllerContract.Imp! controller = ((!)client.Controller).Acquire();
+    								
+							        controller.SendStop();
+    								
+							        // -XXX- This is synchronous for now!
+							        DebugLine("Waiting to SMB client to respond to Stop request");
+							        switch receive {
+								        case controller.Ok():
+									        break;
+    										
+								        case controller.ChannelClosed():
+									        break;
+							        }
+    								
+							        client.Controller.Release(controller);
+							        break;
+    								
+						        default:
+							        DebugLine("ILLEGAL STATE FOR CLIENT PROCESS!");
+							        break;								
+						        }
+
+						        TerminateClient(client, true);
+    						
+						        manager.SendOk();
+					        }
+					        else {
+						        if (TraceSwitches.ShowManagerMessages)
+						            DebugLine("Cannot delete client -- there is no client with mount path = '{0}'", mountPath);
+    							    
+						        manager.SendRequestFailed(SmbErrorCode.MountPathNotFound, null);
+					        }
+    						
+					        managers.Add(manager);
+					        break;
+    						
+				        case manager.EnumClients() in managers:
+				        {
+					        int count = _clients.Values.Count;
+					        char[][]! in ExHeap mountPaths = new[ExHeap] char[][count];
+					        int i = 0;
+					        foreach (ClientProcess! client in _clients.Values)
+					        {
+						        if (i >= count)
+							        break;
+						        char[]! in ExHeap exmount = Bitter.FromString2(client.MountPath);
+						        expose (mountPaths[i]) {
+							        delete mountPaths[i];
+							        mountPaths[i] = exmount;
+						        }
+						        i++;
+					        }
+					        manager.SendClientList(mountPaths);
+					        managers.Add(manager);
+					        break;					
+				        }
+    						
+				        case manager.BindClient(char[]! in ExHeap exmountPath, ServiceContract.Exp:Start! exp) in managers:
+				        {
+					        string! mountPath = Util.ToStringDelete(exmountPath);
+					        if (TraceSwitches.ShowManagerMessages)
+					            DebugLine("BindClient - mount path = " + mountPath);
+    						
+					        ClientProcess client = FindClientByMountPath(mountPath);
+					        if (client != null)
+					        {
+						        switch (client.State)
+						        {
+							        case ClientState.Running:
+								        SmbClientControllerContract.Imp! controller = ((!)client.Controller).Acquire();
+								        try {
+									        controller.SendBind(exp);
+    									
+									        // -XXX- Yes, I know this prevents SmbClientManager from receiving
+									        // -XXX- any other messages.  Need to deal with that.
+									        switch receive {
+										        case controller.Ok():
+											        if (TraceSwitches.ShowManagerMessages)
+											            DebugLine("Bind successful");
+											        manager.SendOk();
+											        break;
+    												
+										        case controller.RequestFailed(error, optionalErrorText):
+											        if (TraceSwitches.ShowManagerMessages)
+											            DebugLine("SmbClient process rejected bind request");
+											        manager.SendRequestFailed(error, optionalErrorText);
+											        break;
+    												
+										        case controller.ChannelClosed():
+											        if (TraceSwitches.ShowManagerMessages)
+											            DebugLine("SmbClient channel closed!");
+											        manager.SendRequestFailed(SmbErrorCode.InternalError, null);
+											        break;
+									        }
+    									
+								        }
+								        finally {
+									        client.Controller.Release(controller);
+								        }
+								        break;
+    								
+							        default:
+								        if (TraceSwitches.ShowManagerMessages)
+								            DebugLine("Client is not in a state that allows binding");
+								        manager.SendRequestFailed(SmbErrorCode.InvalidState, null);
+								        delete exp;
+								        break;
+						        }
+					        }
+					        else {
+						        delete exp;
+						        manager.SendRequestFailed(SmbErrorCode.MountPathNotFound, null);
+					        }
+    						
+					        managers.Add(manager);												
+					        break;
+				        }
+
+				        case notifier.StatusChanged(SmbClientStatus status) in notifiers ~> client:
+					        notifier.SendAck();
+    						
+					        if (TraceSwitches.ShowStatusChanges)
+					            DebugLine(client, "Received StatusChanged from client");						
+    						    
+					        client.ConnectionStatus = status.ConnectionStatus;
+					        client.ReasonDisconnected = status.ReasonDisconnected;
+					        client.ServerOperatingSystem = Bitter.ToString(status.ServerOperatingSystem);
+					        client.ServerMachineName = Bitter.ToString(status.ServerMachineName);
+					        client.ServerDomainName = Bitter.ToString(status.ServerDomainName);
+					        client.ActiveCredentialsName = Bitter.ToString(status.ActiveCredentialsName);
+					        status.Dispose();
+    						
+					        notifiers.Add(notifier, client);
+					        break;
+			        }
+		        }
+    		    
+		    }
+		}
+		
+		/// <summary>
+		/// <para>
+		/// Contains the set of all ClientProcess instances that are managed by this service.
+		/// Aside from brief thread-local references to ClientProcess instances, this table 
+		/// contains the only reference to those instances.
+		/// </para>
+		///
+		/// <para>
+		/// Each key is a string, and is the value of the MountPath field of the client
+		/// process; the keys are case sensitive.  Each value is the corresponding 
+		/// ClientProcess instance.
+		/// </para>
+		/// </summary>
+		static readonly Hashtable/*<String!,ClientProcess!>*/! _clients = new Hashtable();
+		
+		static ClientProcess FindClientByMountPath(string! mountPath)
+		{
+			ClientProcess client = (ClientProcess)_clients[mountPath];
+			return client;
+		}
+
+		static void TerminateClient(ClientProcess! client, bool remove)
+		{
+			DebugLine("Terminating child process, pid=" + client.Process.Id);
+			
+			client.Process.Stop();
+			client.Process.Join();
+			client.Process.Dispose(false);
+
+			switch (client.State)
+			{
+				case ClientState.Starting:
+					assert client.Controller == null;
+					break;
+					
+				case ClientState.Running:
+				case ClientState.Stopping:
+					SmbClientControllerContract.Imp! controller = ((!)client.Controller).Acquire();
+					delete controller;
+					break;
+					
+				default:
+					DebugLine("INVALID STATE for client process!  state=" + client.State.ToString());
+					break;					
+			}
+
+			// This is conditional, because we don't want to modify the _clients collection
+			// while we're enumerating it.
+			if (remove)	 
+				_clients.Remove(client.MountPath);
+		}
+		
+		static void DebugLine(string! line)
+		{
+			DebugStub.WriteLine(line);
+		}
+		
+		static void DebugLine(string! format, params object[]! args)
+		{
+			DebugLine(String.Format(format, args));
+		}
+		
+		static void DebugLine(ClientProcess! client, string! line)
+		{
+			DebugStub.WriteLine(client.DebugPrefix + line);
+		}
+		
+		static void DebugLine(ClientProcess! client, string! format, params object[]! args)
+		{
+			DebugLine(client, String.Format(format, args));
+		}
+		
+		void ITracked.Expose() {}
+		void ITracked.UnExpose() {}
+		void ITracked.Acquire() {}
+		void ITracked.Release() {}
+    }
+    
+
+
+	class Util
+	{	
+		public static void DumpException(Exception chain)
+		{
+			for (Exception ex = chain; ex != null; ex = ex.InnerException)
+			{
+				DebugStub.WriteLine(String.Format("{0}: {1}", ex.GetType().FullName, ex.Message));
+			}
+		}
+		
+		public static string! ToStringDelete([Claims]char[]! in ExHeap exstring)
+		{
+			string! localstring = Bitter.ToString2(exstring);
+			delete exstring;
+			return localstring;
+		}
+	}    
+    
+}
+

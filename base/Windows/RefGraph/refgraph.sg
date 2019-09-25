@@ -1,0 +1,1313 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.IO;
+using System.Xml;
+using System.Compiler;
+using System.Collections;
+using Microsoft.SpecSharp.Collections;
+using Microsoft.Contracts;
+
+public class Test{
+    public static bool oneLine = false;
+    public static bool staticsOnly = false;
+    public static bool verbose = false;
+    public static bool outputXml = false;
+    public static bool outputLogicalModulesOnly = false;
+    public static bool outputTypesOnly = false;
+    public static string outputFileName;
+    public static ArrayList! fileList = new ArrayList();
+
+    static Hashtable! referenceAssemblyCache = new Hashtable();
+
+    public static int Main(string[] args){
+
+        string[]! nargs = (string[]!)args;
+        bool needHelp = false;
+        bool firstModuleOverridesStdLib = false;
+
+        if (nargs.Length == 0) {
+            Usage();
+            return 0;
+        }
+
+        RefGraph rg = new RefGraph();
+
+        // Process flags first
+
+        foreach (string! file in nargs) {
+            if (file.Length >= 2 && (file[0] == '/' || file[0] == '-')) {
+                switch (file[1]) {
+                case 'b':
+                    System.Diagnostics.Debugger.Break();
+                    break;
+
+                case '?':
+                case 'h':
+                case 'H':
+                    needHelp = true;
+                    break;
+                
+                case 'l':
+                case 'L':
+                    oneLine = true;
+                    
+                    assert outputXml == false;
+                    
+                    break;
+
+                case 'm':
+                case 'M':
+                
+                    outputLogicalModulesOnly = true;
+                    break;
+
+                case 'n':
+                case 'N':
+                    firstModuleOverridesStdLib = true;
+                    break;
+
+                case 'o':
+                case 'O':
+                    outputFileName = file.Substring(3);
+                    break;
+
+                case 's':
+                case 'S':
+                    staticsOnly = true;
+                    break;
+
+                case 't':
+                case 'T':
+                    outputTypesOnly = true;
+                    break;
+
+				case 'v':
+				case 'V':
+					verbose = true;
+					break;
+
+				case 'x':
+				case 'X':
+					outputXml = true;
+					
+					assert oneLine == false;
+					
+					break;
+
+                default:
+                    needHelp = true;
+                    break;
+                }
+            }
+            else {
+                fileList.Add(file);
+            }
+        }
+
+        if (needHelp || fileList.Count == 0) {
+            Usage();
+            return 0;
+        }
+        
+        // Now process files
+        string lastModuleName = null;
+
+        ArrayList assemblies = new ArrayList();
+
+        foreach (object! fileObj in fileList) {
+            string file = (string) fileObj;
+        
+			string fullpath = Path.GetFullPath(file);
+			lastModuleName = Path.GetFileNameWithoutExtension(file);
+			
+			if (firstModuleOverridesStdLib) {
+
+				string dir = Path.GetDirectoryName(fullpath);
+
+				SystemTypes.Initialize(false, false);
+				SystemTypes.Clear();
+			    TargetPlatform.SetToV1_1(dir);
+				SystemAssemblyLocation.Location = fullpath;
+				SystemCompilerRuntimeAssemblyLocation.Location = 
+					Path.Combine(dir, "System.Compiler.Runtime.dll");
+				SystemTypes.Initialize(true, true);
+
+                // So we don't try to override it again (once is enough)
+				firstModuleOverridesStdLib = false;
+			}
+        
+            if (verbose) {
+				Console.WriteLine("Scanning: " + file);
+			}
+
+            AssemblyNode assembly = AssemblyNode.GetAssembly(fullpath, referenceAssemblyCache, true, true, true);
+
+            assert assembly != null;
+            assert assembly.Name != null;
+
+            referenceAssemblyCache[assembly.Name] = assembly;
+
+            assembly.AssemblyReferenceResolution += new Module.AssemblyReferenceResolver(ResolveAssemblyReference);
+            
+            assemblies.Add(assembly);
+        }
+
+        foreach (object! assemblyObj in assemblies) {
+            AssemblyNode m = assemblyObj as AssemblyNode;
+            rg.Visit(m);
+        }
+
+        rg.FixNamespaceKeys();
+
+        if (Console.Out != null) {
+            if (outputXml) {
+                if (outputFileName == null) outputFileName = lastModuleName;
+
+                TextWriter tw;
+                if (outputFileName != null) {
+                    if (!outputLogicalModulesOnly) {
+                        tw = new StreamWriter(outputFileName + ".dependencies.xml");
+                    }
+                    else {
+                        tw = new StreamWriter(outputFileName + ".logical_modules.xml");
+                    }
+                }
+                else {
+                  tw = (TextWriter)Console.Out;
+                }
+                XmlDocument doc;
+            
+                doc = rg.DumpAllDependenciesToXml();
+            
+                assert doc != null;
+                doc.Save(tw);
+                if (tw != Console.Out) {
+                  tw.Close();
+                }
+            }
+            else {
+                rg.Dump(Console.Out);
+            }
+        }
+        
+        return 0;
+    }
+
+    /// <summary>
+    /// This method is here to avoid referencing assemblies we haven't mentioned on the command line.
+    /// </summary>
+    /// <returns>A dummy replacement assembly</returns>
+	private	static AssemblyNode	ResolveAssemblyReference(	AssemblyReference assemblyReference, 
+															Module fromModule) {
+
+        assert assemblyReference != null;
+        assert fromModule != null;
+        assert System.Console.Error != null;
+
+        //System.Console.Error.WriteLine("Assembly reference resolver called on	{0}	from {1}.\n", 
+        //    assemblyReference.Name, 
+        //    fromModule.Location);
+
+        assert assemblyReference.Name != null;
+
+        string referencedAssemblyName = assemblyReference.Name;
+
+        if (referencedAssemblyName.ToLower() == "hal") {
+            referencedAssemblyName = "Hal.LegacyPC";
+        }
+
+        AssemblyNode assembly = (AssemblyNode) referenceAssemblyCache[referencedAssemblyName];
+
+        if (assembly != null) {
+            return assembly;
+        }
+            
+        //foreach(object key in referenceAssemblyCache.Keys) {
+        //
+        //    AssemblyNode val = (AssemblyNode) referenceAssemblyCache[key];
+        //    
+        //    assert val != null;
+        //    
+        //    System.Console.Error.WriteLine("Key: " + key);
+        //    System.Console.Error.WriteLine("Val: " + val.Location);
+        //}
+
+        // HACK until	we provide renaming	of references on command line
+
+        referencedAssemblyName = referencedAssemblyName.ToLower();
+
+        if (referencedAssemblyName ==	"kernel" ||
+            referencedAssemblyName ==	"mscorlib" ||
+            referencedAssemblyName ==	"corlib" ||
+            referencedAssemblyName ==	"basetypes" ||
+            referencedAssemblyName ==	"baseattrs" ||
+            referencedAssemblyName ==   "ioconfig" ||
+            referencedAssemblyName ==   "console"
+        ) 
+        {
+            return SystemTypes.SystemAssembly;
+        }
+        
+        assembly = new AssemblyNode();
+        assembly.Culture            = assemblyReference.Culture;
+        assembly.Name               = assemblyReference.Name;
+        assembly.PublicKeyOrToken   = assemblyReference.PublicKeyOrToken;
+        assembly.Version            = assemblyReference.Version;
+        assembly.Location           = "unknown:location";
+
+        //System.Diagnostics.Debugger.Break();
+
+        System.Console.Error.WriteLine("Failed to resolve assembly reference '" + 
+            assemblyReference.Name + "' from module '" + fromModule.Location + "'.");
+
+        return assembly;
+    }
+
+    public static void Usage()
+    {
+        Console.Write(
+            "Usage:\n" +
+            "    refgraph [options] <assemblies>\n" +
+            "Options:\n" +
+            "    /b      -- Break into the debugger on startup.\n" +
+            "    /l      -- Format one-line output for findstr or grep.\n" +
+            "    /m      -- Output template for assigning logical modules to\n" +
+            "               types and members.\n" +
+            "    /n      -- Uses the first assembly as the standard library\n" +
+            "               instead of mscorlib.dll.\n" +
+            "    /o:name -- use name as the base for the output files (/m or /x\n" +
+            "               options).\n" +
+            "    /s      -- Only consider static references (non instance based).\n" +
+            "    /t      -- Only output types.\n" +
+            "    /v      -- Output diagnostic messages.\n" + 
+            "    /x      -- Output xml.\n" + 
+            "    /?      -- Display this help screen.\n" +
+            "Summary:\n" +
+            "    Dumps the graph of cross references for each type.\n"
+            );
+    }
+}
+
+interface IDump {
+    void Dump(TextWriter! tr);
+}
+
+enum DeclKind
+{
+    Assembly,
+    Namespace,
+    Type,
+    Method,
+    Field,
+    Enum,
+    Delegate
+}
+
+[Flags]
+enum DepKind
+{
+    baseClass = 1,
+    iface = 2,
+    sig = 4,
+    code = 8,
+    attr = 16,
+};
+
+class Dep
+{
+    public Decl! decl;
+    public DepKind kind;
+    
+    public Dep(Decl! decl, DepKind kind)
+    {
+        this.decl = decl;
+        this.kind = kind;
+    }
+
+    [Microsoft.Contracts.Confined]
+    public override string! ToString() {
+        string blah = decl + " (" + KindString() + ")";
+        assert blah != null;
+        return blah;
+    }
+
+    public string! KindString() {
+        if (kind == DepKind.baseClass)
+            return "base";
+        else
+            return (string!) kind.ToString();
+    }
+    
+    public XmlElement! CreateXmlElement(XmlDocument! doc)
+    {
+        XmlElement elem = doc.CreateElement("Dep");
+        assert elem != null;
+        
+        Decl.DumpXmlRef(decl, "DepDeclId", elem);
+        elem.SetAttribute("Kind", KindString());
+        
+        return elem;
+    }
+}
+
+// A decl can be a namespace, type, method, or field
+class Decl
+{
+    // Name of the namespace, type, method, or field
+    string! fullName;
+    
+    string  nameSpace; // optional
+    string! shortName;
+
+    string path = null;
+
+    public int key;
+
+    public bool hasFullInfo = false;
+
+    public bool alreadyOutput = false;
+
+    public static int largestKey = 0;
+
+    // Only used by members
+    bool isStatic = false;
+    bool isOverride = false;
+    string access = null;
+
+    // Only used by methods
+    bool isConditional = false;
+    bool isAbstract = false;
+    
+    // Only used by fields
+    bool isConst = false;
+    
+    // Scope of this decl.  For example, the scope of a method
+    // or field decl is the enclosing type.  The scope of a class
+    // decl is a namespace or nested class decl.
+    public Decl lexicalScope = null;
+
+    // Decls this decl depends on.  For a method, the decls are
+    // the return and parameter types.  For a field, the decl is
+    // the field type.  For a class, the decl is the base type
+    // and interface types.  A namespace decl has no dependencies.
+    public ArrayList/*<Dep>*/ dependencies = new ArrayList/*<Dep>*/();
+    
+    // The kind of decl this is: namespace, type, method, or field
+    public DeclKind kind;
+    
+    static char[]! refDesignators = new char[] { '*', '@', '[' };
+    
+    public Decl(string! fullName, string nameSpace, string! shortName, int key, DeclKind kind)
+    {
+        this.fullName = fullName;
+        this.shortName = shortName;
+        this.nameSpace = nameSpace;
+        this.key = key;
+        this.kind = kind;
+        
+        if (key > largestKey)
+            largestKey = key;
+    }
+
+    [Microsoft.Contracts.Confined]
+    public override bool Equals(object rhs) {
+    
+        Decl declRhs = rhs as Decl;
+        if (declRhs == null)
+            return false;
+        
+        return Equals(declRhs);
+    }
+    
+    [Microsoft.Contracts.Confined]
+    public bool Equals(Decl rhs) {
+        
+        if (rhs == null)
+            return false;
+        
+        return this.key == rhs.key;
+    }
+    
+    [Microsoft.Contracts.Confined]
+    public override string! ToString()
+    {
+        string blah = shortName + " (" + kind.ToString() + ")" + (hasFullInfo ? " FULL" : "");
+        assert blah != null;
+        return blah;
+    }
+    
+    public void Dump(TextWriter! o, int indent)
+    {
+        Indent(o, indent);
+        o.WriteLine(ToString());
+
+        Indent(o, indent+1);
+        o.Write("Scope: ");
+       
+        if (lexicalScope == null)
+            o.WriteLine("(null)");
+        else {
+            assert lexicalScope != null;
+            o.WriteLine(lexicalScope);
+        }
+
+        assert dependencies != null;
+            
+        for (int i = 0; i < dependencies.Count; ++i) {
+            Dep dep = dependencies[i] as Dep;
+            assert dep != null;
+            
+            Indent(o, indent+1);
+            o.WriteLine("Dependency: " + dep);
+        }
+    }
+    
+    public static void Indent(TextWriter! o, int indent)
+    {
+        for (int i = 0; i < indent; ++i) {
+            o.Write("    ");
+        }
+    }
+
+    public XmlElement! CreateXmlElement(XmlDocument! doc)
+    {
+        XmlElement elem = doc.CreateElement("Decl");
+        assert elem != null;
+
+        elem.SetAttribute("FullName", fullName);
+        if (nameSpace != null) elem.SetAttribute("Namespace", nameSpace);
+        elem.SetAttribute("Name", shortName);        
+        elem.SetAttribute("Kind", kind.ToString());
+        elem.SetAttribute("Id", key.ToString());
+
+        if (Test.outputLogicalModulesOnly) {
+            elem.SetAttribute("LogicalModule", "");
+            return elem;
+        }
+
+        elem.SetAttribute("HasFullInfo", hasFullInfo.ToString());
+        
+        DumpXmlRef(lexicalScope, "ScopeDeclId", elem);
+        
+        if (access != null) {
+            elem.SetAttribute("IsStatic", isStatic.ToString());
+            elem.SetAttribute("Access", access);
+        }
+
+        if (isOverride) {
+            elem.SetAttribute("IsOverride", "True");
+        }
+        
+        if (isConditional) {
+            elem.SetAttribute("IsConditional", "True");
+        }
+        
+        if (isConst) {
+            elem.SetAttribute("IsConst", "True");
+        }
+        
+        if (isAbstract) {
+            elem.SetAttribute("IsAbstract", "True");
+        }
+
+        if (path != null) {
+            elem.SetAttribute("Path", path);
+        }
+
+        assert dependencies != null;
+            
+        for (int i = 0; i < dependencies.Count; ++i) {
+            Dep dep = dependencies[i] as Dep;
+            assert dep != null;
+
+            XmlElement depElem = dep.CreateXmlElement(doc);
+            elem.AppendChild(depElem);
+        }
+
+        return elem;
+    }
+    
+    public static void DumpXmlRef(Decl decl, string! name, XmlElement! element)
+    {
+        if (decl == null)
+            element.SetAttribute(name, "");
+        else
+            element.SetAttribute(name, decl.key.ToString());
+    }
+
+    public void AddDependency(Decl! decl, DepKind depKind) {
+        assert dependencies != null;
+
+        for (int i = 0; i < dependencies.Count; ++i) {
+            Dep dep = dependencies[i] as Dep;
+            assert dep != null;
+            
+            if (dep.decl.Equals(decl)) {
+                dep.kind |= depKind;
+                return;
+            }
+        }
+
+        dependencies.Add(new Dep(decl, depKind));
+    }
+
+    public static Decl GetOrCreateAssemblyDecl( AssemblyNode! assembly, 
+                                                Hashtable! decls,
+                                                bool hasFullInfo)
+    {
+        Decl declAssembly = decls[assembly.UniqueKey] as Decl;
+        if (declAssembly != null) {
+        
+            assert declAssembly.kind == DeclKind.Assembly;
+        
+            if (!declAssembly.hasFullInfo && hasFullInfo)
+                declAssembly.hasFullInfo = true;
+                
+            return declAssembly;
+        }
+        
+        assert assembly.Name != null;
+        
+        declAssembly = new Decl(assembly.Name, null, assembly.Name, assembly.UniqueKey, DeclKind.Assembly);
+        declAssembly.path = assembly.Location;
+        declAssembly.hasFullInfo = hasFullInfo;
+        
+        decls[assembly.UniqueKey] = declAssembly;
+        
+        return declAssembly;
+    }
+
+    [Pure]
+    public static bool IsType(DeclKind kind) {
+        switch (kind) {
+        case DeclKind.Type: 
+        case DeclKind.Enum:
+        case DeclKind.Delegate:
+            return true;
+
+        default:
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Lookup or create a Decl node for this type.
+    /// Don't traverse anything. That will be done in the context of the corresponding
+    /// definition.
+    /// </summary>
+    public static Decl! GetOrCreateTypeDecl(TypeNode! typeNode, 
+                                            Hashtable! decls, 
+                                            Hashtable! ns_decls,
+                                            bool hasFullInfo)
+    {
+        // Should only get here for type definitions, not constructed types,
+        // no generic instances
+        assert typeNode.Template == null;
+
+        assert typeNode.IsPointerType == false;
+        assert typeNode.IsStructural == false;
+        assert !(typeNode is ArrayType);
+        assert !(typeNode is Reference);
+
+        assert typeNode.FullName != null;
+    
+        Decl declType = decls[typeNode.UniqueKey] as Decl;
+        if (declType != null) {
+
+            assert IsType(declType.kind);
+
+            if (!declType.hasFullInfo && hasFullInfo) {
+                declType.hasFullInfo = true;
+            }
+        }
+        else {
+            // Create the node initially
+            string shortName = typeNode.Name.Name;
+            assert shortName != null;
+
+            DeclKind kind;
+            switch (typeNode.NodeType) {
+            case NodeType.DelegateNode:
+                kind = DeclKind.Delegate;
+                break;
+            case NodeType.EnumNode:
+                kind = DeclKind.Enum;
+                break;
+            default:
+                kind = DeclKind.Type;
+                break;
+            }
+            declType = new Decl(typeNode.FullName, GetMemberNamespace(typeNode), shortName, typeNode.UniqueKey, kind);
+
+            decls[typeNode.UniqueKey] = declType;
+
+            // initialize some other aspects of this Decl
+            declType.hasFullInfo = hasFullInfo;
+        
+        // Set the scope to be the nesting class
+        if (typeNode.DeclaringType != null) {
+                declType.lexicalScope = GetDeclaringTypeDecl(typeNode.DeclaringType, decls, ns_decls);
+        }
+        else if (typeNode.DeclaringModule != null) {
+            assert typeNode.DeclaringModule.ContainingAssembly != null;
+            // Set the assembly
+                declType.lexicalScope = GetOrCreateAssemblyDecl(typeNode.DeclaringModule.ContainingAssembly, decls, false);
+        }
+            }
+        return declType;
+    }
+    
+    private static string GetMemberNamespace(Member! m) {
+        return GetMemberNamespace(m.DeclaringType);
+    }
+    private static string GetMemberNamespace(TypeNode t) {
+        if (t == null) return null;
+        if (t.Namespace != null && t.Namespace.Name != null) return t.Namespace.Name;
+        return GetMemberNamespace(t.DeclaringType);
+    }
+    public static Decl! GetOrCreateMethodDecl(Method! method, Hashtable! decls, Hashtable! ns_decls)
+    {
+        Decl declMethod = decls[method.UniqueKey] as Decl;
+        if (declMethod != null) {
+
+            assert declMethod.kind == DeclKind.Method;
+
+            return declMethod;
+        }
+
+        string shortMethodName = method.GetUnmangledNameWithoutTypeParameters(true);
+        assert shortMethodName != null;
+        
+        assert method.DeclaringType != null;
+        assert method.ReturnType != null;
+        assert method.ReturnType.FullName != null;
+
+        TypeNode! returnType = method.ReturnType;
+        if (returnType is TypeModifier)
+            returnType = (!) TypeNode.StripModifiers(returnType);
+
+        string fullName = 
+            returnType.FullName + " " +
+            method.DeclaringType.Name.Name + "." + 
+            method.GetUnmangledNameWithoutTypeParameters(false);
+        assert fullName != null;
+        string nameSpace = GetMemberNamespace(method);
+        if (!fullName.EndsWith(")"))
+            fullName += "()";
+
+        assert fullName != null;
+        
+        declMethod = new Decl(fullName, nameSpace, shortMethodName, method.UniqueKey, DeclKind.Method);
+                              
+        decls[method.UniqueKey] = declMethod;
+
+        declMethod.isStatic = method.IsStatic;
+        declMethod.isAbstract = method.IsAbstract;
+
+        bool isConstructor = shortMethodName == "#ctor";
+
+        if ((declMethod.isStatic || isConstructor) && method.DeclaringType != null) {
+
+            // If the method is static (including static ctors) or a 
+            // constructor, add a dependency to the static ctor
+            
+            MemberList cctors = method.DeclaringType.GetMembersNamed(StandardIds.CCtor);
+            if (cctors != null && cctors.Count > 0) {
+
+                // Assume we can only have one static constructor
+                assert cctors.Count == 1; 
+
+                Method cctor = cctors[0] as Method;
+                assert cctor != null;
+
+                Decl cctorDecl = Decl.GetOrCreateMethodDecl(cctor, decls, ns_decls);
+                assert cctorDecl != null;
+                declMethod.AddDependency(cctorDecl, DepKind.code);
+            }
+        }
+        
+        if (isConstructor && method.DeclaringType != null) {
+        
+            // Add a dependency from the constructor to the destructor (e.g., Finalize)
+            
+            MemberList finalizers = method.DeclaringType.GetMembersNamed(StandardIds.Finalize);
+            if (finalizers != null && finalizers.Count > 0) {
+            
+                // Asseme we can only have one Finalize method
+                assert finalizers.Count == 1;
+                
+                Method finalizer = finalizers[0] as Method;
+                if (finalizer != null) {
+               
+                    Decl finalizerDecl = Decl.GetOrCreateMethodDecl(finalizer, decls, ns_decls);
+                    assert finalizerDecl != null;
+                    declMethod.AddDependency(finalizerDecl, DepKind.code);
+                }
+            }
+        }
+
+        if (method.IsPrivate) {
+            
+            declMethod.access = "private";
+        }
+        else if (method.IsFamily ||
+                    method.IsFamilyAndAssembly) {
+                    
+            declMethod.access = "protected";
+        }
+        else if (method.IsPublic ||
+                    method.IsAssembly || 
+                    method.IsFamilyOrAssembly ||
+                    method.IsVisibleOutsideAssembly) {
+                    
+            declMethod.access = "public";
+        }
+        else if (method.IsCompilerControlled) {
+        
+            // For some reason, a method like
+            //
+            // public struct DebugService {
+            //      [CLSCompliant(false)]
+            //      public static unsafe void PrintBegin(out char * buffer, out int length) { ... }
+            //
+            // should have IsPublic set to 'true' but it doesn't.  However, it only
+            // appears to happen with members which are "compiler controlled" (does
+            // this mean 'unsafe'?)
+            
+            declMethod.access = "public";
+        }
+        else {
+            assert System.Console.Error != null;
+            System.Console.Error.WriteLine("Member has unknown access: " + fullName);
+            declMethod.access = "public";
+        }
+
+        if ((method.ImplementedInterfaceMethods != null &&
+            method.ImplementedInterfaceMethods.Count > 0) ||
+            (method.ImplicitlyImplementedInterfaceMethods != null &&
+            method.ImplicitlyImplementedInterfaceMethods.Count > 0) ||
+            method.OverriddenMethod != null)
+        {
+            assert !declMethod.isStatic;
+        
+            declMethod.isOverride = true;
+        }
+
+        assert declMethod.dependencies != null;
+
+        if (method.DeclaringType != null) {
+            declMethod.lexicalScope = GetDeclaringTypeDecl(method.DeclaringType, decls, ns_decls);
+        }
+        
+        return declMethod;
+    }
+        
+	public static Decl! GetDeclaringTypeDecl(TypeNode! declaringType, Hashtable! decls, Hashtable! ns_decls) 
+    {
+        if (declaringType.Template != null) {
+            declaringType = declaringType.Template;
+        }
+        ArrayType at = declaringType as ArrayType;
+		if (at != null) {
+			// Special case. The runtime pretends there are methods on things like String[,] etc.
+			// Map this to System.Array
+			declaringType = (!)SystemTypes.Array;
+        }
+        return GetOrCreateTypeDecl(declaringType, decls, ns_decls, false);
+    }
+
+    public static Decl! GetOrCreateFieldDecl(Field! field, Hashtable! decls, Hashtable! ns_decls)
+    {
+        Decl declField = decls[field.UniqueKey] as Decl;
+        if (declField != null) {
+
+            assert declField.kind == DeclKind.Field;
+
+            return declField;
+        }
+
+        assert field.Name != null;
+        assert field.Name.Name != null;
+
+        assert field.DeclaringType != null;
+        assert field.DeclaringType.FullName != null;
+
+        string fullName = field.DeclaringType.Name.Name + "." + field.Name.Name;
+        assert fullName != null;
+
+        declField = new Decl(fullName, GetMemberNamespace(field), field.Name.Name, field.UniqueKey, DeclKind.Field);
+                              
+        decls[field.UniqueKey] = declField;
+
+        declField.isStatic = field.IsStatic;
+        
+        if (field.IsPrivate) {
+
+            declField.access = "private";
+        }
+        else if (field.IsFamily ||
+                    field.IsFamilyAndAssembly) {
+
+            declField.access = "protected";
+        }
+        else if (field.IsPublic ||
+                    field.IsAssembly || 
+                    field.IsFamilyOrAssembly) {
+                    
+            declField.access = "public";
+        }
+        else if (field.IsCompilerControlled) {
+            declField.access = "public";
+        }
+        else {
+            assert System.Console.Error != null;
+            System.Console.Error.WriteLine("Member has unknown access: " + fullName);
+            declField.access = "public";
+        }
+
+        assert declField.dependencies != null;
+
+        if ((field.Flags & FieldFlags.Literal) != 0) {
+            declField.isConst = true;
+        }
+
+        if (field.DeclaringType != null) {
+            declField.lexicalScope = GetDeclaringTypeDecl(field.DeclaringType, decls, ns_decls);
+        }
+        
+        return declField;
+    }
+}
+
+class RefGraph : StandardVisitor, IDump
+{
+
+    Hashtable!/*<Decl>*/ decls = new Hashtable();
+
+    Hashtable!/*<Decl>*/ ns_decls = new Hashtable();
+
+    Set<TypeNode> types = new Set<TypeNode>();
+  
+    /// types referenced in signatures of the type  
+    TrivialHashtable!/*<Set<TypeNode>>*/ inSignatures = new TrivialHashtable();
+  
+    /// types referenced in code of the type
+    TrivialHashtable!/*<Set<TypeNode>>*/ inCode = new TrivialHashtable();
+  
+    Set<TypeNode> currentSet;
+
+    Statement currentStatement;
+
+    Method currentMethod = null;
+    
+    Decl currentDeclaration;
+    DepKind currentKind;
+
+    private void AddDependency(Decl! dep, DepKind kind) {
+        assert this.currentDeclaration != null;
+        this.currentDeclaration.AddDependency(dep, kind);
+    }
+
+    public override AssemblyNode VisitAssembly(AssemblyNode assem) {
+        if (assem == null) return null;
+        this.currentKind = DepKind.sig;
+        this.currentDeclaration =
+            Decl.GetOrCreateAssemblyDecl(assem, this.decls, true);
+        return base.VisitAssembly(assem);
+    }
+
+    public override Node Visit(Node node) {
+        
+        Statement stmt = node as Statement;
+        if (stmt != null && stmt.SourceContext.Document != null) {
+            this.currentStatement = stmt;
+        }
+        return base.Visit(node);
+    }
+        
+    public override Expression VisitLiteral(Literal l) {
+        if (l == null) return null;
+        TypeNode t = l.Value as TypeNode;
+        VisitTypeReference(t);
+        return l;
+    }
+
+    public override AttributeList VisitAttributeList(AttributeList al) {
+        DepKind savedCurrentKind = this.currentKind;
+
+        // switch to attribute kind
+        this.currentKind = DepKind.attr;
+        // visit attribute nodes which should result in a member binding visit
+        // for the constructor, and potential type reference visits for any
+        // typeof(typenode) arguments
+        base.VisitAttributeList(al);
+        this.currentKind = savedCurrentKind;
+        return al;
+    }
+
+    public override TypeNode VisitTypeNode(TypeNode typeNode) {
+
+        if (typeNode == null) return null;
+
+        // Add this type (and its namespace, base class, and base ifaces)
+        // to the the map of decls
+
+        //assert this.decls[typeNode.UniqueKey] == null;
+        Decl savedCurrentDeclaration = this.currentDeclaration;
+
+        this.currentDeclaration = Decl.GetOrCreateTypeDecl(typeNode, decls, ns_decls, true);
+ 
+        Set<TypeNode> oldSet = this.currentSet;
+    
+        Set<TypeNode> inSigSet= new Set<TypeNode>();
+    
+        this.currentSet = inSigSet;
+
+        base.VisitTypeNode(typeNode);
+
+        this.inSignatures[typeNode.UniqueKey] = this.currentSet;
+    
+        types.Add(typeNode);
+
+        this.currentSet = oldSet;
+
+        this.currentDeclaration = savedCurrentDeclaration;
+
+        return typeNode;
+    }
+  
+    public override TypeNode VisitTypeReference(TypeNode typeNode) {
+  
+        if (typeNode == null) return null;
+
+        // Need to take the type reference apart here to get down
+        // to named types.
+        switch (typeNode.NodeType) {
+        case NodeType.ArrayType:
+            ArrayType at = (ArrayType)typeNode;
+            VisitTypeReference(at.ElementType);
+            // Add the implicit base class System.Array
+            VisitTypeReference(SystemTypes.Array);
+        return typeNode;
+    
+        case NodeType.Pointer:
+            Pointer pt = (Pointer)typeNode;
+            VisitTypeReference(pt.ElementType);
+            return pt;
+    
+        case NodeType.Reference:
+            Reference r = (Reference)typeNode;
+            VisitTypeReference(r.ElementType);
+            return r;
+        
+        case NodeType.OptionalModifier:
+        case NodeType.RequiredModifier:
+            TypeModifier tm = (TypeModifier)typeNode;
+            VisitTypeReference(tm.Modifier);
+            VisitTypeReference(tm.ModifiedType);
+            return tm;
+    }
+  
+        // type parameters are not interesting
+        if (typeNode is ITypeParameter) return typeNode;
+  
+        // Look for generics
+        if (typeNode.Template != null) {
+            VisitTypeReference(typeNode.Template);
+            if (typeNode.TemplateArguments != null) {
+                for (int i = 0; i < typeNode.TemplateArguments.Count; i++) {
+                    VisitTypeReference(typeNode.TemplateArguments[i]);
+        }
+            }
+            return typeNode;
+        }
+    
+        // finally add the dependency to the current decl with current kind
+        this.AddDependency(
+                           Decl.GetOrCreateTypeDecl(typeNode, decls, ns_decls, false),
+                           this.currentKind
+                           );
+    
+        this.currentSet.Add(typeNode);
+        return typeNode;
+    }
+
+    public override Field VisitField(Field field) {
+
+        if (field == null) return null;
+            
+        //assert decls[field.UniqueKey] == null;
+        Decl declField = Decl.GetOrCreateFieldDecl(field, decls, ns_decls);
+
+        declField.hasFullInfo = true;
+            
+        Decl savedCurrentDeclaration = this.currentDeclaration;
+        this.currentDeclaration = declField;
+
+        // visit for type and attributes
+        base.VisitField(field);
+
+        this.currentDeclaration = savedCurrentDeclaration;
+        return field;
+            }
+            
+    /// <summary>
+    /// Use this hook to transition into code dependency mode
+    /// </summary>
+    public override Block VisitBlock(Block block) {
+        Set<TypeNode> savedSet = this.currentSet;
+        DepKind savedKind = this.currentKind;
+        
+        // set to code kind for nested visit
+        this.currentKind = DepKind.code;
+
+            assert this.currentMethod != null;
+
+        TypeNode declType = this.currentMethod.DeclaringType;
+    
+        if (declType != null) {
+            
+            this.currentSet = this.InCodeSet(declType);
+            
+            base.VisitBlock(block);
+
+            this.SetInCodeSet(declType, this.currentSet);
+        }
+            
+        this.currentKind = savedKind;
+        this.currentSet = savedSet;
+        return block;
+        }
+  
+    public override Method VisitMethod(Method method) {
+  
+        if (method == null) return null;
+
+        Decl savedCurrentDeclaration = this.currentDeclaration;
+
+        Decl declMethod = Decl.GetOrCreateMethodDecl(method, decls, ns_decls);
+        declMethod.hasFullInfo = true;
+        this.currentDeclaration = declMethod;
+
+        assert this.currentMethod == null;
+        this.currentMethod = method;    
+
+        // visit parameters, attributes, return type and body
+        base.VisitMethod(method);
+
+        assert this.currentMethod == method;
+        this.currentMethod = null;
+        
+        this.currentDeclaration = savedCurrentDeclaration;
+
+        return method;
+    }
+
+
+    private void WriteSourceContext(Node! node) {
+        Document d = node.SourceContext.Document;
+        if (d != null) {
+            Console.Write("{0}:{1} ", d.Name,
+                              node.SourceContext.StartLine);
+        }
+    }
+
+    public override Expression VisitMemberBinding(MemberBinding mb) {
+
+        if (mb == null) return mb;
+
+        base.VisitMemberBinding(mb);
+
+        Member bm = mb.BoundMember;
+        if (bm != null) {
+
+                Decl memberDecl = null;
+                
+                if (bm is Field) {
+                    Field field = bm as Field;
+                    assert field != null;
+                    memberDecl = Decl.GetOrCreateFieldDecl(field, decls, ns_decls);
+                }
+                else if (bm is Method) {
+                    Method method = bm as Method;
+                    assert method != null;
+                    memberDecl = Decl.GetOrCreateMethodDecl(method, decls, ns_decls);
+                }
+                assert memberDecl != null;
+                
+            this.AddDependency(memberDecl, this.currentKind);
+        }
+        return mb;
+    }
+
+    Set<TypeNode> InSigSet(TypeNode! tn) {
+        object o = this.inSignatures[tn.UniqueKey];
+        if (o == null) return new Set<TypeNode>();
+        return (Set<TypeNode>)o;
+    }
+
+    Set<TypeNode> InCodeSet(TypeNode! tn) {
+        object o = this.inCode[tn.UniqueKey];
+        if (o == null) return new Set<TypeNode>();
+        return (Set<TypeNode>)o;
+    }
+
+    void SetInCodeSet(TypeNode! tn, Set<TypeNode> data) {
+        this.inCode[tn.UniqueKey] = data;
+    }
+    
+    public void FixNamespaceKeys() {
+
+        assert this.ns_decls.Values != null;
+    
+        foreach (object val in this.ns_decls.Values) {
+        
+            Decl decl = val as Decl;
+            assert decl != null;
+            
+            if (decl.kind == DeclKind.Namespace) {
+                decl.key += Decl.largestKey;
+            }
+        }
+    }
+  
+    public void Dump(TextWriter! wr) {
+
+        assert !Test.outputXml;
+    
+        foreach (TypeNode! tn in this.types) {
+            if (Test.oneLine) {
+                wr.WriteLine();
+                wr.WriteLine("{0}: Type: {0}", tn.FullName);
+
+                TypeNode bt = tn.BaseType;
+                if (bt != null) {
+                    wr.WriteLine("{0}: Base type: {1}",
+                                 tn.FullName,
+                                 bt.FullName);
+                }
+
+                InterfaceList il = tn.Interfaces;
+                if (il != null) {
+                    for (int i = 0; i < il.Count; i++) {
+                        Interface intf = il[i];
+                        if (intf != null) {
+                            Console.WriteLine("{0}: Interface: {1}",
+                                              tn.FullName,
+                                              intf.FullName);
+                        }
+                    }
+                }
+                Set<TypeNode> s = InSigSet(tn);
+                foreach (TypeNode! stn in s) {
+                    wr.WriteLine("{0}: Referenced from signature: {1}",
+                                 tn.FullName,
+                                 stn.FullName);
+                }
+
+                Set<TypeNode> cs = InCodeSet(tn);
+                foreach (TypeNode! stn in cs) {
+                    wr.WriteLine("{0}: Referenced from code: {1}",
+                                 tn.FullName,
+                                 stn.FullName);
+                }
+            }
+            else {
+                wr.WriteLine("\n\nType: {0}", tn.FullName);
+                wr.WriteLine("----------------------");
+      
+                TypeNode bt = tn.BaseType;
+                if (bt != null) {
+                    wr.WriteLine("\n  Base type: {0}", bt.FullName);
+                }
+      
+                InterfaceList il = tn.Interfaces;
+                if (il != null) {
+                    wr.WriteLine("\n  Interfaces");
+                    for (int i = 0; i < il.Count; i++) {
+                        Interface intf = il[i];
+                        if (intf != null) {
+                            Console.WriteLine("    {0}", intf.FullName);
+                        }
+                    }
+                }
+                Set<TypeNode> s = InSigSet(tn);
+                wr.WriteLine("\n  Referenced from signatures");
+                foreach (TypeNode! stn in s) {
+                    wr.WriteLine("    {0}", stn.FullName);
+                }
+
+                Set<TypeNode> cs = InCodeSet(tn);
+                wr.WriteLine("\n  Referenced from code");
+                foreach (TypeNode! stn in cs) {
+                    wr.WriteLine("    {0}", stn.FullName);
+                }
+            }
+        }
+    }
+
+    public XmlDocument DumpAllDependenciesToXml() {
+
+        XmlDocument doc = new XmlDocument();
+        assert doc != null;
+        
+        XmlElement rootElement = doc.CreateElement("MemberDependencies");
+        assert rootElement != null;
+        
+        doc.AppendChild(rootElement);
+
+        assert this.decls.Values != null;
+
+        foreach (object val in this.decls.Values) {
+        
+            Decl decl = val as Decl;
+            assert decl != null;
+
+            Output(doc, rootElement, decl);
+        }
+
+        return doc;
+    }
+    
+    public void Output(XmlDocument! doc, XmlElement! parentElement, Decl !decl) {
+
+        if (decl.alreadyOutput)
+            return;
+
+        decl.alreadyOutput = true;
+
+        if (Test.outputLogicalModulesOnly &&
+            (decl.kind == DeclKind.Assembly || decl.kind == DeclKind.Namespace)) {
+            return;
+        }
+
+        if (Test.outputTypesOnly && !Decl.IsType(decl.kind)) {
+            return;
+        }
+
+        // Then output lexical scope assembly
+        if (decl.lexicalScope != null)
+            Output(doc, parentElement, decl.lexicalScope);
+
+#if false
+        // Then output all the dependencies
+        for (int i = 0; decl.dependencies != null && i < decl.dependencies.Count; ++i) {
+            Dep dep = decl.dependencies[i] as Dep;
+            assert dep != null;
+
+            assert dep.decl != null;
+
+            Output(doc, parentElement, dep.decl);
+        }
+#endif
+        // Creating the element will output the dependencies
+
+        XmlElement elem = decl.CreateXmlElement(doc);
+        parentElement.AppendChild(elem);
+    }
+}

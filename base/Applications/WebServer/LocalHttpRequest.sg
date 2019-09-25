@@ -1,0 +1,101 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//    This file wraps a WebServer's Request object so it is callable through
+//    the Microsoft.Singularity.WebApps.IHttpRequest interface that web
+//    applications understand.
+//    regular object.
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.WebApps;
+using System.Web;
+
+namespace Microsoft.Singularity.WebServer
+{
+    internal sealed class LocalHttpRequest : IHttpRequest
+    {
+        private Request! request;
+
+        internal LocalHttpRequest(Request! request)
+        {
+            this.request = request;
+            base();
+        }
+
+        public string! GetUriPath()
+        { return (!)request.GetUriPath(); }
+
+        public string GetQueryString()
+        { return request.GetQueryString(); }
+
+        public string GetVerb()
+        { return request.GetHttpVerbName(); }
+
+        public string GetHeader(string! headerName)
+        {
+            int knownIndex = HttpWorkerRequest.GetKnownRequestHeaderIndex(headerName);
+
+            if (knownIndex > 0) {
+                return request.GetKnownRequestHeader(knownIndex);
+            }
+            else {
+                return request.GetUnknownRequestHeader(headerName);
+            }
+        }
+
+        public string! GetRemoteAddress()
+        { return request.GetRemoteAddress(); }
+
+        // Caller should not modify this buffer!
+        public byte[] GetBodyData()
+        {
+            // NOTE: We don't currently deal with the
+            // possibility that there is more body data not
+            // yet read in.
+            assert request.IsEntireEntityBodyIsPreloaded();
+            return request.GetPreloadedEntityBody();
+        }
+
+        public void SendStatus(int code, string! description)
+        { request.SendStatus(code, description); }
+
+        public void SendHeader(string! name, string! value)
+        {
+            int index = HttpWorkerRequest.GetKnownResponseHeaderIndex(name);
+
+            if (index == -1) {
+                request.SendUnknownResponseHeader(name, value);
+            }
+            else {
+                request.SendKnownResponseHeader(index, value);
+            }
+        }
+
+        public void SendBodyData(byte[]! data)
+        {
+            request.SendResponseFromMemory(data, data.Length);
+            request.FlushResponse(false); // always transmit immediately
+        }
+
+        public void SendBodyData([Claims] byte[]! in ExHeap data)
+        {
+            request.SendResponseFromMemory(data);
+            request.FlushResponse(false); // always transmit immediately
+        }
+
+        public void Done()
+        {
+            request.FlushResponse(true);
+            request.EndOfRequest();
+        }
+    }
+}

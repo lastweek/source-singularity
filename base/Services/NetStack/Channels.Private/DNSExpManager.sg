@@ -1,0 +1,104 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Provider-side helper for the IP Channel Contract
+//
+
+using System.Threading;
+using System.Net.IP;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using NetStack.Contracts;
+using NetStack.Runtime;
+using System.Collections;
+using System;
+
+namespace NetStack.Channels.Private
+{
+    public class DNSExpManager : StoppableThread
+    {
+        override protected void Run(StopThreadContract.Exp:Ready! terminator)
+        {
+            // Here is the channel we use to communicate with
+            // the NameServer
+            ServiceProviderContract.Imp! nsImp;
+            ServiceProviderContract.Exp! nsExp;
+            ServiceProviderContract.NewChannel(out nsImp, out nsExp);
+
+            // Here is our NameServer connection over which we
+            // receive new client channels. When we become a
+            // process, this will be present automatically,
+            // somehow.
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                epNS.SendRegister(Bitter.FromString2(DNSContract.ModuleName), nsImp);
+
+                switch receive {
+                    case epNS.AckRegister() :
+                        // All is well.
+                        break;
+
+                    case epNS.NakRegister(ServiceProviderContract.Imp:Start rejectedEP, error) :
+                        // All is very much not well; abort.
+                        DebugStub.Print("Failed to register the DNS module.\n");
+                        delete rejectedEP;
+                        delete nsExp;
+                        return;
+                        break;
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            bool run = true;
+            while (run) {
+                switch receive {
+                    case nsExp.Connect(ServiceContract.Exp:Start! newEp) :
+                        {
+                            // We expect people to give us DNSContract.Exp instances
+                            DNSContract.Exp newDnsEp = newEp as DNSContract.Exp;
+
+                            if (newDnsEp == null) {
+                                // Invalid contract type. Fail.
+                                nsExp.SendNackConnect(newEp);
+                            }
+                            else {
+                                // Signal ready and start servicing this contract
+                                nsExp.SendAckConnect();
+                                newDnsEp.SendReady();
+
+                                // Spin up a new servicing thread
+                                DNSExpConnection newConn = new DNSExpConnection(newDnsEp);
+                                newConn.Start();
+                            }
+                        }
+                        break;
+
+                    case nsExp.ChannelClosed():
+                        // Exit this thread
+                        run = false;
+                        break;
+                        
+                    case terminator.Terminate():
+                        terminator.SendAckTerminate();
+                        run = false;
+                        break;
+                        
+                    case terminator.ChannelClosed():
+                        run = false;
+                        break;
+                }
+            }
+            
+            delete nsExp;
+        }
+    }
+}
+

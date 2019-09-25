@@ -1,0 +1,967 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   BlockCache.sg
+//
+//  Todo: Look at giving up blocks when there is system memory pressure.
+//        This needs a channel to the shared heap or another entity to
+//        provide the necessary hints.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.SingSharp;
+
+using System.Threading;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <remarks> States associated with BlockCacheNodes. </remarks>
+    internal enum NodeState : uint {
+        Unused        = 0, // Node is unused.  It has a buffer, but it does
+                           // not correspond to data on the disk.
+                           // Transitions := <Clean|Dirty>
+
+        Clean         = 1, // Node has data and it's clean.
+                           // Transitions := <CleanBorrowed|Unused|Dirty>
+
+        CleanBorrowed = 2, // There is clean data associated with node,
+                           // but it is temporarily in use elsewhere in
+                           // fs code.
+                           // Transitions := <Clean|Dirty>
+
+        Dirty         = 3, // Node has data and it's dirty.  If a user
+                           // requests the node's data we have to return
+                           // a copy as the data is enqueued to be written
+                           // written to disk.
+                           // Transitions := <WritePending|DirtyBorrowed>
+
+        DirtyBorrowed = 4, // There is dirty data associated with node,
+                           // but it is temporarily in use elsewhere in
+                           // fs code.
+                           // Transitions := <Dirty>
+
+        WritePending  = 5, // The disk has the data associated with the
+                           // node.  The disk will return the data when
+                           // the write is complete.  The node state will
+                           // transition to Clean when done.
+                           // Transitions := <Clean>
+
+        ReadPending   = 6, // The node is tagged with sector id, but data
+                           // from disk has yet to be transferred.
+                           // Transitions := <Clean>
+    }
+
+    internal struct BlockCacheNode
+    {
+        NodeState        nodeState;
+        ulong            sectorId;
+        int              lruTicks;
+        VContainer<byte> blockData; // VContainer has mutex for acquire/release
+                                    // but we don't use it and would prefer
+                                    // not to have it.
+        bool             acquired;  // For sanity check
+
+        internal BlockCacheNode(NodeState                  ns,
+                                ulong                      sectorId,
+                                [Claims] byte[]! in ExHeap blockData,
+                                int                        lruTicks)
+        {
+            this.nodeState = ns;
+            this.sectorId  = sectorId;
+            this.blockData = new VContainer<byte> (blockData);
+            this.lruTicks  = lruTicks;
+            this.acquired  = false;
+        }
+
+        private static NodeState[,] Transitions = {
+            // From State                  To State
+            { NodeState.Unused,           NodeState.ReadPending     },
+            { NodeState.Unused,           NodeState.Dirty           },
+            { NodeState.ReadPending,      NodeState.Clean           },
+            { NodeState.ReadPending,      NodeState.CleanBorrowed   },
+            { NodeState.Unused,           NodeState.Dirty           },
+            { NodeState.Clean,            NodeState.CleanBorrowed   },
+            { NodeState.Clean,            NodeState.Dirty           },
+            { NodeState.Clean,            NodeState.ReadPending     },
+            { NodeState.CleanBorrowed,    NodeState.Clean           },
+            { NodeState.CleanBorrowed,    NodeState.Dirty           },
+            { NodeState.Dirty,            NodeState.Dirty           },
+            { NodeState.Dirty,            NodeState.DirtyBorrowed   },
+            { NodeState.Dirty,            NodeState.WritePending    },
+            { NodeState.DirtyBorrowed,    NodeState.Dirty           },
+            { NodeState.WritePending,     NodeState.Clean           }
+        };
+
+        [ Microsoft.Contracts.Pure ]
+        static bool TransitionValid(NodeState oldState, NodeState newState)
+        {
+            for (int i = 0; i < Transitions.Length; i += Transitions.Rank) {
+                if (Transitions[i/2, 0] == oldState &&
+                    Transitions[i/2, 1] == newState) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        internal byte[]! in ExHeap Acquire()
+        {
+            byte []! in ExHeap bytes = blockData.Acquire();
+            assert (State == NodeState.Unused ||
+                    State == NodeState.Clean ||
+                    State == NodeState.Dirty);
+            this.acquired  = true;
+            return bytes;
+        }
+
+        internal void AcquiredTransition(NodeState newNodeState, int lruTicks)
+        {
+            assert TransitionValid(nodeState, newNodeState);
+            this.nodeState = newNodeState;
+            this.lruTicks  = lruTicks;
+        }
+
+        internal void AcquiredSetSectorId(ulong newSectorId)
+        {
+            assert acquired == true;
+            sectorId = newSectorId;
+        }
+
+        internal void Release([Claims] byte[]! in ExHeap bytes,
+                              NodeState                  newNodeState,
+                              int                        lruTicks)
+        {
+            assert TransitionValid(nodeState, newNodeState);
+
+            assert (newNodeState == NodeState.Unused ||
+                    newNodeState == NodeState.Clean ||
+                    newNodeState == NodeState.Dirty);
+
+            this.nodeState = newNodeState;
+            this.lruTicks  = lruTicks;
+            this.acquired  = false;
+            this.blockData.Release(bytes);
+        }
+
+        internal NodeState State
+        {
+            get { return nodeState; }
+        }
+
+        internal ulong SectorId
+        {
+            get { return sectorId; }
+        }
+
+        internal int LruTicks
+        {
+            get { return lruTicks; }
+        }
+
+        internal bool Acquired
+        {
+            get { return acquired; }
+        }
+    }
+
+    internal pointerfree struct BlockCacheConfiguration
+    {
+        ulong startSectorId;        // SectorId of first block in cache range
+        uint  bytesPerSector;
+        uint  sectorsPerBlock;
+        uint  totalBlocks;          // Number of blocks in cache range
+        uint  maxCacheKB;           // Maximum block data cached
+
+        internal BlockCacheConfiguration(ulong startSectorId,
+                                         uint  bytesPerSector,
+                                         uint  sectorsPerBlock,
+                                         uint  totalBlocks,
+                                         uint  maxCacheKB)
+            requires (bytesPerSector != 0 &&
+                      (bytesPerSector & (bytesPerSector - 1)) == 0)
+                /* otherwise ArgumentException */;
+            requires (sectorsPerBlock != 0 &&
+                      (sectorsPerBlock & (sectorsPerBlock - 1)) == 0)
+                /* otherwise ArgumentException */;
+            requires (totalBlocks != 0)
+                /* otherwise ArgumentException */;
+        {
+            this.startSectorId   = startSectorId;
+            this.bytesPerSector  = bytesPerSector;
+            this.sectorsPerBlock = sectorsPerBlock;
+            this.totalBlocks     = totalBlocks;
+            this.maxCacheKB      = maxCacheKB;
+        }
+
+       internal ulong StartSectorId     { get { return startSectorId; } }
+       internal uint  BytesPerSector    { get { return sectorsPerBlock; } }
+       internal uint  SectorsPerBlock   { get { return sectorsPerBlock; } }
+       internal uint  BytesPerBlock
+       {
+           get { return sectorsPerBlock * bytesPerSector; }
+       }
+       internal uint  TotalBlocks       { get { return totalBlocks; } }
+       internal uint  MaxCacheKB        { get { return maxCacheKB; } }
+    }
+
+    /// <summary>
+    /// The BlockCache is an n-way associative cache of a set of blocks on
+    /// a disk.  All of the blocks are assumed to have the same size.
+    /// </summary>
+    internal sealed class BlockCache : IBlockWriterUser
+    {
+        ///////////////////////////////////////////////////////////////////////
+        // Fields
+
+        private BlockCacheConfiguration config;
+
+        private uint                cacheStride;            // bucketCount
+        private uint                cacheAssociativity;     // bucketDepth
+        private BlockCacheNode [][] cache;
+        private int []              cacheTicks;             // lru clock for
+                                                            // each cache line
+        private Disk!               disk;
+        private BlockWriter!        blockWriter;
+
+        ///////////////////////////////////////////////////////////////////////
+        // Methods
+
+        [ Microsoft.Contracts.NotDelayed ]
+        internal BlockCache(BlockCacheConfiguration configuration,
+                            Disk!                       disk,
+                            BlockWriter!                blockWriter)
+
+        {
+            this.config = configuration;
+            this.disk   = disk;
+            this.blockWriter = blockWriter;
+
+            base();
+
+            SizeCache(ref config, out cacheStride, out cacheAssociativity);
+
+            ulong usedKB = ((ulong)cacheStride) * cacheAssociativity * config.BytesPerBlock / 1024;
+
+            DebugStub.Print(
+                "BlockCache suggested size = {0} K, actual size = {1} K ({2} x {3} x {4})\n",
+                            __arglist(
+                                config.MaxCacheKB,
+                                usedKB,
+                                cacheStride,
+                                cacheAssociativity,
+                                config.BytesPerBlock));
+
+            cache      = new BlockCacheNode [cacheStride][];
+            cacheTicks = new int[cacheStride];
+
+            ulong allocated = 0;
+
+            for (uint i = 0; i < cacheStride; i++) {
+                BlockCacheNode [] cacheLine = new BlockCacheNode[cacheAssociativity];
+                cache[i]      = cacheLine;
+                cacheTicks[i] = 0;
+                for (uint j = 0; j < cacheAssociativity; j++) {
+                    cacheLine[j] = new BlockCacheNode(
+                        NodeState.Unused,
+                        0 /* no sector id */,
+                        new [ExHeap] byte [config.BytesPerBlock],
+                        cacheTicks[i]);
+                    allocated += config.BytesPerBlock;
+                }
+            }
+            DebugStub.Print("Cache allocated {0}\n",
+                            __arglist(allocated));
+        }
+
+        internal ulong StartSectorId
+        {
+            get { return config.StartSectorId; }
+        }
+
+        internal uint TotalBlocks
+        {
+            get { return config.TotalBlocks; }
+        }
+
+        internal uint BytesPerBlock
+        {
+            get { return config.BytesPerBlock; }
+        }
+
+        private uint GetCacheLine(uint blockId)
+            requires blockId < TotalBlocks /* otherwise ArgumentException */;
+        {
+            return blockId % cacheStride;
+        }
+
+        private ulong BlockToSectorId(uint blockId)
+            requires blockId < TotalBlocks /* otherwise ArgumentException */;
+        {
+            return config.StartSectorId + blockId * (ulong)config.SectorsPerBlock;
+        }
+
+        private uint SectorToBlockId(ulong sectorId)
+            requires (long)sectorId >= (long)StartSectorId;
+        {
+            return ((uint)(sectorId - config.StartSectorId) / config.SectorsPerBlock);
+        }
+
+        enum CandidateResult : uint
+        {
+            FoundExact       = 1,           // Found exact block
+            FoundVictim      = 2,           // Found candidate for replacement
+            NodeBlocked      = 0x80000001,  // Found block but in use
+            CacheLineBlocked = 0x80000002   // No blocks found or available
+        }
+
+        /// <remarks> Search for identified node or a victim for
+        /// replacement if not present.
+        ///
+        /// <para>Looks for cache node matching sector id or
+        /// most suitable node to use for sector id.  If it is
+        /// not in the cache, a suitable candidate for
+        /// replacement may be returned.</para>
+        ///
+        /// <para>If the node is in the cache, but in use, then
+        /// NodeBlocked is returned.</para>
+        ///
+        /// <para>If the node is not present and there are no
+        /// available nodes in cache line for replacement, then
+        /// CacheLineBlocked is returned.</para>
+        /// </remarks>
+        private static CandidateResult
+        GetCandidateNode(BlockCacheNode[]! cacheLine,
+                         int               clockTicks,
+                         ulong             sectorId,
+                         out int           nodeIndex)
+        {
+            // requires Monitor.Entered(cacheLine) == true
+            int freeIndex   = -1;
+            int lruIndex    = -1;
+            uint lastLruAge = 0;
+
+            for (int i = 0; i < cacheLine.Length; i++) {
+                if (cacheLine[i].State == NodeState.Unused) {
+                    freeIndex = i;
+                }
+                else if (cacheLine[i].SectorId == sectorId) {
+                    if (cacheLine[i].State == NodeState.Clean ||
+                        cacheLine[i].State == NodeState.Dirty) {
+                        nodeIndex = i;
+#if RECORD_BLOCK_CACHE_STATISTICS
+                        DebugStub.AddToPerfCounter(0, 1);   // Block found
+#endif
+                        return CandidateResult.FoundExact;
+                    }
+                    else {
+                        nodeIndex = i;
+                        // Node exists in cache but is in use
+#if RECORD_BLOCK_CACHE_STATISTICS
+                        DebugStub.AddToPerfCounter(1, 1);   // Block in use, block.
+#endif
+                        return CandidateResult.NodeBlocked;
+                    }
+                }
+                else if (cacheLine[i].State == NodeState.Clean) {
+                    // Candidate for eviction from cache.  Compute age
+                    // and note if eldest clean node to date.
+                    if (lruIndex < -0) {
+                        lruIndex = i;
+                        lastLruAge = (uint) unchecked(clockTicks - cacheLine[i].LruTicks);
+                    }
+                    else {
+                        uint lruAge = (uint) unchecked(clockTicks - cacheLine[i].LruTicks);
+                        if (lruAge > lastLruAge) {
+                            lruIndex   = i;
+                            lastLruAge = lruAge;
+                        }
+                    }
+                }
+            }
+
+            if (freeIndex >= 0) {
+                nodeIndex = freeIndex;
+#if RECORD_BLOCK_CACHE_STATISTICS
+                DebugStub.AddToPerfCounter(2, 1);   // Will fetch.
+#endif
+                return CandidateResult.FoundVictim;
+            }
+            else if (lruIndex >= 0) {
+                nodeIndex = lruIndex;
+#if RECORD_BLOCK_CACHE_STATISTICS
+                DebugStub.AddToPerfCounter(3, 1);   // Will fetch.
+#endif
+                return CandidateResult.FoundVictim;
+            }
+            nodeIndex = -1;
+#if RECORD_BLOCK_CACHE_STATISTICS
+            DebugStub.AddToPerfCounter(3, 1);       // Wait to evict cache.
+#endif
+            return CandidateResult.CacheLineBlocked;
+        }
+
+        /// <remarks>
+        /// Claims an unused or clean block in the cache and tags it
+        /// with the requested block id.  It is assumed the caller wants
+        /// to write block as new without reading it first. The block
+        /// is optionally initialized with zeros and always marked as dirty.
+        /// The caller must pair this method with EndQuickBlockOperation.
+        /// Typical usage would be creating a new directory or first block
+        /// for a file.
+        /// </remarks>
+        internal byte[]! in ExHeap
+        CreateBlockAndBeginQuickOperation(uint blockId, bool zeroBuffer)
+        {
+            uint line = GetCacheLine(blockId);
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+            ulong sectorId = BlockToSectorId(blockId);
+
+            bool enqueue = false;
+
+            // Take cache line lock
+            Monitor.Enter(cacheLine);
+
+          retry:
+            int nodeIndex;
+            CandidateResult cr =
+                GetCandidateNode(cacheLine, cacheTicks[line], sectorId,
+                                 out nodeIndex);
+            if (cr == CandidateResult.NodeBlocked) {
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+            else if (cr == CandidateResult.CacheLineBlocked) {
+                // Wake up thread that flushes blocks to disk and wait
+                // for notification that block state has changed.
+                blockWriter.WakeUp();
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+
+            byte []! in ExHeap bytes = cacheLine[nodeIndex].Acquire();
+
+            if (cr == CandidateResult.FoundExact) {
+                // Block exists in cache
+                assert cacheLine[nodeIndex].SectorId == sectorId;
+
+                assert (cacheLine[nodeIndex].State == NodeState.Clean ||
+                        cacheLine[nodeIndex].State == NodeState.Dirty);
+
+                if (cacheLine[nodeIndex].State == NodeState.Clean) {
+                    cacheLine[nodeIndex].AcquiredTransition(
+                        NodeState.Dirty, cacheTicks[line]++);
+                    enqueue = true;
+                }
+
+                if (zeroBuffer) {
+                    Bitter.Zero(bytes, 0, bytes.Length);
+                }
+
+                cacheLine[nodeIndex].AcquiredTransition(
+                    NodeState.DirtyBorrowed, cacheTicks[line]++);
+
+                Monitor.Exit(cacheLine);
+            }
+            else {
+                // Block was not in cache, relabel block and mark as dirty.
+
+                assert cr == CandidateResult.FoundVictim;
+
+                assert (cacheLine[nodeIndex].State == NodeState.Clean ||
+                        cacheLine[nodeIndex].State == NodeState.Unused);
+
+                cacheLine[nodeIndex].AcquiredSetSectorId(sectorId);
+
+                cacheLine[nodeIndex].AcquiredTransition(
+                    NodeState.Dirty, cacheTicks[line]++);
+
+                if (zeroBuffer) {
+                    Bitter.Zero(bytes, 0, bytes.Length);
+                }
+
+                cacheLine[nodeIndex].AcquiredTransition(
+                    NodeState.DirtyBorrowed, cacheTicks[line]++);
+
+                enqueue = true;
+
+                Monitor.Exit(cacheLine);
+            }
+
+            if (enqueue) {
+                blockWriter.Enqueue(this, sectorId, nodeIndex);
+            }
+            return bytes;
+        }
+
+        /// <remarks>
+        /// Fetches and locks a data block in the cache.  Only
+        /// used by non-blocking internal FS operations.  This
+        /// method may block if a fetch from from the disk is
+        /// required to get the data or the data block is
+        /// already locked.
+        /// </remarks>
+        internal byte[]! in ExHeap
+        BeginQuickBlockOperation(uint blockId)
+        {
+            uint line = GetCacheLine(blockId);
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+            ulong sectorId = BlockToSectorId(blockId);
+
+            // Take cache line lock
+            Monitor.Enter(cacheLine);
+
+          retry:
+            int nodeIndex;
+            CandidateResult cr =
+                GetCandidateNode(cacheLine, cacheTicks[line], sectorId,
+                                 out nodeIndex);
+            if (cr == CandidateResult.NodeBlocked) {
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+            else if (cr == CandidateResult.CacheLineBlocked) {
+                // Wake up thread that flushes blocks to disk and wait
+                // for notification that block state has changed.
+                blockWriter.WakeUp();
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+
+            // Get buffer
+            byte []! in ExHeap bytes = cacheLine[nodeIndex].Acquire();
+
+            if (cr == CandidateResult.FoundExact) {
+                // Block exists in cache
+                assert cacheLine[nodeIndex].SectorId == sectorId;
+
+                assert (cacheLine[nodeIndex].State == NodeState.Clean ||
+                        cacheLine[nodeIndex].State == NodeState.Dirty);
+
+                if (cacheLine[nodeIndex].State == NodeState.Clean) {
+                    cacheLine[nodeIndex].AcquiredTransition(
+                        NodeState.CleanBorrowed, cacheTicks[line]++);
+                }
+                else if (cacheLine[nodeIndex].State == NodeState.Dirty) {
+                    cacheLine[nodeIndex].AcquiredTransition(
+                        NodeState.DirtyBorrowed, cacheTicks[line]++);
+                }
+
+                // Drop cache line lock
+                Monitor.Exit(cacheLine);
+
+                return bytes;
+            }
+            else {
+                assert cr == CandidateResult.FoundVictim;
+
+                assert (cacheLine[nodeIndex].State == NodeState.Clean ||
+                        cacheLine[nodeIndex].State == NodeState.Unused);
+
+                // Block needs to be fetched from disk.
+                // Change sector id on node about to be replaced
+                cacheLine[nodeIndex].AcquiredSetSectorId(sectorId);
+
+                // Mark State
+                cacheLine[nodeIndex].AcquiredTransition(
+                    NodeState.ReadPending, cacheTicks[line]++);
+
+                // Drop lock for duration of read
+                Monitor.Exit(cacheLine);
+
+                byte[] in ExHeap inData = disk.Read(sectorId, bytes);
+                assert inData != null;
+
+                Monitor.Enter(cacheLine);
+                cacheLine[nodeIndex].AcquiredTransition(
+                    NodeState.CleanBorrowed, cacheTicks[line]++);
+                Monitor.Exit(cacheLine);
+
+                return inData;
+            }
+        }
+
+        /// <remarks>
+        /// Returns block to cache and unlocks it.  Must be paired with
+        /// BeginQuickBlockOperation.
+        /// </remarks>
+        internal void
+        EndQuickBlockOperation(uint                       blockId,
+                               [Claims] byte[]! in ExHeap blockData,
+                               bool                       dirtiedBuffer)
+        {
+            uint line = GetCacheLine(blockId);
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+
+            // Lock cache line
+            Monitor.Enter(cacheLine);
+
+            // Get node
+            int nodeIndex;
+            CandidateResult cr = GetCandidateNode(cacheLine,
+                                                  cacheTicks[line],
+                                                  BlockToSectorId(blockId),
+                                                  out nodeIndex);
+
+            // BeginQuickBlockOperation should have blocked node
+            assert cr == CandidateResult.NodeBlocked;
+
+            assert nodeIndex >= 0;
+            assert cacheLine[nodeIndex].Acquired == true;
+            assert (cacheLine[nodeIndex].State == NodeState.CleanBorrowed ||
+                    cacheLine[nodeIndex].State == NodeState.DirtyBorrowed);
+
+            bool enqueueBlock = false;
+            NodeState newState;
+
+            // Return data to cache node and update state
+            if (cacheLine[nodeIndex].State == NodeState.CleanBorrowed) {
+                if (dirtiedBuffer) {
+                    enqueueBlock = true;
+                    newState = NodeState.Dirty;
+                }
+                else {
+                    newState = NodeState.Clean;
+                }
+            }
+            else {
+                assert cacheLine[nodeIndex].State == NodeState.DirtyBorrowed;
+                newState = NodeState.Dirty;
+            }
+
+            cacheLine[nodeIndex].Release(blockData, newState,
+                                         cacheTicks[line]++);
+
+            // Enqueue request *after* returning node to cache.
+            // This is a must to maintain the correct state associated with
+            // the node because writer may work synchronously or
+            // asynchronously and the enqueue operation may trigger a write
+            // which will update the state of the block both when it
+            // starts and completes.
+            if (enqueueBlock) {
+                Monitor.Exit(cacheLine);
+                // NB cookie is index
+                // in cache line of node.
+                blockWriter.Enqueue(this,
+                                    cacheLine[nodeIndex].SectorId,
+                                    nodeIndex);
+            }
+            else {
+                // Wakeup anyone waiting for this block or this cache-line
+                // NB Threads may be sleeping because node has data transiently
+                // unavailable (CleanBorrowed,DirtyBorrowed,ReadPending, or
+                // WritePending), or because it's waiting for a victim to replace
+                // and this node might now be eligible.
+                Monitor.Pulse(cacheLine);
+                Monitor.Exit(cacheLine);
+            }
+        }
+
+        internal void Read(uint              blockId,
+                           int               blockOffset,
+                           byte[]! in ExHeap dstBuffer,
+                           int               dstOffset,
+                           int               readBytes)
+            requires blockId < TotalBlocks;
+            requires blockOffset >= 0;
+            requires dstOffset >= 0;
+            requires readBytes >= 0;
+            requires blockOffset + readBytes <= this.BytesPerBlock;
+            requires dstOffset + readBytes <= dstBuffer.Length;
+        {
+            byte[]! in ExHeap blockData = BeginQuickBlockOperation(blockId);
+
+            Bitter.Copy(dstBuffer, dstOffset, readBytes,
+                        blockData, blockOffset);
+
+            EndQuickBlockOperation(blockId, blockData, false);
+        }
+
+        internal void WriteEntireBlock(uint              blockId,
+                                       byte[]! in ExHeap srcBuffer,
+                                       int               srcOffset)
+            requires blockId < TotalBlocks;
+            requires srcOffset >= 0;
+            requires srcOffset + BytesPerBlock <= srcBuffer.Length;
+        {
+            uint line = GetCacheLine(blockId);
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+            ulong sectorId = BlockToSectorId(blockId);
+
+            // Take cache line lock
+            Monitor.Enter(cacheLine);
+
+          retry:
+            int nodeIndex;
+
+            CandidateResult cr = GetCandidateNode(cacheLine,
+                                                  cacheTicks[line],
+                                                  sectorId,
+                                                  out nodeIndex);
+            if (cr == CandidateResult.NodeBlocked) {
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+            else if (cr == CandidateResult.CacheLineBlocked) {
+                // Wake up thread that flushes blocks to disk and wait
+                // for notification that block state has changed.
+                blockWriter.WakeUp();
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+            assert (cr == CandidateResult.FoundExact ||
+                    cr == CandidateResult.FoundVictim);
+            assert ((cacheLine[nodeIndex].SectorId == sectorId &&
+                     // Node has correct sector id, so is dirty/clean/unused
+                     (cacheLine[nodeIndex].State == NodeState.Dirty ||
+                      cacheLine[nodeIndex].State == NodeState.Clean ||
+                      cacheLine[nodeIndex].State == NodeState.Unused)) ||
+                    // Node is about to be reassigned, so is clean/unused
+                    (cacheLine[nodeIndex].State == NodeState.Clean ||
+                     cacheLine[nodeIndex].State == NodeState.Unused));
+
+            byte []! in ExHeap blockData = cacheLine[nodeIndex].Acquire();
+
+            NodeState oldState = cacheLine[nodeIndex].State;
+
+            cacheLine[nodeIndex].AcquiredSetSectorId(sectorId);
+            Bitter.Copy(blockData, 0, (int)BytesPerBlock,
+                        srcBuffer, (int)srcOffset);
+            cacheLine[nodeIndex].Release(blockData, NodeState.Dirty,
+                                         cacheTicks[line]++);
+
+            if (cacheLine[nodeIndex].State != oldState) {
+                // NB cookie is index
+                // in cache line of node.
+                blockWriter.Enqueue(this,
+                                    cacheLine[nodeIndex].SectorId,
+                                    nodeIndex);
+            }
+
+            // Drop cache line lock
+            Monitor.Exit(cacheLine);
+            return;
+        }
+
+        /// <remarks> Creates a zero-filled block in the cache. </remarks>
+        internal void ZeroBlock(uint blockId)
+        {
+            uint line = GetCacheLine(blockId);
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+            ulong sectorId = BlockToSectorId(blockId);
+
+            // Take cache line lock
+            Monitor.Enter(cacheLine);
+
+          retry:
+            int nodeIndex;
+            CandidateResult cr = GetCandidateNode(cacheLine,
+                                                  cacheTicks[line],
+                                                  sectorId,
+                                                  out nodeIndex);
+            if (cr == CandidateResult.NodeBlocked) {
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+            else if (cr == CandidateResult.CacheLineBlocked) {
+                // Wake up thread that flushes blocks to disk and wait
+                // for notification that block state has changed.
+                blockWriter.WakeUp();
+                Monitor.Wait(cacheLine);
+                goto retry;
+            }
+            assert (cr == CandidateResult.FoundExact ||
+                    cr == CandidateResult.FoundVictim);
+            assert ((cacheLine[nodeIndex].SectorId == sectorId &&
+                     // Node has correct sector id, so is dirty/clean/unused
+                     (cacheLine[nodeIndex].State == NodeState.Dirty ||
+                      cacheLine[nodeIndex].State == NodeState.Clean ||
+                      cacheLine[nodeIndex].State == NodeState.Unused)) ||
+                    // Node is about to be reassigned, so is clean/unused
+                    (cacheLine[nodeIndex].State == NodeState.Clean ||
+                     cacheLine[nodeIndex].State == NodeState.Unused));
+
+            byte []! in ExHeap blockData = cacheLine[nodeIndex].Acquire();
+
+            NodeState oldState = cacheLine[nodeIndex].State;
+
+            cacheLine[nodeIndex].AcquiredSetSectorId(sectorId);
+            Bitter.Zero(blockData, 0, (int)BytesPerBlock);
+            cacheLine[nodeIndex].Release(blockData, NodeState.Dirty,
+                                         cacheTicks[line]++);
+
+            if (cacheLine[nodeIndex].State != oldState) {
+                // NB cookie is index
+                // in cache line of node.
+                blockWriter.Enqueue(this,
+                                    cacheLine[nodeIndex].SectorId,
+                                    nodeIndex);
+            }
+
+            // Drop cache line lock
+            Monitor.Exit(cacheLine);
+            return;
+        }
+
+        internal void Write(uint              blockId,
+                            int               blockOffset,
+                            byte[]! in ExHeap srcBuffer,
+                            int               srcOffset,
+                            int               writeBytes)
+            requires blockId < TotalBlocks;
+            requires blockOffset >= 0;
+            requires srcOffset >= 0;
+            requires writeBytes >= 0;
+            requires blockOffset + writeBytes <= this.BytesPerBlock;
+            requires srcOffset + writeBytes <= srcBuffer.Length;
+        {
+            if (writeBytes < BytesPerBlock) {
+                byte[]! in ExHeap blockData = BeginQuickBlockOperation(blockId);
+
+                Bitter.Copy(blockData, blockOffset, writeBytes,
+                            srcBuffer, srcOffset);
+
+                EndQuickBlockOperation(blockId, blockData, true);
+            }
+            else {
+                WriteEntireBlock(blockId, srcBuffer, srcOffset);
+            }
+        }
+
+        byte[]! in ExHeap
+        IBlockWriterUser.GetDataForWrite(ulong sectorId, int cookie)
+        {
+            uint line = GetCacheLine(SectorToBlockId(sectorId));
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+
+            Monitor.Enter(cacheLine);
+
+            // Cookie is index in cache line of node.
+            int nodeIndex = cookie;
+
+            // Node should not have moved
+            // and should be dirty.
+            assert nodeIndex >= 0 && nodeIndex <= cacheLine.Length;
+            assert cacheLine[nodeIndex].SectorId == sectorId;
+            assert (cacheLine[nodeIndex].State == NodeState.Dirty ||
+                    cacheLine[nodeIndex].State == NodeState.DirtyBorrowed);
+
+            while (cacheLine[nodeIndex].State == NodeState.DirtyBorrowed) {
+                Monitor.Wait(cacheLine);
+            }
+
+            byte[]! in ExHeap blockData = cacheLine[nodeIndex].Acquire();
+            cacheLine[nodeIndex].AcquiredTransition(NodeState.WritePending,
+                                                    cacheTicks[line]++);
+            Monitor.Exit(cacheLine);
+
+            return blockData;
+        }
+
+        void
+        IBlockWriterUser.WriteComplete(ulong                      sectorId,
+                                       [Claims] byte[]! in ExHeap blockData,
+                                       int                        cookie)
+        {
+            uint line = GetCacheLine(SectorToBlockId(sectorId));
+            BlockCacheNode[]! cacheLine = (!) cache[line];
+
+            Monitor.Enter(cacheLine);
+
+            // Cookie is index in cache line of node.
+            int nodeIndex = cookie;
+
+            // Node should not have moved
+            // and should be pending write completion.
+            assert nodeIndex >= 0 && nodeIndex <= cacheLine.Length;
+            assert cacheLine[nodeIndex].SectorId == sectorId;
+            assert cacheLine[nodeIndex].State == NodeState.WritePending;
+
+            cacheLine[nodeIndex].Release(blockData,
+                                         NodeState.Clean,
+                                         cacheTicks[line]++);
+            // Notify any waiters of clean node presence
+            Monitor.Pulse(cacheLine);
+
+            Monitor.Exit(cacheLine);
+        }
+
+        internal void ValidateAllClean()
+        {
+            assert this.cache != null;
+            bool failed = false;
+            for (int line = 0; line < this.cache.Length; line++) {
+                BlockCacheNode []! bcns = (!)cache[line];
+                for (int i = 0; i < bcns.Length; i++) {
+                    if (bcns[i].State == NodeState.Unused &&
+                        bcns[i].State == NodeState.Clean) {
+                        DebugStub.Print("Failed on node[{0}][{1}] (sectorId {2}) -> {3}\n",
+                                        __arglist(line, i,
+                                                  bcns[i].SectorId,
+                                                  bcns[i].State));
+                        failed = true;
+                    }
+                }
+            }
+            assert !failed;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+        // Static helper methods
+
+        private static int Log2(uint value)
+        {
+            int l = 0;
+            if ((value & 0xffff0000u) != 0) {
+                l += 16;
+                value >>= 16;
+            }
+            if ((value & 0xff00ff00u) != 0) {
+                l += 8;
+                value >>= 8;
+            }
+            if ((value & 0xf0f0f0f0) != 0) {
+                l += 4;
+                value >>= 4;
+            }
+            if ((value & 0xcccccccc) != 0) {
+                l += 2;
+                value >>= 2;
+            }
+            if ((value & 0xaaaaaaaa) != 0) {
+                l += 1;
+                value >>= 1;
+            }
+            return l;
+        }
+
+        /// <remarks>
+        /// Computes cache dimensions from cache configuration.
+        /// Output values are both powers of 2.
+        /// </remarks>
+        private static void SizeCache(ref BlockCacheConfiguration config,
+                                      out uint stride,
+                                      out uint associativity)
+        {
+            uint maxBlocks = config.MaxCacheKB * 1024 / config.BytesPerBlock;
+            if (maxBlocks > config.TotalBlocks) {
+                maxBlocks = config.TotalBlocks;
+            }
+
+            if (maxBlocks == 0) {
+                stride        = 1;
+                associativity = 1;
+            }
+            else {
+                stride = 0;
+                associativity = 64;
+                while (stride == 0) {
+                    associativity /= 2;
+                    stride = maxBlocks / associativity;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,745 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   MapDemo.sg
+//
+//  Note:   A demo web application that uses the MapPointProxy service to render
+//          maps
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.WebApps;
+using Microsoft.Singularity.WebApps.Contracts;
+using Microsoft.Singularity.MapPointProxy.Contracts;
+using Microsoft.Singularity.SeattleTrafficProxy.Contracts;
+using System;
+using System.Collections;
+using System.Text;
+using System.Web;
+
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+[assembly: Transform(typeof(WebAppResourceTransform))]
+
+namespace Microsoft.Singularity.WebApps
+{
+    [Category("WebApp")]
+    internal sealed class Parameters
+    {
+        [Endpoint]
+        public readonly TRef<WebAppContract.Exp:Start> webAppRef;
+
+        reflective private Parameters();
+    }
+    
+
+    public class MapDemoWebApp : IWebApp
+    {
+        private TRef<MapPointProxyContract.Imp:ReadyState>! m_MapConn;
+
+        public MapDemoWebApp()
+        {
+            MapPointProxyContract.Imp! impMapConn;
+            MapPointProxyContract.Exp! expMapConn;
+            MapPointProxyContract.NewChannel(out impMapConn, out expMapConn);
+
+            DirectoryServiceContract.Imp epNS = DirectoryService.NewClientEndpoint();
+
+            try {
+                // Look up the MapPoint Proxy module
+                epNS.SendBind(Bitter.FromString2(MapPointProxyContract.ModuleName), expMapConn);
+
+                switch receive {
+                    case epNS.NakBind(ServiceContract.Exp:Start rejectedEP, error) :
+                        delete impMapConn;
+                        delete rejectedEP;
+                        throw new Exception("Couldn't connect to the MapPoint proxy module");
+                        break;
+
+                    case epNS.AckBind() :
+                        impMapConn.RecvMapPointReady();
+                        m_MapConn = new TRef<MapPointProxyContract.Imp:ReadyState>(impMapConn);
+                        // success
+                        break;
+
+                    case epNS.ChannelClosed() :
+                        throw new Exception("epNS channel closed");
+                }
+            }
+            finally {
+                delete epNS;
+            }
+
+            base();
+        }
+
+        public void ProcessRequest(IHttpRequest! request)
+        {
+            MapPointProxyContract.Imp impMapConn = m_MapConn.Acquire();
+
+            try {
+                string queryString = request.GetQueryString();
+                byte mask = 0xff;
+
+                if (queryString != null) {
+                    const string maskPreamble = "mask=";
+                    int maskOffset = queryString.IndexOf(maskPreamble);
+
+                    if (maskOffset != -1) {
+                        int semiOffset = queryString.IndexOf(';', maskOffset + maskPreamble.Length);
+
+                        try {
+                            if (semiOffset != -1) {
+                                mask = Byte.Parse(queryString.Substring(maskOffset + maskPreamble.Length,
+                                                                        semiOffset - maskOffset - maskPreamble.Length));
+                            }
+                            else {
+                                mask = Byte.Parse(queryString.Substring(maskOffset + maskPreamble.Length));
+                            }
+                        }
+                        catch (Exception) {
+                            // Ignore parse errors and keep a mask of 0xff
+                        }
+                    }
+                }
+
+                // Mark everything we serve as permanent
+                request.SendHeader("Expires", (!)DateTime.Now.AddYears(1).ToUniversalTime().ToString("R"));
+                request.SendHeader("Cache-Control", "max-age=" + (60 * 60 * 24 * 365).ToString()); // 1 year
+
+                if (request.GetUriPath().EndsWith("redmond.gif")) {
+                    MapPointProxyContract.PushPin[]! in ExHeap pushPins =
+                        BuildPushPins(RedmondPushPins, mask);
+
+                    // Hard-coded map center and zoom factor
+                    char[]! in ExHeap centerLat = Bitter.FromString2("47.664037990827104");
+                    char[]! in ExHeap centerLong = Bitter.FromString2("-122.12025798221626");
+
+                    ServeMap(request, impMapConn, centerLat, centerLong, 10, pushPins);
+                }
+                else if (request.GetUriPath().EndsWith("seattle.gif")) {
+                    MapPointProxyContract.PushPin[]! in ExHeap pushPins =
+                        BuildPushPins(SeattlePushPins, mask);
+
+                    // Hard-coded map center and zoom factor
+                    char[]! in ExHeap centerLat = Bitter.FromString2("47.616391194232195");
+                    char[]! in ExHeap centerLong = Bitter.FromString2("-122.32471226177632");
+
+                    ServeMap(request, impMapConn, centerLat, centerLong, 7, pushPins);
+                }
+                else if (request.GetUriPath().EndsWith("blue.bmp")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "image/x-ms-bmp");
+                    request.SendBodyData(BlueIcon.ImageData);
+                }
+                else if (request.GetUriPath().EndsWith("red.bmp")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "image/x-ms-bmp");
+                    request.SendBodyData(RedIcon.ImageData);
+                }
+                else if (request.GetUriPath().EndsWith("green.bmp")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "image/x-ms-bmp");
+                    request.SendBodyData(GreenIcon.ImageData);
+                }
+                else if (request.GetUriPath().EndsWith("tower.bmp")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "image/x-ms-bmp");
+                    request.SendBodyData(TowerIcon.ImageData);
+                }
+                else if (request.GetUriPath().EndsWith("seattle_all.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(SeattleAllMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("seattle_sbc.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(SeattleSBCMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("seattle_star.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(SeattleStarMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("seattle_tullys.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(SeattleTullysMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("redmond_all.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(RedmondAllMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("redmond_star.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(RedmondStarMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("redmond_sbc.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(RedmondSBCMapPage.HTMLData);
+                }
+                else if (request.GetUriPath().EndsWith("redmond_tullys.htm")) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(RedmondTullysMapPage.HTMLData);
+                }
+                // Pages added for the Virtual Earth demo
+                else if (request.GetUriPath().IndexOf("ve1.aspx") != -1) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    //byte [] htmlBytes = ProcessAspx(VePage1.HTMLData, request);
+                    //request.SendBodyData(htmlBytes);
+                    request.SendBodyData(VePage1.HTMLData);
+                }
+                else if (request.GetUriPath().IndexOf("ve2.aspx") != -1) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    byte [] htmlBytes = ProcessAspx(VePage2.HTMLData, request);
+                    request.SendBodyData(htmlBytes);
+                }
+                else if (request.GetUriPath().IndexOf("ve3.aspx") != -1) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    byte [] htmlBytes = ProcessAspx(VePage3.HTMLData, request);
+                    request.SendBodyData(htmlBytes);
+                }
+                else if (request.GetUriPath().IndexOf("ve.aspx") != -1) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    byte [] htmlBytes = ProcessAspx(VePage.HTMLData, request);
+                    request.SendBodyData(htmlBytes);
+                }
+                else if (request.GetUriPath().IndexOf("LocalSearch.js") != -1) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/javascript");
+                    byte [] htmlBytes = IssueLocalSearch(ExtractQueryParamValue("loc", request.GetQueryString()), ExtractQueryParamValue("search", request.GetQueryString()));
+                    request.SendBodyData(htmlBytes);
+                }
+                else if (request.GetUriPath().IndexOf("Traffic.js") != -1) {
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/javascript");
+                    byte [] htmlBytes = IssueTrafficQuery();
+                    request.SendBodyData(htmlBytes);
+                }
+                else if (request.GetUriPath().EndsWith("MapControl.js")) {
+                    DebugStub.Break();
+                }
+                else {
+                    // serve main page for lack of any better ideas
+                    request.SendStatus(200, "OK");
+                    request.SendHeader("Content-type", "text/html");
+                    request.SendBodyData(MainMapPage.HTMLData);
+                }
+            }
+            finally {
+                m_MapConn.Release(impMapConn);
+            }
+
+            request.Done();
+        }
+
+        //
+        // HACK: Search and replace specific ASPX strings. (And slowly!)
+        // This isn't even the beginnings of real ASPX support.
+        //
+        private byte []! ProcessAspx(byte []! aspxBytes, IHttpRequest! request)
+        {
+            string s = Encoding.UTF8.GetString(aspxBytes);
+            s = s.Replace("<%=Request.QueryString(\"loc\")%>", ExtractQueryParamValue("loc", request.GetQueryString()));
+            s = s.Replace("<%=Request.QueryString(\"search\")%>", ExtractQueryParamValue("search", request.GetQueryString()));
+            byte [] htmlBytes = Encoding.UTF8.GetBytes(s);
+            return htmlBytes;
+        }
+
+        //
+        // HACK: Simple extraction of query param value.  Doesn't handle encoding.
+        // This should be replaced when there are better helper functions or regular expressions.
+        //
+        private string ExtractQueryParamValue(string! paramName, string queryString)
+        {
+            if (queryString == null) {
+                return "";
+            }
+
+            int start = queryString.IndexOf(paramName + "=");
+            if (start == -1) {
+                return "";
+            }
+            start += paramName.Length + 1;
+            int end = queryString.IndexOf("&", start);
+            if (end == -1) {
+                return queryString.Substring(start);
+            }
+            else {
+                return queryString.Substring(start, end - start);
+            }
+        }
+
+        //
+        // HACK: This should be a call to MSN Local Search followed by parsing of the XML results.
+        // Instead we'll use the pre-cached search results until we have a richer XML parser.
+        //
+        private byte []! IssueLocalSearch(string loc, string search)
+        {
+            PushPinData [] pushPins = SeattlePushPins;
+            if (loc == "redmond") {
+                pushPins = RedmondPushPins;
+            }
+
+            byte searchMask = 3;
+            if (search == "starbucks") {
+                searchMask = 1;
+            }
+            else if (search == "tullys") {
+                searchMask = 2;
+            }
+
+            // Build the javascript result
+            string s = "function AddSearchResultsPushpins(map){\r\n";
+            for (int i = 0; i < pushPins.Length; i++) {
+                if ((pushPins[i].groupMask & searchMask) != 0) {
+                    string sBmp = "green.bmp";
+                    if ((pushPins[i].groupMask & 0x2) != 0) {
+                        sBmp = "red.bmp";
+                    }
+                    string tmp = String.Format("map.AddPushpin('ls{0}', {1}, {2}, 0, 0, 'pinIcon', '<img src=\"{3}\">', {4});\r\n",
+                        i, pushPins[i].latitude, pushPins[i].longitude, sBmp,
+                                               i + 1);
+                    s += tmp;
+                }
+            }
+            s += "}";
+            byte [] htmlBytes = Encoding.UTF8.GetBytes(s);
+            return htmlBytes;
+        }
+
+        //
+        // IssueTrafficQuery - Calls out to the SeattleTrafficProxy service to find
+        // current traffic data.  Maps the data into jscript for the virtual earth
+        // client to use.
+        //
+        private byte []! IssueTrafficQuery()
+        {
+            // Bind to the traffic service over a channel
+            SeattleTrafficProxyContract.Imp imp = BindToTrafficChannel();
+            if (imp == null) {
+                // Return empty jscript on error
+                string s = "function AddTrafficResultsPushpins(map){}";
+                return Encoding.UTF8.GetBytes(s);
+            }
+
+            // Fetch the traffic data
+            TrafficInfo []! in ExHeap trafficInfo;
+            imp.SendGetTraffic();
+            imp.RecvTraffic(out trafficInfo);
+
+            // Close the channel
+            delete imp;
+
+            // Build the jscript from the traffic data
+            string js = "function AddTrafficResultsPushpins(map){\r\n";
+            for (int i = 0; i < trafficInfo.Length; i++) {
+                if (trafficInfo[i].minUntilFree < 2)
+                    continue;
+                string textStyle = "pinGreen";
+                if (trafficInfo[i].minUntilFree > 10) {
+                    textStyle = "pinRed";
+                }
+                string jsLine = String.Format("map.AddPushpin('t{0}', {1}, {2}, 0, 0, '{3}', '{4} Min', {5});\r\n",
+                    i, trafficInfo[i].latitude, trafficInfo[i].longitude, textStyle, trafficInfo[i].minUntilFree, i + 1);
+                js += jsLine;
+            }
+            js += "}";
+
+            // REVIEW: manually release the traffic data in the exchange heap
+            delete trafficInfo;
+            return Encoding.UTF8.GetBytes(js);
+        }
+
+        //
+        // BindToTrafficChannel - Helper function to establish the channel.
+        //
+        private SeattleTrafficProxyContract.Imp:ReadyState BindToTrafficChannel()
+        {
+            SeattleTrafficProxyContract.Exp! exp;
+            SeattleTrafficProxyContract.Imp! imp;
+            SeattleTrafficProxyContract.NewChannel(out imp, out exp);
+
+            // Get the namespace endpoint
+            DirectoryServiceContract.Imp ns = DirectoryService.NewClientEndpoint();
+            try {
+                ns.SendBind(Bitter.FromString2(SeattleTrafficProxyContract.ModuleName), exp);
+                switch receive {
+                    case ns.AckBind():
+                        imp.RecvReady();
+                        break;
+                    case ns.NakBind(rejected, error):
+                        delete imp;
+                        delete rejected;
+                        Console.WriteLine("Received NakLookup from namespace.");
+                        return null;
+                    case ns.ChannelClosed():
+                        Console.WriteLine("Channel closed to nameserver.");
+                        delete imp;
+                        return null;
+                }
+            }
+            finally {
+                delete ns;
+            }
+            return imp;
+        }
+
+        private void ServeMap(IHttpRequest! request, MapPointProxyContract.Imp:ReadyState! impMapConn,
+                              [Claims]char[]! in ExHeap centerLat, [Claims]char[]! in ExHeap centerLong,
+                              int zoom, [Claims]MapPointProxyContract.PushPin[]! in ExHeap pushPins)
+        {
+            impMapConn.SendGetMap(centerLat, centerLong, zoom, pushPins);
+
+            request.SendStatus(200, "OK");
+
+            switch receive {
+                case impMapConn.Failed() :
+                    {
+                        request.SendHeader("Content-type", "text/plain");
+                        request.SendBodyData(Encoding.ASCII.GetBytes("Failed"));
+                    }
+                    break;
+
+                case impMapConn.MapDataBegin() :
+                    {
+                        request.SendHeader("Content-type", "image/gif");
+                        bool done = false;
+
+                        while (!done) {
+                            switch receive {
+                                case impMapConn.MapDataChunk(byte[]! in ExHeap dataChunk) :
+                                    {
+                                        request.SendBodyData(Bitter.ToByteArray(dataChunk));
+                                        impMapConn.SendAck();
+                                        delete dataChunk;
+                                    }
+                                    break;
+
+                                case impMapConn.Done() :
+                                    {
+                                        done = true;
+                                    }
+                                    break;
+
+                                case impMapConn.ChannelClosed() :
+                                    throw new Exception("impMapConn channel closed");
+                            }
+                        }
+                    }
+                    break;
+                case impMapConn.ChannelClosed() :
+                    throw new Exception("impMapConn channel closed");
+            }
+        }
+
+        private void SetLatitude(ref MapPointProxyContract.PushPin pushPin, string! latitude)
+        {
+            expose(pushPin)
+            {
+                char[] in ExHeap tmp = pushPin.latitude;
+
+                if (tmp != null) {
+                    delete tmp;
+                }
+
+                pushPin.latitude = Bitter.FromString2(latitude);
+            }
+        }
+
+        private void SetLongitude(ref MapPointProxyContract.PushPin pushPin, string! longitude)
+        {
+            expose(pushPin)
+            {
+                char[] in ExHeap tmp = pushPin.longitude;
+
+                if (tmp != null) {
+                    delete tmp;
+                }
+
+                pushPin.longitude = Bitter.FromString2(longitude);
+            }
+        }
+
+        private void SetIcon(ref MapPointProxyContract.PushPin pushPin, string! icon)
+        {
+            expose(pushPin)
+            {
+                char[] in ExHeap tmp = pushPin.icon;
+
+                if (tmp != null) {
+                    delete tmp;
+                }
+
+                pushPin.icon = Bitter.FromString2(icon);
+            }
+        }
+
+        private void SetLabel(ref MapPointProxyContract.PushPin pushPin, string! label)
+        {
+            expose(pushPin)
+            {
+                char[] in ExHeap tmp = pushPin.label;
+
+                if (tmp != null) {
+                    delete tmp;
+                }
+
+                pushPin.label = Bitter.FromString2(label);
+            }
+        }
+
+        private MapPointProxyContract.PushPin[]! in ExHeap BuildPushPins(PushPinData[]! pinData, byte mask)
+        {
+            // Make one pass to figure out how many we will use
+            int numPins = 0;
+
+            for (int i = 0; i < pinData.Length; ++i) {
+                if ((pinData[i].groupMask == 0) || ((pinData[i].groupMask & mask) != 0)) {
+                    numPins++;
+                }
+            }
+
+            int outputIndex = 0;
+            MapPointProxyContract.PushPin[]! in ExHeap pushPins = new[ExHeap] MapPointProxyContract.PushPin[numPins];
+
+            for (int i = 0; i < pinData.Length; ++i) {
+                if ((pinData[i].groupMask == 0) || ((pinData[i].groupMask & mask) != 0)) {
+                    CustomVector.Expose(pushPins, outputIndex);
+                    pushPins[outputIndex].UnExpose();
+                    SetLatitude(ref pushPins[outputIndex], pinData[i].latitude);
+                    SetLongitude(ref pushPins[outputIndex], pinData[i].longitude);
+                    SetIcon(ref pushPins[outputIndex], pinData[i].icon);
+
+                    if (pinData[i].label != null) {
+                        SetLabel(ref pushPins[outputIndex], pinData[i].label);
+                    }
+
+                    pushPins[outputIndex].Expose();
+                    CustomVector.UnExpose(pushPins, outputIndex);
+                    outputIndex++;
+                }
+            }
+
+            return pushPins;
+        }
+
+        private struct PushPinData
+        {
+            public string! latitude;
+            public string! longitude;
+            public string! icon;
+            public string label;
+            public byte groupMask;
+
+            public PushPinData(string! latit, string! longi, string! ic,
+                               string lab, byte mask)
+            {
+                latitude = latit;
+                longitude = longi;
+                icon = ic;
+                label = lab;
+                groupMask = mask;
+            }
+        }
+
+        private static readonly PushPinData[] RedmondPushPins = {
+            // "You are here"
+            new PushPinData("47.641372008066419", "-122.14171843658843", "42" /*office building*/, "You are here (Microsoft Research)", 0),
+            // Starbucks
+
+
+            new PushPinData("47.617380881124", "-122.204285557882", "DriveThruIcon" /*green coffee circle*/, null, 1),
+            new PushPinData("47.6105671286853", "-122.201565707188", "DriveThruIcon", null, 1),
+            new PushPinData("47.604523", "-122.20153", "DriveThruIcon", null, 1),
+            new PushPinData("47.615745", "-122.198709", "DriveThruIcon", null, 1),
+            new PushPinData("47.6126613078903", "-122.196318968814", "DriveThruIcon", null, 1),
+            new PushPinData("47.6146420627496", "-122.196305308435", "DriveThruIcon", null, 1),
+            new PushPinData("47.6155317081101", "-122.196324288713", "DriveThruIcon", null, 1),
+            new PushPinData("47.6166209390934", "-122.180393700239", "DriveThruIcon", null, 1),
+            new PushPinData("47.6811084016238", "-122.125467537411", "DriveThruIcon", null, 1),
+            new PushPinData("47.6744181996394", "-122.129225665666", "DriveThruIcon", null, 1),
+            new PushPinData("47.6742935198659", "-122.129642662136", "DriveThruIcon", null, 1),
+            new PushPinData("47.671387274374", "-122.113099943966", "DriveThruIcon", null, 1),
+            new PushPinData("47.6706035", "-122.121555", "DriveThruIcon", null, 1),
+            new PushPinData("47.6709643825666", "-122.11139397589", "DriveThruIcon", null, 1),
+            new PushPinData("47.6711687083206", "-122.106119490634", "DriveThruIcon", null, 1),
+            new PushPinData("47.7047004699707", "-122.133796691895", "DriveThruIcon", null, 1),
+            new PushPinData("47.7023416916925", "-122.092923565158", "DriveThruIcon", null, 1),
+            new PushPinData("47.6793076942739", "-122.173964223732", "DriveThruIcon", null, 1),
+            new PushPinData("47.6792316094164", "-122.178085721598", "DriveThruIcon", null, 1),
+            new PushPinData("47.7111056625465", "-122.189069067129", "DriveThruIcon", null, 1),
+            new PushPinData("47.6782272996955", "-122.200388198634", "DriveThruIcon", null, 1),
+            new PushPinData("47.6662864685059", "-122.196502685547", "DriveThruIcon", null, 1),
+            new PushPinData("47.6315532907175", "-122.140098558258", "DriveThruIcon", null, 1),
+            new PushPinData("47.7000740688881", "-122.026042352805", "DriveThruIcon", null, 1),
+            new PushPinData("47.7072906494141", "-122.211235046387", "DriveThruIcon", null, 1),
+            new PushPinData("47.7521", "-122.1061", "DriveThruIcon", null, 1),
+            new PushPinData("47.6249966295313", "-122.153698588393", "DriveThruIcon", null, 1),
+            new PushPinData("47.6569587329949", "-122.206521525077", "DriveThruIcon", null, 1),
+            new PushPinData("47.72324", "-122.20725", "DriveThruIcon", null, 1),
+            new PushPinData("47.617137", "-122.132195", "DriveThruIcon", null, 1),
+            new PushPinData("47.6169609119728", "-122.132415718939", "DriveThruIcon", null, 1),
+            new PushPinData("47.7544271700597"," 122.154070188864", "DriveThruIcon", null, 1),
+            new PushPinData("47.7544287143031", "-122.155023645092", "DriveThruIcon", null, 1),
+            new PushPinData("47.7552703980699", "-122.08142692402", "DriveThruIcon", null, 1),
+            new PushPinData("47.6097464987024", "-122.139934976989", "DriveThruIcon", null, 1),
+            new PushPinData("47.7593566957892", "-122.174967797468", "DriveThruIcon", null, 1),
+            new PushPinData("47.6145387545187", "-122.035404694481", "DriveThruIcon", null, 1),
+            new PushPinData("47.612365467811", "-122.035490975435", "DriveThruIcon", null, 1),
+            // Tullys
+            new PushPinData("47.6810758977117",   "-122.12546258636381", "CoffeeShopIcon" /*Red coffee circle*/, null, 2),
+            new PushPinData("47.671001368685936", "-122.04650559955846", "CoffeeShopIcon", null, 2),
+            // SBC
+            new PushPinData("47.670178330890948", "-122.11961594443427", "KioskIcon" /*Blue coffee circle*/, null, 4),
+            new PushPinData("47.608457326456126", "-122.20149625220438", "KioskIcon", null, 4),
+            new PushPinData("47.574152701349739", "-122.17140243872132", "KioskIcon", null, 4)
+        };
+
+        private static readonly PushPinData[] SeattlePushPins = {
+            // "You are here"
+            new PushPinData("47.614037591008028", "-122.30879852406528", "27" /*house with flag*/, "You are here (home)", 0),
+            // Starbucks
+            new PushPinData("47.618456723401", "-122.303580259539", "DriveThruIcon" /*green coffee circle*/, null, 1),
+            new PushPinData("47.6091994192007", "-122.31668636661", "DriveThruIcon", null, 1),
+            new PushPinData("47.6199422895455", "-122.313743581024", "DriveThruIcon", null, 1),
+            new PushPinData("47.599437", "-122.301895", "DriveThruIcon", null, 1),
+            new PushPinData("47.6212111570895", "-122.312649269183", "DriveThruIcon", null, 1),
+            new PushPinData("47.6128901192275", "-122.320724034356", "DriveThruIcon", null, 1),
+            new PushPinData("47.6018627788125", "-122.285193390294", "DriveThruIcon", null, 1),
+            new PushPinData("47.610237862022", "-122.322928315481", "DriveThruIcon", null, 1),
+            new PushPinData("47.6092905987202", "-122.325162208694", "DriveThruIcon", null, 1),
+            new PushPinData("47.6221450255528", "-122.32086063814", "DriveThruIcon", null, 1),
+            new PushPinData("47.6223663747617", "-122.320829450141", "DriveThruIcon", null, 1),
+            new PushPinData("47.6188045355887", "-122.325239193537", "DriveThruIcon", null, 1),
+            new PushPinData("47.6162334968262", "-122.329890148222", "DriveThruIcon", null, 1),
+            new PushPinData("47.6169046494928", "-122.330289641677", "DriveThruIcon", null, 1),
+            new PushPinData("47.6043728733325", "-122.329780865196", "DriveThruIcon", null, 1),
+            new PushPinData("47.6043721971621", "-122.329784402156", "DriveThruIcon", null, 1),
+            new PushPinData("47.6108171568144", "-122.331843582325", "DriveThruIcon", null, 1),
+            new PushPinData("47.6090423881785", "-122.332809531195", "DriveThruIcon", null, 1),
+            new PushPinData("47.6117170454482", "-122.333517921376", "DriveThruIcon", null, 1),
+            new PushPinData("47.6069301134782", "-122.333694075029", "DriveThruIcon", null, 1),
+            new PushPinData("47.598136", "-122.327903", "DriveThruIcon", null, 1),
+            new PushPinData("47.6098478103493", "-122.334743355756", "DriveThruIcon", null, 1),
+            new PushPinData("47.6131155154701", "-122.334862525938", "DriveThruIcon", null, 1),
+            new PushPinData("47.6055032696401", "-122.333919959833", "DriveThruIcon", null, 1),
+            new PushPinData("47.6055017170637", "-122.3339229573", "DriveThruIcon", null, 1),
+            new PushPinData("47.6020524524996", "-122.332223568544", "DriveThruIcon", null, 1),
+            new PushPinData("47.6084345306019", "-122.335046964734", "DriveThruIcon", null, 1),
+            new PushPinData("47.612046590865", "-122.335381620315", "DriveThruIcon", null, 1),
+            new PushPinData("47.606388128686", "-122.334715667519", "DriveThruIcon", null, 1),
+            new PushPinData("47.6116967823789", "-122.336296136407", "DriveThruIcon", null, 1),
+            new PushPinData("47.6051471566206", "-122.335104086031", "DriveThruIcon", null, 1),
+            new PushPinData("47.6101314840046", "-122.336650815449", "DriveThruIcon", null, 1),
+            new PushPinData("47.60168", "-122.333949", "DriveThruIcon", null, 1),
+            new PushPinData("47.6064691727839", "-122.336272716656", "DriveThruIcon", null, 1),
+            new PushPinData("47.6135660835676", "-122.336924441826", "DriveThruIcon", null, 1),
+            new PushPinData("47.6033756657136", "-122.335026450478", "DriveThruIcon", null, 1),
+            new PushPinData("47.6112337983537", "-122.337417016688", "DriveThruIcon", null, 1),
+            new PushPinData("47.6112337983537", "-122.337417016688", "DriveThruIcon", null, 1),
+            new PushPinData("47.6072289673078", "-122.337106017343", "DriveThruIcon", null, 1),
+            new PushPinData("47.599135190386", "-122.332838828233", "DriveThruIcon", null, 1),
+            new PushPinData("47.6093179302915", "-122.33863279036", "DriveThruIcon", null, 1),
+            new PushPinData("47.6333928948529", "-122.281512273042", "DriveThruIcon", null, 1),
+            new PushPinData("47.6044616657917", "-122.339138224358", "DriveThruIcon", null, 1),
+            new PushPinData("47.61381560986", "-122.341310224515", "DriveThruIcon", null, 1),
+            new PushPinData("47.6097464987024", "-122.342189276209", "DriveThruIcon", null, 1),
+            new PushPinData("47.6125529038982", "-122.342905420618", "DriveThruIcon", null, 1),
+            new PushPinData("47.6184752170526", "-122.344648806947", "DriveThruIcon", null, 1),
+            new PushPinData("47.6135154241179", "-122.346735619683", "DriveThruIcon", null, 1),
+            new PushPinData("47.6107420247335",  "-122.347675960821", "DriveThruIcon", null, 1),
+            new PushPinData("47.6220015915803", "-122.345818149367", "DriveThruIcon", null, 1),
+            new PushPinData("47.6298972902608", "-122.340996035813", "DriveThruIcon", null, 1),
+            new PushPinData("47.6299348563012", "-122.342293771755", "DriveThruIcon", null, 1),
+            new PushPinData("47.622011836864", "-122.348399960873", "DriveThruIcon", null, 1),
+            new PushPinData("47.6408255929328", "-122.32587399699", "DriveThruIcon", null, 1),
+            new PushPinData("47.5855659474528", "-122.334138525886", "DriveThruIcon", null, 1),
+            new PushPinData("47.5773975925697", "-122.296242307054", "DriveThruIcon", null, 1),
+            new PushPinData("47.5817820226526", "-122.335067431613", "DriveThruIcon", null, 1),
+            new PushPinData("47.6236038208008", "-122.355293273926", "DriveThruIcon", null, 1),
+            new PushPinData("47.622346107565", "-122.356638643795", "DriveThruIcon", null, 1),
+            new PushPinData("47.5693792904357", "-122.290340867944", "DriveThruIcon", null, 1),
+            new PushPinData("47.637629805258", "-122.35698045001", "DriveThruIcon", null, 1),
+            new PushPinData("47.6575288205481", "-122.313210826269", "DriveThruIcon", null, 1),
+            new PushPinData("47.6497241214904", "-122.349778323383", "DriveThruIcon", null, 1),
+            new PushPinData("47.6622877389576", "-122.31307855344", "DriveThruIcon", null, 1),
+            new PushPinData("47.6642975380156", "-122.301667806572", "DriveThruIcon", null, 1),
+            new PushPinData("47.559056", "-122.285462", "DriveThruIcon", null, 1),
+            new PushPinData("47.6613800962745", "-122.333579501002", "DriveThruIcon", null, 1),
+            new PushPinData("47.6664012362799", "-122.299577768686", "DriveThruIcon", null, 1),
+            new PushPinData("47.5811287489603", "-122.383682139035", "DriveThruIcon", null, 1),
+            new PushPinData("47.6484821201053", "-122.37802019047", "DriveThruIcon", null, 1),
+            new PushPinData("47.5483623833267", "-122.321082626329", "DriveThruIcon", null, 1),
+            new PushPinData("47.6750775445954", "-122.317375978787", "DriveThruIcon", null, 1),
+            new PushPinData("47.5807287886721", "-122.386386715489", "DriveThruIcon", null, 1),
+            new PushPinData("47.660603", "-122.370295", "DriveThruIcon", null, 1),
+            new PushPinData("47.6798149294931", "-122.325708188256", "DriveThruIcon", null, 1),
+            // Tullys
+            new PushPinData("47.556308832143081", "-122.14664983316918", "137", null, 6),
+            new PushPinData("47.626021157906813", "-122.30730954282622", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.607811873579557", "-122.33913822435848", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.556308832143081", "-122.14664983316918", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.617097515756193", "-122.35281226307684", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.605650118707253", "-122.33404290323766", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.60911643971103",  "-122.33572312977347", "137", null, 6),
+            new PushPinData("47.608771515157947", "-122.34009445084229", "137", null, 6),
+            new PushPinData("47.599181929563251", "-122.33139278983968", "137", null, 6),
+            new PushPinData("47.633845139601064", "-122.28094501262997", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.556308832143081", "-122.14664983316918", "137", null, 6),
+            new PushPinData("47.610117062424443", "-122.33346916734737", "CoffeeShopIcon", null, 2),
+            new PushPinData("47.611677760649791", "-122.33647445058217", "CoffeeShopIcon", null, 2),
+            // SBC
+            new PushPinData("47.610117062424443", "-122.33655641285222", "KioskIcon", /*Blue coffee circle*/ null, 4),
+            new PushPinData("47.60678051501489",  "-122.33355112961741", "KioskIcon", null, 8),
+            new PushPinData("47.602412609040663", "-122.33254026162025", "KioskIcon", null, 8),
+            new PushPinData("47.608826156671306", "-122.33998516781557", "KioskIcon", null, 8),
+            new PushPinData("47.556308832143081", "-122.14664983316918", "KioskIcon", null, 8)
+        };
+
+        // ======================================================
+        // The code below gets used when this webapp is compiled
+        // to a stand-alone executable
+        internal static int AppMain(Parameters! config)
+        {
+            //Endpoint * in ExHeap ep = Process.GetStartupEndpoint(0);
+            WebAppContract.Exp conn = config.webAppRef.Acquire();
+            if (conn == null) {
+                // Wrong contract type!
+                return -1;
+            }
+
+            conn.SendWebAppReady();
+            MapDemoWebApp webApp = new MapDemoWebApp();
+            Driver.ServiceChannel(webApp, conn);
+            delete conn;
+            return 0;
+        }
+
+        private void ReportInternalError(IHttpRequest! request, string! description)
+        {
+            request.SendStatus(500, "Internal Error");
+            request.SendHeader("Content-type", "text/plain");
+            request.SendHeader("charset", "utf-8");
+            request.SendBodyData(Encoding.ASCII.GetBytes(description));
+        }
+
+    }
+}

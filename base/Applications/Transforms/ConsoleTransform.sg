@@ -1,0 +1,166 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Creates startup boilerplate code from Resource descriptions.
+//
+
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.V1.Services;
+using System;
+
+namespace Microsoft.Singularity.Applications
+{
+
+    transform ApplicationResourceTransform
+        where $EndpointType : unmanaged struct, Endpoint, ITracked
+        where $EpAttr : EndpointAttribute
+    {
+        [ConsoleCategory(*, DefaultAction=true)]
+        internal class $DefaultCategory
+        {
+            // only match, don't implement
+            internal $DefaultCategory();
+
+            internal int AppMain();
+
+            // Single entry point
+            generate public static int Main(string[] args) {
+#if SHOW_ARGS
+                if (args != null) {
+                    foreach (string arg in args) {
+                        DebugStub.WriteLine("startup argument '{0}'", __arglist(arg));
+                    }
+                }
+#endif
+                if (args == null || args.Length < 2) {
+                    $DefaultCategory config = new $DefaultCategory();
+                    return config.AppMain();
+                }
+
+                string action = args[1];
+                forall (; $Action in $$NamedCategories ;) {
+                    if ($Action.$name == action) {
+                        $Action config = new $Action();
+                        return config.AppMain();
+                    }
+                }
+                throw new Exception(String.Format("Unrecognized action {0}", action));
+            }
+        }
+
+        [ConsoleCategory(*, Action=$name)]
+        internal class $$NamedCategories {
+            // only match, don't implement
+            internal $$NamedCategories();
+
+            internal int AppMain();
+        }
+
+        [ConsoleCategory(*)]
+        internal class $$Categories {
+
+            [$EpAttr(*)]
+            TRef<$EndpointType,$State> $$endpoints;
+
+            [StringParameter(*)]
+            string $$strings;
+
+            [StringArrayParameter(*)]
+            string[] $$stringArrays;
+
+            [LongParameter(*)]
+            long $$longs;
+
+            [BoolParameter(*)]
+            bool $$bools;
+
+            //            [NotDelayed]
+            implement internal $$Categories() {
+                //DebugStub.WriteLine("ConsoleCategory action '{0}' applied", __arglist(this.GetType().ToString()));
+
+                int index;
+                ParameterCode code;
+
+                index = 0;
+                forall (; $s in $$strings ;) {
+                    string stringParam;
+                    code = Process.GetStartupStringArg(index, out stringParam);
+                    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup string array {0}. code={1}", index, code));
+                    }
+                    this.$s = stringParam;
+                    //DebugStub.WriteLine("got string {0}=({1})",__arglist(index, $s));
+                    ++index;
+                }
+
+                index = 0;
+                forall (; $sa in $$stringArrays ;) {
+                    string[] stringArrayParam;
+                    code = Process.GetStartupStringArrayArg(index, out stringArrayParam );
+                    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup string {0}. code={1}", index, code));
+                    }
+                    this.$sa = stringArrayParam;
+                    //DebugStub.WriteLine("got string {0}=({1})",__arglist(index, $s));
+                    ++index;
+                }
+
+                index = 0;
+                forall (; $l in $$longs ;) {
+                    long longArg;
+                    code = ProcessService.GetStartupLongArg(index, out longArg);
+                    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup integer {0}. code={1}", index, code));
+                    }
+                    this.$l = longArg;
+                    //DebugStub.WriteLine("got long {0}=({1})",__arglist(index, $l));
+                    ++index;
+                }
+
+                index = 0;
+                forall (; $b in $$bools ;) {
+                    bool b;
+                    code = ProcessService.GetStartupBoolArg(index, out b);
+                    if (code != ParameterCode.Success) {
+                        throw new ArgumentException(String.Format("error acquiring startup bool {0}. code={1}", index, code));
+                    }
+                    this.$b = b;
+                    //DebugStub.WriteLine("got bool {0}=({1})",__arglist(index, b));
+                    ++index;
+                }
+                index = 0;
+                forall (; $e in $$endpoints;) {
+                    if (index == 0 || index == 1) {
+                        //DebugStub.WriteLine("transform skipping pipe at {0}",__arglist(index));
+                    }
+                    else {
+                        $e.$EndpointType* in ExHeap opt($e.$State) ep = Process.GetStartupEndpoint(index)
+                            as $e.$EndpointType* in ExHeap opt($e.$State);
+                        if (ep == null) {
+                            throw new ArgumentException(String.Format("missing startup endpoint {0}", index));
+                        }
+                        $e = new TRef<$e.$EndpointType, $e.$State> (ep);
+                        //DebugStub.WriteLine("getting endpoint at {0}",__arglist(index));
+                    }
+                    ++index;
+
+                }
+
+            }
+
+            // Category specific entry point
+            internal int AppMain();
+
+        }
+
+    }
+}

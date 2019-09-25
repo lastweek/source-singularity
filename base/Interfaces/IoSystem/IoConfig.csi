@@ -1,0 +1,41 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   IoConfig.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyKeyFileAttribute("public.snk")]
+[assembly: System.Reflection.AssemblyDelaySignAttribute(true)]
+
+namespace Microsoft.Singularity.Io
+{
+    public abstract class IoConfig
+    {
+        public String[] Ids;
+        public String Id { get; }
+        public IoRange[]    Ranges;
+
+        public abstract string ToPrint();
+    }
+
+    public abstract class IoRange
+    {
+    }
+}
+
+namespace System.Threading
+{
+    public class AutoResetEvent
+    {
+    }
+}

@@ -1,0 +1,161 @@
+<html>
+<head>
+<title>Singularity Diagnostics</title>
+
+<style type="text/css">
+div.smallThermometer
+{
+  border: 1px dashed #808080;
+  background-color: white; // Color of the thermometer background
+  font-size: 1pt;
+}
+
+div.smallThermometerInner
+{
+  background-color: green; // Color of the inner "mercury"
+}
+
+div.smallThermometerOverflow
+{
+  border: 1px inset black;
+  background-color: yellow; // Color of the thermometer background
+  font-size: 1pt;
+}
+
+div.smallThermometerInnerOverflow
+{
+  background-color: red; // Color of the inner "mercury"
+}
+
+span.smallThermometer
+{
+  font-size: 8pt;
+}
+
+div.largeThermometer
+{
+  border: 3px ridge #a0a0a0;
+  background-color: green; // Color of the thermometer background
+  font-size: 1pt;
+}
+
+div.largeThermometerInner
+{
+  background-color: red; // Color of the inner "mercury"
+  border: 1px inset black
+}
+
+span.largeThermometer
+{
+  font-size: 12pt;
+}
+
+</style>
+
+<script  language="JavaScript">
+function getThermometerHtml(className, name, position, xpos, ypos, width, height)
+{
+  return "<div class=\"" + className + "Enclose\" style=\"" +
+    "position:" + position +
+    "; top:" + ypos +
+    "; left:" + xpos +
+    "\">" +
+      "<div id=\"" + name + "\" class=\"" + className + "\" style=\"" +
+      "position:relative; left:0px; top:0px;font-size: 1pt;" +
+      " HEIGHT:" + height +
+      "; WIDTH:" + width +
+      "\">" +
+          "<div id=\"innerrect\" class =\"" + className + "Inner\" " +
+          "style=\"position:relative; left:0px; top:0px; width:0%; height:100%\"></div>" +
+      "</div>" +
+    "<span class =\"" + className + "\" id=\"" + name + "Label\"></span></div>";
+}
+
+function setThermometerToOverflow(name, percentage)
+{
+  try
+  {
+    setThermometerValue(name, percentage);
+    document.all[name].className = document.all[name].className + "Overflow";
+    document.all[name].all["innerrect"].className = document.all[name].all["innerrect"].className + "Overflow";
+  }
+  catch(e)
+  {
+    // Ignore all exceptions in case the requested thermometer doesn't exist!
+  }
+}
+
+function setThermometerValue(name, percentage)
+{
+  try
+  {
+    document.all[name].all["innerrect"].style.width = percentage;
+  }
+  catch(e)
+  {
+    // Ignore all exceptions in case the requested thermometer doesn't exist!
+  }
+}
+
+function setThermometerLabel(name, text)
+{
+  try
+  {
+    document.all[name + "Label"].innerHTML = text;
+  }
+  catch(e)
+  {
+    // Ignore all exceptions in case the requested thermometer doesn't exist!
+  }
+}
+
+</script>
+
+<body">
+<META HTTP-EQUIV="REFRESH" CONTENT="5">
+
+<h1>IPC State</h1>
+<div style="position:relative">
+<img src="diagram.png">
+
+<script>
+/*
+ *
+ * HERE IS THE LIST OF ALL THE THERMOMETER WIDGETS THAT OVERLAP THE DIAGRAM!!
+ * All the coordinates are relative to the origin of the diagram image.
+ *
+ */
+document.writeln(getThermometerHtml("smallThermometer", "kernel:legacykeyboard", "absolute", "40px", "70px", "50px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "kernel:shell", "absolute", "155px", "70px", "50px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "kernel:cassini", "absolute", "270px", "70px", "50px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "kernel:diagnosticswebapp", "absolute", "380px", "70px", "50px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "childping:childpong", "absolute", "495px", "70px", "50px", "10px"));
+
+document.writeln(getThermometerHtml("smallThermometer", "kernel:volmgr", "absolute", "40px", "185px", "50px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "kernel:sb16", "absolute", "270px", "185px", "50px", "10px"));
+
+document.writeln(getThermometerHtml("smallThermometer", "legacykeyboard:shell", "absolute", "65px", "-10px", "40px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "shell:cassini", "absolute", "180px", "-10px", "40px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "cassini:diagnosticswebapp", "absolute", "295px", "-10px", "40px", "10px"));
+document.writeln(getThermometerHtml("smallThermometer", "diagnosticswebapp:childping", "absolute", "410px", "-10px", "40px", "10px"));
+
+</script>
+</div>
+
+<hr>
+
+<h1>Memory State</h1>
+
+<script>
+// The xpos and ypos args don't matter for a thermometer with "static" (normal-flow) positioning.
+document.writeln(getThermometerHtml("largeThermometer", "usedMemory", "static", 0, 0, "200px", "25px"));
+</script>
+
+<span id="memoryText">
+</span>
+
+<script>
+/*
+ * HERE IS WHERE DYNAMICALLY GENERATED STATEMENTS FOR POKING THE THERMOMETER
+ * VALUES GO!! The web application generates content from here on down.
+ */

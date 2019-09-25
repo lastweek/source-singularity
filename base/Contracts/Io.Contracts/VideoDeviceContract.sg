@@ -1,0 +1,66 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   VideoDeviceContract.sg - Contract between apps and video devices
+//
+
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+
+namespace Microsoft.Singularity.Io
+{
+    public contract VideoDeviceContract : DeviceContract {
+
+        in message Plot(int x, int y, uint color32);
+        out message AckPlot();
+        out message NakPlot();
+
+        in message Fill(int x1, int y1, int x2, int y2, uint color32);
+        out message AckFill();
+        out message NakFill();
+
+#if false
+        in message BitBltChr(int x, int y, int width, int height,
+                             byte[]! in ExHeap buffer, int offset, int scanWidth,
+                             uint color32, uint background32);
+        out message AckBitBltChr(byte[]! in ExHeap buffer);
+        out message NakBitBltChr(byte[]! in ExHeap buffer);
+#endif
+
+        in message BitBltBmp(int x, int y, byte[]! in ExHeap buffer);
+        out message AckBitBltBmp(byte[]! in ExHeap buffer);
+        out message NakBitBltBmp(byte[]! in ExHeap buffer);
+
+        in message BitBltPng(int x, int y, byte[]! in ExHeap buffer);
+        out message AckBitBltPng(byte[]! in ExHeap buffer);
+        out message NakBitBltPng(byte[]! in ExHeap buffer);
+
+        in message Scroll(int left, int top, int right, int bottom, int dy);
+        out message AckScroll();
+        out message NakScroll();
+
+        out message Success();
+
+        override state Start: one {
+            Success! -> Ready;
+        }
+
+        state Ready: one {
+            Plot? -> (AckPlot! or NakPlot!) -> Ready;
+            Fill? -> (AckFill! or NakFill!) -> Ready;
+#if false
+            BitBltChr? -> (AckBitBltChr! or NakBitBltChr!) -> Ready;
+#endif
+            BitBltBmp? -> (AckBitBltBmp! or NakBitBltBmp!) -> Ready;
+            BitBltPng? -> (AckBitBltPng! or NakBitBltPng!) -> Ready;
+            Scroll? -> (AckScroll! or NakScroll!) -> Ready;
+        }
+    }
+}

@@ -1,0 +1,426 @@
+<!--
+##############################################################################
+
+Microsoft Research Singularity
+
+Copyright (c) Microsoft Corporation.  All rights reserved.
+
+File:   Targets\Distro.targets
+
+Note:
+
+This file handles building "Distro" projects.  Distro projects are a collection
+of applications, which are built and packaged into a complete, bootable OS image.
+The OS image can be served to PXE clients by using bootd.exe, can be burned to
+a CD-ROM (or Virtual PC can boot using the CD-ROM image), or can be copied to
+a bootable FAT partition.
+
+Distro projects are currently stored in the $(SINGULARITY_ROOT)\Distro directory.
+
+Distro projects can set the following properties:
+
+  * DistroName - Specifies a name for the distribution, which allows the build
+    outputs to be isolated from other distributions.  It is important that
+    distro projects have distinct names.  This property is required.
+
+
+Distro projects can declare the following items:
+
+  * Application - Specifies a reference to an application project that should be
+    included in this distribution.  This must refer to a project that imports
+    App.targets, either directly or indirectly.
+
+
+
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\DistroPaths.targets"
+          Condition="'$(DISTDIR)'==''" />
+
+  <Import Project="$(ExtraProject)"
+          Condition="'$(ExtraProject)'!=''" />
+
+  <PropertyGroup>
+    <BOOT_LOADER Condition="'$(Machine)'=='x86' or '$(Machine)'=='x64'">Singldr</BOOT_LOADER>
+    <BOOT_LOADER Condition="'$(Machine)'=='arm' and '$(Platform)'=='Omap3430'">SArmBoot.raw</BOOT_LOADER>
+
+    <SYSDATA_NAME Condition="'$(SYSDATA_NAME)'==''">$(SINGULARITY_ROOT)\Distro\LegacyPCDistro.xml</SYSDATA_NAME>
+    <DISTROBUILDER Condition="'$(DISTROBUILDER)'==''">&quot;$(BUILDDIR)\distrobuilder.exe&quot;</DISTROBUILDER>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefaultNibOptionsFile>$(SINGULARITY_ROOT)\Options\$(Configuration).$(COLLECTOR_APP).$(Machine).options</DefaultNibOptionsFile>
+    <NibOptionsFile Condition="'$(NibOptionsFile)'==''">$(DefaultNibOptionsFile)</NibOptionsFile>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(SINGULARITY_BUILD_SETTINGS)'!=''">
+    <BuildSettingsFile Include="$(SINGULARITY_BUILD_SETTINGS)" />
+    <BuildSettingsDir Include="@(BuildSettingsFile->'%(RootDir)%(Directory)')"/>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ExportingBinaryFileList)'!=''">
+    <!-- Create itemgroup when creating list of binaries to export so
+         a directory can be trivially created for it -->
+    <ExportFileList Include="$(ExportingBinaryFileList)" />
+  </ItemGroup>
+
+  <Target Name="Build"
+          DependsOnTargets="
+          BuildDistro;
+          BuildIso;
+          BuildFlash;
+          WriteBuildSettings;
+          "/>
+
+  <Target Name="BuildDistro"
+          DependsOnTargets="
+          CheckProject;
+          ShowDebugInfo;
+          CreateDirs;
+          BuildBoot;
+          BuildBaseProjects;
+          ConvertKernelManifest;
+          ConvertTestPeManifest;
+          BuildAppsNative;
+          CreateFileList;
+          RunDistroBuilder;
+          ">
+
+  </Target>
+
+  <Target Name="ShowDebugInfo">
+    <Message Text="Distro name:           $(DistroName)"/>
+    <Message Text="DISTRO_BINARIES_DIR:   $(DISTRO_BINARIES_DIR)"/>
+    <Message Text="DISTRO_FILES_DIR:      $(DISTRO_FILES_DIR)"/>
+    <Message Text="DISTRO_SCRIPT_DIR:     $(DISTRO_SCRIPT_DIR)"/>
+  </Target>
+
+  <Target Name="CreateDirs">
+    <MakeDir Directories="
+             $(DISTDIR);
+             $(DISTRO_BINARIES_DIR);
+             $(DISTRO_FILES_DIR);
+             $(DISTRO_SCRIPT_DIR);
+             $(DISTRO_TEMP_DIR);
+             $(APPS_NATIVE_IMAGE_DIR);
+             @(BuildSettingsDir);
+             "/>
+  </Target>
+
+  <Target Name="CheckProject">
+    <Error Condition="'$(DistroName)'==''" Text="The 'DistroName' property has not been set, and is required." />
+    <Warning Condition="'$(DistroSkipKernel)'=='true'" Text="You have chosen to skip compiling the kernel (by specifying DistroSkipKernel=true)."/>
+    <Warning Condition="'$(DistroSkipApps)'=='true'" Text="You have chosen to skip compiling all apps (by specifying DistroSkipApps=true)."/>
+  </Target>
+
+  <ItemGroup>
+    <BaseProject Condition="'$(DistroSkipKernel)'!='true'" Include="$(SINGULARITY_ROOT)\Kernel\Kernel.proj" />
+    <BaseProject Condition="'$(DistroSkipApps)'!='true'" Include="$(SINGULARITY_ROOT)\Applications\Runtime\Full\Corlib.Native.proj"/>
+    <!-- Disabled until null runtime is refactored -->
+    <!-- <BaseProject Condition="'$(DistroSkipApps)'!='true'" Include="$(SINGULARITY_ROOT)\Applications\Runtime\Null\Corlib.Native.proj"/> -->
+  </ItemGroup>
+
+  <Target Name="BuildBaseProjects">
+    <MSBuild Projects="@(BaseProject)" StopOnFirstFailure="$(StopOnFirstFailure)" Condition="'$(BuildInParallel)'!='true'"/>
+    <MSBuild Projects="@(BaseProject)" StopOnFirstFailure="$(StopOnFirstFailure)" Condition="'$(BuildInParallel)'=='true'" BuildInParallel="true"/>
+  </Target>
+
+  <Target Name="BuildBoot" Condition="'$(DistroSkipKernel)'!='true'">
+    <MSBuild Projects="$(SINGULARITY_ROOT)\Boot\Boot.proj" StopOnFirstFailure="$(StopOnFirstFailure)" />
+  </Target>
+
+  <Target Name="BuildIso"
+          Condition="('$(SINGULARITY_BUILD_ISO)'=='true') and
+          ('$(Machine)'=='x86' or '$(Machine)'=='x64')"
+          DependsOnTargets="BuildDistro">
+    <Message Text="Building CD-ROM ISO image"/>
+    <MakeDir Condition="'$(DISTRO_ISO_DIR)'!=''" Directories="$(DISTRO_ISO_DIR)"/>
+    <Exec Command="&quot;$(BUILDDIR)\cdimage&quot; -j1 -lSingularity -b&quot;$(BOOTDIR)\Etfs_BS.bin&quot; &quot;$(DISTDIR)&quot; &quot;$(DISTRO_ISO)&quot; 1&gt;&quot;$(DISTRO_ISO_LOG)&quot; 2&gt;&amp;1">
+       <Output TaskParameter="ExitCode" PropertyName="BuildIsoExitCode"/>
+    </Exec>
+    <Message Text="CD-ROM image: $(DISTRO_ISO)" Condition="'$(BuildIsoExitCode)'=='0'"/>
+    <Error Text="cdimage failed. Check $(DISTRO_ISO_LOG)" Condition="'$(BuildIsoExitCode)'!='0'"/>
+    <Delete Files="$(DISTRO_ISO_LOG)" Condition="'$(BuildIsoExitCode)'=='0'"/>
+  </Target>
+
+  <ItemGroup Condition="'$(FlashDestination)'!=''">
+    <FlashFile Include="$(FlashDestination)" />
+  </ItemGroup>
+
+  <Target Name="BuildFlash"
+          Condition="'$(Machine)'=='arm' and '$(FlashDestination)'!=''"
+          DependsOnTargets="BuildDistro">
+    <Message Text="Building Flash image"/>
+    <MakeDir Condition="'$(DISTRO_ISO_DIR)'!=''" Directories="$(DISTRO_ISO_DIR)"/>
+    <Exec Command="&quot;$(BUILDDIR)\mkflash&quot; -flash:$(DISTRO_FLASH) -boot:&quot;$(DISTDIR)\Singularity\singboot.ini&quot; -root:&quot;$(DISTDIR)&quot;">
+       <Output TaskParameter="ExitCode" PropertyName="BuildFlashExitCode"/>
+    </Exec>
+    <Message Text="Flash image: $(DISTRO_FLASH)" Condition="'$(BuildFlashExitCode)'=='0'"/>
+    <Error Text="mkflash failed." Condition="'$(BuildFlashExitCode)'!='0'"/>
+
+    <MakeDir Directories="%(FlashFile.RootDir)%(FlashFile.Directory)"/>
+
+    <Copy SourceFiles="$(DISTRO_FLASH)"
+          DestinationFiles="@(FlashFile)" />
+  </Target>
+
+  <Target Name="WriteBuildSettings"
+          DependsOnTargets="CreateDirs"
+          Outputs="@(BuildSettingsFile)"
+          Condition="'$(SINGULARITY_BUILD_SETTINGS)'!=''">
+    <Touch AlwaysCreate="True" Files="@(BuildSettingsFile)"/>
+    <WriteLinesToFile File="@(BuildSettingsFile);"
+                      Overwrite="true"
+                      Lines="
+rem Generated by MSBuild $(MSBuildProjectFile).
+rem Date:   %(BuildSettingsFile.ModifiedTime)
+rem User:   $(UserName)
+rem System: $(UserDomain)\$(ComputerName)
+
+set _BOOTD_TFTP_DIR=$(DISTRO_ROOT)
+set _BOOT_ISO=$(DISTRO_ISO)
+set _NT_DEBUGGER_EXTENSION_PATH=$(SINGULARITY_ROOT)\build
+set _NT_SOURCE_PATH=srv*%3b$(SINGULARITY_ROOT)%3b$(SINGULARITY_ROOT)\Applications%3b$(SINGULARITY_ROOT)\Boot%3b$(SINGULARITY_ROOT)\drivers%3b$(SINGULARITY_ROOT)\interfaces%3b$(SINGULARITY_ROOT)\kernel%3b$(SINGULARITY_ROOT)\Libraries%3b$(SINGULARITY_ROOT)\Services
+set _NT_SYMBOL_PATH=$(DISTRO_TEMP_DIR)%3b$(KERNEL_NATIVE_DIR)%3b
+"
+    />
+    <Message Text="----------------------------------------------------------------------------
+Bootd and debugger paths written to:
+$(SINGULARITY_BUILD_SETTINGS)
+----------------------------------------------------------------------------
+" Importance="High"/>
+  </Target>
+
+  <ItemGroup>
+    <!-- Copy TestPe -->
+    <!-- Note: The TestPe manifest is create by the ConvertTestPeManifest target -->
+    <ScriptFiles Include="Scripts\*"/>
+    <DataFiles Include="Files\**\*"/>
+    <BootSectors Include="$(BOOTDIR)\*.bin"/>
+    <Binaries Include="$(KERNEL_NATIVE_DIR)\testpe.$(Machine)"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copy Kernel -->
+    <!-- Note: The Kernel manifest is create by the ConvertKernelManifest target -->
+    <Binaries Include="$(KERNEL_NATIVE_DIR)\kernel.$(Machine)"/>
+    <Binaries Include="$(KERNEL_NATIVE_DIR)\kernel.$(Machine).pdb"/>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PAGING)'=='On'">
+    <Binaries Include="$(KERNEL_NATIVE_DIR)\syscalls.dll"/>
+  </ItemGroup>
+
+  <Target Name="CopyFiles"
+          DependsOnTargets="BuildAppsNative;BuildBaseProjects;CopyContentFiles">
+    <Copy SourceFiles="@(ScriptFiles)" DestinationFolder="$(DISTRO_SCRIPT_DIR)" SkipUnchangedFiles="true"/>
+    <Copy SourceFiles="@(DataFiles)" DestinationFolder="$(DISTRO_FILES_DIR)\%(RecursiveDir)" SkipUnchangedFiles="true"/>
+    <Copy SourceFiles="@(Binaries)" DestinationFolder="$(DISTRO_BINARIES_DIR)" SkipUnchangedFiles="true"/>
+    <Copy SourceFiles="$(BOOTDIR)\$(BOOT_LOADER)" DestinationFolder="$(DISTDIR)" SkipUnchangedFiles="true"/>
+    <Copy SourceFiles="@(BootSectors)" DestinationFolder="$(DISTDIR)" SkipUnchangedFiles="true"/>
+  </Target>
+
+  <!-- This always runs; there is no incremental build support here. -->
+  <Target Name="CreateFileList"
+          Outputs="$(FILE_LIST)"
+          DependsOnTargets="CopyFiles">
+
+    <!-- Create a list of files in the distribution. -->
+    <Message Text="Building Distro file list in $(DISTDIR)"/>
+
+    <!--
+    @rem NB Put kernel pdb alongside other pdbs. This makes kernel debug
+    @rem    symbol location robust with respect to entire tree moves (as
+    @rem    might happen with a build on a farm).
+    -->
+    <!-- <Copy SourceFiles="$(KERNDIR)\$(KERNEL_PDB)" DestinationFolder="$(DISTRO_TEMP_DIR)" SkipUnchangedFiles="true"/> -->
+
+    <Message Text="Creating file list - $(FILE_LIST)"/>
+    <Exec Command="dir /b /s /a-d &quot;$(DISTDIR)&quot; | findstr -i -v .pdb &gt; &quot;$(FILE_LIST)&quot;"/>
+  </Target>
+
+
+<!-- Create the system manifest and metadata file. -->
+  <Target Name="RunDistroBuilder"
+          DependsOnTargets="CreateDirs;CreateFileList">
+    <Message Text="Creating Distribution"/>
+
+    <Exec Command="$(DISTROBUILDER) /out:&quot;$(DISTDIR)\Singularity\$(METADATA_NAME)&quot; /policy:&quot;$(SYSDATA_NAME)&quot; /dir:&quot;$(DISTDIR)&quot; /kernel:&quot;$(DISTRO_BINARIES_DIR)\Kernel.$(Machine)&quot; /ini:&quot;$(DISTDIR)\$(INIFILE_NAME)&quot; /desc:&quot;$(FILE_LIST)&quot; @(__service_exes->'/service:&quot;%(filename),mode=%(ServiceActivationMode)&quot;',' ')"/>
+  </Target>
+  <Target Name="ShowAppsIL">
+    <Message Text="Application: %(Application.fullpath)" />
+  </Target>
+
+  <!--
+  This target builds all of the projects declared in the 'Application' item set.
+  -->
+  <Target Name="BuildAppsIL">
+    <Message Condition="'$(DistroSkipApps)'!='true'" Importance="high" Text="Building applications - IL phase"/>
+
+    <!--
+    Removes duplicate items in the Application item set.
+    The result is stored in the Application_no_dups item set.
+    -->
+    <RemoveDuplicates Inputs="@(Application)">
+      <Output ItemName="Application_no_dups" TaskParameter="Filtered"/>
+    </RemoveDuplicates>
+
+    <!--
+    Build all Application projects.  If the invoking MSBuild instance supports parallel builds,
+    then build the applications in parallel.  We need to duplicate the MSBuild task, because MSBuild 2.0
+    will reject the task if the BuildInParallel attribute is present, even if it is empty or "false".
+    -->
+    <MSBuild Projects="@(Application_no_dups)"
+             Condition="'$(DistroSkipApps)'!='true' and '$(BuildInParallel)'!='true'"
+             StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__app_build_outputs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+    <MSBuild Projects="@(Application_no_dups)"
+             Condition="'$(DistroSkipApps)'!='true' and '$(BuildInParallel)'=='true'"
+             BuildInParallel="true"
+             StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__app_build_outputs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+
+    <!--
+    If DistroSkipApps=true, then we still need to determine the names of the output assemblies.
+    We do this by "building" the app projects, but only building the GetOutputAssemblyPath target.
+    -->
+    <MSBuild Projects="@(Application_no_dups)"
+             Targets="GetOutputAssemblyPath"
+             Condition="'$(DistroSkipApps)'=='true'"
+             StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__app_build_outputs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+
+
+    <!-- If any libraries (dlls) were declared in the Application item set, complain. -->
+    <Warning Text="Found library in Application set: %(__app_build_outputs.identity)"
+             Condition="'%(__app_build_outputs.extension)'!='.exe' and '%(__app_build_outputs.extension)'!=''"/>
+
+
+    <!-- Filter the build outputs from the Application item set, so that we only pick up executables. -->
+    <CreateItem Include="%(__app_build_outputs.identity)">
+      <Output ItemName="__app_exes" TaskParameter="Include" Condition="'%(__app_build_outputs.extension)' == '.exe'"/>
+    </CreateItem>
+    <!-- <Message Text="__app_exes: %(__app_exes.identity)"/> -->
+
+
+    <!-- Filter the build outputs and create the __service_exes item set. -->
+    <Error Condition="'%(__app_build_outputs.Category)'=='Service' and '%(__app_build_outputs.ServiceActivationMode)'==''"
+           Text="Executable '%(__app_build_outputs.identity)' is a service, but does not provide the required ServiceActivationMode metadata."/>
+    <CreateItem Include="%(__app_build_outputs.identity)"
+                AdditionalMetadata="ServiceActivationMode=%(__app_build_outputs.ServiceActivationMode)">
+      <Output ItemName="__service_exes" TaskParameter="Include" Condition="'%(__app_build_outputs.Category)'=='Service'"/>
+    </CreateItem>
+    <!-- <Message Text="Services: %(__service_exes.identity)"/> -->
+  </Target>
+
+  <!-- Convert all MSIL files into native images. -->
+  <Target Name="BuildAppsNative" DependsOnTargets="BuildAppsIL">
+    <Message Condition="'$(DistroSkipApps)'!='true'" Importance="high" Text="Building applications - native image generation"/>
+
+    <!-- Create items that represent the app manifests. -->
+    <CreateItem Include="%(__app_exes.rootdir)%(__app_exes.directory)%(__app_exes.filename).$(Machine).manifest">
+      <Output ItemName="__app_manifests" TaskParameter="Include"/>
+    </CreateItem>
+
+    <!-- <Message Text="__app_manifests: %(__app_manifests.identity)"/> -->
+
+    <WriteLinesToFile File="$(NibFileList)"
+                      Overwrite="true"
+                      Lines="@(__app_manifests)"
+                      Condition="'$(DistroSkipApps)'!='true'"/>
+    <Exec Condition="'$(DistroSkipApps)'!='true'"
+      Command="$(NIB) /machine:$(MACHINE) /bartok:$(BARTOK) /linker:$(LINK) /cache:&quot;$(DISTRO_CACHE_DIR)&quot; /libcache:&quot;$(DISTRO_LIB_DIR)&quot; /native:&quot;$(APPS_NATIVE_IMAGE_DIR)&quot; /options:&quot;$(NibOptionsFile)&quot; /temp:&quot;$(DISTRO_TEMP_DIR)&quot; $(NIBOPTS) /apps:&quot;$(NibFileList)&quot;"/>
+
+    <Copy SourceFiles="
+          @(__app_exes->'$(APPS_NATIVE_IMAGE_DIR)\%(filename).$(Machine)');
+          @(__app_exes->'$(APPS_NATIVE_IMAGE_DIR)\%(filename).manifest')"
+          DestinationFiles="
+          @(__app_exes->'$(DISTRO_BINARIES_DIR)\%(filename).$(Machine)');
+          @(__app_exes->'$(DISTRO_BINARIES_DIR)\%(filename).$(Machine).manifest')"
+          SkipUnchangedFiles="true"/>
+
+    <MakeDir Condition="'$(ExportingBinaryFileList)'!=''"
+             Directories="@(ExportFileList->'%(RootDir)%(Directory)')" />
+
+    <WriteLinesToFile Condition="'$(ExportingBinaryFileList)'!=''"
+          File="$(ExportingBinaryFileList)"
+          Overwrite="true"
+          Lines="@(__app_exes->'$(DISTRO_BINARIES_DIR)\%(filename).$(Machine)');
+          @(__app_exes->'$(DISTRO_BINARIES_DIR)\%(filename).$(Machine).manifest')"
+     />
+
+    <ReadLinesFromFile Condition="'$(ImportingBinaryFileList)'!=''"
+          File="$(ImportingBinaryFileList)">
+          <Output TaskParameter="Lines" ItemName="__imported_app_files" />
+    </ReadLinesFromFile>
+
+    <Copy SourceFiles="@(__imported_app_files)"
+          DestinationFolder="$(DISTRO_BINARIES_DIR)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="ConvertKernelManifest"
+          Inputs="$(KERNEL_NATIVE_DIR)\kernel.$(Machine).manifest"
+          Outputs="$(DISTRO_BINARIES_DIR)\kernel.$(Machine).manifest"
+          DependsOnTargets="BuildBaseProjects">
+    <Exec Command="$(NIB) /machine:$(MACHINE) /cache:&quot;$(BUILD_ROOT)&quot; /libcache:&quot;$(BUILD_ROOT)&quot; /native:&quot;$(DISTRO_BINARIES_DIR)&quot; /temp:&quot;$(BUILD_ROOT)&quot; /manifest &quot;$(KERNEL_NATIVE_DIR)\kernel.$(Machine).manifest&quot;"/>
+  </Target>
+
+  <Target Name="ConvertTestPeManifest"
+          Inputs="$(KERNEL_NATIVE_DIR)\testpe.$(Machine).manifest"
+          Outputs="$(DISTRO_BINARIES_DIR)\testpe.$(Machine).manifest"
+          DependsOnTargets="BuildBaseProjects">
+    <Exec Command="$(NIB) /machine:$(MACHINE) /cache:&quot;$(BUILD_ROOT)&quot; /par /libcache:&quot;$(BUILD_ROOT)&quot; /native:&quot;$(DISTRO_BINARIES_DIR)&quot; /temp:&quot;$(BUILD_ROOT)&quot; /manifest &quot;$(KERNEL_NATIVE_DIR)\testpe.$(Machine).manifest&quot;"/>
+  </Target>
+
+
+  <!--
+  This target copies content files from projects to the distro output.
+  If an app project is included in the 'Application' item set of a distro project,
+  and that app project declares one or more 'Content' items, then those items will
+  be copied to the distribution output tree.  This allows apps to declare dependencies
+  on files, and have those files built as part of the distribution, similar to binplace.
+  -->
+  <Target Name="CopyContentFiles" Condition="'$(EnableContentFiles)'!='false'">
+    <MSBuild Projects="@(Application)" Targets="GetContentItems"
+             StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="AppContent" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+
+    <!-- <Message Text="AppContent: %(AppContent.identity) DistroPath=%(AppContent.DistroPath)"/> -->
+
+    <!-- Create directories for the content files, if any -->
+    <MakeDir Directories="$(DISTRO_SINGULARITY_DIR)\%(AppContent.DistroPath)"/>
+
+    <Copy SourceFiles="%(AppContent.identity)" DestinationFolder="$(DISTRO_FILES_DIR)\%(AppContent.DistroPath)" SkipUnchangedFiles="true"/>
+  </Target>
+
+  <Target Name="PublishTestProfiles"
+          DependsOnTargets="BuildAppsIL">
+    <Message Text="Publishing test profiles to Product Studio"/>
+
+    <!--
+    Filter all of the apps that we built earlier (in BuildAppsNative).
+    Select those that contain unit tests.
+    -->
+    <CreateItem Include="@(__app_build_outputs->'%(rootdir)%(directory)%(filename).tst')">
+      <Output Condition="'%(__app_build_outputs.Category)'=='Test'" ItemName="__unit_test_files" TaskParameter="Include"/>
+    </CreateItem>
+
+    <Message Text="  Unit test files: %(__unit_test_files.identity)" />
+
+    <!-- This one submits everything to a single process, as a batch. -->
+    <!-- <Exec Command="echo submit_as_batch.exe /out:some_big_summary_file.tst @(__unit_test_files,' ')"/>
+     -->
+
+    <!-- This one invokes a command, one for each test case. -->
+    <Exec Command="&quot;$(SINGULARITY_ROOT)\Build\Internal\TestExport&quot; -i %(__unit_test_files->'&quot;%(identity)&quot;',' ')" Condition="'%(__unit_test_files.identity)'!=''"/>
+
+  </Target>
+
+</Project>

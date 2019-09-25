@@ -1,0 +1,36 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<!--
+
+Projects that are "driver" apps should import this targets file.
+
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+      <ApplicationCategory>Driver</ApplicationCategory>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Drivers\Transforms\DriverTransform.csproj">
+      <ExcludeFromNativeReferences>true</ExcludeFromNativeReferences>
+    </ProjectReference>
+    
+  </ItemGroup>
+
+  <Import Condition="'$(SingularityPathsIncluded)'==''" Project="Paths.targets"/>
+
+  <PropertyGroup>
+    <OutputPath Condition="'$(OutputPath)'==''">$(DRIVDIR)</OutputPath>
+  </PropertyGroup>
+
+  <Import Project="App.targets"/>
+  
+</Project>

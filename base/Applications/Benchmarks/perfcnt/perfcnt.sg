@@ -1,0 +1,437 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+using Microsoft.Singularity.Processor;
+using System;
+using System.Runtime.CompilerServices;
+using System.Globalization;
+using System.Threading;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="HW performance counter utility", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [BoolParameter( "k", Default=false, HelpMessage="Configure for kompute-bound counting.")]
+        internal bool doComputeBound;
+
+        [BoolParameter( "g", Default=false, HelpMessage="Configure for general counting.")]
+        internal bool doGeneral;
+
+        [BoolParameter( "i", Default=false, HelpMessage="Configure for I/O counting.")]
+        internal bool doIO;
+
+        [BoolParameter( "t", Default=false, HelpMessage="Configure for TLB counting.")]
+        internal bool doTLB;
+
+        [BoolParameter( "d", Default=false, HelpMessage="Configure for Data Cache counting.")]
+        internal bool doCache;
+
+        [BoolParameter( ".", Default=false, HelpMessage="Simple test.")]
+        internal bool doDot;
+
+        [BoolParameter( ",", Default=false, HelpMessage="Simple test.")]
+        internal bool doComma;
+
+        [BoolParameter( "z", Default=false, HelpMessage="Simple test.")]
+        internal bool doZ;
+
+        [BoolParameter( "s", Default=false, HelpMessage="Show counters.")]
+        internal bool doShow;
+
+        [BoolParameter( "b", Default=false, HelpMessage="Configure for branch counting.")]
+        internal bool doBranch;
+
+        [LongParameter( "e", Default=-1, HelpMessage="Configure performance counter 'n'.")]
+        internal long eventCounter;
+
+        [LongParameter( "ev", Default=-1, HelpMessage="Configure event value 'v'.")]
+        internal long eventValue;
+
+        [LongParameter( "p", Default=-1, HelpMessage="Read performance counter 'n'.")]
+        internal long counterReg;
+
+        [LongParameter( "c", Default=-1, HelpMessage="Read CPUID function 'n'.")]
+        internal long cpuidReg;
+
+        [LongParameter( "w", Default=-1, HelpMessage="Write 'v' to MSR 'n'.")]
+        internal long writeReg;
+
+        [LongParameter( "wv", Default=-1, HelpMessage="Write 'v' to MSR 'n'.")]
+        internal long writeValue;
+
+        [LongParameter( "r", Default=-1, HelpMessage="Read MSR 'n'.")]
+        internal long msrReg;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Perfcnt.AppMain(this);
+        }
+    }
+
+    [CLSCompliant(false)]
+    public struct PerfEvtSel
+    {
+        // Bits and Flags
+        public const uint CNT_MASK  = 0xff000000;
+        public const uint INV       = 0x00800000;
+        public const uint EN        = 0x00400000;
+        public const uint INT       = 0x00100000;
+        public const uint PC        = 0x00080000;
+        public const uint E         = 0x00040000;
+        public const uint OS        = 0x00020000;
+        public const uint USR       = 0x00010000;
+        public const uint UNIT_MASK = 0x0000ff00;
+        public const uint SELECTOR  = 0x000000ff;
+
+        // Common setting: Count all, but don't interrupt,
+        public const uint COUNT     = (EN | PC | OS | USR);
+        // public const uint COUNT     = (EN | PC | E | OS | USR);
+
+        // Selector values.
+        public const uint DCacheRefillFromL2OrSys           = 0x42; // Speculative
+        public const uint DCacheRefillFromSystem            = 0x43; // Speculative
+        public const uint DtlbL1MissL2Hit                   = 0x45; // Speculative
+        public const uint DtlbL1MissL2Miss                  = 0x46; // Speculative
+        public const uint CyclesNotHalted                   = 0x76; // No E
+        public const uint RequestsToL2Cache                 = 0x7d;
+        public const uint L2CacheMiss                       = 0x7e;
+        public const uint ItlbL1MissL2Hit                   = 0x84;
+        public const uint ItlbL1MissL2Miss                  = 0x85;
+        public const uint RetiredInstructions               = 0xc0; // No E
+        public const uint RetiredBranchInstructions         = 0xc2; // No E
+        public const uint RetiredBranchesMispredicted       = 0xc3; // No E
+        public const uint RetiredBranchesTaken              = 0xc4; // No E
+        public const uint CyclesInterruptsMasked            = 0xcd; // No E
+        public const uint CyclesInterruptsBlocked           = 0xce; // No E
+    }
+
+    public class Perfcnt
+    {
+        public static bool IsIntel;
+        public static bool IsAmd;
+
+        public static ulong Parse(string! value)
+        {
+            if (value.StartsWith("0x") || value.StartsWith("0X")) {
+                return System.UInt64.Parse(value, NumberStyles.AllowHexSpecifier);
+            }
+            else {
+                return System.UInt64.Parse(value);
+            }
+        }
+
+        public static void Reset(uint pmc, ulong value)
+        {
+            if (IsAmd) {
+                // Clear the event selector.
+                Processor.WriteMsr(0xc0010000 + pmc, 0);
+                // Clear the performance counter.
+                Processor.WriteMsr(0xc0010004 + pmc, 0);
+                // Enable the event selector.
+                Processor.WriteMsr(0xc0010000 + pmc, value);
+            }
+        }
+
+        public static void ResetGlobalPerfCounters()
+        {
+            DebugStub.WritePerfCounter(0, 0);
+            DebugStub.WritePerfCounter(1, 0);
+            DebugStub.WritePerfCounter(2, 0);
+            DebugStub.WritePerfCounter(3, 0);
+        }
+
+        public static void Clear()
+        {
+            Console.WriteLine("Clearing counters to zero.");
+            ResetGlobalPerfCounters();
+            if (IsAmd) {
+                for (uint pmc = 0; pmc < 4; pmc++) {
+                    Processor.WriteMsr(0xc0010004 + pmc, 0);
+                }
+            }
+            DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+        }
+
+        public static string EvtSelToString(ulong value)
+        {
+            switch (value & 0xff) {
+                case PerfEvtSel.DCacheRefillFromL2OrSys:    return "DCache_Refill_L2";
+                case PerfEvtSel.DCacheRefillFromSystem:     return "DCache_Refill_Sys";
+                case PerfEvtSel.DtlbL1MissL2Hit:            return "DTLB_L2_Hit";
+                case PerfEvtSel.DtlbL1MissL2Miss:           return "DTBL_L2_Miss";
+                case PerfEvtSel.CyclesNotHalted:            return "CyclesNotHalted";
+                case PerfEvtSel.RequestsToL2Cache:
+                    if ((value & 0x400) != 0) {
+                        return "TLB_L2_Requests";
+                    }
+                    return "Req_L2_Cache";
+                case PerfEvtSel.L2CacheMiss:
+                    if ((value & 0x400) != 0) {
+                        return "TLB_L2_Miss";
+                    }
+                    return "L2_Cache_Miss";
+                case PerfEvtSel.ItlbL1MissL2Hit:            return "ITLB_L2_Hit";
+                case PerfEvtSel.ItlbL1MissL2Miss:           return "ITLB_L2_Miss";
+                case PerfEvtSel.RetiredInstructions:        return "Retired_Inst.";
+                case PerfEvtSel.RetiredBranchInstructions:  return "Branches";
+                case PerfEvtSel.RetiredBranchesMispredicted:return "Br_Mispredicted";
+                case PerfEvtSel.RetiredBranchesTaken:       return "Br_Taken";
+                case PerfEvtSel.CyclesInterruptsMasked:     return "Ints_Masked (cyc)";
+                case PerfEvtSel.CyclesInterruptsBlocked:    return "Ints_Blocked (cyc)";
+                default:
+                    return String.Format("{0:x16}", value);
+            }
+        }
+
+        public static void DumpNow(bool config)
+        {
+            ulong b0 = DebugStub.ReadPerfCounter(7);
+            ulong t0 = Processor.GetCycleCount();
+            ulong e0 = Processor.ReadMsr(0xc0010000);
+            ulong e1 = Processor.ReadMsr(0xc0010001);
+            ulong e2 = Processor.ReadMsr(0xc0010002);
+            ulong e3 = Processor.ReadMsr(0xc0010003);
+            ulong p0 = Processor.ReadPmc(0);
+            ulong p1 = Processor.ReadPmc(1);
+            ulong p2 = Processor.ReadPmc(2);
+            ulong p3 = Processor.ReadPmc(3);
+            ulong z0 = DebugStub.ReadPerfCounter(0);
+            ulong z1 = DebugStub.ReadPerfCounter(1);
+            ulong z2 = DebugStub.ReadPerfCounter(2);
+            ulong z3 = DebugStub.ReadPerfCounter(3);
+
+
+            t0 = t0 - b0;
+
+            if (config) {
+                Console.WriteLine("evt: {0:x16} {1:x16} {2:x16} {3:x16}", e0, e1, e2, e3);
+            }
+
+            Console.WriteLine("evt: {0,16} {1,16} {2,16} {3,16}",
+                              EvtSelToString(e0),
+                              EvtSelToString(e1),
+                              EvtSelToString(e2),
+                              EvtSelToString(e3));
+            Console.WriteLine("pmc: {0:d16} {1:d16} {2:d16} {3:d16}",
+                              p0, p1, p2, p3);
+            Console.WriteLine("pfc: {0:d16} {1:d16} {2:d16} {3:d16}",
+                              z0, z1, z2, z3);
+
+            DebugStub.WriteLine("evt: {0,16} {1,16} {2,16} {3,16} {4,16}",
+                                __arglist("Cycles",
+                                          EvtSelToString(e0),
+                                          EvtSelToString(e1),
+                                          EvtSelToString(e2),
+                                          EvtSelToString(e3)));
+            DebugStub.WriteLine("pmc: {0:d16} {1:d16} {2:d16} {3:d16} {4:d16}",
+                                __arglist(t0, p0, p1, p2, p3));
+            DebugStub.WriteLine("pfc: {0:d16} {1:d16} {2:d16} {3:d16} {4:d16}",
+                                __arglist(z0 + z1 + z2 + z3, z0, z1, z2, z3));
+        }
+
+        internal static int AppMain(Parameters! config)
+        {
+            // Temporaries for command-line parsing
+            uint eax;
+            uint ebx;
+            uint ecx;
+            uint edx;
+
+            Processor.ReadCpuid(0, out eax, out ebx, out ecx, out edx);
+            if (ebx == 0x756e6547 && ecx == 0x6c65746e && edx == 0x49656e69) {
+                IsIntel = true;
+            }
+            else if (ebx == 0x68747541 && ecx == 0x444d4163 && edx == 0x69746e65) {
+                IsAmd = true;
+            }
+
+            uint reg;
+            ulong val;
+
+            if (config.eventCounter != -1) { // program event selector N.
+                reg = (uint) config.eventCounter;
+                val = (ulong) config.eventValue;
+                if (config.eventValue == -1) {
+                    Console.WriteLine("Must specify both -en and -ev to configure an event.");
+                    return -1;
+                }
+                Reset(reg, val);
+                Console.WriteLine("Reset pmc{0}:{1:x16}", reg, val);
+            }
+
+
+            if (config.counterReg != -1) { // read performance counter.
+                reg = (uint)config.counterReg;
+                val = Processor.ReadPmc(reg);
+                Console.WriteLine("read pmc{0}:{1:x16}", reg, val);
+            }
+
+            if (config.doBranch) {  // configure for branch evaluation.
+                ResetGlobalPerfCounters();
+                Reset(0, PerfEvtSel.COUNT | PerfEvtSel.RetiredInstructions);
+                Reset(1, PerfEvtSel.COUNT | PerfEvtSel.RetiredBranchInstructions);
+                Reset(2, PerfEvtSel.COUNT | PerfEvtSel.RetiredBranchesMispredicted);
+                Reset(3, PerfEvtSel.COUNT | PerfEvtSel.RetiredBranchesTaken);
+                DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+            }
+
+
+            if (config.doComputeBound) {   // configure for compute - bound tasks.
+                ResetGlobalPerfCounters();
+                Reset(0, PerfEvtSel.COUNT | PerfEvtSel.RetiredInstructions);
+                Reset(1, PerfEvtSel.COUNT | PerfEvtSel.RetiredBranchInstructions);
+                Reset(2, PerfEvtSel.COUNT | PerfEvtSel.RequestsToL2Cache | 0x400);
+                Reset(3, PerfEvtSel.COUNT | PerfEvtSel.L2CacheMiss | 0x300);
+                DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+            }
+
+            if (config.doGeneral) {  // configure for General evaluation.
+                ResetGlobalPerfCounters();
+                Reset(0, PerfEvtSel.COUNT | PerfEvtSel.CyclesNotHalted);
+                Reset(1, PerfEvtSel.COUNT | PerfEvtSel.RetiredInstructions);
+                Reset(2, PerfEvtSel.COUNT | PerfEvtSel.CyclesInterruptsMasked);
+                Reset(3, PerfEvtSel.COUNT | PerfEvtSel.RequestsToL2Cache | 0x400);
+                DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+            }
+
+            if (config.doIO) {  // configure for I/O counting.
+                ResetGlobalPerfCounters();
+                Reset(0, PerfEvtSel.COUNT | PerfEvtSel.CyclesNotHalted);
+                Reset(1, PerfEvtSel.COUNT | PerfEvtSel.RetiredInstructions);
+                Reset(2, PerfEvtSel.COUNT | PerfEvtSel.CyclesInterruptsMasked);
+                Reset(3, PerfEvtSel.COUNT | PerfEvtSel.CyclesInterruptsBlocked);
+                DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+            }
+
+            if (config.doTLB) {  // configure for TLB counting.
+                // Just count TLB page walks on L2 Cache.
+                ResetGlobalPerfCounters();
+                Reset(0, PerfEvtSel.COUNT | PerfEvtSel.RequestsToL2Cache | 0x400);
+                Reset(1, PerfEvtSel.COUNT | PerfEvtSel.L2CacheMiss | 0x400);
+                Reset(2, PerfEvtSel.COUNT | PerfEvtSel.DtlbL1MissL2Hit);
+                Reset(3, PerfEvtSel.COUNT | PerfEvtSel.DtlbL1MissL2Miss);
+                DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+            }
+
+            if (config.doCache) {  // Data Cache
+                // Just count TLB page walks on L2 Cache.
+                ResetGlobalPerfCounters();
+                Reset(0, PerfEvtSel.COUNT | PerfEvtSel.RequestsToL2Cache | 0x300);
+                Reset(1, PerfEvtSel.COUNT | PerfEvtSel.L2CacheMiss | 0x300);
+                Reset(2, PerfEvtSel.COUNT | PerfEvtSel.DCacheRefillFromSystem | 0x1f00);
+                Reset(3, PerfEvtSel.COUNT | PerfEvtSel.DCacheRefillFromL2OrSys);
+                DebugStub.WritePerfCounter(7, Processor.GetCycleCount());
+            }
+
+            if (config.cpuidReg != -1) {  // read cpuid.
+                reg = (uint)config.cpuidReg;
+                uint v0;
+                uint v1;
+                uint v2;
+                uint v3;
+                Processor.ReadCpuid(reg, out v0, out v1, out v2, out v3);
+                Console.WriteLine("read cpuid{0:x8}:{1:x8}.{2:x8}.{3:x8}.{4:x8}",
+                                  reg, v0, v1, v2, v3);
+            }
+
+            if (config.msrReg != -1) {  // read msr.
+                reg = (uint)config.msrReg;
+                if (reg == 0) {
+                    Console.WriteLine("Invalid read msr: {0}", reg);
+                }
+                else {
+                    val = Processor.ReadMsr(reg);
+                    Console.WriteLine("read msr{0:x8}:{1:x16}", reg, val);
+                }
+            }
+
+            if (config.writeReg != -1) { // write msr.
+                if (config.writeValue == -1) {
+                    Console.WriteLine("Invalid write msr: reg={0:x}, value{1:x}", config.writeReg, config.writeValue);
+                    return -1;
+                }
+                reg = (uint)config.writeReg;
+                val = (ulong) config.writeValue;
+                Console.WriteLine("write msr{0:x8}:{1:x16}", reg, val);
+                Processor.WriteMsr(reg, val);
+            }
+
+            if (config.doDot) { //Simple test.
+                Clear();
+                int yy = 0;
+                int sign = 0;
+                for (int zz = 0; zz < 100000; zz++) {
+                    sign *= -1;
+                    yy = yy + sign;
+                }
+                DumpNow(true);
+            }
+
+            if (config.doComma) { //Simple test.
+                Clear();
+                int yy = 0;
+                int sign = 0;
+                for (int zz = 0; zz < 100000; zz++) {
+                    sign *= -1;
+                    yy = yy + sign;
+                }
+                Thread.Sleep(2);
+                DumpNow(true);
+            }
+
+            if (config.doZ) { //Simplest test.
+                // Clear the event selectors.
+                Processor.WriteMsr(0xc0010000, 0);
+                Processor.WriteMsr(0xc0010001, 0);
+                // Clear the performance counters.
+                Processor.WriteMsr(0xc0010004, 0);
+                Processor.WriteMsr(0xc0010005, 0);
+                // Enable the event selectors.
+                Processor.WriteMsr(0xc0010000, 0x4f00c0);
+                Processor.WriteMsr(0xc0010001, 0x4f00c2);
+
+                int yy = 0;
+                int sign = 1;
+                for (int zz = 0; zz < 100000; zz++) {
+                    sign *= -1;
+                    yy = yy + sign;
+                }
+
+                ulong p0 = Processor.ReadPmc(0);
+                ulong p1 = Processor.ReadPmc(1);
+                Console.WriteLine("retired instrcts: {0}", p0);
+                Console.WriteLine("retired branches: {0}", p1);
+            }
+
+            if (false /* FIXFIX need a really long check here */) {
+                DumpNow(false);
+            }
+
+            if (config.doShow /* FIXFIX need a really long check here */) {
+                DumpNow(false);
+            }
+
+            return 0;
+        }
+    }
+}

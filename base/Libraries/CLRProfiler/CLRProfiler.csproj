@@ -1,0 +1,38 @@
+﻿<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Libraries\xxx\xxx.csproj
+#
+#   Note:
+#
+##############################################################################
+-->
+
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>CLRProfiler</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="CLRProfiler.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.sg" />
+    <!-- <ProjectReference Include="$(SINGULARITY_ROOT)\Applications\Runtime\Corlibsg.csproj"/> -->
+    <ProjectReference Include="..\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Directory.Contracts\Directory.Contracts.csproj" />
+    <!-- <ProjectReference Include="..\Singularity.V1\Singularity.V1.csproj"/> -->
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\App.targets" />
+</Project>

@@ -1,0 +1,60 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Some basic tests of system code on SMP.
+//
+
+using System;
+using System.Threading;
+
+using Microsoft.Singularity.UnitTest;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Contracts;
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(DefaultAction=true)]
+    internal class Parameters {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return SmpTest.AppMain(this);
+        }
+    }
+
+    public class SmpTest
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            UnitTest.Add("process creation",
+                         new UnitTest.TestDelegate(ForkTest.Run));
+
+            UnitTest.Add("heap and GC (large allocations)",
+                         new UnitTest.TestDelegate(HeapTest.TestLargeAllocs));
+
+            UnitTest.Add("heap and GC (small allocations)",
+                         new UnitTest.TestDelegate(HeapTest.TestSmallAllocs));
+
+            UnitTest.Add("process creation",
+                         new UnitTest.TestDelegate(ForkTest.Run));
+
+            return ((UnitTest.Run(true) == UnitTest.Result.Passed) &&
+                    Assert.Failures == 0) ? 0 : 1;
+        }
+    }
+}

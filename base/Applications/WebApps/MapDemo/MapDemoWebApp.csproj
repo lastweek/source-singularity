@@ -1,0 +1,153 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="3.5">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>MapDemoWebApp</AssemblyName>
+    <NoNullCheck>true</NoNullCheck>
+    <AssumeFieldsNonNull>true</AssumeFieldsNonNull>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Compile Include="MapDemo.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\WebApps.Contracts\WebApps.Contracts.csproj" />
+    <!--ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\Hypercall.Contracts\Hypercall.Contracts.csproj" /-->
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\SeattleTrafficProxy.Contracts\SeattleTrafficProxy.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\MapPointProxy.Contracts\MapPointProxy.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\WebApps\WebAppsLib.csproj" />
+    <ProjectReference Include="..\Driver\WebAppDriver.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Xml\Xml.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />    
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Contracts\FileSystem.Contracts\FileSystem.Contracts.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+   </ItemGroup>
+
+
+  <ItemGroup>
+
+    <BinaryResource Include="mainpage.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>MainMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="seattle_all.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>SeattleAllMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="seattle_star.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>SeattleStarMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="seattle_sbc.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>SeattleSBCMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="seattle_tullys.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>SeattleTullysMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+
+    <BinaryResource Include="redmond_all.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>RedmondAllMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="redmond_star.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>RedmondStarMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="redmond_sbc.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>RedmondSBCMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="redmond_tullys.htm">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>RedmondTullysMapPage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="blue.bmp">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>BlueIcon</ClassName>
+      <FieldName>ImageData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="red.bmp">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>RedIcon</ClassName>
+      <FieldName>ImageData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="green.bmp">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>GreenIcon</ClassName>
+      <FieldName>ImageData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="tower.bmp">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>TowerIcon</ClassName>
+      <FieldName>ImageData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="ve1.aspx">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>VePage1</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="ve2.aspx">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>VePage2</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="ve3.aspx">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>VePage3</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="ve.aspx">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>VePage</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+    <BinaryResource Include="MapControl.js">
+      <Namespace>Microsoft.Singularity.WebApps</Namespace>
+      <ClassName>MapControl</ClassName>
+      <FieldName>HTMLData</FieldName>
+    </BinaryResource>
+
+  </ItemGroup>
+  
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

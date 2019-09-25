@@ -1,0 +1,116 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:
+//
+
+using FileSystem.Utils;
+using System;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Write contents of file to stdout", DefaultAction=true)]
+    internal class Parameters 
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [StringParameter( "filename", Mandatory=true, Position=0, HelpMessage="Name of file.")]
+        internal string fileName;
+
+        [BoolParameter( "q", Default=false, HelpMessage="Quiet Mode: read file but do not write to stdout")]
+        internal bool quietMode;
+
+        [BoolParameter( "d", Default=false, HelpMessage="Write Contents to Debugger")]
+        internal bool debugMode;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return Type.AppMain(this);
+        }
+    }
+
+    public class Type
+    {
+        internal static int AppMain(Parameters! config)
+        {
+            string fileName;
+            FileContract.Imp fileImp;
+            long readSize = 512;
+            long readOffset = 0;
+            byte* opt(ExHeap[]) buf = new[ExHeap] byte[readSize];
+
+            byte [] bytes = new byte[readSize];
+
+            DirectoryServiceContract.Imp rootNS = ((!)config.nsRef).Acquire(); 
+            if (rootNS == null) { 
+                throw new Exception("Unable to acquire handle to the Directory Service root"); 
+            } 
+            
+            rootNS.RecvSuccess();
+
+            fileImp = FileUtils.OpenFile((!)config.fileName, rootNS);
+            delete rootNS; 
+
+            if (fileImp == null) {
+                delete buf;
+                Console.WriteLine("Unable to open file " + config.fileName);
+                return 1;
+            }
+
+            do
+            {
+                fileImp.SendRead(buf, 0, readOffset, readSize);
+                switch receive {
+                    case fileImp.AckRead( _buf,  bytesRead,  error) :
+                        if (error != 0)
+                            Console.WriteLine("Got Error "+error);
+                        buf = _buf;
+                        Bitter.ToByteArray(buf,0,(int) bytesRead,bytes,0);
+                        string str = Encoding.ASCII.GetString(bytes, 0,(int)bytesRead);
+                        if (!config.quietMode) Console.Write(str);
+                        if (config.debugMode) DebugStub.Write(str);
+                        readOffset += bytesRead;
+                        if (bytesRead < readSize) {
+                            delete buf;
+                            goto end;
+                        }
+                        break;
+                    case fileImp.ChannelClosed() :
+                        goto end;
+                        break;
+                    case unsatisfiable :
+                        goto end;
+                        break;
+                }
+            } while (true);
+end:        delete fileImp;
+            return 0;
+        }
+
+    } // class Type
+}

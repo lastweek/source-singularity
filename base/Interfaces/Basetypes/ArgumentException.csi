@@ -1,0 +1,31 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//=============================================================================
+//
+// Class: ArgumentException
+//
+// Purpose: Exception class for invalid arguments to a method.
+//
+//=============================================================================  
+
+using System;
+
+namespace System
+{
+
+    // The ArgumentException is thrown when an argument does not meet
+    // the contract of the method.  Ideally it should give a meaningful error
+    // message describing what was wrong and which parameter is incorrect.
+    //
+    //| <include file='doc\ArgumentException.uex' path='docs/doc[@for="ArgumentException"]/*' />
+    public class ArgumentException : SystemException {
+        public ArgumentException();
+        public ArgumentException(String message);
+        public ArgumentException(String message, Exception innerException);
+        public ArgumentException(String message, String paramName, Exception innerException);
+        public ArgumentException(String message, String paramName);
+    }
+}

@@ -1,0 +1,70 @@
+#
+# A script for automated asplos protection domain benchmark.
+#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+#
+
+#mkfs '/dev/vol0.2'
+#if (!($? == 0)) {
+#   echo 'bb: mkfs /dev/vol0.2 failed.'
+#   decho 'bb: mkfs /dev/vol0.2 failed.'
+#   exit
+#}
+#
+#fsmount '/dev/vol0.2' '/fs'
+#if (!($? == 0)) {
+#   echo 'bb: fsmount /dev/vol0.2 failed.'
+#   decho 'bb: fsmount /dev/vol0.2 failed.'
+#   exit
+#}
+
+testpe '!+'
+tasklist '-d'
+
+i = 0
+while ($i < 10) {
+    clear
+    echo 'bb: bartok-'$i
+    decho 'bb: bartok-'$i
+    perfcnt '-k'
+    if (!($? == 0)) {
+       echo 'bb: perfcnt -k failed.'
+       decho 'bb: perfcnt -k failed.'
+       exit
+    }
+
+    bartok '/Singularity' '/verbosity:silence' '/LinkedStacksRequireExternalBound=true' '/LinkedStacksDumpBounds=true' '/BackEndComments=true' '/GCInlineArrayAllocations=false' '/GCInlineFixedAllocations=false' '/GCIntrinsicFixedAllocations=false' '/GCInlineWriteBarrier=false' '/LinkedStacks=true' '/UseSegmentRegister=true' '/OmitFramePointer=false' '/SymbolicDebug=true' '/DebugInline=true' '/UnnameTracedPtrs=true' '/Warnings=true' '/WholeProgram=true' '/GenCoffLineNumber=false' '/MarkSweepGC' '/minopt' '/IrSimpleInliner=false' '/DumpMethodSizes=false' '/LinkedStacksTrace=false' '/LinkedStacksDumpBounds=false' '/LinkedStacksDumpEntryPointBounds=false' '/out:' '\blackhole\kernel.obj' '/outdir:' '\blackhole' '/lib:' '\init' '\init\kernel.exe' '\init\Diagnostics.Contracts.dll' '\init\Diagnostics.dll' '\init\Directory.Contracts.dll' '\init\Directory.dll' '\init\Drivers.dll' '\init\FileSystem.Contracts.dll' '\init\Hal.LegacyPC.dll' '\init\Hypercall.Contracts.dll' '\init\Hypercall.dll' '\init\ILHelpers.dll' '\init\Io.Contracts.dll' '\init\IoSystem.dll' '\init\Loader.dll' '\init\Microsoft.SingSharp.Runtime.dll' '\init\Security.Contracts.dll' '\init\SecurityService.dll' '\init\Security.dll' '\init\Stress.Contracts.dll' '\init\Stress.dll' '\init\System.Compiler.Runtime.dll'
+    if (!($? == 0)) {
+       echo 'bb: bartok failed.'
+       decho 'bb: bartok failed.'
+       exit
+    }
+
+    perfcnt '-s'
+    tasklist '-d'
+    if (!($? == 0)) {
+       echo 'bb: perfcnt failed.'
+       decho 'bb: perfcnt failed.'
+       exit
+    }
+#    delete '/fs/kernel.obj'
+#    delete '/fs/kernel_info.obj'
+#    delete '/fs/kernel_superobj.obj'
+    i = $i + 1
+}
+
+testpe '!-'
+
+echo 'bb: finished with bartok'
+decho 'bb: finished with bartok'
+
+shutdown
+
+# Magic exit code to shut machine down,
+# taken from Kernel\Singularity\BootInfo.cs:
+#
+# 0x1fff (8191) = EXIT_AND_RESTART
+# 0x1ffe (8190) = EXIT_AND_SHUTDOWN
+# 0x1ffd (8189) = EXIT_AND_WARMBOOT
+# 0x1ffc (8188) = EXIT_AND_HALT
+exit 8188

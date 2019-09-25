@@ -1,0 +1,87 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PacketFifo.sg
+//
+
+namespace Microsoft.Singularity.Io.Net
+{
+    using System;
+    using System.Runtime.InteropServices;
+    using Microsoft.Contracts;
+    using Microsoft.SingSharp;
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Channels;
+
+    public rep struct PacketFifo : ITracked
+    {
+        private Packet*[]! in ExHeap packets;
+        private int head;
+        private int length;
+
+        public PacketFifo(int capacity)
+        {
+            this.packets = new [ExHeap] Packet* [capacity];
+            this.head   = 0;
+            this.length = 0;
+        }
+
+        public int Capacity
+        {
+            get { expose (this) { return this.packets.Length; } }
+        }
+
+        public int Count
+        {
+            get { expose (this) { return this.length; } }
+        }
+
+        public void Push([Claims] Packet*! in ExHeap p)
+            requires this.Count < this.Capacity;
+        {
+            expose (this) {
+                int index = this.head;
+                expose (this.packets[index]) {
+                    assert this.packets[index] == null;
+                    delete this.packets[index];
+                    this.packets[index] = p;
+                }
+                this.head = (this.head + 1) % this.Capacity;
+                this.length++;
+            }
+        }
+
+        public void Push(PacketFifo*! in ExHeap donor, int count)
+            requires this.Count + count <= this.Capacity;
+        {
+            count = Math.Min(donor->Count, count);
+            while (count-- > 0) {
+                this.Push(donor->Pop());
+            }
+        }
+
+        public void Push(PacketFifo*! in ExHeap donor)
+            requires this.Count + donor->Count <= this.Capacity;
+        {
+            Push(donor, donor->Count);
+        }
+
+        public Packet*! in ExHeap Pop()
+            requires this.Count > 0;
+        {
+            expose (this) {
+                Packet*! in ExHeap packet;
+                int index = (this.Capacity + this.head - this.length) % this.Capacity;
+                expose (this.packets[index]) {
+                    packet = (!)packets[index];
+                    this.packets[index] = null;
+                }
+                this.length--;
+                return packet;
+            }
+        }
+    }
+}

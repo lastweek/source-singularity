@@ -1,0 +1,136 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+
+namespace Microsoft.Singularity.ServiceManager
+{
+    public enum ServiceError : uint
+    {
+        None = 0,
+
+        ChannelClosed,
+        ContractNotSupported,
+        ServiceNotFound,
+        PermissionDenied,
+        InvalidArguments,
+        ServiceExists,
+        ErrorLoadingManifest,
+        ServiceHasInvalidManifest,
+        CreateProcessFailed,
+        FailedSetChannels,
+        StartProcessFailed,
+        ServiceIsAlreadyRunning,
+        ServiceIsStopping,
+        ServiceIsNotRunning,
+        ServiceIsStarting,
+        InternalError,
+        ServiceIsAdministrativelyDisabled,
+        ServiceIsDeleted,
+        ServiceIsMarkedForDeletion,
+        ServiceIsDefective,
+        ServiceIsAlreadyStarting,
+        CannotStopService,
+
+
+        Unknown = 0xFFFFFFFF
+    }
+    
+    // There are better places for this (which don't exist yet),
+    // and there are also much worse places for this.
+    public static class ServiceEnums
+    {
+        public static string! ToString(ServiceState value)
+        {
+            switch (value) {
+                case ServiceState.Stopped:  return "Stopped";
+                case ServiceState.Starting: return "Starting";
+                case ServiceState.Running:  return "Running";
+                case ServiceState.Stopping: return "Stopping";
+                default:
+                    return ((int)value).ToString();
+            }
+        }
+        
+        public static string! ToString(ServiceProcessState value)
+        {
+            switch (value) {
+                case ServiceProcessState.Starting: return "Starting";
+                case ServiceProcessState.Running:  return "Running";
+                case ServiceProcessState.Stopping: return "Stopping";
+                default:
+                    return ((int)value).ToString();
+            }
+        }
+        
+        public static string! ToString(ServiceActivationMode value)
+        {
+            switch (value) {
+                case ServiceActivationMode.AlwaysActive:    return "AlwaysActive";
+                case ServiceActivationMode.Manual:          return "Running";
+                case ServiceActivationMode.Demand:          return "Demand";
+                default:
+                    return ((int)value).ToString();
+            }
+        }
+        
+        public static string! ToString(ServiceError value)
+        {
+            switch (value) {
+                case ServiceError.None:                                 return "None";
+                case ServiceError.ChannelClosed:                        return "ChannelClosed";
+                case ServiceError.ContractNotSupported:                 return "ContractNotSupported";
+                case ServiceError.ServiceNotFound:                      return "ServiceNotFound";
+                case ServiceError.PermissionDenied:                     return "PermissionDenied";
+                case ServiceError.InvalidArguments:                     return "InvalidArguments";
+                case ServiceError.ServiceExists:                        return "ServiceExists";
+                case ServiceError.ErrorLoadingManifest:                 return "ErrorLoadingManifest";
+                case ServiceError.ServiceHasInvalidManifest:            return "ServiceHasInvalidManifest";
+                case ServiceError.CreateProcessFailed:                  return "CreateProcessFailed";
+                case ServiceError.FailedSetChannels:                    return "FailedSetChannels";
+                case ServiceError.StartProcessFailed:                   return "StartProcessFailed";
+                case ServiceError.ServiceIsAlreadyRunning:              return "ServiceIsAlreadyRunning";
+                case ServiceError.ServiceIsStopping:                    return "ServiceIsStopping";
+                case ServiceError.InternalError:                        return "InternalError";
+                case ServiceError.ServiceIsAdministrativelyDisabled:    return "ServiceIsAdministrativelyDisabled";
+                case ServiceError.ServiceIsNotRunning:                  return "ServiceIsNotRunning";
+                case ServiceError.ServiceIsDeleted:                     return "ServiceIsDeleted";
+                case ServiceError.ServiceIsMarkedForDeletion:           return "ServiceIsMarkedForDeletion";
+                case ServiceError.ServiceIsDefective:                   return "ServiceIsDefective";
+                case ServiceError.ServiceIsAlreadyStarting:             return "ServiceIsAlreadyStarting";
+                case ServiceError.CannotStopService:                    return "CannotStopService";
+                
+                default:
+                    return ((int)value).ToString();
+            }
+        }
+        
+        public static string! ToString(ServiceLoad value)
+        {
+            switch (value) {
+                case ServiceLoad.Unknown:       return "Unknown";
+                case ServiceLoad.Low:           return "Low";
+                case ServiceLoad.Moderate:      return "Moderate";
+                case ServiceLoad.High:          return "High";
+                case ServiceLoad.Overloaded:    return "Overloaded";
+                default:
+                    return ((int)value).ToString();
+            }
+        }
+        
+        public static string! ToString(ServiceHealth value)
+        {
+            switch (value) {
+                case ServiceHealth.Unknown:                 return "Unknown";
+                case ServiceHealth.Normal:                  return "Normal";
+                case ServiceHealth.UnrecoverableError:      return "UnrecoverableError";
+                case ServiceHealth.RecoverableError:        return "RecoverableError";
+                default:
+                    return ((int)value).ToString();
+            }
+        }
+    }
+}

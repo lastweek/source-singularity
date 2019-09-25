@@ -1,0 +1,661 @@
+//------------------------------------------------------------------------------
+//   Copyright (c) Microsoft Corporation. All Rights Reserved.
+//------------------------------------------------------------------------------
+
+namespace Microsoft.Singularity.WebServer
+{
+    using System;
+    using System.Collections;
+    using System.Diagnostics;
+    using System.Globalization;
+    using System.Net.Sockets;
+    using System.Security;
+    using System.Text;
+    using System.Web;
+
+    // SingSharp, Singularity
+    using Microsoft.SingSharp;
+    using Microsoft.SingSharp.Runtime;
+    using Microsoft.Singularity.Channels;
+
+    // Event types local to this provider   
+    internal enum WebServerEvent : ushort
+    {
+        ProcessRequest = 1
+    }
+
+    internal sealed class Request
+    {
+        // Statistics
+        private static ulong totalServed = 0;
+        private static ulong totalTime = 0;
+
+        private const ulong ReportRatio = 1ul;
+        private const int MaxChunkLength = 64 * 1024;
+        
+        private Connection! connection;
+        private Application application;
+
+        // raw request data
+        private const int maxHeaderBytes = 32*1024;
+        private byte[] headerBytes;
+        private int startHeadersOffset;
+        private int endHeadersOffset;
+        private ArrayList headerBytesStrings;
+
+        // parsed request data
+        private string verb;
+        private string url;
+        private string protocol;
+
+        private string path;
+        private string filePath;
+        private string pathInfo;
+        private string queryString;
+        private byte[] queryStringBytes;
+
+        private int contentLength;
+        private int preloadedContentLength;
+        private byte[] preloadedContent;
+
+        private string allRawHeaders;
+        private string[][] unknownRequestHeaders;
+        private string[] knownRequestHeaders;
+        private bool specialCaseStaticFileHeaders;
+
+        // cached response
+        private bool headersSent;
+        private int responseStatus;
+        private StringBuilder responseHeadersBuilder;
+        private ArrayList responseBodyBytes;    // Contains byte[] or VContainer<byte> elements.
+
+        private bool silentMode, debugMode;
+
+        internal Request(Connection! connection, bool doSilent, bool doDebug)
+        {
+            this.connection = connection;
+            this.silentMode = doSilent;
+            this.debugMode = doDebug;
+            base();
+        }
+
+        internal void Process()
+        {
+            ReadAllHeaders();
+
+            // Limit to local requests only
+            if (!connection.IsLocal) {
+                connection.WriteErrorAndClose(403);
+                return;
+            }
+
+            if (headerBytes == null || endHeadersOffset < 0 ||
+                headerBytesStrings == null || headerBytesStrings.Count == 0) {
+                connection.WriteErrorAndClose(400);
+                return;
+            }
+
+            if (!ParseRequestLine()) {
+                return; // ParseRequestLine() has closed the connection
+            }
+
+            Monitoring.Log(Monitoring.Provider.WebServer,
+                           (ushort)WebServerEvent.ProcessRequest,
+                           this.GetUriPath());
+
+            ParseHeaders();
+
+            ParsePostedContent();
+
+            if (verb == "POST" && contentLength > 0 && preloadedContentLength < contentLength) {
+                connection.Write100Continue();
+            }
+
+            PrepareResponse();
+
+            // Time the following block and report it as the request processing time
+            {
+                ulong startTime = Processor.CycleCount;
+
+                // Find or create an application that can service this request.
+                application = Application.FindOrCreateApplication(this);
+
+                if (application == null) {
+                    connection.WriteErrorAndClose(404);
+                }
+                else {
+                    application.Process(this);
+                }
+
+                // Calculate Elapsed Time, but Keep Positive
+                ulong elapsed = Processor.CycleCount - startTime;
+                if (elapsed > (ulong.MaxValue / 2)) {
+                    elapsed = 1;
+                }
+                
+                // Log a fraction of the Requests as 'xml' elements.
+                if (!silentMode && ((totalServed % Request.ReportRatio) == 0ul)) {
+                    Console.Write("<Processed Ordinal=\"{0,4}\" Cycles=\"{1,12}\" Request=\"{2}\" />{3}",
+                                  totalServed, elapsed, GetFilePath(), Environment.NewLine);
+                }
+                if (debugMode) {
+                    DebugStub.WriteLine("<Processed Ordinal=\"{0,4}\" Cycles=\"{1,12}\" Request=\"{2}\" />{3}",
+                                      __arglist(totalServed, elapsed, GetFilePath(), Environment.NewLine));
+                }
+
+                totalServed++;
+                totalTime += elapsed;
+            }
+        }
+
+        private bool TryReadAllHeaders()
+        {
+            // read the first packet (up to 32K)
+            byte[] headerBytesRead = connection.ReadRequestBytes(maxHeaderBytes);
+
+            if (headerBytesRead == null || headerBytesRead.Length == 0)
+                return false;
+
+            if (headerBytes != null) {
+                // previous partial read
+                int len = headerBytesRead.Length + headerBytes.Length;
+                if (len > maxHeaderBytes)
+                    return false;
+
+                byte[] bytes = new byte[len];
+                Buffer.BlockCopy(headerBytes, 0, bytes, 0, headerBytes.Length);
+                Buffer.BlockCopy(headerBytesRead, 0, bytes, headerBytes.Length, headerBytesRead.Length);
+                headerBytes = bytes;
+            }
+            else {
+                headerBytes = headerBytesRead;
+            }
+
+            // start parsing
+            startHeadersOffset = -1;
+            endHeadersOffset = -1;
+            headerBytesStrings = new ArrayList();
+
+            // find the end of headers
+            ByteParser parser = new ByteParser(headerBytes);
+
+            for (;;) {
+                ByteString line = parser.ReadLine();
+
+                if (line == null) {
+                    break;
+                }
+
+                if (startHeadersOffset < 0) {
+                    startHeadersOffset = parser.CurrentOffset;
+                }
+
+                if (line.IsEmpty) {
+                    endHeadersOffset = parser.CurrentOffset;
+                    break;
+                }
+
+                headerBytesStrings.Add(line);
+            }
+
+            return true;
+        }
+
+        private void ReadAllHeaders()
+        {
+            headerBytes = null;
+
+            do {
+                if (!TryReadAllHeaders()) {
+                    // something bad happened
+                    break;
+                }
+            }
+            while (endHeadersOffset < 0); // found \r\n\r\n
+        }
+
+        private bool ParseRequestLine()
+        {
+            ByteString requestLine = (ByteString)headerBytesStrings[0];
+            ByteString[] elems = requestLine.Split(' ');
+
+            if (elems == null || elems.Length < 2 || elems.Length > 3) {
+                connection.WriteErrorAndClose(400);
+                return false;
+            }
+
+            verb = elems[0].GetString();
+
+            ByteString urlBytes = elems[1];
+            url = urlBytes.GetString();
+
+            if (elems.Length == 3) {
+                protocol = elems[2].GetString();
+            }
+            else {
+                protocol = "HTTP/1.0";
+            }
+
+            // query string
+
+            int iqs = urlBytes.IndexOf('?');
+            if (iqs > 0) {
+                queryStringBytes = urlBytes.Substring(iqs+1).GetBytes();
+            }
+            else {
+                queryStringBytes = new byte[0];
+            }
+
+            iqs = url.IndexOf('?');
+            if (iqs > 0) {
+                path = url.Substring(0, iqs);
+                queryString = url.Substring(iqs+1);
+            }
+            else {
+                path = url;
+                queryStringBytes = new byte[0];
+            }
+
+            // url-decode path
+
+            if (path.IndexOf('%') >= 0) {
+                path = HttpUtility.UrlDecode(path, Encoding.UTF8);
+            }
+
+            // path info
+
+            int lastDot = path.LastIndexOf('.');
+            int lastSlh = path.LastIndexOf('/');
+
+            if (lastDot >= 0 && lastSlh >= 0 && lastDot < lastSlh && lastSlh < path.Length - 1) {
+                int ipi = path.IndexOf('/', lastDot);
+                filePath = path.Substring(0, ipi);
+                pathInfo = path.Substring(ipi);
+            }
+            else {
+                filePath = path;
+                pathInfo = String.Empty;
+            }
+
+            return true;
+        }
+
+        private void ParseHeaders()
+        {
+            knownRequestHeaders = new string[HttpWorkerRequest.RequestHeaderMaximum];
+
+            // construct unknown headers as array list of name1,value1,...
+            ArrayList headers = new ArrayList();
+
+            for (int i = 1; i < headerBytesStrings.Count; i++) {
+                string s = ((ByteString)headerBytesStrings[i]).GetString();
+
+                int c = s.IndexOf(':');
+
+                if (c >= 0) {
+                    string name = s.Substring(0, c).Trim();
+                    string value = s.Substring(c + 1).Trim();
+
+                    // remember
+                    int knownIndex = HttpWorkerRequest.GetKnownRequestHeaderIndex(name);
+                    if (knownIndex >= 0) {
+                        knownRequestHeaders[knownIndex] = value;
+                    }
+                    else {
+                        headers.Add(name);
+                        headers.Add(value);
+                    }
+                }
+            }
+
+            // copy to array unknown headers
+
+            int n = headers.Count / 2;
+            unknownRequestHeaders = new string[n][];
+            int j = 0;
+
+            for (int i = 0; i < n; i++) {
+                unknownRequestHeaders[i] = new string[2];
+                unknownRequestHeaders[i][0] = (string)headers[j++];
+                unknownRequestHeaders[i][1] = (string)headers[j++];
+            }
+
+            // remember all raw headers as one string
+
+            if (headerBytesStrings.Count > 1) {
+                allRawHeaders = Encoding.UTF8.GetString(headerBytes, startHeadersOffset, endHeadersOffset-startHeadersOffset);
+            }
+            else {
+                allRawHeaders = String.Empty;
+            }
+        }
+
+        private void ParsePostedContent()
+        {
+            contentLength = 0;
+            preloadedContentLength = 0;
+
+            string contentLengthValue = knownRequestHeaders[HttpWorkerRequest.HeaderContentLength];
+            if (contentLengthValue != null) {
+                try {
+                    contentLength = Int32.Parse(contentLengthValue);
+                }
+                catch {
+                }
+            }
+
+            if (headerBytes.Length > endHeadersOffset) {
+                preloadedContentLength = headerBytes.Length - endHeadersOffset;
+
+                if (preloadedContentLength > contentLength && contentLength > 0)
+                    preloadedContentLength = contentLength; // don't read more than the content-length
+
+                preloadedContent = new byte[preloadedContentLength];
+                Buffer.BlockCopy(headerBytes, endHeadersOffset, preloadedContent, 0, preloadedContentLength);
+            }
+        }
+
+        private void PrepareResponse()
+        {
+            headersSent = false;
+            responseStatus = 200;
+            responseHeadersBuilder = new StringBuilder();
+            responseBodyBytes = new ArrayList();
+        }
+
+        ///////////////////////////////////////////////////////////////////////////////////////////////
+        // Implementation of HttpWorkerRequest
+
+        internal string! GetUriPath()
+        {
+            return path;
+        }
+
+        internal string GetQueryString()
+        {
+            return queryString;
+        }
+
+        internal byte[] GetQueryStringRawBytes()
+        {
+            return queryStringBytes;
+        }
+
+        internal string GetRawUrl()
+        {
+            return url;
+        }
+
+        internal string GetHttpVerbName()
+        {
+            return verb;
+        }
+
+        internal string GetHttpVersion()
+        {
+            return protocol;
+        }
+
+        internal string GetRemoteAddress()
+        {
+            return connection.RemoteIP;
+        }
+
+        internal int GetRemotePort()
+        {
+            return 0;
+        }
+
+        internal string GetLocalAddress()
+        {
+            return connection.LocalIP;
+        }
+
+        internal string GetServerName()
+        {
+            string localAddress = GetLocalAddress();
+            if (localAddress.Equals("127.0.0.1")) {
+                return "localhost";
+            }
+            return localAddress;
+        }
+
+        internal int GetLocalPort()
+        {
+            return connection.ListenerPort;
+        }
+
+        internal string GetFilePath()
+        {
+            return filePath;
+        }
+
+        internal string GetPathInfo()
+        {
+            return pathInfo;
+        }
+
+        internal byte[] GetPreloadedEntityBody()
+        {
+            return preloadedContent;
+        }
+
+        [ Microsoft.Contracts.Pure ]
+        internal bool IsEntireEntityBodyIsPreloaded()
+        {
+            return (contentLength == preloadedContentLength);
+        }
+
+        internal int ReadEntityBody(byte[] buffer, int size)
+        {
+            int bytesRead = 0;
+            byte[] bytes = connection.ReadRequestBytes(size);
+
+            if (bytes != null && bytes.Length > 0) {
+                bytesRead = bytes.Length;
+                Buffer.BlockCopy(bytes, 0, buffer, 0, bytesRead);
+            }
+
+            return bytesRead;
+        }
+
+        internal string GetKnownRequestHeader(int index)
+        {
+            return knownRequestHeaders[index];
+        }
+
+        internal string GetUnknownRequestHeader(string name)
+        {
+            int n = unknownRequestHeaders.Length;
+
+            for (int i = 0; i < n; i++) {
+                if (string.Compare(name, unknownRequestHeaders[i][0], true) == 0) {
+                    return unknownRequestHeaders[i][1];
+                }
+            }
+
+            return null;
+        }
+
+        internal string[][] GetUnknownRequestHeaders()
+        {
+            return unknownRequestHeaders;
+        }
+
+        // TODO: No support for user-based security yet.
+        internal IntPtr GetUserToken()
+        {
+            // impersonation token
+            return IntPtr.Zero;
+        }
+
+        internal string GetServerVariable(string name)
+        {
+            string s = String.Empty;
+
+            switch (name) {
+                case "ALL_RAW":
+                    s = allRawHeaders;
+                    break;
+
+                case "SERVER_PROTOCOL":
+                    s = protocol;
+                    break;
+
+                case "AUTH_TYPE":
+                    if (GetUserToken() != IntPtr.Zero)
+                        s = "NTLM";
+                    break;
+            }
+
+            return s;
+        }
+
+        internal void SendStatus(int statusCode, string statusDescription)
+        {
+            responseStatus = statusCode;
+        }
+
+        internal void SendKnownResponseHeader(int index, string value)
+        {
+            if (headersSent) {
+                return;
+            }
+
+            switch (index) {
+                case HttpWorkerRequest.HeaderServer:
+                case HttpWorkerRequest.HeaderDate:
+                case HttpWorkerRequest.HeaderConnection:
+                    // ignore these
+                    return;
+                case HttpWorkerRequest.HeaderAcceptRanges:
+                    if (value == "bytes") {
+                        // use this header to detect when we're processing a static file
+                        specialCaseStaticFileHeaders = true;
+                        return;
+                    }
+                    break;
+                case HttpWorkerRequest.HeaderExpires:
+                case HttpWorkerRequest.HeaderLastModified:
+                    if (specialCaseStaticFileHeaders) {
+                        // NOTE: Ignore these for static files. These are generated
+                        //       by the StaticFileHandler, but they shouldn't be.
+                        return;
+                    }
+                    break;
+            }
+
+            responseHeadersBuilder.Append(HttpWorkerRequest.GetKnownResponseHeaderName(index));
+            responseHeadersBuilder.Append(": ");
+            responseHeadersBuilder.Append(value);
+            responseHeadersBuilder.Append("\r\n");
+        }
+
+        internal void SendUnknownResponseHeader(string name, string value)
+        {
+            if (headersSent)
+                return;
+
+            responseHeadersBuilder.Append(name);
+            responseHeadersBuilder.Append(": ");
+            responseHeadersBuilder.Append(value);
+            responseHeadersBuilder.Append("\r\n");
+        }
+
+        internal void SendCalculatedContentLength(int contentLength)
+        {
+            if (!headersSent) {
+                responseHeadersBuilder.Append("Content-Length: ");
+                responseHeadersBuilder.Append(contentLength);
+                responseHeadersBuilder.Append("\r\n");
+            }
+        }
+
+        internal bool HeadersSent()
+        {
+            return headersSent;
+        }
+
+        internal bool IsClientConnected()
+        {
+            return connection.Connected;
+        }
+
+        internal void CloseConnection()
+        {
+            connection.Close();
+        }
+
+        internal void SendResponseFromMemory(byte[] data, int length)
+        {
+            if (length > 0) {
+                byte[] bytes = new byte[length];
+                Buffer.BlockCopy(data, 0, bytes, 0, length);
+                responseBodyBytes.Add(bytes);
+            }
+        }
+
+        internal void SendResponseFromMemory([Claims] byte[]! in ExHeap data)
+        {
+            VContainer<byte> container = new VContainer<byte>(data);
+            responseBodyBytes.Add(container);
+        }
+
+        internal void FlushResponse(bool finalFlush)
+        {
+            try {
+
+                if (!headersSent) {
+                    connection.WriteHeaders(responseStatus, responseHeadersBuilder.ToString());
+                    headersSent = true;
+                }
+
+                for (int i = 0; i < responseBodyBytes.Count; i++) {
+                    byte[] bytes = responseBodyBytes[i] as byte[];
+                    VContainer<byte> container = responseBodyBytes[i] as VContainer<byte>;
+
+                    if (bytes != null) {
+                        connection.WriteBody(bytes, 0, bytes.Length);
+                    }
+                    else if (container != null) {
+                        byte[]! in ExHeap exBytes = container.Acquire();
+                        responseBodyBytes[i] = null;
+                        connection.WriteBody(exBytes);
+                    }
+                    else {
+                        Debug.Assert(false);
+                    }
+                }
+            }
+            catch (SocketException) {
+                // If the socket throws an exception, abort trying to write the
+                // rest of the body.
+            }
+            finally {
+                // Clean up in case an exception caused us to abort partway through
+                headersSent = true;
+
+                for (int i = 0; i < responseBodyBytes.Count; i++) {
+                    VContainer<byte> container = responseBodyBytes[i] as VContainer<byte>;
+
+                    if (container != null) {
+                        byte[]! in ExHeap exBytes = container.Acquire();
+                        delete exBytes;
+                        responseBodyBytes[i] = null;
+                    }
+                }
+            }
+
+            responseBodyBytes = new ArrayList();
+
+            if (finalFlush) {
+                connection.Close();
+            }
+        }
+
+        internal void EndOfRequest()
+        {
+            FlushResponse(true);
+        }
+    }
+}

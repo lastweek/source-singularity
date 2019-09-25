@@ -1,0 +1,217 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   FsObject.sg
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    /// <remarks> Base class for file system objects.
+    /// <para> Provides reference counting functionality and support for
+    /// common directory and file operations, such as updating the
+    /// last write time. </para>
+    /// </remarks>
+    internal abstract class FsObject
+    {
+        private Directory parent;
+        private int shortEntryOffset;
+        private int refcnt;
+
+        public string cachedName     = null; // Debugging info
+        public string cachedPathName = null; // Debugging info
+
+        /// <remarks>
+        /// Create an FsObject with a reference count of 1.
+        /// </remarks>
+        [ Microsoft.Contracts.NotDelayed ]
+        internal FsObject(Directory! parent, int shortEntryOffset)
+            requires shortEntryOffset > 0;
+        {
+            this.parent           = parent;
+            this.shortEntryOffset = shortEntryOffset;
+            this.refcnt           = 1;
+        }
+
+        internal FsObject()
+        {
+            this.refcnt           = 0;
+            this.shortEntryOffset = -1;
+            this.parent           = null;
+        }
+
+        [ Microsoft.Contracts.Pure ]
+        internal bool HasParent { get { return parent != null; } }
+
+        [ Microsoft.Contracts.Pure ]
+        internal bool HasNoReferences { get { return this.refcnt == 0; } }
+
+        [ Microsoft.Contracts.Pure ]
+        internal bool HasOneReference { get { return this.refcnt == 1; } }
+
+        [ Microsoft.Contracts.Pure ]
+        internal int ShortEntryOffset
+        {
+            get { return this.shortEntryOffset; }
+        }
+
+        abstract internal int FirstCluster
+        {
+            get;
+        }
+
+        private void PopulateCachedName()
+            requires this.cachedName == null;
+            ensures  this.cachedName != null;
+        {
+            if (parent != null) {
+                char[]! in ExHeap v = parent.GetName(this.shortEntryOffset);
+                this.cachedName = Bitter.ToString2(v);
+                delete v;
+            }
+            else {
+                this.cachedName = "/";
+            }
+        }
+
+        internal string Name
+        {
+            get {
+                if (cachedName == null) {
+                    PopulateCachedName();
+                }
+                return cachedName;
+            }
+        }
+
+        internal bool GetShortDirectoryEntry(out DirectoryEntry de)
+        {
+            if (this.parent != null) {
+                this.parent.GetShortDirectoryEntry(this.shortEntryOffset,
+                                                   out de);
+                return true;
+            }
+            de = new DirectoryEntry();
+            return false;
+        }
+
+        private void PopulateCachedPathName()
+            requires this.cachedPathName == null;
+            ensures  this.cachedPathName != null;
+        {
+            if (parent != null) {
+                if (this.parent.FullPathName == "/") {
+                    this.cachedPathName = this.parent.FullPathName + this.Name;
+                }
+                else {
+                    this.cachedPathName = this.parent.FullPathName + "/" + this.Name;
+                }
+            }
+            else {
+                this.cachedPathName = this.Name;
+            }
+        }
+
+        internal string FullPathName
+        {
+            get {
+                if (cachedPathName == null) {
+                    PopulateCachedPathName();
+                }
+                return cachedPathName;
+            }
+        }
+
+        internal void UpdateLastWriteTime()
+        {
+            if (parent != null && !FatVolume.IsReadOnly) {
+                parent.UpdateLastWriteTime(this.shortEntryOffset);
+            }
+        }
+
+        internal void UpdateLastAccessTime()
+        {
+            if (parent != null && !FatVolume.IsReadOnly) {
+                parent.UpdateLastAccessTime(this.shortEntryOffset);
+            }
+        }
+
+        /// <remarks> Update the file size field in the
+        /// directory entry associated with a file object. This
+        /// method also updates the last access and last update
+        /// fields. </remarks>
+        internal void UpdateFileSize(uint fileBytes)
+        {
+            if (parent != null && !FatVolume.IsReadOnly) {
+                parent.UpdateFileSize(this.shortEntryOffset, fileBytes);
+            }
+        }
+
+        /// <remarks> Update the first cluster field in the
+        /// directory entry associated with a file object. This
+        /// method also updates the last access and last update
+        /// fields. It is called when a zero length file has been
+        /// created and has no first cluster, and is subsequently
+        /// grown</remarks>
+        internal void UpdateFirstCluster(uint firstCluster)
+        {
+            if (parent != null && !FatVolume.IsReadOnly) {
+                parent.UpdateFirstCluster(this.shortEntryOffset, firstCluster);
+            }
+        }
+
+        internal void SetMutableAttributes(byte newAttributes)
+            requires (newAttributes & ~DirectoryEntry.AttributeMutable) == 0;
+        {
+            if (parent != null && !FatVolume.IsReadOnly) {
+                parent.SetMutableAttributes(this.shortEntryOffset,
+                                            newAttributes);
+            }
+        }
+
+        internal byte GetMutableAttributes()
+        {
+            if (parent != null) {
+                return parent.GetMutableAttributes();
+            }
+            return 0;
+        }
+
+        internal void
+        GetAttributes(ref FileAttributesRecord fileAttributes)
+        {
+            if (parent == null) {
+                fileAttributes.Type  = NodeType.Directory;
+                fileAttributes.FileSize = 0;
+            }
+            else {
+                parent.GetAttributes(this.shortEntryOffset,
+                                     ref fileAttributes);
+            }
+        }
+
+        /// <remarks> Increment reference count by 1 </remarks>
+        internal void AddRef()
+        {
+            this.refcnt++;
+        }
+
+        /// <remarks> Decrement reference count by 1 </remarks>
+        internal void Release()
+        {
+            this.refcnt--;
+        }
+
+        internal void CloseInstance()
+        {
+            if (parent != null) {
+                parent.CloseOpenFsObject(this);
+            }
+        }
+    }
+}

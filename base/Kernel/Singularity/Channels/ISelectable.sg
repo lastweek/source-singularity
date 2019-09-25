@@ -1,0 +1,93 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Selectable.cs
+//
+//  Note: File is part of Sing# runtime files and copied into Singularity tree
+//        whenever a new version of Sing# is dropped.
+//        Coordinate any changes with Sing# team.
+//
+using System;
+#if ENDPOINT_STRUCT
+using Microsoft.Singularity.V1.Threads;
+#else
+using System.Threading;
+#endif
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Channels
+{
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public class SelectableAttribute : Attribute {
+      public SelectableAttribute(int tag) {}
+    }
+    
+    
+    [CLSCompliant(false)]
+    public interface ISelectable : IBorrowed {
+
+        /// <summary>
+        /// Tests if the message at the head of the queue matches the given tag. If so,
+        /// returns true.
+        ///
+        /// If no match is possible in the future given the current message, possible must
+        /// be set to false. 
+        /// Implementations are disallowed from setting possible to true
+        /// so that the context can chain them.
+        ///
+        /// If the underlying object is an endpoint set, it also returns an object that
+        /// serves to extract the endpoint having the match from the set later.
+        ///
+        /// Again, implementations are disallowed from setting match setMatch to null
+        /// so that the context can chain the calls.
+        ///
+        /// </summary>
+        bool HeadMatches(int tag, ref bool possible, ref object setMatch);
+        
+        /// <summary>
+        /// Allow the context to get a handle to wait on an event for this object
+        /// </summary>
+        #if ENDPOINT_STRUCT
+        SyncHandle GetWaitHandle();
+        #else
+        WaitHandle GetWaitHandle();
+        #endif
+
+        /// <summary>
+        /// Reset the associated event to avoid spurious wake-ups. This is called by
+        /// Select prior to scanning the state of the ISelectable object.
+        /// </summary>
+        void ResetWaitSignal();
+    }
+
+
+    [CLSCompliant(false)]
+    public interface IEventCollectionElement : ISelectable, ITracked {
+
+        /// <summary>
+        /// Instruct the selectable object to signal events on the given AutoResetEvent
+        /// rather than its normal event in order to aggregate signalling into a set.
+        /// A selectable object need only support being part of a single collection at
+        /// any point in time.
+        /// </summary>
+        #if ENDPOINT_STRUCT
+        void LinkIntoCollection(AutoResetEventHandle ev);
+        #else
+        void LinkIntoCollection(AutoResetEvent ev);
+        #endif
+
+        /// <summary>
+        /// Instruct the selectable object to stop signalling events on the given
+        /// AutoResetEvent.
+        /// </summary>
+        #if ENDPOINT_STRUCT
+        void UnlinkFromCollection(AutoResetEventHandle ev);
+        #else
+        void UnlinkFromCollection(AutoResetEvent ev);
+        #endif
+    }
+}

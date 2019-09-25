@@ -1,0 +1,5 @@
+clear
+fsmount '/dev/vol0.2' '/fs'
+perfcnt '-g'
+webfiles '-f:50000'
+perfcnt '-s'

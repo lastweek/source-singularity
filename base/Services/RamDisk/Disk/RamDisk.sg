@@ -1,0 +1,377 @@
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   RamDisk.cs
+//
+//  Base class and Interfaces for RAM (memory-based) disk devices.
+//  Based on IDE disk classes (IdeDisk.sg).
+//
+
+using System;
+using Microsoft.SingSharp;
+using Microsoft.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.Services.RamDisk.Contracts;
+
+namespace Microsoft.Singularity.Services.RamDisk
+{
+    public class RamDisk
+    {
+        public const int SECTOR_SIZE = 512;
+
+        private string      deviceName;
+        private string      registeredName;   //with Directory
+        private int         diskId;
+        private static int  diskIdGenerator = 0;
+        private uint        numSectors;
+        private byte[]      diskContents;
+
+        private class DiskConnectionState
+        {
+            public const int NoSystemId = 0xffff;   // Whole disk
+
+            private int   systemId;
+            private ulong startSector;
+            private ulong sectorCount;
+
+            public DiskConnectionState(int sysId, ulong start, ulong count)
+            {
+                this.systemId    = sysId;
+                this.startSector = start;
+                this.sectorCount = count;
+            }
+
+            public DiskConnectionState(ulong start, ulong count)
+                : this(NoSystemId, start, count)
+            {
+            }
+
+            public DiskAttributes DiskAttributes
+            {
+                get { return 0; }
+            }
+
+            public int SystemId
+            {
+                get { return this.systemId; }
+            }
+
+            public ulong StartSector
+            {
+                get { return this.startSector; }
+            }
+
+            public ulong SectorCount
+            {
+                get { return this.sectorCount; }
+            }
+        }
+
+        public void Finalize()
+        {
+            Tracing.Log(Tracing.Debug," RAM Disk: Finalize");
+        }
+
+        public void Run([Claims] ServiceProviderContract.Exp:Start! service,
+                        [Claims] RamDiskClientContract.Exp:Start! managerExp)
+        {
+            Tracing.Log(Tracing.Audit, "Starting diskMsgPump.");
+
+            // create a set of all client endpoints connected to the device
+            EMap<DiskDeviceContract.Exp:Ready,DiskConnectionState!> clients =
+                    new EMap<DiskDeviceContract.Exp:Ready,DiskConnectionState!>();
+
+            // These sets will only ever contain one thing, but they are here to save memory,
+            // since this avoids boxing these endpoints once per iteration.
+            ESet<ServiceProviderContract.Exp:Start> serviceproviders =
+                    new ESet<ServiceProviderContract.Exp:Start>();
+            serviceproviders.Add(service);
+            ESet<RamDiskClientContract.Exp:Start> clientManagers =
+                    new ESet<RamDiskClientContract.Exp:Start>();
+            clientManagers.Add(managerExp);
+
+            try {
+                bool run = true;
+                while (run) {
+                    switch receive {
+                        // Listen for new connections
+                        case sp.Connect(candidate) in serviceproviders:
+                            DiskDeviceContract.Exp newClient = candidate as DiskDeviceContract.Exp;
+                            if (newClient != null) {
+                                newClient.SendSuccess();
+                                DiskConnectionState! conn = new DiskConnectionState(0, this.numSectors);
+                                clients.Add(newClient, conn);
+                                sp.SendAckConnect();
+                            }
+                            else {
+                                sp.SendNackConnect(candidate);
+                            }
+                            serviceproviders.Add(sp);
+                            break;
+
+                        case sp.ChannelClosed() in serviceproviders:
+                            delete sp;
+                            break;
+
+                        // Listen for client departure
+                        case ep.ChannelClosed() in clients~>connState:
+                            Tracing.Log(Tracing.Debug, "Client channel closes.");
+                            delete ep;
+                            break;
+
+
+                        // Listen for client requests
+                        case ep.GetDeviceName()in clients~>connState:
+                            char[] in ExHeap blee = Bitter.FromString(this.deviceName);
+                            ep.SendAckGetDeviceName(blee);
+                            clients.Add(ep,connState);
+                            break;
+
+                        case ep.GetDiskAttributes() in clients~>connState:
+                            ep.SendAckGetDiskAttributes(connState.DiskAttributes);
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.GetStartSector() in clients~>connState:
+                            ep.SendAckGetStartSector(connState.StartSector);
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.GetSectorCount() in clients~>connState:
+                            ep.SendAckGetSectorCount(connState.SectorCount);
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.GetSystemId() in clients~>connState:
+                            int systemId = connState.SystemId;
+                            if (systemId != DiskConnectionState.NoSystemId) {
+                                ep.SendSystemId((byte)systemId);
+                            }
+                            else {
+                                ep.SendNoSystemId();
+                            }
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.Write(data, offset, length, sectorId) in clients~>connState:
+                            if (data == null) {
+                                Tracing.Log(Tracing.Debug,"data buffer is null!!!\n");
+                                ep.SendNakWrite();
+                            }
+                            else {
+                                try {
+                                    Tracing.Log(Tracing.Debug,"write: sector={0} len={1}",sectorId,length);
+                                    ReadWrite(true, data, offset, length, sectorId, connState);
+                                    ep.SendAckWrite(data);
+                                }
+                                catch (ArgumentOutOfRangeException) {
+                                    ep.SendNakWrite();
+                                }
+                            }
+                            clients.Add(ep, connState);
+                            Tracing.Log(Tracing.Debug,"write: ends.");
+                            break;
+
+                        case ep.NoOp()in clients~>connState:
+                            ep.SendAckNoOp();
+                            clients.Add(ep, connState);
+                            break;
+
+                        case ep.Read(data, offset, length, sectorId) in clients~>connState:
+                            if (data == null) {
+                                Tracing.Log(Tracing.Debug,"data buffer is null!!!\n");
+                                ep.SendNakRead();
+                            }
+                            else {
+                                try {                            
+                                    Tracing.Log(Tracing.Debug,"read: sector={0} len={1}", sectorId, length);
+                                    ReadWrite(false, data, offset, length, sectorId, connState);
+                                    ep.SendAckRead(data);
+                                }
+                                catch (ArgumentOutOfRangeException) {
+                                    ep.SendNakRead();
+                                }
+                            }
+
+                            clients.Add(ep, connState);
+                            Tracing.Log(Tracing.Debug,"read: ends.");
+                            break;
+
+                        case ep.ReadPerf(numMB, chunkSize) in clients~>connState:
+                            {
+                            long cycles;
+                            long ticks;
+                            ReadPerf(numMB, chunkSize, out cycles, out ticks, connState);
+                            ep.SendAckReadPerf(cycles, ticks);
+                            clients.Add(ep, connState);
+                            break;
+                            }
+                            
+                        case cm.Destroy(force) in clientManagers:
+                            if (!force && !clients.IsEmpty) {
+                                Tracing.Log(Tracing.Debug, "Tried to destroy RamDisk while still in use");
+                                cm.SendFail(RamDiskContractErrorCode.IsInUse);
+                            }
+                            else {
+                                if (!clients.IsEmpty) {
+                                    Tracing.Log(Tracing.Debug, "Warning: forcing destruction of RamDisk while still in use");
+                                }
+                                
+                                // Client endpoints and disk will be cleaned up during shutdown
+                                cm.SendSuccess();
+                                run = false;
+                            }
+                            clientManagers.Add(cm);
+                            break;
+
+                        case cm.ChannelClosed() in clientManagers:
+                            Tracing.Log(Tracing.Debug,"RamDiskClientManager has closed channel");
+                            run = false;
+                            delete cm;
+                            break;
+
+                        // If all else fails....
+                        case clients.Empty() && serviceproviders.Empty() /*&& volumemanagers1.Empty() && volumemanagers2.Empty() && extensions.Empty()*/:
+                            Tracing.Log(Tracing.Debug, "Disk driver has no more connections");
+                            run = false;
+                            break;
+                    } // switch receive
+                } // for
+            }
+            finally {
+                Tracing.Log(Tracing.Debug, "diskMsgPump exiting.");
+                clients.Dispose();
+                serviceproviders.Dispose();
+                clientManagers.Dispose();
+            }
+        }
+
+        [NotDelayed]
+        public RamDisk(string! registeredName, uint numSectors, string! instanceName)
+        {
+            DebugStub.Print("RamDisk: {0}\n", __arglist(instanceName));
+
+            this.registeredName = registeredName;
+            this.numSectors = numSectors;
+
+            this.diskId = ++RamDisk.diskIdGenerator;
+
+            this.deviceName = String.Format("RamDisk {0} {1} MB",
+                this.diskId,
+                (this.numSectors>>11));
+
+            this.diskContents = new byte[numSectors * SECTOR_SIZE];
+            InitializePartitionTable();
+
+            announceDrive();
+        }
+
+        private void InitializePartitionTable()
+        {
+            // Write system sector signature
+            diskContents[510] = 0x55;
+            diskContents[511] = 0xaa;
+
+            // Because the array is initialized to all zeros, the four
+            // partition entries will initially have the correct type
+            // "Empty" and all their fields set correctly.
+        }
+
+        private int ReadPerf(int      numMB,
+                             int      chunkSize,
+                             out long cycles,
+                             out long ticks,
+                             DiskConnectionState! conn)
+        {
+            long endCycles;
+            long endClock;
+            long startCycles;
+            long startClock;
+
+            int sectors = numMB * 1024 * (1024 / SECTOR_SIZE);
+            int sectorsPerChunk = chunkSize / SECTOR_SIZE;
+
+            byte* opt(ExHeap[]) perfBuffer = new [ExHeap] byte[chunkSize];
+
+            try {
+                startCycles = ProcessService.GetCycleCount();
+                startClock  = ProcessService.GetUpTime().Ticks;
+
+                int i = 0;
+                while (i < sectors) {
+                    ReadWrite(false, perfBuffer, 0, (UIntPtr) chunkSize, (ulong)i, conn);
+                    i += sectorsPerChunk;
+                }
+
+                endCycles = ProcessService.GetCycleCount();
+                endClock  = ProcessService.GetUpTime().Ticks;
+            }
+            finally {
+                delete perfBuffer;
+            }
+
+            cycles = endCycles - startCycles;
+            ticks = endClock - startClock;
+
+            return 0;
+        }
+
+        private void ReadWrite( bool doWrite,
+                                byte[]! in ExHeap  buffer,
+                                UIntPtr bufferOffset,
+                                UIntPtr length,
+                                ulong sector,
+                                DiskConnectionState! conn)
+        {
+            ushort temp;
+            ulong sectorId;
+            uint dataStart;
+            uint bufferStart;
+
+            ulong numSectors = ((ulong)length + SECTOR_SIZE - 1)/ SECTOR_SIZE;
+
+            if (sector > conn.SectorCount) {
+                throw new ArgumentOutOfRangeException("RamDisk ReadWrite: Sector start out of Bounds.");
+            }
+
+            if ((sector + numSectors) > conn.SectorCount) {
+                throw new ArgumentOutOfRangeException("RamDisk ReadWrite: Sector operation out of Bounds.");
+            }
+
+            sectorId = sector + conn.StartSector;
+
+            if (sectorId >= this.numSectors) {
+                throw new ArgumentOutOfRangeException("RamDisk ReadWrite: Sector out of Bounds.");
+            }
+
+            if ((length + bufferOffset) > (UIntPtr)buffer.Length) {
+                throw new ArgumentOutOfRangeException("RamDisk ReadWrite: length + offset exceeds array bounds");
+            }
+
+            lock (this) {
+                //
+                // perform operation
+                //
+                if (doWrite) {
+                    Bitter.ToByteArray(buffer, (int)bufferOffset, (int)length, diskContents, (int)(sector*SECTOR_SIZE));
+                }
+                else {
+                    Bitter.FromByteArray(buffer, (int)bufferOffset, (int)length, diskContents, (int)(sector*SECTOR_SIZE));
+                }
+            }
+        }
+
+        private void announceDrive()
+        {
+            Tracing.Log(Tracing.Debug,"RamDisk: id {0}\n",
+                        this.deviceName);
+
+            DebugStub.WriteLine("RamDisk: id={0}", __arglist(this.deviceName));
+        }
+    }
+}

@@ -1,0 +1,145 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Runtime.CompilerServices;
+
+namespace System
+{
+    [CCtorIsRunDuringStartup]
+    public sealed class String : IComparable, ICloneable
+    {
+        public static readonly String Empty;
+
+        public String(char [] value, int startIndex, int length);
+        public String(char [] value);
+        public String(char c, int count);
+
+        public static String Join(String separator, String[] value);
+        public static String Join(String separator, String[] value, int startIndex, int count);
+
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+        public override String ToString();
+
+        public bool Equals(String value);
+        public static bool Equals(String a, String b);
+
+        public static bool operator == (String a, String b);
+        public static bool operator != (String a, String b);
+
+        public char this[int index] { get; }
+
+        public void CopyTo(int sourceIndex, char[] destination, int destinationIndex, int count);
+
+        public char[] ToCharArray();
+        public char[] ToCharArray(int startIndex, int length);
+
+        public int Length { get; }
+
+        public String[] Split(params char [] separator);
+        public String[] Split(char[] separator, int count);
+
+        public String Substring (int startIndex);
+        public String Substring (int startIndex, int length);
+
+        public static String StringCTOR(char[] value, int startIndex, int length);
+        public static String StringCTOR(char[] value);
+        public static String StringCTOR(char c, int count);
+
+        public String Trim(params char[] trimChars);
+        public String TrimStart(params char[] trimChars);
+        public String TrimEnd(params char[] trimChars);
+
+        public static int Compare(String strA, String strB);
+        public static int Compare(String strA, String strB, bool ignoreCase);
+        public static int Compare(String strA, int indexA, String strB, int indexB, int length);
+        public static int Compare(String strA, int indexA, String strB, int indexB, int length, bool ignoreCase);
+
+        public int CompareTo(Object value);
+        public int CompareTo(String strB);
+
+        public static int CompareOrdinal(String strA, String strB);
+        public static int CompareOrdinal(String strA, int indexA, String strB, int indexB, int length);
+
+        public bool EndsWith(String value);
+
+        public int IndexOf(char value);
+        public int IndexOf(char value, int startIndex);
+        public int IndexOf(char value, int startIndex, int count);
+
+        public int IndexOfAny(char [] anyOf);
+        public int IndexOfAny(char [] anyOf, int startIndex);
+        public int IndexOfAny(char [] anyOf, int startIndex, int count);
+
+        public int IndexOf(String value);
+        public int IndexOf(String value, int startIndex);
+        public int IndexOf(String value, int startIndex, int count);
+
+        public int LastIndexOf(char value);
+        public int LastIndexOf(char value, int startIndex);
+        public int LastIndexOf(char value, int startIndex, int count);
+
+        public int LastIndexOfAny(char [] anyOf);
+        public int LastIndexOfAny(char [] anyOf, int startIndex);
+        public int LastIndexOfAny(char [] anyOf, int startIndex, int count);
+
+        public int LastIndexOf(String value);
+        public int LastIndexOf(String value, int startIndex);
+        public int LastIndexOf(String value, int startIndex, int count);
+
+        public String PadLeft(int totalWidth);
+        public String PadLeft(int totalWidth, char paddingChar);
+
+        public String PadRight(int totalWidth);
+        public String PadRight(int totalWidth, char paddingChar);
+
+        public String ToLower();
+        public String ToUpper();
+
+        public Object Clone();
+
+        public String Trim();
+        public String Insert(int startIndex, String value);
+        public String Replace(char oldChar, char newChar);
+        public String Replace(String oldValue, String newValue);
+        public String Remove(int startIndex, int count);
+
+        public static String Format(String format, Object arg0);
+        public static String Format(String format, Object arg0, Object arg1);
+        public static String Format(String format, Object arg0, Object arg1, Object arg2);
+        public static String Format(String format, params Object[] args);
+
+        public static String Copy (String str);
+
+        public static String Concat(Object arg0);
+        public static String Concat(Object arg0, Object arg1);
+        public static String Concat(Object arg0, Object arg1, Object arg2);
+        public static String Concat(params Object[] args);
+        public static String Concat(String str0, String str1);
+        public static String Concat(String str0, String str1, String str2);
+        public static String Concat(String str0, String str1, String str2, String str3);
+
+        public static String Concat(object obj0, object obj1, object obj2,
+                                    object obj3, string obj4, string obj5,
+                                    string obj6, string obj7);
+        public static String Concat(params String[] values);
+
+        public static String Intern(String str);
+
+        public static String IsInterned(String str);
+
+#if !DONT_DO_BARTOK
+        private static String[] internedStringConstants;
+
+        [RequiredByBartok] 
+        private int  m_arrayLength;
+        [AccessedByRuntime("referenced from c++")] 
+        private int  m_stringLength;
+        [AccessedByRuntime("referenced from c++")] 
+        private char m_firstChar;
+#endif
+    }
+}

@@ -1,0 +1,108 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.FileSystem;
+using Microsoft.Singularity.V1.Services;
+
+using Microsoft.SingSharp.Reflection;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+[assembly: Transform(typeof(ApplicationResourceTransform))]
+
+namespace Microsoft.Singularity.Applications
+{
+    [ConsoleCategory(HelpMessage="Unmount CD device", DefaultAction=true)]
+    internal class Parameters
+    {
+        [InputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Exp:READY> Stdin;
+
+        [OutputEndpoint("data")]
+        public readonly TRef<UnicodePipeContract.Imp:READY> Stdout;
+
+        [Endpoint]
+        public readonly TRef<DirectoryServiceContract.Imp:Start> nsRef;
+
+        [BoolParameter( "s", Default=false, HelpMessage="Silent.")]
+        internal bool silent;
+
+        [StringParameter("path", Mandatory=true, Position=0, HelpMessage="The path to unmount.")]
+        public string mountPath;
+
+        reflective internal Parameters();
+
+        internal int AppMain() {
+            return CdUnmount.AppMain(this);
+        }
+    }
+
+    public class CdUnmount
+    {
+        public static void WriteLineWrapper(string format, params object[] args) {
+            if (!silent) {
+                Console.WriteLine(format, args);
+            }
+        }
+
+        public static void WriteWrapper(string format, params object[] args) {
+            if (!silent) {
+                Console.Write(format, args);
+            }
+        }
+
+
+        public static bool silent = false;
+        public const string ControlLocation = "/service/services/iso9660";
+        internal static int AppMain(Parameters! config)
+        {
+            DirectoryServiceContract.Imp ds = ((!)config.nsRef).Acquire();
+            if (ds == null) {
+                throw new Exception("Unable to acquire handle to the Directory Service root");
+            }
+
+            ds.RecvSuccess();
+
+            silent = config.silent;
+
+            FileSystemControllerContract.Imp! controlClient;
+            FileSystemControllerContract.Exp! controlServer;
+            FileSystemControllerContract.NewChannel(out controlClient, out controlServer);
+
+            ErrorCode errorOut;
+            bool ok = SdsUtils.Bind(ControlLocation, ds, controlServer, out errorOut);
+            if (!ok) {
+                    delete controlClient;
+                    delete ds;
+                    WriteLineWrapper("Error binding to " + ControlLocation + " reason "
+                                + SdsUtils.ErrorCodeToString(errorOut) );
+                    return 0;
+            }
+
+            controlClient.RecvSuccess();
+
+            delete ds;
+
+            WriteLineWrapper("Sending unmount request...");
+            controlClient.SendUnmount(Bitter.FromString2((!)config.mountPath));
+            switch receive {
+                case controlClient.Ok():
+                    Console.WriteLine("Unmount succeeded.");
+                    delete controlClient;
+                    return 0;
+
+                case controlClient.RequestFailed(error):
+                    Console.WriteLine("Unmount failed: " + SdsUtils.ErrorCodeToString(error));
+                    delete controlClient;
+                    return -1;
+            }
+        }
+    }
+}

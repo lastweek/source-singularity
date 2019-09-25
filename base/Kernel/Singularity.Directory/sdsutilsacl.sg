@@ -1,0 +1,216 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   SdsUtils.sg
+//
+//  Note:
+//
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Collections;
+
+using Microsoft.Singularity;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Security;
+using Microsoft.Singularity.Security.SDS;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.SingSharp;
+
+namespace Microsoft.Singularity.Directory
+{
+    public class SdsUtilsAcl
+    {
+
+//------------------------------------------------------------------------------
+// QueryACL
+//------------------------------------------------------------------------------
+        public static  bool QueryACL (string! path, bool effective,
+                                      DirectoryServiceContract.Imp:Ready! ds,
+                                      out Acl aclOut, out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            aclOut = Acl.nullAcl;
+            char[]! in ExHeap exPath;
+            exPath = Bitter.FromString2(path);
+            bool results;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendQueryACL(exPath, effective);
+            try {
+                switch receive {
+                    case ds.NakQueryACL(error):
+  // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckQueryACL(nodePattern, descendantPattern):
+                        // Success
+                        // unmarshall ACL
+                        errorOut = ErrorCode.NoError;
+                        string res1 = Bitter.ToString(nodePattern);
+                        string res2 = Bitter.ToString(descendantPattern);
+                        aclOut = new Acl(res1, res2);
+                        delete nodePattern;
+                        delete descendantPattern;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+  // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakQueryACLReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound):
+                        // traversed either a mount point or a link
+                        string pre = Bitter.ToString2(i_prefix);
+                        string suf = Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("QueryACL.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre,suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            return QueryACL(pre, effective, ds, out aclOut, out errorOut);
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp =
+                                SdsUtils.GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakCreateDirectoryReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return QueryACL(suf, effective, dsImp, out aclOut, out errorOut);
+                                }
+                            }
+                            finally {
+                                SdsUtils.ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //QueryACL
+
+//------------------------------------------------------------------------------
+// StoreACL
+//------------------------------------------------------------------------------
+        public static  bool StoreACL (string! path, Acl acl,
+                                      DirectoryServiceContract.Imp:Ready! ds,
+                                      out ErrorCode errorOut )
+        {
+            errorOut = ErrorCode.Unknown;
+            char[]! in ExHeap exPath;
+            char[] in ExHeap exAclStr1, exAclStr2;
+            exPath = Bitter.FromString2(path);
+            exAclStr1 = Bitter.FromString(acl.Node);
+            exAclStr2 = Bitter.FromString(acl.Descendant);
+            bool results;
+
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            ds.SendStoreACL(exPath, exAclStr1, exAclStr2);
+            try {
+                switch receive {
+                    case ds.NakStoreACL(error):
+                        // Failed: no such leaf node, or leaf node is not a file
+                        errorOut = error;
+                        return false;
+
+                    case ds.AckStoreACL():
+                        // Success
+                        errorOut = ErrorCode.NoError;
+                        return true;
+                        break;
+
+                    case ds.ChannelClosed():
+                        // Directory channel closed unexpectedly
+                        errorOut = ErrorCode.ChannelClosed;
+                        return false;
+                        break;
+
+                    case unsatisfiable :
+                        // should never happen.
+                        errorOut = ErrorCode.Unsatisfiable;
+                        return false;
+                        break;
+
+                    case ds.NakStoreACLReparse(i_prefix,
+                                                    i_suffix,
+                                                    linkFound) :
+                        // traversed either a mount point or a link
+                        string pre= Bitter.ToString2(i_prefix);
+                        string suf= Bitter.ToString(i_suffix);
+                        delete i_prefix;
+                        delete i_suffix;
+
+                        DebugStub.WriteLine("StoreACL.reparse: pre={0}, suf={1}, linkfound ={2}",
+                                            __arglist(pre, suf, linkFound? "true": "false"));
+
+                        // Either a SymLink or a non-leaf provider node has been encountered.
+                        if (linkFound) {
+                            //reissue search
+                            DebugStub.WriteLine("link: issuing rebind to{0}",__arglist(pre));
+                            return StoreACL(pre, acl, ds, out errorOut);
+                        }
+                        else {
+                            // Bind to the ServiceProvider and continue search
+                            DirectoryServiceContract.Imp dsImp =
+                                SdsUtils.GetDSPChannel(ds, pre, out errorOut);
+
+                            if (dsImp == null) {
+                                return false; // failure; code already in errorOut
+                            }
+
+                            try {
+                                if (null == suf) {
+                                    // Strange to get a NakCreateDirectoryReparse here!
+                                    errorOut = ErrorCode.Unknown;
+                                    return false;
+                                }
+                                else {
+                                    return StoreACL(suf, acl, dsImp, out errorOut);
+                                }
+                            }
+                            finally {
+                                SdsUtils.ReleaseDSPChannel(pre, dsImp);
+                            }
+                        } //!linkFound
+                        break;
+                } //switch
+            }
+            finally {
+            if (!ds.InState(DirectoryServiceContract.Ready.Value)) DebugStub.Break();
+            }
+        } //StoreAcl
+    } // class
+}

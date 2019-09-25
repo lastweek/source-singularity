@@ -1,0 +1,30 @@
+.assembly 'hello' { }
+.class public 'Hello'
+	extends [mscorlib]System.Object
+{
+.method hidebysig specialname rtspecialname static private void .cctor() {
+ldstr "creating Hello"
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of constructor Hello.Hello
+.method hidebysig public instance void 'Goodbye'() {
+ldstr "Goodbye"
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of method Hello.Goodbye
+.method hidebysig public static void 'Main'() {
+.entrypoint
+ldstr "Hello, world"
+call  void [mscorlib]System.Console::'WriteLine'(string)
+ret
+.maxstack 1
+} // end of method Hello.Main
+.method hidebysig specialname rtspecialname public void .ctor() {
+ldarg.0
+call instance void [mscorlib]System.Object::.ctor()
+ret
+.maxstack 1
+} // end of constructor Hello.Hello
+} // end of class Hello

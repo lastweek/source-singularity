@@ -1,0 +1,219 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   PathOpen.sg
+//
+//  Note:
+//
+//  These methods exist because the core Directory class operations for
+//  opening, reading, deleting, files and directories only work for files
+//  and directories contained with the directory instance.  These methods
+//  provide a means to recurse down to right spot to operate at.
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.SingSharp;
+
+using System;
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    internal class PathOpen
+    {
+        internal static ErrorCode
+        GetTargetAndDirectory(Directory!                 root,
+                              [Claims] char[]! in ExHeap targetPath,
+                              out char[] in ExHeap       theTarget,
+                              out Directory              theDirectory)
+        {
+            char [] in ExHeap dirPath = null;
+            theTarget    = null;
+            theDirectory = null;
+
+            targetPath = PathUtils.CleanSeparators(targetPath);
+            try {
+                PathUtils.SplitPathBottomUp(targetPath,
+                                            out dirPath,
+                                            out theTarget);
+            }
+            catch (OutOfMemoryException) {
+                delete dirPath;
+                delete theTarget;
+                theTarget = null;
+                return ErrorCode.InsufficientResources;
+            }
+
+            if (theTarget == null) {
+                delete dirPath;
+                return ErrorCode.BadArguments;
+            }
+            else if (dirPath == null) {
+                theDirectory = root.OpenDirectory();
+                return ErrorCode.NoError;
+            }
+            else {
+                ErrorCode error = GetDirectory(root, dirPath,
+                                               out theDirectory);
+                if (error != ErrorCode.NoError) {
+                    delete theTarget;
+                    theTarget = null;
+                }
+                return error;
+            }
+        }
+
+        internal static ErrorCode
+        GetFsObject(Directory!                 root,
+                    [Claims] char[]! in ExHeap path,
+                    out FsObject               fsObject)
+        {
+            fsObject = null;
+
+            path = PathUtils.CleanSeparators(path);
+            path = PathUtils.Trim(path);
+
+            if (path.Length == 0) {
+                delete path;
+                return ErrorCode.BadArguments;
+            }
+
+            char[] in ExHeap objName = null;
+            char[] in ExHeap dirPath = null;
+            try {
+                PathUtils.SplitPathBottomUp(path, out dirPath, out objName);
+            }
+            catch (OutOfMemoryException) {
+                delete dirPath;
+                delete objName;
+                return ErrorCode.InsufficientResources;
+            }
+
+            assert !(dirPath == null && objName == null);
+            try {
+                if (objName == null) {
+                    // Trying to open root directory.
+                    assert dirPath != null;
+                    Directory d;
+                    ErrorCode error = GetDirectory(root, dirPath, out d);
+                    fsObject = d;
+                    return error;
+                }
+                else if (dirPath == null) {
+                    // Trying to open object within root directory.
+                    assert objName != null;
+                    return root.OpenFsObject(objName, out fsObject);
+                }
+                else {
+                    // Trying to open an object below root directory.
+                    Directory parent;
+                    ErrorCode error = GetDirectory(root, dirPath, out parent);
+                    assert error == ErrorCode.NoError || parent == null;
+                    if (error == ErrorCode.NoError) {
+                        assert parent != null;
+                        error = parent.OpenFsObject(objName, out fsObject);
+                        parent.Close();
+                    }
+                    return error;
+                }
+            }
+            finally {
+                delete objName;
+            }
+        }
+
+        internal static ErrorCode
+        GetDirectory(Directory!                  root,
+                     [Claims] char []! in ExHeap dirPath,
+                     out Directory               theDirectory)
+        {
+            char[] in ExHeap top       = null;
+            char[] in ExHeap remainder = null;
+
+            theDirectory = null;
+
+            remainder = PathUtils.CleanSeparators(dirPath);
+            remainder = PathUtils.Trim(remainder);
+
+            if (remainder.Length == 0) {
+                delete remainder;
+                remainder = null;
+                return ErrorCode.BadArguments;
+            }
+
+            ErrorCode error = ErrorCode.NoError;
+            int pass = 0;
+
+            theDirectory = root.OpenDirectory();
+
+            while (remainder != null) {
+                try {
+                    PathUtils.SplitPathTopDown(remainder,
+                                               out top,
+                                               out remainder);
+                }
+                catch (OutOfMemoryException) {
+                    delete top;
+                    top = null;
+                    delete remainder;
+                    remainder = null;
+                    theDirectory.Close();
+                    theDirectory = null;
+                    error = ErrorCode.InsufficientResources;
+                    break;
+                }
+
+                assert top != null;
+
+                if (pass++ == 0 && top.Length == 1 &&
+                    top[0] == PathUtils.Separator) {
+                    // No action needed.  theDirectory is already local root.
+                }
+                else {
+                    Directory next;
+                    assert top.Length >= 1 && top[0] != PathUtils.Separator;
+
+                    assert theDirectory != null;
+                    error = theDirectory.OpenDirectory(top, out next);
+                    assert (next == null) != (error == ErrorCode.NoError);
+
+                    if (error != ErrorCode.NoError) {
+                        delete remainder;
+                        remainder = null;
+                    }
+                    theDirectory.Close();
+                    theDirectory = next;
+                }
+                delete top;
+                top = null;
+            }
+            return error;
+        }
+
+        internal static ErrorCode
+        GetFile(Directory!                 root,
+                [Claims] char[]! in ExHeap path,
+                out File                   theFile)
+        {
+            theFile      = null;
+            FsObject tmp = null;
+
+            ErrorCode error = GetFsObject(root, path, out tmp);
+            if (error == ErrorCode.NoError) {
+                assert tmp != null;
+                theFile = tmp as File;
+                if (theFile == null) {
+                    ((Directory)tmp).Close();
+                    return ErrorCode.NotFile;
+                }
+            }
+            else {
+                assert tmp == null;
+            }
+            return error;
+        }
+    }
+}

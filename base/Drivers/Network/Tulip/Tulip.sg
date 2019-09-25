@@ -1,0 +1,910 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   Tulip.cs
+//
+//  Simple Driver for DEC 21140a PCI Ethernet card.  (as used in Virtual PC)
+//
+//  Useful reference URLs:
+//      http://www.intel.com/design/network/manuals/21140ahm.pdf
+//
+//  TODO:
+//   - MII support
+//   - Loss of Carrier / No Carrier Handling
+//   - Promiscuous mode switching
+//   - Filtering
+//   - Receive Watchdog / Jabber Handling
+//   - Event Counters
+//   - Review why is this driver using I/O ports.
+//
+//  NB: This code is only tested on Virtual PC 2007 and would probably have
+//  error handling issues on real hardware.
+
+using System;
+using System.Threading;
+using System.Diagnostics;
+using System.Collections;
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Configuration;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.V1.Services;
+using Drivers.Net;
+using Microsoft.Singularity.Drivers;
+
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    internal class Tulip
+    {
+        internal const uint MaxRxPackets            = 512;
+        internal const uint MaxTxPackets            = 512;
+        internal const uint MaxRxFragmentsPerPacket = 1;
+        internal const uint MaxTxFragmentsPerPacket = 8;
+        internal const uint MaxRxFragmentsInRing    = MaxRxPackets * MaxRxFragmentsPerPacket;
+        internal const uint MaxTxFragmentsInRing    = MaxTxPackets * MaxTxFragmentsPerPacket;
+        internal const uint MtuBytes = 1514;
+
+        internal const uint SetupFrameBytes    = 192;
+        private const uint  BytesPerDescriptor = 16;
+
+        // MAC address
+        private EthernetAddress macAddress;
+        private uint unit;
+
+        // State for tracking controllers sharing serial rom
+        private static EthernetAddress macBase;
+        private static uint lastUnit = 0;
+
+        // PCI stuff
+        private PciDeviceConfig! config;
+
+        // CSRs
+        private IoPort! csr0;
+        private IoPort! csr1;
+        private IoPort! csr2;
+        private IoPort! csr3;
+        private IoPort! csr4;
+        private IoPort! csr5;
+        private IoPort! csr6;
+        private IoPort! csr7;
+        private IoPort! csr8;
+        private IoPort! csr9;
+        private IoPort! csr10;
+        private IoPort! csr11;
+        private IoPort! csr12;
+        private IoPort! csr15;
+        private IoIrq!  irq;
+
+        private TulipTxRingBuffer! txRing;
+        private TulipRxRingBuffer! rxRing;
+
+        private EthernetAddress ethernetAddress;
+
+        private TulipEventRelay eventRelay;
+
+        private Thread        irqWorker;
+        private volatile uint irqLastStatus;
+        private volatile bool irqWorkerStop;
+        private volatile bool isShutdown = false;
+
+        // Constructor
+        internal Tulip(IoPortRange! csrRange,
+                       IoMemoryRange! memRange,
+                       IoIrqRange! irqRange)
+        {
+            TulipDebug.Print("Tulip: Initialize() called\n");
+
+            csr0  = (!)csrRange.PortAtOffset(0x00, 4, Access.ReadWrite);
+            csr1  = (!)csrRange.PortAtOffset(0x08, 4, Access.Write);
+            csr2  = (!)csrRange.PortAtOffset(0x10, 4, Access.Write);
+            csr3  = (!)csrRange.PortAtOffset(0x18, 4, Access.ReadWrite);
+            csr4  = (!)csrRange.PortAtOffset(0x20, 4, Access.ReadWrite);
+            csr5  = (!)csrRange.PortAtOffset(0x28, 4, Access.ReadWrite);
+            csr6  = (!)csrRange.PortAtOffset(0x30, 4, Access.ReadWrite);
+            csr7  = (!)csrRange.PortAtOffset(0x38, 4, Access.ReadWrite);
+            csr8  = (!)csrRange.PortAtOffset(0x40, 4, Access.Read);
+            csr9  = (!)csrRange.PortAtOffset(0x48, 4, Access.ReadWrite);
+            csr10 = (!)csrRange.PortAtOffset(0x50, 4, Access.Read);
+            csr11 = (!)csrRange.PortAtOffset(0x58, 4, Access.ReadWrite);
+            csr12 = (!)csrRange.PortAtOffset(0x60, 4, Access.ReadWrite);
+            csr15 = (!)csrRange.PortAtOffset(0x78, 4, Access.ReadWrite);
+
+            irq = (!)irqRange.IrqAtOffset(0);
+            TulipDebug.Print("Tulip IRQ {0}\n", __arglist(irqRange.ToString()));
+
+            PciDeviceConfig! config = this.config = (PciDeviceConfig!)IoConfig.GetConfig();
+            Debug.Assert((config.InterruptsEnabled));
+
+            this.txRing = new TulipTxRingBuffer(MaxTxPackets,
+                                                MaxTxFragmentsInRing);
+            this.rxRing = new TulipRxRingBuffer(MaxRxFragmentsInRing);
+        }
+
+        internal void StartIo()
+        {
+            Debug.Assert(irqWorker == null);
+            TulipDebug.Print("StartIo\n");
+
+            if (isShutdown) {
+                return;
+            }
+
+            csr6.Write32(CSR6.MBO | CSR6.HBD | CSR6.PS | (3u << CSR6.TR_ROLL) |
+                         CSR6.ST);
+            WriteStandardSetupFrame();
+
+            // Write CSR6 to start receive and transmit processes
+            //
+            // This is taken from the state remaining after pxeboot.
+            // == 100Mb/s MII/SYM (table 3-43 entry 1000)
+            csr6.Write32(CSR6.MBO | CSR6.HBD | CSR6.PS | (3u << CSR6.TR_ROLL) |
+                         CSR6.ST | CSR6.SR);
+
+            TulipDebug.Print("Programmed CSR values...\n");
+            TulipDebug.PrintCsrs(csr0, csr1, csr2, csr3, csr4, csr5, csr6,
+                                 csr7, csr8, csr9, csr10, csr11, csr12, csr15);
+
+            TulipDebug.Print("CFCS: {0:x4} {1:x4}\n",
+                             __arglist(config.Control, config.Status));
+
+            irqWorkerStop = false;
+            irqWorker     = new Thread(new ThreadStart(this.IrqWorkerMain));
+            irqWorker.Start();
+        }
+
+        internal void StopIo()
+        {
+            if (irqWorker != null) {
+                // Set stop flag, wake-up irqWorker thread, then wait.
+                irqWorkerStop = true;
+                irq.Pulse();
+                irqWorker.Join();
+                irqWorker = null;
+            }
+        }
+
+        internal void Shutdown()
+        {
+            isShutdown = true;
+            StopIo();
+        }
+
+        public bool IsShutdown { get { return isShutdown; } }
+
+        private void InitChains()
+        {
+            TulipDebug.Print("InitChains(rx = {0}, tx = {1})\n",
+                             __arglist(MaxRxFragmentsInRing,
+                                       MaxTxFragmentsInRing));
+
+            // Turn off receive and transmit
+            uint mode = csr6.Read32();
+            mode &= ~(CSR6.SR | CSR6.ST);
+            csr6.Write32(mode);
+
+            this.rxRing.Reset();
+            csr3.Write32(this.rxRing.BaseAddress.ToUInt32());
+
+            this.txRing.Reset();
+            csr4.Write32(this.txRing.BaseAddress.ToUInt32());
+        }
+
+        // Device methods
+        internal void Initialize()
+        {
+            TulipDebug.Print("Tulip: Initialize() called\n");
+
+            // Dump config registers
+            TulipDebug.Print("Initial CSR values...\n");
+            TulipDebug.PrintCsrs(csr0, csr1, csr2, csr3, csr4, csr5, csr6,
+                                 csr7, csr8, csr9, csr10, csr11, csr12, csr15);
+
+            // Perform reset to clear out any state we may have left over
+            // from pxeboot.
+            csr0.Write32(CSR0.SWR);
+
+            TulipDebug.Print("Reset and new CSR values...\n");
+            TulipDebug.PrintCsrs(csr0, csr1, csr2, csr3, csr4, csr5, csr6,
+                                 csr7, csr8, csr9, csr10, csr11, csr12, csr15);
+
+            // Pull Serial Rom and parse data
+            byte[]! srom = PullSRom();
+            TulipDebug.PrintBytes("SROM", srom);
+
+            // Assign mac address.  Note we may have multiple
+            // phy's sharing the same rom and multiple cards and
+            // the below is not foolproof.
+            EthernetAddress macRom = EthernetAddress.ParseBytes(srom, 20);
+            if (macBase != macRom) {
+                macBase = macRom;
+                unit = 0;
+            } else {
+                unit = lastUnit + 1;
+            }
+
+            macAddress = macRom;
+            for (int i = 1; i < unit; i++) {
+                macAddress++;
+            }
+            lastUnit = unit;
+
+            // Register Interrupt
+            if (irq.RegisterInterrupt() == false) {
+                DebugStub.Break();
+            }
+
+            // Configure bus mode register
+            uint cls       = config.CacheLineSize;      // # of DWORDS
+            uint cacheBits = CSR0.WIE | CSR0.RLE | CSR0.RME;
+            uint cal       = 0;     // cache alignment
+            uint pbl       = 32;    // # of DWORDS to burst (>= cal)
+            switch (cls) {
+                case 8:
+                    cal = 1;
+                    break;
+                case 16:
+                    cal = 2;
+                    break;
+                case 32:
+                    cal = 3;
+                    break;
+                default:
+                    cacheBits = 0;
+                    cal       = 0;
+                    pbl       = 0;
+                    break;
+            }
+
+            InitChains();
+
+            // Write CSR0 to set global host bus operating parameters
+            csr0.Write32(cacheBits | CSR0.BAR |
+                         (cal << CSR0.CAL_ROLL) |
+                         (pbl << CSR0.PBL_ROLL));
+
+            // This is a debug helper and could be used to switch to
+            // polling mode.
+            //
+            StartPeriodicTimer(TimeSpan.FromMilliseconds(1000));
+
+            // And remember to enable the timer interrupt below CSR7.GPT
+
+            // Write CSR7 to mask unnecessary interrupts
+            csr7.Write32(CSR7.AI | CSR7.RI | CSR7.TI | CSR7.GPT);
+        }
+
+        internal void Finalize()
+        {
+            irq.ReleaseInterrupt();
+
+            // Get worker thread to end main loop.  When it terminates
+            irqWorkerStop = true;
+
+            TulipDebug.Print("Tulip: Finalize() called\n");
+        }
+
+        internal string! Name
+        {
+            get { return "DE2114x Ethernet"; }
+        }
+
+        internal string! Version
+        {
+            get { return "0.1"; }
+        }
+
+        internal EthernetAddress HardwareAddress
+        {
+            get { return macAddress; }
+        }
+
+        internal byte[]! HardwareAddressBytes
+        {
+            get {
+                byte [] tmp = macAddress.GetAddressBytes();
+                if (tmp != null) return tmp;
+                return new byte[6] { 0, 0, 0, 0, 0, 0 };
+            }
+        }
+
+        internal uint LinkSpeed
+        {
+            get { return 10 * 1000 * 1000; }
+        }
+
+        internal EthernetAddress BssId
+        {
+            get { return EthernetAddress.Zero; }
+        }
+
+        private void ReceivePollDemand()
+        {
+            csr2.Write32(1);
+        }
+
+        internal void GetReceivedPackets(PacketFifo*! in ExHeap fifo)
+        {
+            rxRing.Pop(fifo);
+            //            ReceivePollDemand();
+        }
+
+        internal void ReceivePackets(PacketFifo*! in ExHeap fifo)
+            ensures fifo->Count == 0;
+        {
+            rxRing.Push(fifo);
+            ReceivePollDemand();
+        }
+
+        private void TransmitPollDemand()
+        {
+            csr1.Write32(1);
+        }
+
+        internal void GetTransmittedPackets(PacketFifo*! in ExHeap fifo)
+        {
+            txRing.Pop(fifo);
+            TransmitPollDemand();
+        }
+
+        internal void TransmitPackets(PacketFifo*! in ExHeap fifo)
+            ensures fifo->Count == 0;
+        {
+            txRing.Push(fifo);
+            TransmitPollDemand();
+        }
+
+
+        //
+        // IrqWorker thread and related event notification setter
+        //
+
+        internal void SetEventRelay(TulipEventRelay theEventRelay)
+        {
+            eventRelay = theEventRelay;
+        }
+
+        private void StartPeriodicTimer(TimeSpan period)
+        {
+            long ticksPerBit;
+
+            uint mode = csr6.Read32();
+            if ((mode & (CSR6.PS | CSR6.TTM)) != 0) {
+                // 10 MB port
+                ticksPerBit = 2048;
+            } else if ((mode & (CSR6.PS | CSR6.TTM | CSR6.PCS | CSR6.SCR)) ==
+                       (CSR6.PS | CSR6.TTM)) {
+                // 10 MB MII/SYM
+                ticksPerBit = 8192;
+            } else {
+                // 100 MB
+                ticksPerBit = 819;
+            }
+
+            long bv = period.Ticks / ticksPerBit;
+            if (bv > 0xffff)
+                bv = 0xffff;
+
+            csr11.Write32(0x10000 | (uint)bv);
+        }
+
+        private void IrqWorkerMain()
+        {
+            Tracing.Log(Tracing.Debug, "Start worker thread.");
+
+            // Grab IoPorts used locally from instance so other threads
+            // can not use them.
+
+            while (irqWorkerStop == false) {
+                uint status = 0;
+
+                while (status == 0) {
+                    irq.WaitForInterrupt();
+                    status = csr5.Read32() & CSR5.VALID;
+                }
+                DumpCsr5(status);
+                rxRing.DumpOwnership("Interrupt");
+
+                uint tulipEvent = TulipEvent.NoEvent;
+                if ((status & (CSR5.EB|CSR5.FBE)) != 0) {
+                    TulipDebug.Print("Error: csr5.EB = {0} csr5.FBE = {1}\n",
+                                     __arglist(status & CSR5.EB, status & CSR5.FBE));
+                    DebugStub.Break();
+                }
+
+                if ((status & CSR5.RWT) != 0) {
+                }
+
+                if ((status & CSR5.TJT) != 0) {
+                }
+
+                if ((status & CSR5.AIS) != 0) {
+                    txRing.ClearTransmitError();
+                    TransmitPollDemand();
+                }
+
+                if ((status & (CSR5.RI | CSR5.RPS)) != 0) {
+                    tulipEvent |= TulipEvent.ReceiveEvent;
+                }
+
+                if ((status & CSR5.TI) != 0) {
+                    tulipEvent |= TulipEvent.TransmitEvent;
+                }
+
+                // Clear status bits
+                csr5.Write32(status);
+
+                // Enable interrupts
+                //                csr7.Write32(CSR7.AI | CSR7.RI | CSR7.TI );
+
+                // Acknowledge Interrupt
+                irq.AckInterrupt();
+
+                // Announce events
+                if (eventRelay != null) {
+                    eventRelay.ForwardEvent(tulipEvent);
+                }
+            }
+
+            // Perform software reset to stop processing
+            csr0.Write32(CSR0.SWR);
+
+            TulipDebug.Print("Tulip Stopped.");
+        }
+
+        [ System.Diagnostics.Conditional("DEBUG_TULIP") ]
+        private static void DumpCsr5(uint v)
+        {
+            v &= CSR5.VALID;
+
+            TulipDebug.Print("CSR5 : {0:x8} ", __arglist(v));
+
+            uint eb = (v >> CSR5.EB_ROLL) & CSR5.EB_MASK;
+            if ((v & CSR5.FBE) != 0) {
+                TulipDebug.Print("Fatal bus error: {0}\n", __arglist(eb));
+                return;
+            }
+
+            uint ts = (v >> CSR5.TS_ROLL) & CSR5.TS_MASK;
+            switch (ts) {
+                case 0: TulipDebug.Print("TS - STOPPED     ");  break;
+                case 1: TulipDebug.Print("TS - RUN (Fetch) ");  break;
+                case 2: TulipDebug.Print("TS - RUN (Wait)  ");  break;
+                case 3: TulipDebug.Print("TS - RUN (Fifo)  ");  break;
+                case 4: TulipDebug.Print("TS - RESERVED    ");  break;
+                case 5: TulipDebug.Print("TS - RUN (Setup) ");  break;
+                case 6: TulipDebug.Print("TS - Suspended   ");  break;
+                case 7: TulipDebug.Print("TS - RUN (Close) ");  break;
+            }
+
+            uint rs = (v >> CSR5.RS_ROLL) & CSR5.RS_MASK;
+            switch (rs) {
+                case 0: TulipDebug.Print("RS - STOPPED     ");  break;
+                case 1: TulipDebug.Print("RS - RUN (Fetch) ");  break;
+                case 2: TulipDebug.Print("RS - RUN (Check) ");  break;
+                case 3: TulipDebug.Print("RS - RUN (Wait)  ");  break;
+                case 4: TulipDebug.Print("RS - Suspended ) ");  break;
+                case 5: TulipDebug.Print("RS - RUN (Close) ");  break;
+                case 6: TulipDebug.Print("RS - RUN (Flush) ");  break;
+                case 7: TulipDebug.Print("RS - RUN (Queue) ");  break;
+            }
+
+            if ((v & CSR5.NIS) != 0) TulipDebug.Print("NIS ");
+            if ((v & CSR5.AIS) != 0) TulipDebug.Print("AIS ");
+            if ((v & CSR5.ERI) != 0) TulipDebug.Print("ERI ");
+            if ((v & CSR5.FBE) != 0) TulipDebug.Print("FBE ");
+            if ((v & CSR5.GTE) != 0) TulipDebug.Print("GTE ");
+            if ((v & CSR5.ETI) != 0) TulipDebug.Print("ETI ");
+            if ((v & CSR5.RWT) != 0) TulipDebug.Print("RWT ");
+            if ((v & CSR5.RPS) != 0) TulipDebug.Print("RPS ");
+            if ((v & CSR5.RU)  != 0) TulipDebug.Print("RU ");
+            if ((v & CSR5.RI)  != 0) TulipDebug.Print("RI ");
+            if ((v & CSR5.UNF) != 0) TulipDebug.Print("UNF ");
+            if ((v & CSR5.TJT) != 0) TulipDebug.Print("TJT ");
+            if ((v & CSR5.TU)  != 0) TulipDebug.Print("TU ");
+            if ((v & CSR5.TPS) != 0) TulipDebug.Print("TPS ");
+            if ((v & CSR5.TI)  != 0) TulipDebug.Print("TI ");
+
+            TulipDebug.Print("\n");
+        }
+
+
+        //
+        // SROM related methods
+        //
+
+        private uint GetSRomAddressWidth()
+        {
+            for (uint i = 6; i < 13; i++) {
+                ushort w = SRomRead16(18u, i);
+                if (w == 0) {
+                    return i - 1;
+                }
+            }
+            return 6;
+        }
+
+        private byte[]! PullSRom()
+        {
+            uint sromWidth = GetSRomAddressWidth();
+
+            byte[] b = new byte[2 << (int)sromWidth];
+
+            for (uint i = 0; i < b.Length; i += 2) {
+                ushort w = SRomRead16(i, sromWidth);
+                b[i]     = (byte) (w >> 8);
+                b[i + 1] = (byte) (w & 0xff);
+            }
+            return b;
+        }
+
+        [System.Diagnostics.Conditional("HAVE_DELAY")]
+        private static void Delay(int kernelTicks)
+        {
+            long expiry = ProcessService.GetUpTime().Ticks + kernelTicks;
+            while (ProcessService.GetUpTime().Ticks < expiry) {
+                Thread.Yield();
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // MII (Based on IEEE802.3-2002 and unreviewed *and* untested).
+
+        private int MiiReadBit()
+        {
+            int result = (csr9.Read32() & CSR9.MDI) != 0 ? 1 : 0;
+
+            csr9.Write32(CSR9.MII);                 Delay(1);
+            csr9.Write32(CSR9.MII | CSR9.MDC);      Delay(1);
+            csr9.Write32(CSR9.MII);                 Delay(1);
+            return result;
+        }
+
+        private int MiiReadBits(int count)
+        {
+            int result = 0;
+            while (count-- > 0) {
+                result  = result << 1;
+                result |= MiiReadBit();
+            }
+            return result;
+        }
+
+        private int MiiRead(int phy, int register)
+            requires phy      <= 31;
+            requires register <= 31;
+        {
+            MiiWriteBits(-1, 32);  // Preamble
+            // 14 bit write, 18bit read
+            MiiWriteBits((6 << 10)  |      // Start read transaction   (2 bits)
+                         (phy << 5) |      // Phy Address              (5 bits)
+                         register, 14);    // Register                 (5 bits)
+            int value = MiiReadBits(18);
+            MiiWriteBits(0, 32);           // Idle
+            return value & 0xffff;
+        }
+
+        private void MiiWriteBit(int bit)
+            requires bit == 0 || bit == 1;
+        {
+            uint data = (uint)(bit * CSR9.MDO);
+            csr9.Write32(data);             Delay(1);
+            csr9.Write32(data | CSR9.MDC);  Delay(1);
+            csr9.Write32(data);             Delay(1);
+        }
+
+        // Write count bits from vector to MII
+        private void MiiWriteBits(int vector, int count)
+            requires count >= 0 && count <= 32;
+        {
+            while (count-- > 0) {
+                MiiWriteBit(vector & 1);
+                vector >>= 1;
+            }
+        }
+
+        private void MiiWrite(int phy, int register, int value)
+            requires phy      <= 31;
+            requires register <= 31;
+            requires value    <= 0xffff;
+        {
+            MiiWriteBits(-1, 32);   // Preamble
+            MiiWriteBits((0x5 << 28) |      // Start write transaction (4 bits)
+                         (phy << 23) |      // Phy Address             (5 bits)
+                         (register << 18) | // Register                (5 bits)
+                         (2 << 16) |        // Turnaround 2 cycles     (2 bits)
+                         value, 32);
+            MiiWriteBits(0, 32);            // Idle
+        }
+
+        // --------------------------------------------------------------------
+        // SROM
+
+        private static ushort CalculateSromCrc(byte[]! srom)
+            requires srom.Length > 126;
+        {
+            // Cut-paste-and-converted directly from SROM 4.09 spec
+            const uint POLY = 0x04C11DB6;
+            const uint DATA_LEN = 126;
+
+            uint crc = 0xffffffff;
+
+            for (uint index = 0; index < DATA_LEN; index++) {
+                byte currentByte = srom[index];
+                for (uint bit = 0; bit < 8; bit++) {
+                    uint Msb = (crc >> 31) & 1;
+                    crc <<= 1;
+                    if ((Msb ^ (currentByte & 1)) != 0) {
+                        crc ^= POLY;
+                        crc |= 0x00000001;
+                    }
+                    currentByte >>= 1;
+                }
+            }
+
+            uint flippedCrc = 0;
+            for (uint i = 0; i < 32; i++) {
+                flippedCrc <<= 1;
+                uint bit = crc & 1;
+                crc >>= 1;
+                flippedCrc += bit;
+            }
+            crc = flippedCrc ^ 0xffffffff;
+            return (ushort)(crc & 0xffff);
+        }
+
+        private static int DumpLeafMedia(byte[]! srom, int offset)
+        {
+            if ((0x80 & (int)srom[offset]) == 0) {
+                TulipDebug.Print("-- Compact format (non-MII)");
+                TulipDebug.Print("   Media code {0:x2} GPR {1:x2} Command {2:x2}{3:x2}\n",
+                                 __arglist(0x3f & (int)srom[offset],
+                                           srom[offset + 1],
+                                           srom[offset + 3],
+                                           srom[offset + 2]));
+                return 4;
+            }
+            else {
+                int length = (0x7f & (int)srom[offset]) + 1;
+                int type   = (int)srom[offset + 1];
+                TulipDebug.Print("--- Extended format (Type {0} Length {1})\n",
+                                 __arglist(type, length));
+
+                if (type == 0x01) {
+                    int gprLength = (int)srom[offset + 3];
+                    int resetLength = (int)srom[offset + 4 + gprLength];
+                    TulipDebug.Print("    MII PHY id = {0:x2} SeqLen {1} ResetLen {2} ",
+                                     __arglist(srom[offset + 2],
+                                               gprLength, resetLength));
+                    int mediaCaps = ((int)srom[offset + 6 + gprLength + resetLength]) * 256 + (int)srom[offset + 5 + gprLength + resetLength];
+                    int nWay      = ((int)srom[offset + 8 + gprLength + resetLength]) * 256 + (int)srom[offset + 7 + gprLength + resetLength];
+                    int fdx      = ((int)srom[offset + 10 + gprLength + resetLength]) * 256 + (int)srom[offset + 9 + gprLength + resetLength];
+                    int ttm      = ((int)srom[offset + 12 + gprLength + resetLength]) * 256 + (int)srom[offset + 11 + gprLength + resetLength];
+                    TulipDebug.Print("mediaCaps {0:x4} nWay {1:x4} fdx {2:x4} ttm {3:x4}\n", __arglist(mediaCaps, nWay, fdx, ttm));
+                }
+                return length;
+            }
+        }
+
+        private static void DumpLeafNode(byte[]! srom, int offset)
+        {
+            TulipDebug.Print("Leaf:\n");
+            TulipDebug.Print("- ConnectionType: {0:x2}{1:x2} GPR: {2:x2} InfoBlocks: {3}\n",
+                             __arglist(srom[offset + 1], srom[offset],
+                                       srom[offset + 2], srom[offset + 3]));
+
+            int infoBlocks = (int)srom[offset + 3];
+            offset += 4;
+            for (int i = 0; i < infoBlocks; i++) {
+                offset += DumpLeafMedia(srom, offset);
+            }
+        }
+
+        private static void DecodeSRom(byte[]! srom)
+        {
+            TulipDebug.Print("SROM ID Block: Vendor {0:x2}{1:x2} Subsystem {2:x2}{3:x2} HwOpts {4:x2} Func0Opts {5:x2} CRC {6:x2}",
+                             __arglist(srom[1], srom[0], srom[3], srom[4],
+                                       srom[15], srom[17], srom[16]));
+
+            TulipDebug.Print("\nSROM Format: {0}\nController Count: {1}",
+                             __arglist(srom[18], srom[19]));
+
+            int controllers = (int)srom[19];
+            TulipDebug.Print("\nMAC address: {0:x2}:{1:x2}:{2:x2}:{3:x2}:{4:x2}:{5:x2}",
+                             __arglist(srom[20], srom[21], srom[22],
+                                       srom[23], srom[24], srom[25])
+                             );
+
+            for (int i = 0; i < controllers; i++) {
+                int offset = 27 + i * 2;
+                TulipDebug.Print("\nController {0} leaf offset {1:x2}{2:x2}\n",
+                                 __arglist(i,
+                                           srom[offset + 1], srom[offset])
+                                 );
+                DumpLeafNode(srom,
+                             ((int)(srom[offset + 1]) << 8) |
+                             (int)(srom[offset]));
+            }
+        }
+
+        private static byte [] SRomReadPreamble = {
+            0x01, 0x31, 0x57, 0x57, 0x51, 0x31
+        };
+
+        private ushort SRomRead16(uint addr, uint addrBits)
+        {
+            // This is taken from section 7-8 in 21140A reference manual. We
+            // deliberately make all delays as 3 ticks since we don't have
+            // sufficient resolution and don't care about 300ns vs 150ns for
+            // the SROM accesses.
+
+            const uint srom_base_cmd = 0x4800;
+
+            // Starting byte address to starting word address
+            addr >>= 1;
+
+            foreach (byte b in SRomReadPreamble) {
+                csr9.Write32(srom_base_cmd | (uint)(b >> 4));    Delay(3);
+                csr9.Write32(srom_base_cmd | (uint)(b & 0x0f));  Delay(3);
+            }
+
+            // Write address to be read
+            for (int i = (int)addrBits - 1; i >= 0; --i) {
+                uint bit = ((uint)addr >> i) & 0x01;
+                bit <<= 2;
+                csr9.Write32(srom_base_cmd | bit | 0x01);        Delay(3);
+                csr9.Write32(srom_base_cmd | bit | 0x03);        Delay(3);
+                csr9.Write32(srom_base_cmd | bit | 0x01);        Delay(3);
+            }
+
+            // Get lsb
+            uint r = 0;
+            for (int i = 7; i >= 0; --i) {
+                csr9.Write32(srom_base_cmd | 0x03);              Delay(3);
+                r |= ((csr9.Read32() & 0x08) >> 3) << i;         Delay(3);
+                csr9.Write32(srom_base_cmd | 0x01);              Delay(3);
+            }
+
+            // Get msb
+            for (int i = 15; i >= 8; --i) {
+                csr9.Write32(srom_base_cmd | 0x03);              Delay(3);
+                r |= ((csr9.Read32() & 0x08) >> 3) << i;         Delay(3);
+                csr9.Write32(srom_base_cmd | 0x01);              Delay(3);
+            }
+
+            // Finish up
+            csr9.Write32(srom_base_cmd);                         Delay(3);
+
+            return (ushort)r;
+        }
+
+        private String ConnectionTypeName(uint connectionType)
+        {
+            switch (connectionType) {
+                case 0x0000: return "10BaseT";
+                case 0x0100: return "10BaseT Nway";
+                case 0x0204: return "10BaseT Full Duplex";
+                case 0x0001: return "BNC";
+                case 0x0003: return "SYM_SRC (100BaseTx)";
+                case 0x0205: return "SYM_SCR";
+                case 0x0006: return "100Base-T4";
+                case 0x0007: return "100Base-FX";
+                case 0x0208: return "100Base-FXFD";
+                case 0x0009: return "MII TP";
+                case 0x020a: return "MII TP (full-dulex)";
+                case 0x000d: return "MII (100Base-Tx)";
+                case 0x020e: return "MII (100Base-Tx full duplex)";
+                case 0x000f: return "MII (100Base-T4";
+                case 0x0010: return "MII (100Base-FX 100Mb/s fiber)";
+                case 0x0211:
+                    return "MII (100Base-FX 100Mb/s fiber full duplex)";
+                case 0x0800: return "Power up AutoSense (dynamic)";
+                case 0x8800: return "Power up AutoSense";
+                case 0xffff: return "No selected media interface";
+                default:
+                    return String.Format("Unknown ({0})", connectionType);
+            }
+        }
+
+        private String MediaCodeName(uint mediaCode)
+        {
+            switch (mediaCode) {
+                case 0: return "TP (10MB/s)";
+                case 1: return "BNC (10MB/s)";
+                case 3: return "SYM_SCR (100Base-Tx)";
+                case 4: return "TP full-duplex";
+                case 5: return "SYM_SCR full-duplex (100Base-Tx)";
+                case 6: return "100Base-T4";
+                case 7: return "100Base-FX";
+                case 8: return "100Base-FXFD";
+                default: return String.Format("Unknown ({1})", mediaCode);
+            }
+        }
+
+        private byte[]! GetEthernetAddressBytes(EthernetAddress address)
+        {
+            byte []! data = (!)address.GetAddressBytes();
+            return data;
+        }
+
+        //
+        // Setup Frame related methods
+        //
+
+        /// <summary>
+        /// Constructs a perfect filtering setup frame buffer.
+        /// </summary>
+        ///
+        /// <param name="addresses">The addresses to be present
+        /// in the perfect filter up to a maximum of 16.</param>
+        private byte[]! MakePerfectFilteringFrame(EthernetAddress[]! addresses)
+            requires addresses.Length <= 16;
+        {
+            //
+            // Ref: pages 4.20-4.23
+            //
+            // Frame has 192 bytes and is laid out thus:
+            //
+            //      <3:0> XX XX a0[1] a0[0]     XX    = don't care
+            //      <7:4> XX XX a0[3] a0[2]     aN    = ethernet address N
+            //     <11:8> XX XX a0[5] a0[4]     aN[i] = i'th byte of address N
+            //    <15:12> XX XX a1[1] a1[0]
+            //    <19:16> XX XX a1[3] a1[2]
+            //    <23:20> XX XX a1[5] a1[4]
+            //  ...
+            //  <183:180> XX XX a15[1] a15[0]
+            //  <187:184> XX XX a15[3] a15[2]
+            //  <191:188> XX XX a15[5] a15[4]
+            //
+            // If there are less than 16 addresses to go in the frame,
+            // addresses should be repeated to fill all 16 slots.
+            //
+            // Frame is generated in little endian ordering.
+            //
+            const int MaxOutIndex = 16;
+            int addressIndex = 0;
+            int outIndex = 0;
+
+            byte []! frame = new byte [SetupFrameBytes]; // 192 bytes
+
+            while (outIndex != MaxOutIndex) {
+                int start = outIndex * 6 * 2;
+                byte []! address = GetEthernetAddressBytes(
+                    addresses[addressIndex]);
+                frame[start + 0] = address[0];
+                frame[start + 1] = address[1];
+                frame[start + 4] = address[2];
+                frame[start + 5] = address[3];
+                frame[start + 8] = address[4];
+                frame[start + 9] = address[5];
+                addressIndex = (addressIndex + 1) % addresses.Length;
+                outIndex ++;
+            }
+            return frame;
+        }
+
+        private bool WriteStandardSetupFrame()
+        {
+            txRing.WriteSetupFrame(
+                MakePerfectFilteringFrame(
+                    new EthernetAddress [] { macAddress,
+                                             EthernetAddress.Broadcast }
+                    ),
+                FilteringType.Perfect
+                );
+            TransmitPollDemand();
+
+            for (int i = 0; i < 100; i++) {
+                if (txRing.PollSetupFrameCompleted()) {
+                    return true;
+                }
+                Thread.Sleep(TimeSpan.FromMilliseconds(5));
+            }
+            DebugStub.Break();
+            return false;
+        }
+    }
+}

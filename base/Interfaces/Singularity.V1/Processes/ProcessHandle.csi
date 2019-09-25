@@ -1,0 +1,125 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File: ProcessHandle.csi
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using Microsoft.Singularity.V1.Services;
+using Microsoft.Singularity.V1.Types;
+using Microsoft.Singularity.V1.Security;
+
+namespace Microsoft.Singularity.V1.Processes
+{
+    public enum ProcessState {
+        Active,
+        Suspended,
+        Stopped,
+    }
+
+    public struct ProcessHandle
+    {
+        public readonly UIntPtr id;
+
+        [NoHeapAllocation]
+        public static bool Create(char *args,
+                                  int *argLengths,
+                                  int argCount,
+                                  char *role,
+                                  int roleLength,
+                                  int endpointCount,
+                                  out ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static bool Create(char *processName,  //args[0]
+                                  int  processNameLength,
+                                  char *action,
+                                  int  actionLength,
+                                  char *role,
+                                  int roleLength,
+                                  out ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static bool SetStartupEndpoint(ProcessHandle handle,
+                                              int index,
+                                              SharedHeapService.Allocation * endpoint);
+
+        [NoHeapAllocation]
+        public static void Dispose(ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static bool Start(ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static void Join(ProcessHandle handle, out bool started);
+
+        [NoHeapAllocation]
+        public static bool Join(ProcessHandle handle,
+                                TimeSpan timeout,
+                                out bool started);
+
+        [NoHeapAllocation]
+        public static bool Join(ProcessHandle handle,
+                                SchedulerTime stop,
+                                out bool started);
+
+        [NoHeapAllocation]
+        public static bool Suspend(ProcessHandle handle, bool recursive);
+
+        [NoHeapAllocation]
+        public static bool Resume(ProcessHandle handle, bool recursive);
+
+        [NoHeapAllocation]
+        public static void Stop(ProcessHandle handle, int exitcode);
+
+        [NoHeapAllocation]
+        public static void SuspendBarrier();
+
+        [NoHeapAllocation]
+        public static int GetProcessId(ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static int GetExitCode(ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static PrincipalHandle GetPrincipalHandle(ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static ProcessState GetState(ProcessHandle handle);
+
+        [NoHeapAllocation]
+        public static unsafe ParameterCode SetStartupStringArrayArg(
+                                                ProcessHandle handle,
+                                                int index,
+                                                char *args,
+                                                int *argLengths,
+                                                int argCount);
+
+        [NoHeapAllocation]
+        public static bool BindToService(ProcessHandle handle,
+                                        SystemType impType,
+                                        SystemType expType,
+                                        char *contract,
+                                        int  contractLen,
+                                        int startState,
+                                        int index);
+
+
+        [NoHeapAllocation]
+        public static unsafe ParameterCode SetStartupStringArg(ProcessHandle handle, int arg, char * input, int length);
+
+        [NoHeapAllocation]
+        public static ParameterCode SetStartupLongArg(ProcessHandle handle, int index, long value);
+
+
+        [NoHeapAllocation]
+        public static ParameterCode SetStartupBoolArg(ProcessHandle handle, int index, bool value);
+
+    }
+}

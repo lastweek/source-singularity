@@ -1,0 +1,135 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"
+         DefaultTargets="Build">
+  <PropertyGroup>
+    <!--
+    These two paths MUST end in "\".
+    Also, we add $(Configuration).$(Platform) to BaseIntermediateOutputPath, even though CommonTargets will
+    add them itself, because CommonTargets also generates some intermediate files *without* decorating them.
+    -->
+    <OutputPath Condition="'$(OutputPath)'==''">$(SINGULARITY_OBJROOT)\Windows\$(Configuration).$(Platform)\</OutputPath>
+    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)'==''">$(SINGULARITY_OBJROOT)\Windows.obj\$(Configuration).$(Platform)\</BaseIntermediateOutputPath>
+    <SD Condition="'$(SD)'==''">$(BUILDDIR)\internal\sd.exe</SD>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <DefineDebug Condition="'$(Configuration)'=='Debug' or '$(Configuration)'=='Prototype'">true</DefineDebug>
+    <DefineTrace>true</DefineTrace>
+    <WindowsToolInstallDirectory Condition="'$(WindowsToolInstallDirectory)'==''" >$(SINGULARITY_ROOT)\build</WindowsToolInstallDirectory>
+    <NoStdLib>false</NoStdLib>
+    <AdditionalLibPaths>@(AdditionalLibPaths);$(MSBuildBinPath)</AdditionalLibPaths>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PreRewriteAssemblyPath>$(IntermediateOutputPath)Rewrite\$(TargetName)$(TargetExt)</PreRewriteAssemblyPath>
+    <PreRewriteSymbolPath>$(IntermediateOutputPath)Rewrite\$(TargetName).pdb</PreRewriteSymbolPath>
+    <PreRewriteAssemblyDir>$(IntermediateOutputPath)Rewrite\</PreRewriteAssemblyDir>
+    <PreRewritePublicKey>$(IntermediateOutputPath)Rewrite\public.snk</PreRewritePublicKey>
+    <IntermediateAssemblySymbols>$(IntermediateOutputPath)$(TargetName).pdb</IntermediateAssemblySymbols>
+  </PropertyGroup>
+  <Target
+      Name="CoreCompile"
+      Inputs="$(MSBuildAllProjects);
+              @(Compile);
+              @(ManifestResourceWithNoCulture);
+              $(ApplicationIcon);
+              $(AssemblyOriginatorKeyFile);
+              @(ManifestNonResxWithNoCultureOnDisk);
+              @(ReferencePath);
+              @(CompiledLicenseFile);
+              @(EmbeddedDocumentation);                
+              @(CustomAdditionalCompileInputs);
+              $(OutputPath)$(TemplateAssemblyFile)"
+      Outputs="@(DocFileItem);
+               @(IntermediateAssembly);
+               $(NonExistentFile);
+               @(CustomAdditionalCompileOutputs)"
+      DependsOnTargets="$(CoreCompileDependsOn)"
+      >
+    <MakeDir Directories="$(PreRewriteAssemblyDir)"/>
+    <Csc
+        AdditionalLibPaths="$(AdditionalLibPaths)"
+        AddModules="@(AddModules)"
+        AllowUnsafeBlocks="$(AllowUnsafeBlocks)"
+        BaseAddress="$(BaseAddress)"
+        CheckForOverflowUnderflow="$(CheckForOverflowUnderflow)"
+        CodePage="$(CodePage)"
+        DebugType="$(DebugType)"
+        DefineConstants="$(DefineConstants)"
+        DelaySign="$(DelaySign)"
+        DisabledWarnings="$(_DisabledWarnings)"
+        DocumentationFile="@(DocFileItem)"
+        EmitDebugInformation="$(DebugSymbols)"
+        ErrorReport="$(ErrorReport)"
+        FileAlignment="$(FileAlignment)"
+        GenerateFullPaths="$(GenerateFullPaths)"
+        KeyContainer="$(KeyContainerName)"
+        KeyFile="$(KeyOriginatorFile)"
+        LangVersion="$(LangVersion)"
+        MainEntryPoint="$(StartupObject)"
+        ModuleAssemblyName="$(ModuleAssemblyName)"
+        NoConfig="true"
+        NoLogo="$(NoLogo)"
+        NoStandardLib="$(NoStdLib)"
+        Optimize="$(Optimize)"
+        OutputAssembly="$(PreRewriteAssemblyPath)"
+        PdbFile="$(PreRewriteSymbolPath)"
+        Platform="$(PlatformTarget)"
+        References="@(ReferencePath)"
+        Resources="@(ManifestResourceWithNoCulture);@(ManifestNonResxWithNoCultureOnDisk);@(CompiledLicenseFile)"
+        ResponseFiles="$(CompilerResponseFile)"
+        Sources="@(Compile)"
+        TargetType="$(OutputType)"
+        ToolPath="$(CscToolPath)"
+        TreatWarningsAsErrors="$(TreatWarningsAsErrors)"
+        UseHostCompilerIfAvailable="$(UseHostCompilerIfAvailable)"
+        Utf8Output="$(Utf8Output)"
+        WarningLevel="$(WarningLevel)"
+        WarningsAsErrors="$(WarningsAsErrors)"
+        WarningsNotAsErrors="$(WarningsNotAsErrors)"
+        Win32Icon="$(ApplicationIcon)"
+        Win32Resource="$(Win32Resource)"
+        />
+    
+    <Exec Command='$(BUILDDIR)\transform\transform.exe $(TRANSFORM_FLAGS) -t &quot;$(WINDOWSDIR)\$(TemplateAssemblyFile)&quot; -o &quot;@(IntermediateAssembly)&quot; -d &quot;$(IntermediateAssemblySymbols)&quot; &quot;$(PreRewriteAssemblyPath)&quot; &gt; &quot;@(IntermediateAssembly).log&quot;'/>
+  </Target>
+
+  <PropertyGroup>
+      <CoreCompileDependsOn>RunCustomBuildTools</CoreCompileDependsOn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InstallFile Include="@(IntermediateAssembly)"/>
+  </ItemGroup>
+
+  <Target Name="CheckOut">
+    <Exec Command="$(SD) edit @(IntermediateAssembly->'$(WindowsToolInstallDirectory)\%(filename)%(extension)') @(IntermediateAssembly->'$(WindowsToolInstallDirectory)\%(filename).pdb')"/>
+  </Target>
+
+  <Target Name="InstallCopyOnly" DependsOnTargets="Build">
+    <Copy SourceFiles="@(IntermediateAssembly);@(IntermediateAssembly->'%(rootdir)%(directory)%(filename).pdb')"
+          DestinationFolder="$(WindowsToolInstallDirectory)"
+          SkipUnchangedFiles="true"
+          />
+  </Target>
+
+  <Target Name="Install" DependsOnTargets="Build;CheckOut;InstallCopyOnly">
+  </Target>
+
+  <Import Condition="'$(SingularityCustomBuildToolsIncluded)'==''" Project="CustomBuildTools.targets"/>
+
+  <Target Name="GetNativeManifest">
+    <Message Text="GetNativeManifest - NYI"/>
+  </Target>
+
+</Project>

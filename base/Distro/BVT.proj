@@ -1,0 +1,95 @@
+<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\Paths.targets"/>
+  <Import Project="ExcludeTests.targets"/>
+
+  <ItemGroup>
+    <!-- Apps -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\tty\tty.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Shell\Shell.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Login\Login.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\BootCount\BootCount.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Slides\Slides.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Tasklist\Tasklist.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\CredentialsControl\CredentialsControl.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Tester\Tester.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Eventing\EventTest\EventTest.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Eventing\EvStress\EvStress.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Eventing\EventActive\EventActive.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\ServiceManager\SMSClient\SMSClient.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Iso9660\cdmount\cdmount.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Iso9660\cdunmount\cdunmount.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\ipconfig\ipconfig.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\dns\dns.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\route\route.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\UdpBlast\UdpBlast.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\UdpGulp\UdpGulp.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\TcpBlast\TcpBlast.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Network\TcpGulp\TcpGulp.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\more\more.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\SysInfo\SysInfo.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\DebugPipe\DebugPipe.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Utilities\Utilities.proj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\SchedBench\SchedBench.csproj"/>
+
+
+    <!-- Benchmarks -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\SingBench\SingBench\SingBenchApp.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\SingBench\BenchChild\SingBenchChild.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\Perfcnt\Perfcnt.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Benchmarks\diskrw\diskrw.csproj"/>
+
+    <!-- Tests -->
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Tests\**\*.csproj"
+                 Exclude="$(SINGULARITY_ROOT)\Applications\Tests\Benchmark\Hoisted\Hoisted.csproj;
+                          $(ExcludePhoenixTestApp);
+                          $(SINGULARITY_ROOT)\Applications\Tests\InsightTests\WpfObserverTest\WpfObserverTest.csproj;
+                          $(SINGULARITY_ROOT)\Applications\Tests\InsightTests\InsightTestsVs.csproj;
+                          $(SINGULARITY_ROOT)\Applications\**\*.Win.*proj;
+                          "/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Tests\Scheduler\**\*.csproj" />
+    <Application Include="$(SINGULARITY_ROOT)\Applications\Play\Play.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Applications\ptest\ptest.csproj"/>
+
+    <!-- Drivers -->
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Disk\Disk.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\LegacyKeyboard\LegacyKeyboard.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Network\Tulip\Tulip.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\Network\Intel\Intel.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\VolumeManager\VolumeManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\SB16\SB16.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Drivers\S3Trio64\S3Trio64.csproj"/>
+
+    <!-- Services -->
+    <Application Include="$(SINGULARITY_ROOT)\Services\CredentialsManager\CredentialsManagerService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\Control\FatControl.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\ClientManager\FatClientManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Fat\Fs\FatFs.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Iso9660\Iso9660.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\NetStack\NetStackService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\RamDisk\Disk\RamDisk.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\RamDisk\Control\RamDiskControl.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\RamDisk\ClientManager\RamDiskClientManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\ServiceManager\ServiceManager.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Smb\Client\SmbClient.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Smb\ClientService\SmbClientService.csproj"/>
+    <Application Include="$(SINGULARITY_ROOT)\Services\Smb\Control\Smb.Control.csproj"/>
+  </ItemGroup>
+
+  <Import Condition="Exists('$(SINGULARITY_ROOT)\internal')"
+	  Project="$(SINGULARITY_ROOT)\internal\internal.BVT.proj"/>
+  <ItemGroup Condition="!Exists('$(SINGULARITY_ROOT)\internal')">
+      <Application Include="$(SINGULARITY_ROOT)\precompiled\Drivers\Network\nForce4\nForce4.csproj"/>
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\Distro.targets"/>
+
+</Project>

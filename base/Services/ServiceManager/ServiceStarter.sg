@@ -1,0 +1,268 @@
+// ----------------------------------------------------------------------------
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ----------------------------------------------------------------------------
+
+//
+//
+//Steps taken to start a service:
+//
+//Load the manifest.  (Slow Synchronous)
+//Parse the manifest.  (fast)
+//Create channels, bind them.  (fast)
+//Create the process.  (fast)
+//Start the process.  (fast)
+//Wait for "ok" response from process.  (slow)
+//
+//
+//
+
+using System;
+using System.Collections;
+using System.Threading;
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Applications;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.ServiceManager;
+using Microsoft.Singularity.V1.Processes;
+using Microsoft.Singularity.Xml;
+
+namespace Microsoft.Singularity.Services.ServiceManager
+{
+    
+    contract ServiceStarterContract
+    {
+        out message Succeeded();
+            
+        out message Failed(ServiceError error);
+        
+        state Starting : one {
+            Succeeded! -> Done;
+            Failed! -> Done;
+        }
+        
+        state Done : one {
+        }
+    }
+    
+    class ServiceStarter
+    {
+        public string! ExecutableName;
+        TRef<ServiceStarterContract.Exp:Starting>! notifierRef;
+        
+        string! _dbgprefix;
+        
+        public readonly Service! Service;
+        public readonly ServiceProcess! Process;
+        Process SystemProcess;
+
+        private TRef<ServiceProcessContract.Imp:Starting> _svcontrol;
+        private TRef<ServiceEventContract.Exp:Ready> _svevent;
+
+        public void GetSuccessfulResults(        
+            out ServiceProcessContract.Imp:Starting! svcontrol,
+            out ServiceEventContract.Exp:Ready! svevent,
+            out Process! process)
+        {
+            if (_svcontrol == null || _svevent == null)
+                throw new InvalidOperationException("Cannot get results of operation; it did not succeed");
+            svcontrol = _svcontrol.Acquire();
+            svevent = _svevent.Acquire();
+            assert this.SystemProcess != null;
+            process = this.SystemProcess;
+        }
+        
+        
+        public static ServiceStarterContract.Imp:Starting! StartService(
+            ServiceProcess! svprocess,
+            out ServiceStarter! out_starter)
+        {
+            ServiceStarterContract.Imp! notifier_imp;
+            ServiceStarterContract.Exp! notifier_exp;
+            ServiceStarterContract.NewChannel(out notifier_imp, out notifier_exp);
+            
+            ServiceStarter starter = new ServiceStarter(notifier_exp, svprocess);
+
+            Thread thread = new Thread(starter.ThreadRoutine);
+            thread.Start();
+            
+            out_starter = starter;
+            
+            return notifier_imp;         
+        }
+
+        private ServiceStarter([Claims]ServiceStarterContract.Exp! notifier, ServiceProcess! svprocess)
+        {
+            notifierRef = new TRef<ServiceStarterContract.Exp:Starting>(notifier);
+            this.ExecutableName = svprocess.Service.Config.ExecutableName;
+            this.Service = svprocess.Service;
+            this.Process = svprocess;
+            
+            _dbgprefix = ServiceManager.MakeDbgPrefix(svprocess.Service.ServiceName + "/new");
+        }
+
+        private void ThreadRoutine()
+        {
+            ServiceStarterContract.Exp:Starting! notifier = notifierRef.Acquire();
+            Service! service = this.Service;
+            try {
+            
+                Dbg(TraceLevel.Debug, "Loading manifest '{0}'", service.Config.ExecutableName);
+                Process process;
+                Manifest manifest;
+
+                try {
+                    string[]! process_args = { service.Config.ExecutableName };
+                    
+                    DirectoryServiceContract.Imp! rootds = DirectoryService.NewClientEndpoint();
+                    try {
+                        process = Binder.CreateProcess("Service", rootds, process_args, out manifest);
+                    }
+                    finally {
+                        delete rootds;
+                    }
+                    // manifest = Binder.LoadManifest(service.ExecutableName);
+                }
+                catch (Exception ex) {
+                    Dbg(TraceLevel.Error, "Failed to load manifest; an exception occurred.");
+                    DumpException(ex);
+                    notifier.SendFailed(ServiceError.ErrorLoadingManifest);
+                    return;
+                }
+                if (process == null || manifest == null) {
+                    Dbg(TraceLevel.Error, "Failed to load manifest.");
+                    notifier.SendFailed(ServiceError.CreateProcessFailed);
+                    return;
+                }
+                
+                //
+                // Next, parse the manifest.  We need to verify that this executable is in the "Service"
+                // category, and we need to find the indices of several endpoints, which will allow the
+                // service process to communicate with this process.
+                //
+                
+                Dbg(TraceLevel.Debug, "Parsing manifest.");
+
+                XmlNode manifestCategory = manifest.GetCategoryNodeByName("Service");
+                if (manifestCategory == null) {
+                    Dbg(TraceLevel.Error, "Error: The application manifest does not contain a 'Service' category.");
+                    notifier.SendFailed(ServiceError.ServiceHasInvalidManifest);
+                    process.Dispose(true);
+                    return;
+                }
+
+                // int directoryServiceEndpointIndex = manifest.FindCustomEndpointIndex(manifestCategory, "Microsoft.Singularity.Directory.DirectoryServiceContract");            
+                int managedServiceEndpointIndex = manifest.FindCustomEndpointIndex(manifestCategory, "Microsoft.Singularity.ServiceManager.ServiceProcessContract");
+                int serviceEventEndpointIndex = manifest.FindCustomEndpointIndex(manifestCategory, "Microsoft.Singularity.ServiceManager.ServiceEventContract");
+
+                bool manifest_error = false;
+                            
+                if (managedServiceEndpointIndex == -1) {
+                    Dbg(TraceLevel.Error, "Error: The manifest of the service does not declare a 'ServiceProcessContract'.");
+                    manifest_error = true;
+                }
+                if (serviceEventEndpointIndex == -1) {
+                    Dbg(TraceLevel.Error, "Error: The manifest of the service does not declare a 'ServiceEventContract'.");
+                    manifest_error = true;
+                }
+                
+                if (manifest_error) {
+                    Dbg(TraceLevel.Error, "Error: The service cannot be started because the manifest is invalid.");
+                    notifier.SendFailed(ServiceError.ServiceHasInvalidManifest);
+                    process.Dispose(true);
+                    return;
+                }
+                
+                //
+                // Create the channels that we will use to communicate with the process.
+                //
+                    
+                ServiceProcessContract.Imp! svcontrol_imp;
+                ServiceProcessContract.Exp! svcontrol_exp;
+                ServiceProcessContract.NewChannel(out svcontrol_imp, out svcontrol_exp);
+                
+                ServiceEventContract.Imp! svevent_imp;
+                ServiceEventContract.Exp! svevent_exp;
+                ServiceEventContract.NewChannel(out svevent_imp, out svevent_exp);
+                
+                bool ok = true;
+                
+                if (!process.SetStartupEndpoint(managedServiceEndpointIndex, svcontrol_exp)) {
+                    Dbg(TraceLevel.Error, "Error: FAILED to set ServiceProcessContract endpoint for new child process at index {0}.", managedServiceEndpointIndex);
+                    ok = false;
+                }
+                if (!process.SetStartupEndpoint(serviceEventEndpointIndex, svevent_imp)) {
+                    Dbg(TraceLevel.Error, "Error: FAILED to set ServiceEventContract for new child process at index {0}.", serviceEventEndpointIndex);
+                    ok = false;
+                }
+                
+                if (!ok) {
+                    Dbg(TraceLevel.Error, "Failed to wire up service endpoints.");
+                    notifier.SendFailed(ServiceError.FailedSetChannels);
+                    delete svcontrol_imp;
+                    delete svevent_exp;
+                    process.Dispose(true);
+                    return;
+                }
+                
+                Dbg(TraceLevel.Debug, "Service process successfully created, all endpoints set.  Starting service process...");
+                try {
+                    process.Start();
+                }
+                catch (Exception ex) {
+                    Dbg(TraceLevel.Warning, "FAILED to start service process.");
+                    DumpException(ex);
+                    notifier.SendFailed(ServiceError.StartProcessFailed);
+                    delete svcontrol_imp;
+                    delete svevent_exp;
+                    process.Dispose(true);
+                    return;
+                }
+
+                //
+                // At this point, we have successfully created and started the new child process.
+                // However, the service is not considered "running" yet.  For that to happen, we
+                // need to receive a "Success" message on the ServiceProcessContract channel.
+                // We don't wait for that here (synchronously).  Instead, we mark the service as
+                // "starting" and return.  Later, the main loop will receive that message and
+                // advance state.
+                //
+                
+                Dbg(TraceLevel.Debug, "Service process is starting.  Waiting for Success message...");
+
+                this.SystemProcess = process;
+
+                _svcontrol = new TRef<ServiceProcessContract.Imp:Starting>(svcontrol_imp);
+                _svevent = new TRef<ServiceEventContract.Exp:Ready>(svevent_exp);
+
+                notifier.SendSucceeded();
+            }
+            finally {
+                delete notifier;
+            }
+        }
+        
+        
+        void DumpException(Exception! ex)
+        {
+            for (Exception focus = ex; focus != null; focus = focus.InnerException) {
+                Dbg(TraceLevel.Warning, "{0}: {1}", ex.GetType().FullName, ex.Message);
+            }
+        }
+        
+        void Dbg(TraceLevel level, string! line)
+        {
+            ServiceManager.TraceLog(level, _dbgprefix + line);
+        }
+        
+        void Dbg(TraceLevel level, string! format, params object[]! args)
+        {
+            Dbg(level, String.Format(format, args));
+        }
+            
+    }
+
+}

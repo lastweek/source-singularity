@@ -1,0 +1,92 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple ping-pong test child app #1
+//
+
+using Microsoft.SingSharp;
+using Microsoft.SingSharp.Runtime;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Diagnostics.Contracts;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.PingPong.Contracts;
+using System;
+using System.Diagnostics;
+
+namespace Microsoft.Singularity.Applications
+{
+    public class CPing
+    {
+        public static int Main(String[]! args)
+        {
+            int links = 0;
+            if (args.Length == 2) {
+                links = Int32.Parse(args[1]);
+            }
+            if (args.Length > 1 && links == 0) {
+                Console.WriteLine("Usage:\n" +
+                                  "    ping [links]\n" +
+                                  "Summary\n" +
+                                  "    Starts one cpong process and 'links' clink processes.");
+                return 1;
+            }
+
+            // Start up the pong process.
+            PongContract.Imp! pongImp;
+            PongContract.Exp! pongExp;
+
+            PongContract.NewChannel(out pongImp, out pongExp);
+
+            Console.WriteLine("CPing  : Starting cpong.");
+
+            string[] cargs = new string[1];
+            cargs[0] = "CPong";
+            Process child = new Process(cargs, null, 1);
+            child.SetStartupEndpoint(0, (Endpoint * in ExHeap)pongExp);
+            child.Start();
+
+            // Start up each link process.
+            for (int i = 0; i < links; i++) {
+                PongContract.Imp! linkImp;
+                PongContract.Exp! linkExp;
+
+                PongContract.NewChannel(out linkImp, out linkExp);
+
+                Console.WriteLine("CPing  : Starting clink[{0}].", i);
+                cargs = new string[2];
+                cargs[0] = "CLink";
+                cargs[1] = i.ToString();
+
+                child = new Process(cargs, null, 2);
+                child.SetStartupEndpoint(0, (Endpoint * in ExHeap)linkExp);
+                child.SetStartupEndpoint(1, (Endpoint * in ExHeap)pongImp);
+                child.Start();
+
+                pongImp = linkImp;
+            }
+
+            Console.WriteLine("CPing  : Waiting for cpong.");
+            pongImp.RecvPongReady();
+
+            try {
+                for (int i = 1; i <= 5; ++i) {
+                    int data = i * 1000;
+                    Console.WriteLine("CPing  : Ping({0}).", data);
+                    pongImp.SendPing(data);
+                    pongImp.RecvPong(out data);
+                    Console.WriteLine("CPing  : Pong({0}).", data);
+                }
+                Console.WriteLine("CPing  : Finished.");
+                return 0;
+            }
+            finally {
+                delete pongImp;
+            }
+            return 1;
+        }
+    }
+}

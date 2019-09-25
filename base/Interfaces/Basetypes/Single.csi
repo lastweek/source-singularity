@@ -1,0 +1,41 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System.Globalization;
+
+namespace System
+{
+    public struct Single : IComparable, IFormattable
+    {
+#if !DONT_DO_BARTOK
+        private int m_value;
+#endif
+        public const float MinValue;
+        public const float Epsilon;
+        public const float MaxValue;
+        public const float PositiveInfinity;
+        public const float NegativeInfinity;
+        public const float NaN;
+
+        public static bool IsInfinity(float f);
+        public static bool IsPositiveInfinity(float f);
+        public static bool IsNegativeInfinity(float f);
+        public static bool IsNaN(float f);
+
+        public static float ToSingle(byte[] buffer);
+
+        public static void GetBytes(float value, byte[] buffer);
+
+        public int CompareTo(Object value);
+
+        public override bool Equals(Object obj);
+        public override int GetHashCode();
+        public override String ToString();
+
+        public String ToString(String format);
+        public static float Parse(String s);
+    }
+}

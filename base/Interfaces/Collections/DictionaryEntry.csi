@@ -1,0 +1,24 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+
+using System;
+
+namespace System.Collections
+{
+    // A DictionaryEntry holds a key and a value from a dictionary.
+    // It is returned by IDictionaryEnumerator::GetEntry().
+    public struct DictionaryEntry
+    {
+#if !DONT_DO_BARTOK
+        private int value;
+#endif
+
+        public DictionaryEntry(Object key, Object value);
+
+        public Object Key { get; set; }
+        public Object Value { get; set; }
+    }
+}

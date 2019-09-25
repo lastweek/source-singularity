@@ -1,0 +1,43 @@
+﻿<!--
+###############################################################################
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+###############################################################################
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\..\Paths.targets" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>TestDSP</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="DirectoryService.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\DirAclCoreSupport.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\DirectoryServiceWorker.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\DirNode.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\IoMemoryNode.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\Node.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\NotificationManager.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\Path.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\Property.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\ProviderNode.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\ResolutionState.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\SbUtils.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\SymLinkNode.sg" />
+    <Compile Include="..\..\..\kernel\Singularity.Directory\WorkerFunctions.sg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\System.IO\System.IO.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\Security\Security.csproj" />
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\FileSystem.Utils\FileSystem.Utils.csproj"/>
+    <ProjectReference Include="$(SINGULARITY_ROOT)\Libraries\DirectoryService.Utils\DirectoryService.Utils.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SINGULARITY_ROOT)\Targets\ConsoleCategory.targets" />
+
+</Project>

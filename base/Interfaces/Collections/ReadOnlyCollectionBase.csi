@@ -1,0 +1,28 @@
+// ==++==
+//
+//   Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// ==--==
+//------------------------------------------------------------------------------
+
+using System;
+
+namespace System.Collections
+{
+
+    public abstract class ReadOnlyCollectionBase : ICollection {
+        ArrayList list;
+
+        protected ArrayList InnerList { get; }
+
+        public int Count { get; }
+
+        bool ICollection.IsSynchronized { get; }
+
+        object ICollection.SyncRoot { get; }
+
+        void ICollection.CopyTo(Array array, int index);
+        public IEnumerator GetEnumerator();
+    }
+
+}

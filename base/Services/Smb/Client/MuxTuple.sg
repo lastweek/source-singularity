@@ -1,0 +1,119 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   
+//
+//  Note:
+//
+
+using System;
+using Microsoft.Singularity;
+using Smb.PrivateChannels;
+using Smb.Protocol;
+
+namespace Smb.Client
+{
+	struct MuxTuple
+	{
+		public int TreeId;
+		public int ProcessId;
+		public int UserId;
+		public int MuxId;
+		
+		// private readonly int _hashcode;
+		
+		public override int GetHashCode()
+		{
+			long h = this.TreeId ^ (((long)this.ProcessId) * 3) ^ (((long)this.UserId) * 5) ^ (((long)this.MuxId) * 7);
+			int hashcode = unchecked((int)(h ^ (h >> 20)));
+			// DebugStub.WriteLine(String.Format("MuxTuple: {0} -> hash code {1:x8}", this.ToString(), _hashcode));
+			return hashcode;
+		}
+		
+		public static bool operator== (MuxTuple a, MuxTuple b)
+		{
+			return a.TreeId == b.TreeId
+				&& a.ProcessId == b.ProcessId
+				&& a.UserId == b.UserId
+				&& a.MuxId == b.MuxId;				
+		}
+		
+		public static bool operator!= (MuxTuple a, MuxTuple b)
+		{
+			return !(a.TreeId == b.TreeId
+				&& a.ProcessId == b.ProcessId
+				&& a.UserId == b.UserId
+				&& a.MuxId == b.MuxId);
+		}
+		
+		public override bool Equals(object ob)
+		{
+			if (ob == null)
+				return false;
+			
+			if (!(ob is MuxTuple))
+				return false;
+				
+			MuxTuple t = (MuxTuple)ob;
+			return this == t;
+		}
+		
+		public MuxTuple(SmbMuxTuple tuple)
+			: this(tuple.TreeId, tuple.ProcessId, tuple.UserId, tuple.MuxId)
+		{
+		}
+		
+		public MuxTuple(int treeId, int processId, int userId, int muxId)
+		{
+			this.TreeId = treeId;
+			this.ProcessId = processId;
+			this.UserId = userId;
+			this.MuxId = muxId;
+		}
+		
+		public static implicit operator SmbMuxTuple(MuxTuple t)
+		{
+			return t.ToExchange();
+		}
+		
+		public static implicit operator MuxTuple(SmbMuxTuple t)
+		{
+			return new MuxTuple(t);
+		}
+		
+		public static MuxTuple FromSmb(ref SmbHeader header)
+		{
+			return new MuxTuple(header.TreeId, header.ProcessId, header.UserId, header.MuxId);
+		}
+			
+		public SmbMuxTuple ToExchange()
+		{
+			SmbMuxTuple ex;
+			ex.TreeId = this.TreeId;
+			ex.ProcessId = this.ProcessId;
+			ex.UserId = this.UserId;
+			ex.MuxId = this.MuxId;
+			return ex;
+		}
+		
+		public override string! ToString()
+		{
+			return String.Format(
+				// "[Mux: TID:{0:x4} PID:{1:x4} UID:{2:x4}, MID:{3:x4}]",
+				"[t{0:x4} p{1:x4} u{2:x4} m{3:x4}]",
+				TreeId,
+				ProcessId,
+				UserId,
+				MuxId);
+		}
+
+		public static MuxTuple FromSmbHeader(SmbHeader header)		
+		{
+			return new MuxTuple(header.TreeId, header.ProcessId, header.UserId, header.MuxId);
+		}
+
+	}
+}

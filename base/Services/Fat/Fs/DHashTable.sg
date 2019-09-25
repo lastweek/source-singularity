@@ -1,0 +1,116 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DHashtable.sg
+//
+//  Note:
+//         A hashtable customized for FAT directory hashing.  Table entries
+//  are composed of <nameKey, (entry offset, entry length)>.
+//
+//         Earlier versions of this file implemented a chain based
+//  Hashtable in place.  The code was updated to use open address hashing
+//  as it has lower memory overhead and faster lookup when the load is
+//  is low.
+//
+
+namespace Microsoft.Singularity.Services.Fat.Fs
+{
+    using System;
+    using System.Diagnostics;
+
+    /// <remarks> Specialized hashtable for storing filename
+    /// hashes for directories. </remarks>
+    internal sealed class DHashtable
+    {
+        public const int MaxKeyValue = OpenHash.MaxKeyValue;
+        public const int MaxKeyBits  = OpenHash.MaxKeyBits;
+
+        OpenHash table;
+
+        internal DHashtable()
+        {
+            this.table = new OpenHash();
+        }
+
+        /// <value>Property <c>Count</c> represents the number of key-value
+        /// pairs stored in the hash table. </value>
+        internal int Count
+        {
+            get { return table.Count; }
+        }
+
+        /// <value>Property <c>Capacity</c> represents the current capacity
+        /// of the hash table. </value>
+        /// <para>The capacity of the hash table changes dynamically.</para>
+        internal int Capacity
+        {
+            get { return table.Capacity; }
+        }
+
+        private static int ComposeValue(ushort x, ushort y)
+        {
+            return (((int)x) << 16) | ((int)y);
+        }
+
+        private static void DecomposeValue(int v, out ushort x, out ushort y)
+        {
+            x = (ushort)(v >> 16);
+            y = (ushort)(v);
+        }
+
+        /// <summary>
+        /// Insert name-key, entry offset, length triplet.
+        /// </summary>
+        internal bool Insert(int    nameKey,
+                             ushort entryOffset,
+                             ushort entryLength)
+            requires nameKey <= MaxKeyValue;
+        {
+            return table.Insert(nameKey,
+                                ComposeValue(entryOffset, entryLength));
+        }
+
+        /// <summary> Remove key-value pair. </summary>
+        /// <returns> true on success, false if key-value pair
+        /// is not present. </returns>
+        internal bool Remove(int    nameKey,
+                             ushort entryOffset,
+                             ushort entryLength)
+            requires nameKey <= MaxKeyValue;
+        {
+            return table.Remove(nameKey,
+                                ComposeValue(entryOffset, entryLength));
+        }
+
+        /// <summary>
+        /// Prepare to begin a search.  This methods clears out
+        /// the state associated with any previous searches.
+        /// </summary>
+        internal void ResetSearch()
+        {
+            table.BeginSearch();
+        }
+
+        /// <summary> Performs value lookup after GetFirstValue
+        /// has retrieved first value for key.  This methods
+        /// allows callers to iterate over hash items with the
+        /// same key.  </summary>
+        /// <exception cref="InvalidOperationException"> The
+        /// hash table was modified or the key does not match
+        /// the key in the last GetFirstValue call. </exception>
+        /// <seealso cref="GetFirstValue"/>
+        internal bool Search(int        nameKey,
+                             out ushort entryOffset,
+                             out ushort entryLength)
+            requires nameKey <= MaxKeyValue;
+        {
+            int value;
+            bool success = table.Search(nameKey, out value);
+            DecomposeValue(value, out entryOffset, out entryLength);
+            return success;
+        }
+    }
+}

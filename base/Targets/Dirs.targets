@@ -1,0 +1,58 @@
+<!--
+##############################################################################
+#
+#   Microsoft Research Singularity
+#
+#   Copyright (c) Microsoft Corporation.  All rights reserved.
+#
+#   File:   Targets\Dirs.targets
+#
+#   Note:
+#
+##############################################################################
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Target Name="Build"
+          Outputs="@(__merged_project_outputs)"
+          DependsOnTargets="BeforeBuild;BuildDependentProjects;AfterBuild;$(BuildDependsOn)">
+  </Target>
+
+
+  <Target Name="BuildDependentProjects">
+    <MSBuild Projects="@(DependentProject);@(ProjectReference)" Condition="'$(BuildInParallel)'!='true'" StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__merged_project_outputs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+    <MSBuild Projects="@(DependentProject);@(ProjectReference)" Condition="'$(BuildInParallel)'=='true'" StopOnFirstFailure="$(StopOnFirstFailure)" BuildInParallel="true">
+      <Output ItemName="__merged_project_outputs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+
+  <Target Name="Clean" DependsOnTargets="$(CleanDependsOn)">
+    <MSBuild Projects="@(DependentProject);@(ProjectReference)" Targets="Clean"/>
+  </Target>
+
+  <Target Name="BeforeBuild"/>
+  <Target Name="AfterBuild"/>
+
+  <Target Name="ShowCommands">
+    <MSBuild Projects="@(ProjectReference);@(DependentProject)" Targets="ShowCommands"/>
+  </Target>
+
+  <Target Name="GetContentItemsOfDependentProjects">
+    <MSBuild Projects="@(ProjectReference)" Targets="GetContentItems" StopOnFirstFailure="$(StopOnFirstFailure)">
+      <Output ItemName="__content_items" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+
+
+  <Target Name="GetOutputAssemblyPath" Outputs="(__dependent_outputs)">
+    <MSBuild Projects="@(ProjectReference);@(DependentProject)" Targets="GetOutputAssemblyPath">
+      <Output ItemName="__dependent_outputs" TaskParameter="TargetOutputs"/>
+    </MSBuild>
+  </Target>
+  
+  <Target Name="GetContentItems" Outputs="@(__content_items)" DependsOnTargets="GetContentItemsOfDependentProjects">    
+  </Target>
+
+</Project>

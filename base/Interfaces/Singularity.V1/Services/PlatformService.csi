@@ -1,0 +1,50 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity - Singularity ABI
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   DebugService.cs
+//
+//  Note:
+//
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Memory;
+
+namespace Microsoft.Singularity.V1.Services
+{
+    public struct PlatformService
+    {
+        [NoHeapAllocation]
+        public static bool DisableInterrupts();
+
+        [NoHeapAllocation]
+        public static void RestoreInterrupts(bool enabled);
+
+        [NoHeapAllocation]
+        public static bool InterruptsDisabled();
+
+        [NoHeapAllocation]
+        [CLSCompliant(false)]
+        public static void CleanAndInvalidateDCache(UIntPtr addr, UIntPtr length);
+
+        [NoHeapAllocation]
+        [CLSCompliant(false)]
+        public static void InvalidateDCache(UIntPtr addr, UIntPtr length);
+
+        [NoHeapAllocation]
+        [CLSCompliant(false)]
+        public static void SetCacheAttributes(UIntPtr addr, UIntPtr length,
+                                              bool cacheable, bool bufferable);
+
+        [NoHeapAllocation]
+        public static int GetProcessorContextOffset();
+
+        [NoHeapAllocation]
+        public static int GetThreadContextOffset();
+    }
+}

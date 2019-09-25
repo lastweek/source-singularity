@@ -1,0 +1,200 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Native image building tool.
+//
+
+using System;
+using FileSystem.Utils;
+
+using System.Collections;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.IO;
+using System.Text;
+using System.Threading;
+using Microsoft.Singularity.Xml;
+
+using Microsoft.SingSharp;
+using Microsoft.Singularity;
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Memory;
+using Microsoft.Singularity.Xml;
+
+public class NibHelper
+{
+    internal const long readSize = 4096;
+    private static TRef<DirectoryServiceContract.Imp:Ready>       m_epNS = null;
+    
+    public static XmlNode OpenXmlDocument(string fileName)
+    {
+        return CreateXmlDocument(fileName);
+    }
+
+    public static XmlNode CreateXmlDocument(string fileName)
+    {
+        // read file into memory region
+     
+        int size; 
+        
+        DirectoryServiceContract.Imp! ds = GetDirectoryServiceContract();
+        try {
+            if (fileName == null) return null;
+            byte[] xmlRegion = FileUtils.ReadEntireFile(fileName, ds);
+            if (xmlRegion == null) return null;
+            
+            XmlReader xmlReader = new XmlReader();
+            if (xmlReader == null) return null; 
+            
+            return xmlReader.Parse(xmlRegion);
+        }
+        finally {
+            ReleaseDirectoryServiceContract(ds);
+        }
+        return null;
+    }
+    
+    public static void SaveXmlDocument(XmlWriter writer, XmlNode doc)
+    {
+        if (writer == null || doc == null) {
+            throw new Exception("Args_null");
+        }
+        writer.WriteStartDocument(false);
+        doc.WriteTo(writer);
+        writer.Flush();
+    }
+
+    public static DirectoryServiceContract.Imp:Ready! GetDirectoryServiceContract()
+    {
+        if (m_epNS == null) {
+            m_epNS = new TRef<DirectoryServiceContract.Imp:Ready>(DirectoryService.NewClientEndpoint());
+        }
+
+        return m_epNS.Acquire();
+    }
+
+    public static void ReleaseDirectoryServiceContract([Claims] DirectoryServiceContract.Imp:Ready! imp)
+    {
+        assert m_epNS != null;
+        m_epNS.Release(imp);
+    }
+
+        //////////////////////////////////////////////////////////////////////////
+        // kinda dumb...
+        private static bool CommandLineSyntaxCheck(string! commandLine)
+        {
+            int quoteCount = 0;
+            for (int i = 0; i < commandLine.Length; i++) {
+                if (commandLine[i] == '\'') {
+                    quoteCount++;
+                }
+            }
+
+            return (quoteCount % 2 == 0);
+        }
+
+        private static bool InSeparators(char c, char []! separators)
+        {
+            for (int i = 0; i < separators.Length; i++) {
+                if (separators[i] == c)
+                    return true;
+            }
+            return false;
+        }
+
+        private static ArrayList! Tokenize(string! input, int last,
+                                           char []! separators)
+        {
+            ArrayList tokens = new ArrayList();
+
+            for (int i = 0; i <= last;) {
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to slurp word
+                int start = i;
+                while (i <= last &&
+                       !InSeparators(input[i], separators) &&
+                       input[i] != '\'')
+                {
+                    i++;
+                }
+                if (i != start) {
+                    tokens.Add(input.Substring(start, i - start));
+                }
+
+                // Skip separators
+                while (i <= last && InSeparators(input[i], separators)) {
+                    i++;
+                }
+
+                if (i > last)
+                    break;
+
+                // Try to quoted slurp word
+                if (input[i] == '\'') {
+                    start = i;
+                    i++;
+                    while (i <= last && input[i] != '\'') {
+                        i++;
+                    }
+
+                    if (i <= last && input[i] == '\'') {
+                        tokens.Add(input.Substring(start + 1, i - start - 1));
+                        i++;
+                    }
+                    else {
+                        tokens.Add(input.Substring(start, i - start));
+                        i++;
+                    }
+                }
+            } // end for
+
+            return tokens;
+        }
+
+        public static void BreakCommandLine(string!       input,
+                                             char []!      separators,
+                                             out string    command,
+                                             out string[]! commandArguments)
+        {
+
+            if (!CommandLineSyntaxCheck(input)) {
+                command = "";
+                commandArguments = new string[0];
+                return;
+            }
+
+            // Scan for trailing ampersand first
+            int last = input.Length - 1;
+            while (last > 0 && InSeparators(input[last], separators)) {
+                last--;
+            }
+
+
+            ArrayList tokens = Tokenize(input, last, separators);
+
+            if (tokens.Count == 0) {
+                command = "";
+                commandArguments = new string[0];
+                return;
+            }
+
+            command = (string) tokens[0];
+            commandArguments = new string [tokens.Count];
+            for (int i = 0; i < tokens.Count; i++) {
+                commandArguments[i] = (string) tokens[i];
+            }
+        }
+}

@@ -1,0 +1,196 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  Note:   Simple Singularity telnet daemon.
+//
+
+namespace Microsoft.Singularity.Telnetd
+{
+    using System;
+    using System.Net;
+    using System.Net.Sockets;
+    using System.Text;
+    using System.Threading;
+
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Io;
+
+    internal sealed class Connection
+    {
+        const byte IAC = 255;                   // telnet "interpret as command" escape
+        const byte CODE_WILL = 251;             // telnet commands
+        const byte CODE_WONT = 252;
+        const byte CODE_DO = 253;
+        const byte CODE_DONT = 254;
+        const byte OPTION_ECHO = 0x01;          // telnet command options
+        const byte OPTION_SUPPRESSGA = 0x03;
+
+        private Socket socket;
+        private Process process;
+        private TRef<UnicodePipeContract.Imp:READY> m_stdinImp;
+        
+        public Connection(Socket socket)
+        {
+            this.socket = socket;
+        }
+        
+        public void Start()
+        {
+            ThreadStart threadStart = new ThreadStart(Run);
+            Thread thread = new Thread(threadStart);
+            thread.Start();
+        }
+        
+        private void Run()
+        {
+            // Send options and welcome message to the client
+            SendCommand(IAC, CODE_DONT, OPTION_ECHO);
+            SendCommand(IAC, CODE_WILL, OPTION_SUPPRESSGA);
+            Send("Microsoft Singularity Telnet Daemon\r\n\r\n");
+
+            // Start a shell process with redirected IO
+            string[] commands = new string[] { "shell" };
+            process = new Process(commands, null, 2);
+            if (process == null) {
+                Console.WriteLine("Singularity Telnet Daemon - failed to exec shell.");
+                return;
+            }
+
+            UnicodePipeContract.Imp! stdinImp;
+            UnicodePipeContract.Exp! stdinExp;
+            UnicodePipeContract.NewChannel(out stdinImp, out stdinExp);
+
+            UnicodePipeContract.Imp! stdoutImp;
+            UnicodePipeContract.Exp! stdoutExp;
+            UnicodePipeContract.NewChannel(out stdoutImp, out stdoutExp);
+
+            process.SetStartupEndpoint(0, (Endpoint * in ExHeap) stdinExp);
+            process.SetStartupEndpoint(1, (Endpoint * in ExHeap) stdoutImp);
+            process.Start();
+
+            // Kick off another thread that will pump the data from the socket to shell stdin
+            m_stdinImp = new TRef<UnicodePipeContract.Imp:READY>(stdinImp);
+            ThreadStart threadStart = new ThreadStart(WaitOnSocket);
+            Thread thread = new Thread(threadStart);
+            thread.Start();
+
+            // Process all output from the shell
+            bool abort = false;
+            while (!abort) {
+                switch receive {
+                    case stdoutExp.Write(buffer, offset, count):
+                        Send(buffer, offset, count);
+                        stdoutExp.SendAckWrite(buffer);
+                        break;
+                    case stdoutExp.ChannelClosed():
+                        Console.WriteLine("Singularity Telnet Daemon - ending connection.");
+                        abort = true;
+                        break;
+                }
+            }
+
+            delete stdoutExp;
+            socket.Close();
+        }
+
+        private void WaitOnSocket()
+        {
+            UnicodePipeContract.Imp:READY! stdinImp = m_stdinImp.Acquire();
+            byte[] localBuffer = new byte[256];
+            bool abort = false;
+            while (!abort) {
+                try {
+                    int count = socket.Receive(localBuffer);
+#if DebugTracingOn
+                    DebugStub.Write("Receive " + count + "b:");
+                    for (int i = 0; i < count; i++) {
+                        DebugStub.Write(" " + localBuffer[i]);
+                    }
+                    DebugStub.WriteLine();
+#endif
+
+                    if (count > 0) {
+                        // REVIEW: If we only care about ASCII we have the same sized buffers...
+                        char[] in ExHeap buffer = new [ExHeap] char[localBuffer.Length];
+                        int dataCount = 0;
+                        for (int i = 0; i < count; i++) {
+                            if (localBuffer[i] == IAC) {
+                                i += 2; // TODO: Handle split 3 byte sequences and other forms
+                                continue;
+                            }
+                            buffer[dataCount] = (char)localBuffer[i];
+                            dataCount++;
+                        }
+
+                        // Send the data and wait for acknowledgement
+                        stdinImp.SendWrite(buffer, 0, dataCount);
+                        switch receive {
+                            case stdinImp.AckWrite(returnedBuffer):
+                                delete returnedBuffer;
+                                break;
+                            case stdinImp.ChannelClosed():
+                                abort = true;
+                                break;
+                        }
+                    }
+                }
+                catch (SocketException) {
+                    Console.WriteLine("Socket Exception on input thread");
+                    abort = true;
+                }
+            }
+            delete stdinImp;
+            socket.Close();
+        }
+        
+        // Send - encode and sends
+        private void Send(char[]! in ExHeap buffer, int offset, int count)
+        {
+            // REVIEW: it's silly to copy the buffer locally because it's going to a socket
+            char[] localBuffer = new char[count];
+            for (int i = 0; i < count; i++) {
+                localBuffer[i] = buffer[offset + i];
+            }
+            byte[] encodedBuffer = Encoding.ASCII.GetBytes(localBuffer);
+            SendRawBytes(encodedBuffer, 0, encodedBuffer.Length);
+        }
+
+        // Send - encode and sends
+        private void Send(string! s)
+        {
+            byte[] buffer = Encoding.ASCII.GetBytes(s);
+            SendRawBytes(buffer, 0, buffer.Length);
+        }
+
+        // SendCommand - assembles and sends the standard three byte command
+        private void SendCommand(byte iac, byte code, byte option)
+        {
+            byte[] buffer = new byte[] { iac, code, option };
+            SendRawBytes(buffer, 0, buffer.Length);
+        }
+
+        // SendRawBytes - base function for sending already encoded data to client
+        private void SendRawBytes(byte[] buffer, int offset, int count)
+        {
+#if DebugTracingOn
+            DebugStub.Write("Send " + count + "b:");
+            for (int i = 0; i < count; i++) {
+                DebugStub.Write(" " + buffer[offset + i]);
+            }
+            DebugStub.WriteLine();
+#endif
+            if (count <= 0) {
+                return;
+            }
+            try {
+                socket.Send(buffer, offset, count, SocketFlags.None);
+            }
+            catch (SocketException) {
+                Console.WriteLine("Socket Exception writing string.");
+            }
+        }
+    }
+}

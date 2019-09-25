@@ -1,0 +1,100 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Microsoft Research Singularity
+//
+//  Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+//  File:   TulipController.sg
+//
+//
+
+using Microsoft.Singularity.Channels;
+using Microsoft.Singularity.Io;
+using Microsoft.Singularity.Io.Net;
+using Microsoft.Singularity.Directory;
+using Microsoft.Singularity.Extending;
+using Microsoft.Singularity.V1.Services;
+
+using System;
+using System.Threading;
+
+namespace Microsoft.Singularity.Drivers.Network.Tulip
+{
+    internal class TulipController
+    {
+        public static int DriverMain(PnicResources! resources)
+        {
+            ExtensionContract.Exp! ep = (resources.ec).Acquire();
+            ServiceProviderContract.Exp! sp = (resources.nicsp).Acquire();
+            Tulip! device = new Tulip(resources.csr, resources.mem, resources.irq);
+
+            try {
+                return SharedMain(ep, sp, device);
+            }
+            finally {
+                delete ep;
+                delete sp;
+            }
+        }
+
+        public static int DriverMain(TulipResources! resources)
+        {
+            ExtensionContract.Exp! ep = (resources.ec).Acquire();
+            ServiceProviderContract.Exp! sp = (resources.nicsp).Acquire();
+            Tulip! device = new Tulip(resources.csr, resources.mem, resources.irq);
+
+            try {
+                return SharedMain(ep, sp, device);
+            }
+            finally {
+                delete ep;
+                delete sp;
+            }
+        }
+
+        public static int SharedMain(ExtensionContract.Exp! ep,
+                                     ServiceProviderContract.Exp! sp,
+                                     Tulip! device)
+        {
+            device.Initialize();
+
+            ep.SendSuccess();
+            for (bool run = true; run;) {
+                switch receive {
+                    case sp.Connect(ServiceContract.Exp:Start! exp):
+                        NicDeviceContract.Exp nd = exp as NicDeviceContract.Exp;
+                        if (nd != null) {
+                            Tracing.Log(Tracing.Debug, "Connect success.");
+                            sp.SendAckConnect();
+                            TulipDeviceChannel.CreateThread(device, nd);
+                        }
+                        else {
+                            Tracing.Log(Tracing.Error, "Connect failed.");
+                            sp.SendNackConnect(exp);
+                        }
+                        break;
+
+                    case sp.ChannelClosed():
+                        device.Shutdown();
+                        run = false;
+                        break;
+
+                    case ep.Shutdown():
+                        device.Shutdown();
+                        ep.SendAckShutdown();
+                        break;
+
+                    case ep.ChannelClosed():
+                        device.Shutdown();
+                        run = false;
+                        break;
+
+                    case unsatisfiable:
+                        DebugStub.Break();
+                        break;
+                }
+            }
+            return 0;
+        }
+    }
+}

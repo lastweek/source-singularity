@@ -1,0 +1,794 @@
+//
+// Copyright (c) Microsoft Corporation.   All rights reserved.
+//
+
+namespace Microsoft.Singularity.Diagnostics
+{
+    using FileSystem.Utils;
+
+    using Microsoft.Singularity;
+    using Microsoft.Singularity.Isal;
+    using Microsoft.Singularity.Channels;
+    using Microsoft.Singularity.Directory;
+    using Microsoft.Singularity.V1.Services;
+
+    using System;
+    using System.Collections;
+    using System.GCs;
+    using System.IO;
+    using System.Runtime.CompilerServices;
+    using System.Threading;
+
+    // Receive notifications from the GC and deliver them to a profiler, via a log file.
+    public class CLRProfiler : GCProfiler
+    {
+        // The public API for a typical client app.
+        static public void StartProfiling()
+        {
+            CLRProfiler prof = new CLRProfiler();
+            prof.Initialize();
+            GC.SetProfiler(prof);
+        }
+
+        internal abstract class Buffer
+        {
+            // This must be big enough for whatever the biggest logical entry is that someone
+            // might write from a mutator thread.  The GC thread has unbounded entries and
+            // doesn't need to observe this rule.  I think the biggest entry is probably a
+            // typeName, which could be 512 bytes for the name, plus some slop.
+            //
+            // In a checked build, we assert that we remain within this requirement.  In a
+            // retail build, we quietly generate a corrupt log with entries intermingled.
+            // If you don't like this policy, change LocalBuffer.FlushOnOverflow to do
+            // something different.
+            protected const int  bufferSize = 800;
+            protected byte[]!    data;                  // data buffer
+            protected int        iBuff;                 // index into data buffer
+
+            protected Buffer()
+            {
+                data = new byte[bufferSize];
+                iBuff = 0;
+                base();
+            }
+
+            // Write a byte
+            internal void Write(byte c)
+            {
+                if (iBuff >= bufferSize) {
+                    DebugStub.Assert(iBuff == bufferSize);
+                    FlushOnOverflow();
+                    DebugStub.Assert(iBuff == 0);      // no races possible
+                }
+                data[iBuff++] = c;
+            }
+
+            // Write a byte and a space-separator
+            internal void WritePair(byte c)
+            {
+                Write(c);
+                Write(' ');
+            }
+
+            // Perform a Write of the number.ToString -- without allocating anything, with
+            // a space-separator
+            internal void WriteNumber(ulong ul)
+            {
+                if (ul == 0) {
+                    WritePair('0');
+                    return;
+                }
+
+                Write('0');
+                Write('x');
+
+                bool leadingZero = true;
+                byte nybble;
+
+                // 16 nybbles in an 8-byte quantity
+                for (int i = 0; i < 16; i++) {
+                    nybble = (byte) ((ul & 0xf000000000000000) >> 60);
+                    ul <<= 4;
+
+                    if (leadingZero) {
+                        if (nybble == 0) {
+                            continue;       // no need to print leading zeroes
+                        }
+                        else {
+                            leadingZero = false;
+                        }
+                    }
+
+                    nybble += (byte) ((nybble > 9) ? 'a'-10 : '0');
+                    Write(nybble);
+                }
+                Write(' ');
+            }
+
+            // No space-separator!
+            internal void WriteString(string! s)
+            {
+                for (int i = 0; i < s.Length; i++) {
+                    Write((byte) s[i]);     // simplest Unicode -> ASCII
+                }
+            }
+
+            // Terminate an entry
+            internal void WriteCRLF()
+            {
+                Write('\r');
+                Write('\n');
+            }
+
+            // For some buffer subtypes, it is a bug to overflow an entry while writing a
+            // partial entry.  That's why we distinguish the overflow and consistent
+            // forms of flush.
+            internal virtual void FlushOnOverflow()
+            {
+                FlushConsistentEntry();
+            }
+
+            internal abstract void FlushConsistentEntry();
+
+            // A child buffer can ask its parent to accept some bytes.  The parent is responsible
+            // for the appropriate synchronization (including with the GC!).
+            internal abstract void TakeBytes(byte[]! bytes, int count);
+        }
+
+        // A LocalBuffer that -- when completely consistent -- can flush up to its Parent.
+        internal class LocalBuffer : Buffer
+        {
+            private Buffer!             parent;
+
+            // With everyone allocating and using local buffers, we need at least a minimal
+            // cache for recycling.
+            private LocalBuffer         next;       // create linked list for a cache of buffers
+
+            static private LocalBuffer  cache;
+            static private SpinLock     cacheLock;
+
+            internal LocalBuffer(Buffer! parent)
+            {
+                this.parent = parent;
+                base();
+            }
+
+            // The LocalBuffers are supposed to be large enough to be accommodate any non-GC
+            // logging.  This isn't the case, and we are about to corrupt the log by interleaving
+            // output from multiple entries.
+            internal override void FlushOnOverflow()
+            {
+#if _DEBUG
+                DebugStub.Assert(false);
+#endif
+                base.FlushOnOverflow();             // emit a corruption
+            }
+
+            internal override void FlushConsistentEntry()
+            {
+                if (iBuff > 0) {
+                    parent.TakeBytes(data, iBuff);
+                    iBuff = 0;
+                }
+            }
+
+            internal override void TakeBytes(byte[]! bytes, int count)
+            {
+                DebugStub.Assert(false, "Never implemented arbitrarily nested LocalBuffers");
+            }
+
+            // We don't want to create a new buffer on every log entry.  Recycle
+            // buffers using a pool.
+            static internal LocalBuffer! FindOrCreateBuffer(FileBuffer! fileBuffer)
+            {
+                cacheLock.Acquire();
+                LocalBuffer temp = cache;
+                if (temp != null) {
+                    cache = temp.next;
+                    temp.next = null;
+                }
+                cacheLock.Release();
+                if (temp != null) {
+                    // Not a very general cache.  Make sure it isn't being abused.
+                    DebugStub.Assert(fileBuffer == temp.parent);
+                    return temp;
+                }
+                // cache underflow:
+                return new LocalBuffer(fileBuffer);
+            }
+
+            // The below is unsafe.  If there are any outstanding references to this buffer, then
+            // we no longer have single-threaded access and the entries will become corrupt.
+            internal void Recycle()
+            {
+                FlushConsistentEntry();
+
+                cacheLock.Acquire();        // cache grows to a high water mark
+                this.next = cache;
+                cache = this;
+                cacheLock.Release();
+            }
+        }
+
+        // A buffer associated with a file to which it directly writes.
+        internal class FileBuffer : Buffer
+        {
+            private TRef<FileContract.Imp:Ready>! connRef;
+            private long       filePos;
+            private SpinLock   fileLock;
+            private Thread     owningThread;
+
+            internal FileBuffer(TRef<FileContract.Imp:Ready>! connRef)
+            {
+                this.connRef = connRef;
+                base();
+            }
+
+            internal override void FlushConsistentEntry()
+            {
+                if (iBuff > 0) {
+                    FileContract.Imp conn = connRef.Acquire();
+                    byte[]! in ExHeap bytes = Bitter.FromByteArray(data, 0, iBuff);
+
+                    try {
+                        long bytesWritten;
+                        int error;
+
+                        conn.SendWrite(bytes, 0, filePos, bytes.Length);
+                        conn.RecvAckWrite(out bytes, out bytesWritten, out error);
+                        delete bytes;
+
+                        filePos += bytesWritten;
+                        if (error != 0) {
+                            // TODO: We need a real error story for the platform.
+                            throw new Exception("Failed to write to GC Profiler log");
+                        }
+                    }
+                    finally {
+                        // Other threads could have passed their 'enabled' check and be
+                        // blocked on the monitor.  So even on failure we must empty
+                        // the buffer
+                        iBuff = 0;
+                        connRef.Release(conn);
+                    }
+                }
+            }
+
+            // TakeBytes from a child LocalBuffer in a single consistent cycle.  And do
+            // so without allocating or making a kernel transition or otherwise yielding
+            // to the GC.
+            //
+            // If the FileBuffer is currently Owned for exclusive access (i.e. the GC is
+            // streaming inconsistent records of arbitrary size and cannot be interrupted)
+            // then Yield to the GC and try again.  Sleeping should go through the kernel
+            // and provide an adequate Transition.
+            //
+            // Everything happens in a SpinLock because these locks don't themselves
+            // allocate.  Also, the SpinLock guarantees a consistent read of state like
+            // 'OwningThread' across all the CPUs.
+            internal override void TakeBytes(byte[]! bytes, int count)
+            {
+                DebugStub.Assert(count <= bufferSize);     // Guaranteed.
+                while (true) {
+                    fileLock.Acquire();
+
+                    // Is the GC thread holding onto exclusive access right now?
+                    if (OwningThread != null) {
+                        DebugStub.Assert(OwningThread != Thread.CurrentThread);
+                        fileLock.Release();
+                        Thread.Sleep(0);                // yield to the GC
+
+                        // It's possible that OwningThread has changed again (though
+                        // not in a manner that involves the current thread).  Start over.
+                        continue;
+                    }
+
+                    // Ensure there is enough space in the FileBuffer for all our
+                    // bytes.  Once we start accepting bytes, there must be no
+                    // allocations.  And we cannot write to disk while holding the
+                    // spinlock.
+                    if (iBuff + count > bufferSize) {
+                        fileLock.Release();
+                        FlushConsistentEntry();
+
+                        // It's possible that OwningThread has changed, or another
+                        // writer has intruded.  Start over.
+                        continue;
+                    }
+
+                    // We are holding the lock.  The GC hasn't taken control from us.
+                    // There is room for our entry.  Blast it without allocating or yielding.
+                    for (int i = 0; i < count; i++) {
+                        data[iBuff++] = bytes[i];
+                    }
+                    fileLock.Release();
+                    return;                             // success.
+                }
+            }
+
+            // A FileBuffer can be owned by a client thread, in which case it will not TakeBytes
+            // from any children.
+            internal Thread OwningThread
+            {
+                get {
+                    // Reads are either performed for Assertion purposes by the thread that
+                    // is the owner, or they are only performed by threads that hold the
+                    // spinlock.  However, this invariant cannot be easily expressed in an
+                    // Assert.
+                    return owningThread;
+                }
+                set {
+                    fileLock.Acquire();
+                    owningThread = value;
+                    fileLock.Release();
+                }
+            }
+        }
+
+        private bool        enabled;                  // profiling is enabled?
+
+        private ulong       lastCycle;                // time entries
+        private ulong       firstCycle;
+        private const int   cycleGranularity = 5000000;
+
+        private const int   maxGeneration = 3;        // CLR Profiler only handles this many
+        private int[]!      generations;
+
+        private TRef<FileContract.Imp:Ready> connRef;
+
+        private Hashtable!  typeTable;                // hash of types->ids
+        private Hashtable!  stackTable;               // hash of stacks->ids
+        private Hashtable!  funcTable;                // hash of Eips->ids
+
+        private uint        nextTypeNo;               // hand out IDs monotonically
+        private uint        nextStackNo;
+        private uint        nextFuncNo;
+
+        private FileBuffer  _fileBuffer;
+        private FileBuffer! fileBuffer {
+            get {
+                // We can't capture the specs (in the type system) that
+                // one needs to call Initialize before any other ops
+                assert _fileBuffer != null;
+                return _fileBuffer;
+            }
+            set {
+                this._fileBuffer = value;
+            }
+        }
+
+        private int         rootCount;                // break up 'r' entries into chunks
+
+        private Thread      recurseThread;            // prevent recursion when the profiler allocates
+        private SpinLock    allocationLock;
+
+        // For stack traces, the Eips and corresponding stack numbers
+        private const int   stackSize = 8;            // increase for bigger / slower stack traces
+        private UIntPtr[]!  stackEips;
+        private uint[]!     stackNos;
+
+        internal CLRProfiler()
+        {
+            this.generations = new int[maxGeneration];
+            this.typeTable = new Hashtable();
+            this.stackTable = new Hashtable();
+            this.funcTable = new Hashtable();
+            this.stackEips = new UIntPtr[stackSize];
+            this.stackNos = new uint[stackSize];
+            firstCycle = Processor.CycleCount;
+            base();
+        }
+
+        // Initialization, prior to attempting to set this profiler into the GC.  It's
+        // inappropriate to do this stuff inside a constructor.
+        internal void Initialize()
+        {
+            string logDirectory = "/fs/gcProfiler";
+            bool   isDirectory;
+
+            if ((DirectoryUtils.PathIsDirectory(logDirectory, out isDirectory) != 0) ||
+                !isDirectory) {
+
+                // If it doesn't look like a healthy directory, try & create it.  There
+                // seems to be a bug where valid nested directories fail the PathIsDirectory
+                // call.  So make a best effort to create it, but if it already exists this
+                // will be a NOP.  Therefore, ignore failure at this stage.
+                DirectoryUtils.CreateDirectory(logDirectory);
+            }
+
+            ushort pid = ProcessService.GetCurrentProcessId();
+
+            string logFile = logDirectory + "/" + pid.ToString();
+
+            // If the file already exists, blow it away.  Don't worry about failures on the
+            // delete... Create & Open are what we really care about.
+            FileUtils.DeleteFile(logFile);
+
+            if (FileUtils.CreateFile(logFile) != 0) {
+                DebugStub.WriteLine("Couldn't create file '" + logFile + "'");
+                return;
+            }
+
+            FileContract.Imp conn = FileUtils.OpenFile(logFile);
+            if (conn == null) {
+                DebugStub.WriteLine("Couldn't open file '" + logFile + "'");
+                return;
+            }
+
+            connRef = new TRef<FileContract.Imp:Ready>(conn);
+            fileBuffer = new FileBuffer(connRef);
+
+            // Write out the log header, while we are still single-threaded.
+            WriteHeader(fileBuffer);
+
+            // When we set this, we are no longer single-threaded:
+            this.enabled = true;
+        }
+
+        // the API by which our base class calls us
+
+        protected override void Shutdown()
+        {
+            // This is presumed to be called when the process is single-threaded, since
+            // the entire GC heap is shutting down.
+            if (enabled) {
+                // flush & close the log
+                fileBuffer.FlushConsistentEntry();
+                enabled = false;
+            }
+        }
+
+        // There are 3 entry points that must write to the log, causing multi-threaded
+        // concerns.
+        //
+        // 1.  PreGC
+        // 2.  PostGC
+        // 3.  Allocation
+        //
+        // Here are those concerns:
+        //
+        // o  Multiple Allocation notifications will race with each other.
+        // 
+        // o  Some GCs might use multiple threads.  For now, I assume a single-threaded
+        //    GC.
+        //
+        // o  Some GCs might be concurrent with the application.  For now, I assume that
+        //    GC allows mutator threads to run, so long as they don't allocate, make a
+        //    user/kernel transition, or otherwise synchronize with the GC.
+        //
+        // o  Some GCs might relocate objects.  I haven't implemented the notifications
+        //    for this yet.
+        //
+        // The solution is that non-GC logging is performed to LocalBuffers.  When a buffer
+        // is in a consistent state, it can be flushed to the shared FileBuffer.
+        // There are some subtleties to this:
+        //
+        // 1.  The GC writes some entries that are unbounded in size (like the elements
+        //     coming out of a huge object array).  So it cannot use a LocalBuffer.
+        //
+        // 2.  The mutator threads might have to write a set of entries like a stack
+        //     trace, a type definition, and an allocation entry which are all related.
+        //
+        // The second issue is addressed by making the local buffers big enough to write
+        // fully formed consistent entries without overflowing.  We also tolerate races
+        // in the definitions of some of the related entries, leading to duplicates.
+        //
+        // The first issue is addressed by putting the GC in a special position where
+        // it can stream to the file on overflow, and prevent any mutator threads from
+        // injecting their consistent entries into that stream, thereby corrupting it.
+        // This means that a mutator might allocate in one GC, but not report that
+        // allocation until the next GC.  The CLR Profiler tool seems resilient to these
+        // anomalies.
+
+        // A GC is about to start.  The world is in a sane place, except that we may
+        // have stopped the mutator threads if this is a StopTheWorld collection.
+        protected override void PreGC(int generation)
+        {
+            try {
+                // Take ownership of the fileBuffer to prevent mutating threads from
+                // interleaving with us.
+                DebugStub.Assert(fileBuffer.OwningThread == null);
+                fileBuffer.OwningThread = Thread.CurrentThread;
+
+                // emit the fact that a GC will occur
+                MaybeTick(fileBuffer);
+
+                if (generation >= maxGeneration) {
+                    generation = maxGeneration-1;
+                }
+                generations[generation]++;
+
+                fileBuffer.WritePair('g');
+                fileBuffer.WriteNumber((ulong) generations[0]);
+                fileBuffer.WriteNumber((ulong) generations[1]);
+                fileBuffer.WriteNumber((ulong) generations[2]);
+                fileBuffer.WriteCRLF();
+            }
+            catch (Exception) {
+                enabled = false;
+                throw;
+            }
+        }
+
+        // A GC has finished.  The world is in a sane place, except that we might not
+        // have started up all the mutator threads if this is a StopTheWorld collection.
+        protected override void PostGC()
+        {
+            try {
+                // emit the fact a GC has happened, including the state of the heap.
+                MaybeTick(fileBuffer);
+
+                // Write all the Roots
+                fileBuffer.WritePair('r');
+                rootCount = 0;
+                ScanRoots();
+                fileBuffer.WriteCRLF();        // finish off the open log entry
+
+                // Write all the reachability graph of the heap
+                ScanObjects();
+
+                // Once we have finished writing everything, we can allow mutator threads to
+                // share access to the fileBuffer with their own consistent entries.
+                fileBuffer.FlushConsistentEntry();
+                DebugStub.Assert(fileBuffer.OwningThread == Thread.CurrentThread);
+                fileBuffer.OwningThread = null;
+            }
+            catch (Exception) {
+                enabled = false;
+                throw;
+            }
+        }
+
+        // In the list of roots, we have found another object
+        protected override void ScanOneRoot(UIntPtr objectAddress)
+        {
+            if (objectAddress != 0) {
+                // We want to put a reasonable chunk into each 'r' entry and then use multiple
+                // such entries.  But I'm tempted to say there is a bug in CLR Profiler that
+                // prevents it from correctly handling multiple consecutive 'r' log entries.
+                // So make the chunk size enormous for now.
+                if (rootCount > 10000) {
+                    fileBuffer.WriteCRLF();
+                    fileBuffer.WritePair('r');
+                    rootCount = 0;
+                }
+                fileBuffer.WriteNumber((ulong) objectAddress);
+                rootCount++;
+            }
+        }
+
+        // In the heap reachability graph, we are starting to dump a new object
+        protected override void StartScanOneObject(UIntPtr objectAddress, Type type, UIntPtr size)
+        {
+            uint typeNo = MaybeWriteType(fileBuffer, (!)type);
+
+            fileBuffer.WritePair('o');
+            fileBuffer.WriteNumber((ulong) objectAddress);
+            fileBuffer.WriteNumber((ulong) typeNo);
+            fileBuffer.WriteNumber((ulong) size);
+
+            // This will be followed by repeated calls to ScanOneObjectField, then
+            // EndScanOneObject
+        }
+
+        // This is one of the references that the current object holds.
+        protected override void ScanOneObjectField(UIntPtr objectAddress)
+        {
+            if (objectAddress != 0) {
+                fileBuffer.WriteNumber((ulong) objectAddress);
+            }
+        }
+
+        // We are finished scanning one object
+        protected override void EndScanOneObject()
+        {
+            fileBuffer.WriteCRLF();
+        }
+
+        // Create a log entry for the allocation that just occurred on this thread.
+        protected override void Allocation(UIntPtr objAddr, Type type, UIntPtr size)
+        {
+            // We cannot recurse inside an Allocation notification, or we will simply
+            // blow the stack on the first entry.  Also, we don't want to log allocations
+            // that occur as a consequence of logging the state of the GC heap -- though
+            // we could support that if we chose to.
+            if (enabled &&
+                recurseThread != Thread.CurrentThread &&            // recurse?
+                fileBuffer.OwningThread != Thread.CurrentThread) {  // GC logging?
+                allocationLock.Acquire();
+                try {
+                    DebugStub.Assert(recurseThread == null);
+                    recurseThread = Thread.CurrentThread;
+                    // record the fact that an object was allocated, into a local
+                    // buffer that will be written to the fileBuffer only when we
+                    // are no longer subject to the GC.
+                    LocalBuffer! localBuffer = LocalBuffer.FindOrCreateBuffer(fileBuffer);
+                    MaybeTick(localBuffer);
+
+                    // Emit a stack trace.
+                    // TODO: Processor.GetStackEips doesn't indicate how much of the array
+                    // it modified, so we have to zero it before each call.  Better to change
+                    // the GetStackEips API!
+                    for (int i = 0; i < stackEips.Length; i++) {
+                        stackEips[i] = 0;
+                    }
+                    Isa.GetStackReturnAddresses(stackEips);
+                    uint stkNo = MaybeWriteStack(localBuffer, (!) type, size, stackEips);
+
+                    localBuffer.WritePair('!');
+                    localBuffer.WriteNumber((ulong) Thread.CurrentThread.GetThreadId());
+                    localBuffer.WriteNumber((ulong) objAddr);
+                    localBuffer.WriteNumber((ulong) stkNo);
+                    localBuffer.WriteCRLF();
+
+                    localBuffer.Recycle();
+                }
+                finally {
+                    recurseThread = null;
+                    allocationLock.Release();
+                }
+            }
+        }
+
+        // The rest of our implementation details:
+
+        private uint MaybeWriteStack(Buffer! buffer, Type! type, UIntPtr size, UIntPtr[]! stackEips)
+        {
+            // First make sure that we have a type record for the object being
+            // instantiated at this stack.
+            uint typeNo = MaybeWriteType(buffer, type);
+
+            // Then, make sure we have a function record for each Eip in the stack.  Of course
+            // we don't know when a bunch of Eips map to different offsets in the same function.
+            // So make a function for each unique Eip & fix it up in the post-processing.
+            // Hopefully there aren't too many unique call sites in each method.
+            ulong hash = typeNo; // perhaps "typeNo ^ size" ?
+            int   edge = -1;
+            for (int i = 0; i < stackEips.Length && stackEips[i] != 0; i++) {
+                edge++;
+                // Map the individual Eips into their corresponding functions
+                stackNos[i] = MaybeWriteFunction(buffer, stackEips[i]);
+                hash = (hash << 11) + (hash ^ stackNos[i]);
+            }
+
+            // Note that we will statistically map some distinct stacks into the same
+            // stack if they have the same hash.  Oh well.
+            object o = stackTable[hash];
+            if (o != null) {
+                return (uint) o;
+            }
+
+            // It's a novel stack.  Note that we embed the size into the stack, but we
+            // don't include the size in the hash.  There's a technique for sharing
+            // prefixes of stacks that could be explored here to get more accurate profiles
+            // without huge stack expansion.
+            // TODO: consider the above.
+            uint stackNo = nextStackNo++;
+
+            buffer.WritePair('n');
+            buffer.WriteNumber((ulong) stackNo);
+            buffer.WritePair('1');     // bits to indicate variant of record
+            buffer.WriteNumber((ulong) typeNo);
+            buffer.WriteNumber((ulong) size);
+
+            // Stacks are emitted backwards, presumably to support common prefixes better.
+            for (int i = edge; i >= 0; i--) {
+                buffer.WriteNumber((ulong) stackNos[i]);
+            }
+            buffer.WriteCRLF();
+
+            // Flush this entry before putting it into the hashtable, where other threads might
+            // see it.  This means we may have duplicate conflicting entries for the same logical
+            // stack, but this is tolerated by the profiler.
+            buffer.FlushConsistentEntry();
+            stackTable[hash] = stackNo;
+
+            return stackNo;
+        }
+
+        private uint MaybeWriteFunction(Buffer! buffer, UIntPtr eip)
+        {
+            // Given the EIP of a Function, make sure the function has been defined.  Since we
+            // don't have enough runtime information to map Eips to functions, we must rely on
+            // post-processing.
+            object o = funcTable[eip];
+            if (o != null) {
+                return (uint) o;
+            }
+
+            uint funcNo = nextFuncNo++;
+
+            // Emit the function record
+
+            buffer.WritePair('f');
+            buffer.WriteNumber(funcNo);
+            buffer.WriteString("Function_EIP_");
+            buffer.WriteNumber((ulong) eip);
+            buffer.WriteString("(UNKNOWN ARGUMENTS) 0 0");
+            buffer.WriteCRLF();
+
+            // Flush this entry before putting it into the hashtable, where other threads might
+            // see it.  This means we may have duplicate conflicting entries for the same logical
+            // type, but this is tolerated by the profiler.
+            buffer.FlushConsistentEntry();
+            funcTable[eip] = funcNo;
+
+            return funcNo;
+        }
+
+        private uint MaybeWriteType(Buffer! buffer, Type! type)
+        {
+            // Given a Type, make sure that it has been defined.
+            object o = typeTable[type];
+            if (o != null) {
+                return (uint) o;
+            }
+
+            uint typeNo = nextTypeNo++;
+
+            // Emit the type record
+
+            buffer.WritePair('t');
+            buffer.WriteNumber((ulong) typeNo);
+            buffer.WritePair('0');  // TODO: assume not Finalizable for now
+            buffer.WriteString((!)type.FullName);
+            buffer.WriteCRLF();
+
+            // Flush this entry before putting it into the hashtable, where other threads might
+            // see it.  This means we may have duplicate conflicting entries for the same logical
+            // type, but this is tolerated by the profiler.
+            buffer.FlushConsistentEntry();
+            typeTable[type] = typeNo;
+
+            return typeNo;
+        }
+
+        // Use the fast 'rdtsc' to decide when to emit a tick value.
+        private void MaybeTick(Buffer! buffer)
+        {
+            ulong nowCycle = Processor.CycleCount;
+
+            // Emit a tick-count record only if it's been a while since the last one.
+            if (nowCycle > lastCycle + cycleGranularity) {
+                lastCycle = nowCycle;
+                Tick(buffer);
+            }
+        }
+
+        private void Tick(Buffer! buffer)
+        {
+            // Time since profiling began on this application.
+            buffer.WritePair('i');
+            buffer.WriteNumber((ulong) ((lastCycle - firstCycle) / 1000000));
+            buffer.WriteCRLF();
+        }
+
+        // Write the start of the Log file.
+        [MethodImplAttribute(MethodImplOptions.NoInlining)]
+        private void WriteHeader(Buffer! buffer)
+        {
+            // We need a comment record that gives the address of a well-known symbol.  This
+            // allows us to adjust all the EIPs in the log for the actual load address.
+            // Obtain the value before doing anything else, so the only noise in the address
+            // comes from the method prolog.
+            UIntPtr eip = GetAddressOfWriteHeader();
+            MaybeTick(buffer);
+
+            buffer.WritePair('z');
+            buffer.WriteNumber((ulong) eip);
+            buffer.WriteString("CLRProfiler_WriteHeader");
+            buffer.WriteCRLF();
+
+            buffer.FlushConsistentEntry();
+        }
+
+        [MethodImplAttribute(MethodImplOptions.NoInlining)]
+        private UIntPtr GetAddressOfWriteHeader()
+        {
+            // Well, this actually includes the prolog of this method, so it is off by a
+            // few bytes.
+            return Isa.GetCallerReturnAddress();
+        }
+    }
+}
+
