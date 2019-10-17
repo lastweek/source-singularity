@@ -4,4 +4,4 @@ Source code downloaded from [Microsoft](https://www.microsoft.com/en-us/research
 ## Papers
 
 1. [Language Support for Fast and Reliable Message-based
-Communication in Singularity OS, EuroSys'16](https://www.microsoft.com/en-us/research/wp-content/uploads/2006/04/singsharp.pdf)
+Communication in Singularity OS, EuroSys'06](https://www.microsoft.com/en-us/research/wp-content/uploads/2006/04/singsharp.pdf)
